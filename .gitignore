@@ -1,0 +1,9 @@
+# Build output lives outside the repositories (../_build, ../_third_party); these guard against
+# accidental in-tree builds and editor files.
+/build/
+/out/
+/.vs/
+/.vscode/
+/.idea/
+CMakeUserPresets.json
+*.user

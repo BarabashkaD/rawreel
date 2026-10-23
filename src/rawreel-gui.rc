@@ -1,0 +1,6 @@
+// rawreel-gui resources: wxWidgets' standard resources and its application manifest (common
+// controls v6, per-monitor DPI awareness v2). The linker writes no manifest (/MANIFEST:NO), so
+// this is the program's only one.
+#define wxUSE_RC_MANIFEST 1
+#define wxUSE_DPI_AWARE_MANIFEST 2
+#include "wx/msw/wx.rc"
