@@ -27,6 +27,7 @@ using dvv::media::TransferFn;
         case ColourMatrix::Bt709: return "bt709";
         case ColourMatrix::Bt2020Ncl: return "bt2020";
         case ColourMatrix::Rgb: return "rgb";
+        case ColourMatrix::Custom: return "custom";
     }
     return "unspecified";
 }

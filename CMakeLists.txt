@@ -39,16 +39,34 @@ if(NOT DVV_CMAKE_DIR)
 endif()
 include("${DVV_CMAKE_DIR}/DvvCompilerOptions.cmake")
 
-# rawreel_render: everything of rawreel-gui that needs no wx (test pattern, renderer, arguments),
-# so unit, GPU and sanitizer builds use it without the GUI.
+# rawreel_render: the rendering of rawreel-gui that needs no wx (the display state and the viewport
+# compositor), so unit, GPU and sanitizer builds use it without the GUI.
 add_library(rawreel_render STATIC
-    src/arguments.cpp
-    src/test_pattern.cpp
-    src/test_pattern_renderer.cpp)
+    src/render/composite_reference.cpp
+    src/render/display_state.cpp
+    src/render/viewport_renderer.cpp)
 target_include_directories(rawreel_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(rawreel_render PUBLIC dvv::gpu dvv::base)
-dvv_add_shaders(rawreel_render NAMESPACE rawreel_shaders SHADERS shaders/test_pattern.slang)
+target_link_libraries(rawreel_render PUBLIC rawreel_core dvv::gpu dvv::base)
+dvv_add_shaders(rawreel_render NAMESPACE rawreel_shaders SHADERS shaders/composite.slang)
 dvv_set_compiler_options(rawreel_render)
+
+# rawreel_core (design M3 §3): the wx-free application core (fit view math, player logic,
+# commands and keys, format choice, drop routing, the Session and its timer, rawreel-gui's
+# argument parser). Built under every preset, sanitizers included.
+add_library(rawreel_core STATIC
+    src/core/commands.cpp
+    src/core/drop.cpp
+    src/core/format_choice.cpp
+    src/core/gui_arguments.cpp
+    src/core/info_text.cpp
+    src/core/player.cpp
+    src/core/session.cpp
+    src/core/status_text.cpp
+    src/core/timer.cpp
+    src/core/view.cpp)
+target_include_directories(rawreel_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(rawreel_core PUBLIC dvv::media)
+dvv_set_compiler_options(rawreel_core)
 
 # rawreel_dvv_version(<package> <out>): the version of a dvv package, whether it was found
 # installed (find_package sets <package>_VERSION) or added in-tree (read from its directory). A
@@ -97,25 +115,34 @@ dvv_set_compiler_options(rawreel_cli)
 # tests still build and run there. v1.0 runs it on Windows only; elsewhere it is built with a stub
 # native window, so the GUI code stays portable.
 if(NOT DVV_SANITIZE)
-    find_package(wxWidgets CONFIG REQUIRED COMPONENTS core base)
+    find_package(wxWidgets CONFIG REQUIRED COMPONENTS core base aui)
     add_executable(rawreel_gui WIN32
-        src/app.cpp
-        src/main.cpp
-        src/main_frame.cpp
-        src/selftest.cpp
-        src/vulkan_viewport.cpp)
+        src/gui/app.cpp
+        src/gui/drop_target.cpp
+        src/gui/format_dialog.cpp
+        src/gui/info_panel.cpp
+        src/gui/log_panel.cpp
+        src/gui/main.cpp
+        src/gui/main_frame.cpp
+        src/gui/player_panel.cpp
+        src/gui/selftest.cpp
+        src/gui/session_bridge.cpp
+        src/gui/transport_bar.cpp
+        src/gui/viewport.cpp)
     set_target_properties(rawreel_gui PROPERTIES OUTPUT_NAME rawreel-gui)
     # wx is an imported target, so its headers are SYSTEM includes (our /WX does not apply to them).
-    target_link_libraries(rawreel_gui PRIVATE rawreel_render dvv::platform dvv::gpu dvv::base
-                                              wx::core wx::base)
+    target_link_libraries(rawreel_gui PRIVATE rawreel_render rawreel_core dvv::platform dvv::gpu
+                                              dvv::base wx::aui wx::core wx::base)
+    # The source providers (file, synthetic) are components linked into the program.
+    dvv_link_components(rawreel_gui dvv::media_sources)
     dvv_set_compiler_options(rawreel_gui)
     if(WIN32)
-        target_sources(rawreel_gui PRIVATE src/native_window_msw.cpp src/rawreel-gui.rc)
+        target_sources(rawreel_gui PRIVATE src/gui/viewport_msw.cpp src/gui/rawreel-gui.rc)
         # wmain() in a GUI-subsystem program; the manifest comes from wx.rc (rawreel-gui.rc).
         target_link_options(rawreel_gui PRIVATE /ENTRY:wmainCRTStartup /MANIFEST:NO)
     else()
         # No native viewport outside Windows yet (Linux support follows).
-        target_sources(rawreel_gui PRIVATE src/native_window_stub.cpp)
+        target_sources(rawreel_gui PRIVATE src/gui/viewport_stub.cpp)
     endif()
 endif()
 

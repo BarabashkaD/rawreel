@@ -10,14 +10,6 @@ rawreel is a raw video player. This repository holds two programs on top of the 
 [rawreel-workspace](https://github.com/BarabashkaD/rawreel-workspace), which provides the presets,
 the third-party dependencies (wxWidgets among them) and the CI workflow.
 
-## rawreel-gui in M1b
-
-`rawreel-gui` opens a wxWidgets window with one Vulkan viewport, a native child window with its own
-Vulkan surface and presenter. The viewport shows a test pattern rendered by a Slang compute shader
-(`shaders/test_pattern.slang`): 75 % colour bars in the upper two thirds, a grey ramp in the lower
-third and a 1-pixel white border. Resizing redraws the pattern at the new size; minimising and
-restoring work. Validation messages and errors go to stderr, and a leak check runs at exit.
-
 ## Build and run (Windows)
 
 From this folder, in PowerShell 7, after the workspace bootstrap:
@@ -37,25 +29,96 @@ $env:VK_ADD_LAYER_PATH = (Resolve-Path ../_third_party/msvc/bin).Path
 $env:DVV_VK_VALIDATION = 'sync'
 ```
 
-## rawreel-gui --selftest and exit codes
+## rawreel-gui
 
-`rawreel-gui --help` prints:
+`rawreel-gui` plays one raw video stream (v1.0: Windows only). The window has the viewport with the
+transport bar under it, an Info pane (the stream: URI, format, size, frame rate, frame count and
+colour, with "(assumed)" for defaults and "tone-mapped (BT.2390, 1000 → 100 nits)" for PQ and HLG
+streams), a Log pane, a status bar (frame and length, target / actual fps, the pipeline's
+bottleneck) and an infobar for warnings and errors. The log also goes to `rawreel.log` in the
+user's data folder.
 
 ```text
-Usage: rawreel-gui [--selftest] [--help]
+Usage: rawreel-gui [--appearance system|light|dark] [--gpu N] [--selftest SCENARIO]
+                   [--inflight K] [URI]
 
-  --selftest  open the window, present, resize, minimise and restore it, close it, and exit
-  --help      print this text
-
-Exit codes: 0 success; 1 bad arguments, or the GUI could not start; 4 GPU error (no Vulkan
-loader, no usable device, presenter failure); 6 a --selftest check failed; 77 (--selftest only)
-no usable device or no display, unless DVV_REQUIRE_GPU=1 (then 4).
+  --appearance  light or dark windows, or the system setting (default)
+  --gpu N       use GPU N (the index dvv-gpu-info lists) instead of the best one
+  --selftest S  run a scripted check and exit: smoke, player, lost or perf
+  --inflight K  frames in flight for --selftest perf (default 4)
+  --help        print this text
+  URI           a source to open (a path, file:..., synthetic:...)
 ```
 
-`--selftest` runs a fixed script, each step with a 5 s deadline: the first frames at the viewport's
-size, two resizes (800×600 and 333×177), minimise (no new frames, hidden), restore (a new frame),
-close (no validation message, no presenter failure, no leak). A failed step exits with 6 and names
-the step. CTest runs it as `rawreel.gui_selftest` (labels `gpu;display;gui`).
+For example (quote a URI that contains `&` in PowerShell):
+
+```powershell
+$gui = (Resolve-Path ../_build/rawreel/vs2026/Release/rawreel-gui.exe).Path
+& $gui --appearance dark 'synthetic:gradient?fmt=yuv420p10le&size=1920x1080&frames=250'
+```
+
+**Opening.** File → Open… (Ctrl+O), File → Open URI… (Ctrl+U), a URI on the command line (at most
+one) or a file dropped on the window opens one stream; it replaces the stream that was open. When
+several files are dropped, the first opens and the Log pane says "N files ignored: one stream in
+v1.0". A file whose format the name does not give (e.g. `clip.yuv`), or an ambiguous one, opens
+the format dialog, filled with the best guess, else the last choice, else 1920×1080 `yuv420p`
+25 fps. The dialog sets the pixel format (the catalogue, or a custom format loaded with
+Load JSON…, see the dvv-media README), size, frame rate and colour: matrix (BT.601, BT.709,
+BT.2020 NCL, RGB, or Custom with Kr and Kb), range, transfer (sRGB, BT.1886, linear, PQ, HLG) and
+primaries; OK stays disabled while the choice is invalid. View → Format… opens the same dialog
+for the open stream and reopens it with the new choice at the current frame. A file with "N
+trailing bytes ignored" shows the warning in the infobar with a Format… button.
+
+**Playback** shows every frame in order (it waits for a slow frame instead of skipping it) and
+always fits the frame to the viewport: scaled up or down, centred, aspect ratio kept, the
+background around it. Known limit: below 1:8 the fit view still undersamples (at most 4 × 4
+bilinear taps per screen pixel), so very small views of very large frames can alias.
+
+**Hotkeys** (`commandTable()`; bare keys act while no text field has the focus):
+
+| Key | Command | Key | Command |
+| --- | --- | --- | --- |
+| Ctrl+O | File → Open… | Space | Play/Pause |
+| Ctrl+U | File → Open URI… | Left / Right | Step back / forward |
+| Ctrl+W | File → Close stream | Shift+Left / Shift+Right | 10 frames back / forward |
+| Ctrl+Q | File → Quit | Home / End | First / last frame |
+| | | L | Loop on or off |
+
+Playback → Stop, View → Format…, View → Reopen, Help → GPU info and Help → Diagnostics have no key.
+
+**GPU failures.** When the GPU device is lost (or a presenter fails), playback pauses, the viewport
+shows the background and the infobar says "GPU device lost: … Reopen to continue." with a Reopen
+button (also View → Reopen). Reopen builds a new GPU context and reopens the stream at the frame it
+showed, paused. Nothing is retried automatically. A GPU error at start (no Vulkan loader, no usable
+device) shows a dialog and exits with 4.
+
+**Options.** `--appearance dark` (or `light`) sets the window appearance at start; `system`
+follows Windows. `--gpu N` picks the GPU by the index `dvv-gpu-info` prints; the default is the
+best usable one.
+
+**Selftests.** `--selftest <scenario> [URI]` drives the real window through its commands and
+synthesised wx events, each step with a 5 s deadline, and exits with 6 naming the failed step:
+
+- `smoke`: present at the window size, resize to 800×600 and 333×177, minimise and restore, with no
+  stream and then with one; the panes, menus, status fields, infobar and Help items.
+- `player` (needs a URI): play, pause, step, Home/End, the slider, loop, a resize that keeps the
+  fit, View → Format… (BT.601, full range, the frame kept), drops of a named file, of `clip.yuv`
+  (through the format dialog) and of two files.
+- `lost` (needs a URI): an injected device loss → the infobar with Reopen within 5 s, no hang;
+  Reopen presents the kept frame again; play advances; a second loss.
+
+Every scenario ends by closing the window: no validation message, no presenter failure, no leak.
+CTest runs them as `rawreel.gui_selftest.smoke`, `.player` and `.lost` (labels `gpu;display;gui`).
+`perf` is planned for M3.1 and exits with 6 ("scenario perf is not available") until then.
+
+**Exit codes** (`--help` lists them): 0 success; 1 bad arguments (e.g. a second URI: "at most one
+URI"), or the GUI could not start; 4 GPU error (no Vulkan loader, no usable device, a presenter
+failure in a selftest); 6 a `--selftest` check failed; 77 (`--selftest` only) no usable device or
+no display, unless `DVV_REQUIRE_GPU=1` (then 4).
+
+**Planned for M3.1:** the 4K60 performance run (`--selftest perf`, a 4K `yuv420p10le` file at
+60 fps) and faster disk reads (overlapped IOCP reads on Windows, built only if the `bench` gate
+shows a gain). FFmpeg sources and packaging come in M4.
 
 ## rawreel-cli
 
@@ -73,9 +136,10 @@ rawreel-cli --help
 - `dump` writes `--count` frames (default 1) from frame `--frame` (default 0) to `--out`, one
   after the other. `--view original` (the default) writes the original bytes of each frame;
   `--view planes` writes its unpacked planes (format `<name>@planes`). `--via` defaults to `auto`.
-- `bench` reads the first `--frames` frames (default 60) as GPU images, `--inflight` reads at a
-  time (default 4), and prints frames/s, GB/s and the throughput of each stage. It always uses
-  the GPU. `--frames` must not exceed the frame count of the source.
+- `bench` reads the first `--frames` frames (default 60) as GPU images in batches of `--inflight`
+  frames (default 4; a batch is awaited as a whole before the next starts, so K is a batch size,
+  not a sustained queue depth), and prints frames/s, GB/s and the throughput of each stage. It
+  always uses the GPU. `--frames` must not exceed the frame count of the source.
 - `--version` prints the version of rawreel and of each dvv library; `--help` prints the usage.
 
 Each option is valid only for the commands above and may be given once. `--frame` is at least 0;
@@ -89,7 +153,9 @@ A `<uri>` is one of:
 - `synthetic:<gradient|noise>?fmt=<format>&size=WxH[&frames=N][&seed=S]`, 10 frames unless
   `frames` is given.
 
-In PowerShell, quote a URI that contains `&`.
+Every form also takes the colour parameters `range`, `matrix` (with `kr` and `kb` for
+`matrix=custom`), `transfer` and `primaries`, and a raw file takes a custom format as
+`fmt=@<file.json>` (see the dvv-media README). In PowerShell, quote a URI that contains `&`.
 
 ### --via
 
@@ -149,10 +215,13 @@ In detail:
 
 - 1 also covers an argument that is not valid Unicode (Windows).
 - 2 covers the dvv errors `Io` and `Format`, and `OutOfMemory`, `Internal` and `Cancelled`
-  outside the GPU stages. An unexpected exception also exits with 2.
-- 3 covers `Unsupported` outside the GPU stages.
-- 4 covers `DeviceLost` and `ShaderCompile`, and `Unsupported`, `OutOfMemory`, `Internal` and
-  `Cancelled` in a GPU stage.
+  outside the GPU setup. An `Internal` from Upload or GpuUnpack exits with 2 too, and so does a
+  URI the parser rejects, even as `Unsupported` (e.g. `file://host/x`). An unexpected exception
+  also exits with 2.
+- 3 covers `Unsupported` from opening a source.
+- 4 covers `DeviceLost` and `ShaderCompile` anywhere, `Unsupported`, `OutOfMemory`, `Internal`
+  and `Cancelled` from the GPU setup (the GPU registry, the context and a store with a GPU
+  context), and `OutOfMemory` from reading a frame through a store with a GPU context.
 
 A leak check runs at exit. It lists the leaked objects on stderr; with `DVV_LEAK_CHECK=fail` (the
 default in Debug builds) a run that would exit with 0 exits with 1.
@@ -161,7 +230,8 @@ default in Debug builds) a run that would exit with 0 exits with 1.
 
 Without `--json` the result goes to stdout, and an error goes to stderr in a line that starts
 with `error:` (followed by the usage for bad arguments). With `--json` both the result and the
-errors are JSON on stdout. The keys are:
+errors are JSON on stdout, except three that stay plain text on stderr: an argument that is not
+valid Unicode, an internal error (an unexpected exception) and the leak report. The keys are:
 
 - `info`: `uri` (resolved), `provider`, `format` (the format description: `name`, `model`,
   `components`, `planes`, `widthMultiple`), `width`, `height`, `fps` (`num`, `den`), `frames`
@@ -224,10 +294,20 @@ so paths with non-ASCII characters work for both the source and `--out`.
 
 ## Tests
 
-- `rawreel.unit`: the argument parsing of `rawreel-gui` and the CPU reference of the test pattern.
-- `rawreel.gpu` (label `gpu`): the shader's output equals the CPU reference; exits with 77 without a
-  usable Vulkan 1.4 device unless `DVV_REQUIRE_GPU=1`.
-- `rawreel.gui_selftest`: `rawreel-gui --selftest`, Windows only.
+- `rawreel.unit`: the renderer without a GPU: the compositor's CPU reference and `DisplayState`
+  (with its race case).
+- `rawreel.core_unit`: `rawreel_core` (no wx): the fit transform, the player logic, the command
+  table and key normaliser, format choice, drop routing, the `rawreel-gui` arguments and the status
+  and Info texts.
+- `rawreel.core_session` and `rawreel.core_timer`: the headless Session suite (a host-only store,
+  a fake clock and timer, injected read, out-of-memory and device-lost errors, Reopen, shutdown
+  with the leak check) and the `ThreadTimer` suite.
+- `rawreel.gpu` (label `gpu`): the fit compositor against its CPU reference (upscale, downscale,
+  1:1, letterbox and pillarbox, dark and light), and the Session on the GPU (playback, an injected
+  device loss, Reopen); exits with 77 without a usable Vulkan 1.4 device unless
+  `DVV_REQUIRE_GPU=1`.
+- `rawreel.gui_selftest.smoke`, `.player` and `.lost`: the selftests above; `rawreel.gui_fault.presenter`
+  and `.stack`: an injected presenter failure and a failed start exit with 4. Windows only.
 - `rawreel.cli_unit`: the argument parsing of `rawreel-cli`, its text and JSON forms and the
   Windows argument conversion.
 - `rawreel.cli_e2e.info`, `.dump`, `.errors` and `.unicode`: the built `rawreel-cli` in a scratch
@@ -240,9 +320,9 @@ so paths with non-ASCII characters work for both the source and `--out`.
 ## Platforms
 
 v1.0 supports Windows only. `rawreel-gui` also builds on Linux, but its viewport has no native
-window there yet (a stub; the GTK native child comes in v1.x), so the selftest is not registered.
-`rawreel-gui` and its selftest are not built under sanitizers (`vs2026-asan` and the Linux sanitizer
-presets): wxWidgets is not instrumented. The renderer, `rawreel-cli` and their tests still build and
-run there.
+window there yet (a stub; the GTK native child comes in v1.x), so the selftests are not
+registered. `rawreel-gui` and its selftests are not built under sanitizers (`vs2026-asan` and the
+Linux sanitizer presets): wxWidgets is not instrumented. `rawreel_core`, the renderer,
+`rawreel-cli` and their tests still build and run there.
 
 Licence: MIT.
