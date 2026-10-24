@@ -10,6 +10,18 @@ set_tests_properties(rawreel.unit PROPERTIES
     ENVIRONMENT DVV_LEAK_CHECK=fail
     ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
 
+# rawreel-cli unit tests (M2 Task 13): arguments, output forms and the Windows argument helper.
+add_executable(rawreel_cli_tests
+    cli_main.cpp test_cli_arguments.cpp test_cli_output.cpp test_cli_utf8_arguments.cpp)
+target_link_libraries(rawreel_cli_tests PRIVATE rawreel_cli_core doctest::doctest)
+target_compile_definitions(rawreel_cli_tests PRIVATE DOCTEST_CONFIG_USE_STD_HEADERS)
+dvv_set_compiler_options(rawreel_cli_tests)
+add_test(NAME rawreel.cli_unit COMMAND rawreel_cli_tests)
+set_tests_properties(rawreel.cli_unit PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT DVV_LEAK_CHECK=fail
+    ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
+
 # GPU tests (spec §12): exit 77 without a usable Vulkan 1.4 device unless DVV_REQUIRE_GPU=1. The
 # loader is pointed at the validation layer of the third-party prefix, as in dvv-gpu.
 find_file(DVV_VK_VALIDATION_LAYER_MANIFEST VkLayer_khronos_validation.json
@@ -49,3 +61,31 @@ if(TARGET rawreel_gui AND WIN32)
         ENVIRONMENT "${gpu_test_environment};NO_AT_BRIDGE=1"
         ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
 endif()
+
+# rawreel-cli end to end (M2 Task 13): each script runs the built CLI in its own scratch folder.
+foreach(name IN ITEMS info dump errors unicode)
+    add_test(NAME rawreel.cli_e2e.${name}
+             COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:rawreel_cli>
+                     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cli-e2e-${name}
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/cli/run-cli-${name}.cmake)
+    set_tests_properties(rawreel.cli_e2e.${name} PROPERTIES
+        TIMEOUT 300
+        ENVIRONMENT DVV_LEAK_CHECK=fail
+        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
+endforeach()
+
+# GPU equals CPU (M2 exit criterion 2): dump --via gpu must write the bytes of dump --via cpu.
+# bench (M2 Task 14): frames through produce, staging, upload and unpack. Exit 77 without a usable
+# device unless DVV_REQUIRE_GPU=1.
+foreach(name IN ITEMS gpu bench)
+    add_test(NAME rawreel.cli_e2e.${name}
+             COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:rawreel_cli>
+                     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cli-e2e-${name}
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/cli/run-cli-${name}.cmake)
+    set_tests_properties(rawreel.cli_e2e.${name} PROPERTIES
+        LABELS gpu
+        SKIP_RETURN_CODE 77
+        TIMEOUT 600
+        ENVIRONMENT "${gpu_test_environment};DVV_VK_VALIDATION=sync;DVV_VK_VALIDATION_REQUIRED=1;DVV_LEAK_CHECK=fail"
+        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
+endforeach()
