@@ -14,6 +14,7 @@
 #include <ios>
 #include <memory>
 #include <optional>
+#include <random>
 #include <span>
 #include <string>
 #include <string_view>
@@ -31,6 +32,7 @@
 
 #include "core/commands.h"
 #include "core/format_choice.h"
+#include "core/perf_stats.h"
 #include "core/session.h"
 #include "core/view.h"
 #include "dvv/base/error.h"
@@ -224,8 +226,8 @@ std::optional<SelfTestScript> selfTestScript(Scenario scenario, SelfTest& test) 
         case Scenario::Lost:
             return SelfTestScript{.steps = lostScenario(test), .presenterFailureFails = false};
         case Scenario::Player: return SelfTestScript{.steps = playerScenario(test)};
-        case Scenario::None:
-        case Scenario::Perf: return std::nullopt;
+        case Scenario::Perf: return SelfTestScript{.steps = perfScenario(test)};
+        case Scenario::None: return std::nullopt;
     }
     return std::nullopt;
 }
@@ -1143,6 +1145,125 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             return true;
         }));
     return steps;  // the runner appends the close step (validation 0, leak check)
+}
+
+// --- perf (design v2 §8.4 perf, E7; manual) ------------------------------------------------------
+
+std::vector<SelfTestStep> perfScenario(SelfTest& test) {
+    MainFrame& frame = test.frame();
+    ShowHistory& history = *test.app().showHistory();
+    struct State {
+        int quietTicks = 0;
+        std::size_t mark = 0;
+        std::uint64_t presented0 = 0, overwritten0 = 0, stalls0 = 0;
+        std::uint64_t presented = 0, overwritten = 0, stalls = 0;
+        std::string bottleneck = "none";
+        ShowTiming timing;
+        std::mt19937_64 random{1};
+        std::int64_t target = 0;
+        Clock::time_point seekStart{};
+        std::vector<double> seekMs;
+    };
+    auto st = std::make_shared<State>();
+    auto status = [&frame] { return frame.session().status(); };
+    std::vector<SelfTestStep> steps;
+    using std::chrono::seconds;
+
+    steps.push_back(step(
+        "open and maximise", [&frame] { frame.Maximize(); },
+        [&frame](std::string& seen) {
+            seen = std::format("streams {}, presented {}", frame.streams().size(),
+                               presented(frame.viewport()));
+            return frame.streams().size() == 1 && presented(frame.viewport()) >= 2;
+        },
+        seconds(30)));
+    steps.push_back(step(
+        "warm-up", {},
+        [st, status](std::string& seen) {
+            const SessionStatus s = status();
+            seen = std::format("inflight {}, readyAhead {}", s.inflight, s.readyAhead);
+            st->quietTicks = s.inflight == 0 && s.readyAhead >= 2 ? st->quietTicks + 1 : 0;
+            return st->quietTicks >= 3;  // W is full: nothing in flight, nothing more to fetch
+        },
+        seconds(60)));
+    steps.push_back(step(
+        "play 600 frames",
+        [&frame, &history, st, status] {
+            if (!status().player.loop) {
+                frame.execute(Command::Loop);
+            }
+            st->stalls0 = status().player.stalls;
+            st->presented0 = presented(frame.viewport());
+            st->overwritten0 = frame.viewport().display()->stats().overwritten;
+            st->mark = history.size();
+            frame.execute(Command::PlayPause);
+        },
+        [&frame, &history, st, status](std::string& seen) {
+            const SessionStatus s = status();
+            if (!s.bottleneck.empty()) {
+                st->bottleneck = s.bottleneck;
+            }
+            const std::size_t shown = history.size() - st->mark;
+            seen = std::format("{} of 601 shows", shown);
+            if (shown < 601) {
+                return false;
+            }
+            frame.execute(Command::PlayPause);  // pause at once: the counters below end here
+            st->stalls = status().player.stalls - st->stalls0;
+            st->presented = presented(frame.viewport()) - st->presented0;
+            st->overwritten = frame.viewport().display()->stats().overwritten - st->overwritten0;
+            std::vector<ShowSample> samples;
+            for (const ShownSet& set : history.since(st->mark)) {
+                if (samples.size() == 601) {
+                    break;
+                }
+                samples.push_back({.index = set.index, .at = set.at});
+            }
+            st->timing = showTiming(samples, frame.streams().at(0).info.fps);
+            return true;
+        },
+        seconds(120)));
+    for (int k = 1; k <= 20; ++k) {
+        steps.push_back(step(
+            std::format("seek {}", k),
+            [&frame, &history, st, status] {
+                const SessionStatus s = status();
+                std::uniform_int_distribution<std::int64_t> pick(0,
+                                                                 s.player.length.value_or(1) - 1);
+                do {
+                    st->target = pick(st->random);
+                } while (st->target == s.player.position && s.player.length.value_or(1) > 1);
+                st->mark = history.size();
+                st->seekStart = Clock::now();
+                frame.session().seek(st->target);
+            },
+            [&history, st](std::string& seen) {
+                for (const ShownSet& set : history.since(st->mark)) {
+                    if (set.index == st->target) {
+                        st->seekMs.push_back(
+                            std::chrono::duration<double, std::milli>(set.at - st->seekStart)
+                                .count());
+                        return true;
+                    }
+                }
+                seen = std::format("target {} not shown", st->target);
+                return false;
+            },
+            seconds(10)));
+    }
+    steps.push_back(step(
+        "report",
+        [st, status] {
+            const std::string line = std::format(
+                R"({{"targetFps":{:.3f},"actualFps":{:.3f},"stalls":{},"bottleneck":"{}","frames":600,"presented":{},"overwritten":{},"p99TickLatenessMs":{:.3f},"inflight":{},"seekMedianMs":{:.1f},"seekMaxMs":{:.1f}}})",
+                status().player.targetFps, st->timing.actualFps, st->stalls, st->bottleneck,
+                st->presented, st->overwritten, st->timing.p99LatenessMs, App::arguments().inflight,
+                median(st->seekMs), st->seekMs.empty() ? 0.0 : std::ranges::max(st->seekMs));
+            std::fputs((line + "\n").c_str(), stdout);
+            std::fflush(stdout);
+        },
+        [](std::string&) { return true; }));
+    return steps;  // the runner's close step follows; exit 0
 }
 
 }  // namespace rawreel

@@ -22,6 +22,7 @@
 #include "dvv/base/executors.h"
 #include "dvv/gpu/device_id.h"
 #include "dvv/media/types.h"
+#include "dvv/platform/file_reader.h"
 
 namespace rawreel::testing {
 
@@ -153,6 +154,8 @@ public:
     SessionFixture();  // creates the Session (REQUIREs success)
     // The production clock and timer: `clock` and `timer` stay null, tick() must not be used.
     explicit SessionFixture(RealTime);
+    // SessionOptions::fileReads = file_reads (M3.1 U-IO2); fake clock and timer.
+    explicit SessionFixture(dvv::platform::FileReadMode file_reads);
     SessionFixture(const SessionFixture&) = delete;
     SessionFixture& operator=(const SessionFixture&) = delete;
     SessionFixture(SessionFixture&&) = delete;
@@ -176,6 +179,7 @@ public:
     [[nodiscard]] int stackCalls() const;       // completed makeStack calls
     [[nodiscard]] int stackMaxRunning() const;  // the most makeStack calls ever running at once
 
+    dvv::platform::FileReadMode fileReads = dvv::platform::FileReadMode::Auto;  // options()
     std::shared_ptr<dvv::ThreadPool> cpu, io;
     std::shared_ptr<dvv::ComponentRegistry> components;
     std::shared_ptr<FakeClock> clock;

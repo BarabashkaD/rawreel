@@ -145,7 +145,7 @@ struct DialogHooks {
 [[nodiscard]] int showModal(FormatDialog& dialog);
 
 // The dispatcher: Smoke -> {smokeScenario(test)}, Lost -> {lostScenario(test), false}, Player ->
-// {playerScenario(test)}; M3.1 Task 11b adds Perf; every other scenario -> nullopt.
+// {playerScenario(test)}, Perf -> {perfScenario(test)}; every other scenario -> nullopt.
 [[nodiscard]] std::optional<SelfTestScript> selfTestScript(Scenario scenario, SelfTest& test);
 [[nodiscard]] std::vector<SelfTestStep> smokeScenario(SelfTest& test);
 // Device loss (design v2 §8.4 lost, E3): an injected loss offers Reopen within 5 s without
@@ -154,5 +154,8 @@ struct DialogHooks {
 // Transport, keys, slider, loop, the resize fit check, View -> Format..., drops and the format
 // dialog (design v2 §8.4 player); one stream from the command line.
 [[nodiscard]] std::vector<SelfTestStep> playerScenario(SelfTest& test);
+// The performance run (design v2 §8.4 perf, E7; manual, not a CTest entry): maximise, wait for a
+// full prefetch window, play 600 frames with Loop on, do 20 random seeks and print one JSON line.
+[[nodiscard]] std::vector<SelfTestStep> perfScenario(SelfTest& test);
 
 }  // namespace rawreel

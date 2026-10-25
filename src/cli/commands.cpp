@@ -25,6 +25,7 @@
 
 #include "cli/arguments.h"
 #include "cli/output.h"
+#include "core/config.h"
 #include "dvv/base/error.h"
 #include "dvv/base/executors.h"
 #include "dvv/base/json.h"
@@ -355,8 +356,9 @@ constexpr std::array<std::string_view, 4> BENCH_ORDER{"Produce", "HostToStaging"
     return stages;
 }
 
-// Reads frames [0, --frames) as VkImage planes in the device domain, --inflight at a time (whenAll
-// of the batch, then the next batch), and reports the wall time and the converter stats.
+// Reads frames [0, --frames) as VkImage planes in the device domain (--read-only: the exact
+// original as host planes, so only Produce runs), --inflight at a time (whenAll of the batch, then
+// the next batch), and reports the wall time and the converter stats.
 int bench(const Arguments& arguments, Resources& resources) {
     const media::SourceInfo info = resources.source->info();
 
@@ -408,9 +410,13 @@ int bench(const Arguments& arguments, Resources& resources) {
         std::vector<dvv::Task<dvv::Result<media::OriginalRead>>> tasks;
         tasks.reserve(static_cast<std::size_t>(end - first));
         for (std::int64_t index = first; index < end; ++index) {
-            tasks.push_back(
-                resources.store->acquireOriginal(media::FrameKey{.origin = *origin, .index = index},
-                                                 media::Api::VkImage, *device, *resources.cpu));
+            const media::FrameKey key{.origin = *origin, .index = index};
+            tasks.push_back(arguments.readOnly
+                                ? resources.store->acquireOriginal(key, media::Api::HostPlanes,
+                                                                   resources.store->hostDomain(),
+                                                                   *resources.cpu, true)
+                                : resources.store->acquireOriginal(key, media::Api::VkImage,
+                                                                   *device, *resources.cpu));
         }
         const std::vector<dvv::Result<media::OriginalRead>> reads =
             dvv::syncWait(dvv::whenAll(std::move(tasks)));
@@ -435,7 +441,8 @@ int bench(const Arguments& arguments, Resources& resources) {
                              .inflight = arguments.inflight,
                              .frameBytes = frameBytesOf(info.desc),
                              .seconds = elapsed.count(),
-                             .stages = benchStages(resources.store->stats())};
+                             .stages = benchStages(resources.store->stats()),
+                             .readOnly = arguments.readOnly};
     if (arguments.json) {
         printJson(benchJson(report));
     } else {
@@ -472,8 +479,10 @@ int runSource(const Arguments& arguments, Resources& resources) {
         return fail(arguments, uri.error(), exit_code::INPUT_ERROR);
     }
 
-    // 5. Open the source.
-    const media::SourceRequest request{.uri = std::move(*uri), .hint = std::nullopt};
+    // 5. Open the source, file reads as the config file says (M3.1 U-IO2).
+    const LoadedConfig config = loadConfig(arguments.config);
+    const media::SourceRequest request{
+        .uri = std::move(*uri), .hint = std::nullopt, .fileReads = config.config.io.fileReads};
     auto opened = dvv::syncWait(resources.factory->open(request));
     if (!opened) {
         return fail(arguments, opened.error(), exitCodeFor(opened.error(), false));

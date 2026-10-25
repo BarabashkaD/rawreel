@@ -76,6 +76,16 @@ TEST_CASE("arguments: bench defaults") {
     CHECK(parsed->uri == "u");
     CHECK(parsed->frames == 60);
     CHECK(parsed->inflight == 4);
+    CHECK_FALSE(parsed->readOnly);
+}
+
+TEST_CASE("arguments: bench --read-only") {
+    const auto parsed = parse({"bench", "u", "--read-only", "--inflight", "1"});
+    REQUIRE(parsed.has_value());
+    CHECK(parsed->readOnly);
+    CHECK(parsed->inflight == 1);
+    checkError({"info", "u", "--read-only"}, "not valid for info");
+    checkError({"bench", "u", "--read-only", "--read-only"}, "given twice");
 }
 
 TEST_CASE("arguments: version and help") {
@@ -105,4 +115,23 @@ TEST_CASE("arguments: errors") {
     checkError({"dump", "u", "--out", "o", "--out", "p"}, "given twice");
     checkError({"info", "u", "--bogus"}, "unknown option");
     checkError({"dump", "u", "--out", "o", "--frame", "x"}, "bad number");
+}
+
+TEST_CASE("arguments: --config for the commands that open a source") {
+    for (const std::string_view command : {"info", "dump", "bench"}) {
+        CAPTURE(command);
+        std::vector<std::string_view> args{command, "u", "--config", "dir/my config.json"};
+        if (command == "dump") {
+            args.insert(args.end(), {"--out", "o"});
+        }
+        const auto parsed = parse(args);
+        REQUIRE_MESSAGE(parsed.has_value(), parsed.error().message);
+        CHECK(parsed->config == "dir/my config.json");
+    }
+    const auto none = parse({"info", "u"});
+    REQUIRE(none.has_value());
+    CHECK_FALSE(none->config.has_value());
+    checkError({"info", "u", "--config"}, "option --config needs a value");
+    checkError({"info", "u", "--config", "a", "--config", "b"}, "option --config given twice");
+    checkError({"--version", "--config", "a"}, "option --config is not valid for --version");
 }

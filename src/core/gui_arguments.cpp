@@ -79,6 +79,7 @@ dvv::Result<GuiArguments> parseGuiArguments(std::span<const std::string_view> ar
     bool gpu_seen = false;
     bool selftest_seen = false;
     bool inflight_seen = false;
+    bool config_seen = false;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string_view arg = args[i];
         if (!arg.starts_with("--")) {
@@ -97,6 +98,8 @@ dvv::Result<GuiArguments> parseGuiArguments(std::span<const std::string_view> ar
             seen = &selftest_seen;
         } else if (arg == "--inflight") {
             seen = &inflight_seen;
+        } else if (arg == "--config") {
+            seen = &config_seen;
         } else {
             return dvv::makeError(dvv::Errc::Format, std::format("unknown argument '{}'", arg));
         }
@@ -123,6 +126,8 @@ dvv::Result<GuiArguments> parseGuiArguments(std::span<const std::string_view> ar
                                       std::format("bad number '{}' for --gpu", value));
             }
             arguments.gpu = gpu;
+        } else if (arg == "--config") {
+            arguments.config = std::string(value);
         } else if (arg == "--selftest") {
             const std::optional<Scenario> scenario = parseScenario(value);
             if (!scenario) {

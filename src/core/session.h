@@ -22,6 +22,7 @@
 #include "dvv/gpu/device_id.h"
 #include "dvv/media/frame_store.h"
 #include "dvv/media/source_factory.h"
+#include "dvv/platform/file_reader.h"
 #include "dvv/registry/component_registry.h"
 
 namespace dvv::gpu {
@@ -52,6 +53,8 @@ struct SessionOptions {
     std::optional<dvv::gpu::DeviceId> device;     // null: the best device
     bool presentation = false;                    // contexts with presentation (GUI)
     std::uint32_t inflight = 4;                   // PlayerConfig::inflight (K, D11)
+    // SourceRequest::fileReads of every open (M3.1 U-IO2: the config file's io.fileReads).
+    dvv::platform::FileReadMode fileReads = dvv::platform::FileReadMode::Auto;
     std::shared_ptr<IClock> clock;
     std::shared_ptr<ITimer> timer;
     std::shared_ptr<IDisplaySink> sink;

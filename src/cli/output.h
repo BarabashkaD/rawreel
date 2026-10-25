@@ -57,13 +57,15 @@ struct BenchReport {
     std::uint64_t frameBytes = 0;    // geometry bytes of one original frame
     double seconds = 0;              // wall time of the measured loop
     std::vector<BenchStage> stages;  // converters with runs > 0, Produce first
+    bool readOnly = false;           // --read-only: only Produce ran (seconds = read wall clock)
 };
-// "bench <uri>: ..." and "end-to-end: ..." lines, then a table with one line per stage; every line
-// ends with a newline. End-to-end frames/s = frames / seconds and GB/s = frames * frameBytes /
-// seconds / 1e9; a stage's GB/s = bytes / nanoseconds (per run, as concurrent run times add up).
+// "bench <uri>: ..." and "end-to-end: ..." lines ("..., read only, ..." and "read wall clock: ..."
+// with readOnly), then a table with one line per stage; every line ends with a newline. Frames/s =
+// frames / seconds and GB/s = frames * frameBytes / seconds / 1e9 (wall clock); a stage's GB/s =
+// bytes / nanoseconds (per run: concurrent run times add up, so it is not a throughput).
 [[nodiscard]] std::string benchText(const BenchReport& report);
-// {"uri","device","format","width","height","frameBytes","frames","inflight","reader","seconds",
-// "fps","gbps","stages":[{"name","runs","bytes","nanoseconds","gbps"}...]}
+// {"uri","device","format","width","height","frameBytes","frames","inflight","reader","readOnly",
+// "seconds","fps","gbps","stages":[{"name","runs","bytes","nanoseconds","gbps"}...]}
 [[nodiscard]] dvv::json::Value benchJson(const BenchReport& report);
 
 }  // namespace rawreel::cli

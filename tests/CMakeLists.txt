@@ -30,8 +30,10 @@ set_tests_properties(rawreel.cli_unit PROPERTIES
 # "session" and "timer", each its own CTest entry, so the race checks can repeat them), every preset.
 # The slow:/fail: test provider is a component of this executable.
 add_executable(rawreel_core_tests
-    core_main.cpp session_fixture.cpp test_commands.cpp test_drop.cpp test_format_choice.cpp
-    test_gui_arguments.cpp test_info_text.cpp test_player.cpp test_session.cpp test_session_types.cpp
+    core_main.cpp session_fixture.cpp test_commands.cpp test_config.cpp test_drop.cpp
+    test_format_choice.cpp
+    test_gui_arguments.cpp test_info_text.cpp test_perf_stats.cpp test_player.cpp test_session.cpp
+    test_session_types.cpp
     test_source_provider.cpp
     test_status_text.cpp test_timer.cpp test_view.cpp)
 target_link_libraries(rawreel_core_tests PRIVATE rawreel_core doctest::doctest)

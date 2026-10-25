@@ -102,6 +102,9 @@ public:
     // --- Session executor only, from here on ---
     [[nodiscard]] bool stopping() const noexcept { return stopping_; }
     [[nodiscard]] dvv::media::SourceFactory& factory() const noexcept { return *factory_; }
+    [[nodiscard]] dvv::platform::FileReadMode fileReads() const noexcept {
+        return options_.fileReads;
+    }
     [[nodiscard]] dvv::IExecutor& io() const noexcept { return *options_.io; }
     // Only buildStack calls it, on `io`, while its job runs: never twice at once.
     [[nodiscard]] dvv::Result<MediaStack> makeStack() {
@@ -821,6 +824,7 @@ dvv::Task<void> openSource(std::shared_ptr<SessionCore> core, OpenJob job,
     // Spawned only for a job with a request; `job` lives in this frame.
     OpenResult opened = dvv::makeError(dvv::Errc::Internal, "an open job without a request");
     if (job.request) {
+        job.request->fileReads = core->fileReads();  // every open, reopens included
         try {
             opened = co_await core->factory().open(*job.request);
         } catch (const std::exception& error) {

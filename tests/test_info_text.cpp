@@ -84,6 +84,18 @@ TEST_SUITE("core") {
         CHECK_MESSAGE(contains(text, "matrix custom kr=0.2120 kb=0.0870,"), text);
     }
 
+    TEST_CASE("info: file read mode") {
+        CHECK_FALSE(contains(infoOf(stream()), "reads:"));  // not a file source
+        StreamInfo info = stream();
+        info.info.reader = "unbuffered";
+        CHECK_MESSAGE(contains(infoOf(info), "\n  reads: unbuffered"), infoOf(info));
+        info.info.reader = "buffered (fallback: the unbuffered open failed)";
+        CHECK_MESSAGE(contains(infoOf(info),
+                               "\n  reads: buffered (fallback: the unbuffered open "
+                               "failed)"),
+                      infoOf(info));
+    }
+
     TEST_CASE("info: warnings") {
         StreamInfo info = stream();
         info.info.warnings.emplace_back("5 trailing bytes ignored");

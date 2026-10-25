@@ -50,6 +50,22 @@ foreach(stage IN ITEMS Produce HostToStaging Upload GpuUnpack)
     endif()
 endforeach()
 
+# --read-only: only Produce runs; the wall time is the read stage's wall clock.
+run_cli(0 json err bench "synthetic:noise?fmt=yuv420p10le&size=64x64&frames=8" --frames 8
+        --inflight 2 --read-only --json)
+expect_no_validation("${err}" "bench --read-only")
+expect_json("${json}" ON readOnly)
+stage_runs("${json}" Produce runs)
+if(NOT runs EQUAL 8)
+    message(FATAL_ERROR "--read-only: Produce ran ${runs} times, expected 8 in:\n${json}")
+endif()
+foreach(stage IN ITEMS HostToStaging Upload GpuUnpack)
+    stage_runs("${json}" ${stage} runs)
+    if(NOT runs EQUAL 0)
+        message(FATAL_ERROR "--read-only: stage ${stage} ran ${runs} times in:\n${json}")
+    endif()
+endforeach()
+
 # 1: more frames than the source has.
 run_cli(1 out err bench "synthetic:noise?fmt=gray&size=2x2&frames=2" --frames 3)
 expect_match("${err}" "bench needs --frames <= 2 \\(the source has 2 frames\\)" "--frames 3")

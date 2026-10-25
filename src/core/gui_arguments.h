@@ -31,8 +31,9 @@ struct GuiArguments {
     Appearance appearance = Appearance::System;
     std::optional<std::uint32_t> gpu;  // index into GpuRegistry::devices() (dvv-gpu-info order)
     Scenario selftest = Scenario::None;
-    std::uint32_t inflight = 4;      // --inflight K, 1..64, only with --selftest perf
-    std::optional<std::string> uri;  // positional, at most one (opened as the stream, frame 0)
+    std::uint32_t inflight = 4;         // --inflight K, 1..64, only with --selftest perf
+    std::optional<std::string> uri;     // positional, at most one (opened as the stream, frame 0)
+    std::optional<std::string> config;  // --config <file> (UTF-8): replaces rawreel.json by the exe
     bool help = false;
 };
 // Options take their value in the next argument. Every error is Errc::Format with one of:
@@ -47,12 +48,13 @@ struct GuiArguments {
 
 inline constexpr char USAGE[] =
     R"(Usage: rawreel-gui [--appearance system|light|dark] [--gpu N] [--selftest SCENARIO]
-                   [--inflight K] [URI]
+                   [--inflight K] [--config FILE] [URI]
 
   --appearance  light or dark windows, or the system setting (default)
   --gpu N       use GPU N (the index dvv-gpu-info lists) instead of the best one
   --selftest S  run a scripted check and exit: smoke, player, lost or perf
   --inflight K  frames in flight for --selftest perf (default 4)
+  --config F    read config file F instead of rawreel.json next to rawreel-gui
   --help        print this text
   URI           a source to open (a path, file:..., synthetic:...)
 

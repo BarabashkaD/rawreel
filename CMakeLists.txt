@@ -52,13 +52,15 @@ dvv_set_compiler_options(rawreel_render)
 
 # rawreel_core (design M3 §3): the wx-free application core (fit view math, player logic,
 # commands and keys, format choice, drop routing, the Session and its timer, rawreel-gui's
-# argument parser). Built under every preset, sanitizers included.
+# argument parser, the config file). Built under every preset, sanitizers included.
 add_library(rawreel_core STATIC
     src/core/commands.cpp
+    src/core/config.cpp
     src/core/drop.cpp
     src/core/format_choice.cpp
     src/core/gui_arguments.cpp
     src/core/info_text.cpp
+    src/core/perf_stats.cpp
     src/core/player.cpp
     src/core/session.cpp
     src/core/status_text.cpp
@@ -93,7 +95,8 @@ endfunction()
 add_library(rawreel_cli_core STATIC
     src/cli/arguments.cpp src/cli/commands.cpp src/cli/output.cpp src/cli/utf8_arguments.cpp)
 target_include_directories(rawreel_cli_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(rawreel_cli_core PUBLIC dvv::media)
+# rawreel_core: the config file loader (core/config.h).
+target_link_libraries(rawreel_cli_core PUBLIC rawreel_core dvv::media)
 set(cli_versions "RAWREEL_VERSION=\"${PROJECT_VERSION}\"")
 foreach(package IN ITEMS dvv_base dvv_registry dvv_platform dvv_gpu dvv_media)
     rawreel_dvv_version(${package} version)

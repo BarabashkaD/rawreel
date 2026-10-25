@@ -118,14 +118,27 @@ TEST_CASE("output: benchJson") {
     REQUIRE(j["stages"].is_array());
     CHECK(j["stages"][0]["gbps"].get<double>() == doctest::Approx(3.0));
     CHECK(j["reader"] == "unbuffered");
+    CHECK(j["readOnly"] == false);
     report.reader.clear();
     CHECK(rawreel::cli::benchJson(report)["reader"] == "none");
+    report.readOnly = true;
+    CHECK(rawreel::cli::benchJson(report)["readOnly"] == true);
 }
 
 TEST_CASE("output: benchText") {
-    const std::string text = rawreel::cli::benchText(benchReport());
+    rawreel::cli::BenchReport report = benchReport();
+    const std::string text = rawreel::cli::benchText(report);
     CHECK(text.starts_with("bench "));
+    CHECK(text.find(", reads unbuffered, device Test GPU\n") != std::string::npos);  // as info
+    CHECK(text.find("\nend-to-end: 16.0 frames/s") != std::string::npos);
     CHECK(text.find("\nUpload") != std::string::npos);
+    // --read-only: the wall time is the read stage's wall clock.
+    report.readOnly = true;
+    const std::string read = rawreel::cli::benchText(report);
+    CHECK(read.find(", read only,") != std::string::npos);
+    CHECK(read.find("\nread wall clock: 16.0 frames/s, 0.00 GB/s in 0.500 s\n") !=
+          std::string::npos);
+    CHECK(read.find("end-to-end") == std::string::npos);
 }
 
 TEST_CASE("output: infoText lines") {
@@ -137,6 +150,6 @@ TEST_CASE("output: infoText lines") {
     CHECK(text.find("fps: 25/1\n") != std::string::npos);
     CHECK(text.find("frames: 3\n") != std::string::npos);
     CHECK(text.find("access: random-cheap\n") != std::string::npos);
-    CHECK(text.find("reader: buffered\n") != std::string::npos);
+    CHECK(text.find("reads: buffered\n") != std::string::npos);
     CHECK(text.find("warning: 5 trailing bytes ignored\n") != std::string::npos);
 }

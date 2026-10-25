@@ -104,6 +104,9 @@ std::string formatInfo(std::span<const StreamInfo> streams) {
         if (colour.transfer == TransferFn::Pq || colour.transfer == TransferFn::Hlg) {
             text += "\n  tone-mapped (BT.2390, 1000 → 100 nits)";  // D4
         }
+        if (!info.reader.empty()) {
+            text += "\n  reads: " + info.reader;  // M3.1 U-IO2: the file read mode
+        }
         for (const std::string& warning : info.warnings) {
             text += "\n  warning: " + warning;
         }

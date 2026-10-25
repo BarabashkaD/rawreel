@@ -14,6 +14,7 @@
 #include <string_view>
 #include <utility>
 
+#include "core/config.h"
 #include "core/timer.h"
 #include "dvv/base/environment.h"
 #include "dvv/base/executors.h"
@@ -127,6 +128,8 @@ bool App::OnInit() {
     openLogFile();    // 2. the log file and the Log pane's sink (before the Session exists)
     log_sink_ = std::make_shared<LogPanelSink>();
     dvv::Logger::instance().addSink(log_sink_);
+    // The config file (M3.1 U-IO2), after the log sinks so a warning reaches the Log pane.
+    const LoadedConfig config = loadConfig(the_arguments.config);
     if (!startPools() || !startGpu()) {  // 3., 4.
         return false;
     }
@@ -173,6 +176,7 @@ bool App::OnInit() {
                          .device = device_,
                          .presentation = true,
                          .inflight = the_arguments.inflight,
+                         .fileReads = config.config.io.fileReads,
                          .clock = steadyClock(),
                          .timer = std::move(*timer),
                          .sink = std::move(sink),

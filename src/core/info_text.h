@@ -14,7 +14,8 @@ namespace rawreel {
 // file here." Per stream: "Stream <slot+1>: <resolvedUri>", "  <format>, <W>x<H>, <fps> fps, <N>
 // frames" (or "unbounded"), "  colour: matrix <m>, range <r>, transfer <t>, primaries <p>" (each
 // with " (assumed)" when ResolvedColour assumed it), "  tone-mapped (BT.2390, 1000 → 100 nits)"
-// for PQ and HLG, and "  warning: <text>" per warning.
+// for PQ and HLG, "  reads: <SourceInfo::reader>" for file sources (e.g. "unbuffered", "buffered
+// (fallback: <reason>)"), and "  warning: <text>" per warning.
 [[nodiscard]] std::string formatInfo(std::span<const StreamInfo> streams);
 
 }  // namespace rawreel

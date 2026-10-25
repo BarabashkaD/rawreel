@@ -3,6 +3,7 @@
 // rawreel-cli's command line (spec §10.3, M2 design §4.6).
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -22,6 +23,8 @@ struct Arguments {
     View view = View::Original;
     Via via = Via::Auto;
     bool json = false;
+    bool readOnly = false;              // bench --read-only: produce only (the file read stage)
+    std::optional<std::string> config;  // --config <file> (UTF-8), info, dump and bench
 };
 
 // `args` excludes the program name. The first argument is the command (info, dump, bench,

@@ -238,6 +238,10 @@ SessionFixture::SessionFixture(RealTime) {
     start(true);
 }
 
+SessionFixture::SessionFixture(dvv::platform::FileReadMode file_reads) : fileReads(file_reads) {
+    start(false);
+}
+
 void SessionFixture::start(bool real_time) {
     resetShots();
     releaseGate(STACK_GATE);
@@ -309,6 +313,7 @@ SessionOptions SessionFixture::options() {
     options.timer = realTimer ? realTimer : std::shared_ptr<ITimer>(timer);
     options.sink = sink;
     options.events = events;
+    options.fileReads = fileReads;
     options.makeStack = [log = stackLog, cpu_pool = cpu, io_pool = io](
                             std::optional<dvv::gpu::DeviceId> device) -> dvv::Result<MediaStack> {
         {

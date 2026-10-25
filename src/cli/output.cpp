@@ -147,7 +147,7 @@ std::string infoText(const dvv::media::SourceInfo& info) {
                         transferName(colour.transfer), primariesName(colour.primaries));
     text += std::format("access: {}\n", accessText(info.access));
     if (!info.reader.empty()) {
-        text += std::format("reader: {}\n", info.reader);
+        text += std::format("reads: {}\n", info.reader);  // M3.1 U-IO2: the file read mode
     }
     for (const std::string& warning : info.warnings) {
         text += std::format("warning: {}\n", warning);
@@ -220,11 +220,12 @@ std::string ambiguousText(std::string_view uri, const dvv::media::Ambiguous& amb
 }
 
 std::string benchText(const BenchReport& report) {
-    std::string text =
-        std::format("bench {}: {} frames {}x{} {}, inflight {}, reader {}, device {}\n", report.uri,
-                    report.frames, report.width, report.height, report.format, report.inflight,
-                    readerName(report.reader), report.device);
-    text += std::format("end-to-end: {:.1f} frames/s, {:.2f} GB/s in {:.3f} s\n", benchFps(report),
+    std::string text = std::format(
+        "bench {}: {} frames {}x{} {}, inflight {}{}, reads {}, device {}\n", report.uri,
+        report.frames, report.width, report.height, report.format, report.inflight,
+        report.readOnly ? ", read only" : "", readerName(report.reader), report.device);
+    text += std::format("{}: {:.1f} frames/s, {:.2f} GB/s in {:.3f} s\n",
+                        report.readOnly ? "read wall clock" : "end-to-end", benchFps(report),
                         benchGbps(report), report.seconds);
     text +=
         std::format("{:<14}{:>5}{:>13}{:>10}{:>7}\n", "stage", "runs", "bytes", "seconds", "GB/s");
@@ -247,6 +248,7 @@ dvv::json::Value benchJson(const BenchReport& report) {
     value["frames"] = report.frames;
     value["inflight"] = report.inflight;
     value["reader"] = readerName(report.reader);
+    value["readOnly"] = report.readOnly;
     value["seconds"] = report.seconds;
     value["fps"] = benchFps(report);
     value["gbps"] = benchGbps(report);

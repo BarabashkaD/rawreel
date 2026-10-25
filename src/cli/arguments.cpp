@@ -15,7 +15,18 @@ namespace rawreel::cli {
 
 namespace {
 
-enum class Option : std::uint8_t { Json, Out, Frame, Count, View, Via, Frames, Inflight };
+enum class Option : std::uint8_t {
+    Json,
+    Out,
+    Frame,
+    Count,
+    View,
+    Via,
+    Frames,
+    Inflight,
+    ReadOnly,
+    Config,
+};
 
 struct OptionInfo {
     std::string_view name;
@@ -23,7 +34,7 @@ struct OptionInfo {
     bool takesValue;
 };
 
-constexpr std::array<OptionInfo, 8> OPTIONS{{
+constexpr std::array<OptionInfo, 10> OPTIONS{{
     {.name = "--json", .option = Option::Json, .takesValue = false},
     {.name = "--out", .option = Option::Out, .takesValue = true},
     {.name = "--frame", .option = Option::Frame, .takesValue = true},
@@ -32,6 +43,8 @@ constexpr std::array<OptionInfo, 8> OPTIONS{{
     {.name = "--via", .option = Option::Via, .takesValue = true},
     {.name = "--frames", .option = Option::Frames, .takesValue = true},
     {.name = "--inflight", .option = Option::Inflight, .takesValue = true},
+    {.name = "--read-only", .option = Option::ReadOnly, .takesValue = false},
+    {.name = "--config", .option = Option::Config, .takesValue = true},
 }};
 
 [[nodiscard]] std::string_view commandName(Command command) noexcept {
@@ -46,13 +59,17 @@ constexpr std::array<OptionInfo, 8> OPTIONS{{
 }
 
 [[nodiscard]] bool allowed(Command command, Option option) noexcept {
+    if (option == Option::Config) {  // every command that opens a source
+        return command == Command::Info || command == Command::Dump || command == Command::Bench;
+    }
     switch (command) {
         case Command::Info: return option == Option::Json;
         case Command::Dump:
             return option == Option::Json || option == Option::Out || option == Option::Frame ||
                    option == Option::Count || option == Option::View || option == Option::Via;
         case Command::Bench:
-            return option == Option::Json || option == Option::Frames || option == Option::Inflight;
+            return option == Option::Json || option == Option::Frames ||
+                   option == Option::Inflight || option == Option::ReadOnly;
         case Command::Version: return option == Option::Json;
         case Command::Help: return false;
     }
@@ -76,12 +93,14 @@ constexpr std::array<OptionInfo, 8> OPTIONS{{
     return value;
 }
 
-// Applies one option and its value (empty for --json) to `arguments`.
+// Applies one option and its value (empty for --json and --read-only) to `arguments`.
 [[nodiscard]] dvv::Result<void> apply(Arguments& arguments, const OptionInfo& info,
                                       std::string_view value) {
     switch (info.option) {
         case Option::Json: arguments.json = true; break;
+        case Option::ReadOnly: arguments.readOnly = true; break;
         case Option::Out: arguments.out = value; break;
+        case Option::Config: arguments.config = std::string(value); break;
         case Option::Frame: {
             DVV_TRY(arguments.frame, parseNumber(info.name, value, 0));
             break;
@@ -201,10 +220,10 @@ dvv::Result<Arguments> parseArguments(std::span<const std::string_view> args) {
 
 std::string usageText() {
     return R"(Usage:
-  rawreel-cli info <uri> [--json]
+  rawreel-cli info <uri> [--json] [--config <file>]
   rawreel-cli dump <uri> --out <file> [--frame N] [--count K] [--view original|planes]
-                   [--via cpu|gpu|auto] [--json]
-  rawreel-cli bench <uri> [--frames N] [--inflight K] [--json]
+                   [--via cpu|gpu|auto] [--json] [--config <file>]
+  rawreel-cli bench <uri> [--frames N] [--inflight K] [--read-only] [--json] [--config <file>]
   rawreel-cli --version [--json]
   rawreel-cli --help
 
@@ -215,8 +234,11 @@ std::string usageText() {
             the GPU when a usable device exists
   bench     read N frames (--frames, default 60) through produce, staging, upload and unpack on
             the GPU, K reads in flight (--inflight, default 4); prints frames/s and per-stage
-            throughput
+            throughput; --read-only stops after produce (host memory), so the wall time is the
+            file read stage's wall clock
   --json    print the result, and errors, as JSON on stdout
+  --config  read this config file instead of rawreel.json next to rawreel-cli (io.fileReads:
+            auto, unbuffered or buffered file reads)
 
 A <uri> is a file path (clip_1920x1080_v210.yuv, clip.y4m), file:<path>?fmt=..&size=WxH, or
 synthetic:<gradient|noise>?fmt=<format>&size=WxH[&frames=N][&seed=S].

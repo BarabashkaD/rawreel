@@ -34,18 +34,19 @@ $env:DVV_VK_VALIDATION = 'sync'
 `rawreel-gui` plays one raw video stream (v1.0: Windows only). The window has the viewport with the
 transport bar under it, an Info pane (the stream: URI, format, size, frame rate, frame count and
 colour, with "(assumed)" for defaults and "tone-mapped (BT.2390, 1000 → 100 nits)" for PQ and HLG
-streams), a Log pane, a status bar (frame and length, target / actual fps, the pipeline's
+streams, and for files the read mode, e.g. "reads: unbuffered"), a Log pane, a status bar (frame and length, target / actual fps, the pipeline's
 bottleneck) and an infobar for warnings and errors. The log also goes to `rawreel.log` in the
 user's data folder.
 
 ```text
 Usage: rawreel-gui [--appearance system|light|dark] [--gpu N] [--selftest SCENARIO]
-                   [--inflight K] [URI]
+                   [--inflight K] [--config FILE] [URI]
 
   --appearance  light or dark windows, or the system setting (default)
   --gpu N       use GPU N (the index dvv-gpu-info lists) instead of the best one
   --selftest S  run a scripted check and exit: smoke, player, lost or perf
   --inflight K  frames in flight for --selftest perf (default 4)
+  --config F    read config file F instead of rawreel.json next to rawreel-gui
   --help        print this text
   URI           a source to open (a path, file:..., synthetic:...)
 ```
@@ -106,40 +107,62 @@ synthesised wx events, each step with a 5 s deadline, and exits with 6 naming th
   (through the format dialog) and of two files.
 - `lost` (needs a URI): an injected device loss → the infobar with Reopen within 5 s, no hang;
   Reopen presents the kept frame again; play advances; a second loss.
+- `perf` (needs a URI; manual, Windows only, not a CTest entry): the 4K60 run (exit criterion E7)
+  with longer step deadlines. It maximises the window, waits until the prefetch window is full,
+  plays 600 frames, seeks to 20 random frames and prints one JSON line with `targetFps`,
+  `actualFps`, `stalls`, `bottleneck`, `frames`, `presented`, `overwritten`, `p99TickLatenessMs`,
+  `inflight`, `seekMedianMs` and `seekMaxMs`. `--inflight K` sets the frames in flight (default
+  4). It fails only on a step deadline; the E7 rule is applied by hand to the median of three runs
+  by `actualFps`: pass at `actualFps` ≥ 59.5, 0 `stalls` and at most 6 `overwritten`. The measured
+  numbers are in spec §16.
 
 Every scenario ends by closing the window: no validation message, no presenter failure, no leak.
-CTest runs them as `rawreel.gui_selftest.smoke`, `.player` and `.lost` (labels `gpu;display;gui`).
-`perf` is planned for M3.1 and exits with 6 ("scenario perf is not available") until then.
+CTest runs `rawreel.gui_selftest.smoke`, `.player` and `.lost` (labels `gpu;display;gui`).
 
 **Exit codes** (`--help` lists them): 0 success; 1 bad arguments (e.g. a second URI: "at most one
 URI"), or the GUI could not start; 4 GPU error (no Vulkan loader, no usable device, a presenter
 failure in a selftest); 6 a `--selftest` check failed; 77 (`--selftest` only) no usable device or
 no display, unless `DVV_REQUIRE_GPU=1` (then 4).
 
-**Planned for M3.1:** the 4K60 performance run (`--selftest perf`, a 4K `yuv420p10le` file at
-60 fps) and faster disk reads (overlapped IOCP reads on Windows, built only if the `bench` gate
-shows a gain). FFmpeg sources and packaging come in M4.
+**Performance (M3.1).** Disk reads follow U-IO2: unbuffered on Windows with a buffered fallback
+per file, buffered elsewhere, one read in flight per file source; see
+[The config file](#the-config-file). No IOCP. FFmpeg sources and packaging come in M4.
+
+**What 4K60 needs.** Uncompressed 4K 10-bit 4:2:0 (`yuv420p10le`) at 60 fps is about 1.5 GB/s.
+The file must sit on a drive that sustains a file read of about 1.5 GB/s or more, i.e. an NVMe
+SSD, read unbuffered (the Windows default); a SATA SSD or a hard disk cannot. The buffered
+fallback, e.g. on a network drive, may not keep up and drop below 60 fps (playback stalls; it
+never skips a frame). On the development machine, one data point: a median of 3 runs of 59.999
+fps with 0 stalls, 10 of 12 runs clean, the read stage (the slowest) at 70.7 fps, and upload plus
+GPU unpack 4.6 ms per frame, so the margin is thin (spec §16).
 
 ## rawreel-cli
 
 ```text
-rawreel-cli info <uri> [--json]
+rawreel-cli info <uri> [--json] [--config <file>]
 rawreel-cli dump <uri> --out <file> [--frame N] [--count K] [--view original|planes]
-                 [--via cpu|gpu|auto] [--json]
-rawreel-cli bench <uri> [--frames N] [--inflight K] [--json]
+                 [--via cpu|gpu|auto] [--json] [--config <file>]
+rawreel-cli bench <uri> [--frames N] [--inflight K] [--read-only] [--json] [--config <file>]
 rawreel-cli --version [--json]
 rawreel-cli --help
 ```
 
 - `info` describes a source: provider, format, size, frame rate, frame count, frame bytes, colour,
-  access, reader and warnings.
+  access, file read mode (`reads`) and warnings.
 - `dump` writes `--count` frames (default 1) from frame `--frame` (default 0) to `--out`, one
   after the other. `--view original` (the default) writes the original bytes of each frame;
   `--view planes` writes its unpacked planes (format `<name>@planes`). `--via` defaults to `auto`.
 - `bench` reads the first `--frames` frames (default 60) as GPU images in batches of `--inflight`
   frames (default 4; a batch is awaited as a whole before the next starts, so K is a batch size,
   not a sustained queue depth), and prints frames/s, GB/s and the throughput of each stage. It
-  always uses the GPU. `--frames` must not exceed the frame count of the source.
+  always uses the GPU. `--frames` must not exceed the frame count of the source. Frames/s and GB/s
+  are wall clock; a stage's GB/s is bytes over its summed run time, which falls as runs overlap,
+  so it is not a throughput. `--read-only` stops after reading each frame into host memory (only
+  Produce runs), so frames/s and GB/s are the file read stage's wall-clock throughput
+  (`read wall clock:` in the text output). A file source keeps one read in flight whatever K is
+  (U-IO2), so `--read-only` measures single-read throughput.
+- `--config <file>` reads that config file instead of `rawreel.json` next to `rawreel-cli` (see
+  [The config file](#the-config-file)).
 - `--version` prints the version of rawreel and of each dvv library; `--help` prints the usage.
 
 Each option is valid only for the commands above and may be given once. `--frame` is at least 0;
@@ -196,10 +219,12 @@ frames: 3
 frame bytes: 5529600
 colour: matrix=unspecified range=unspecified transfer=unspecified primaries=unspecified
 access: random-cheap
-reader: unbuffered
+reads: unbuffered
 ```
 
-`reader` is `unbuffered` or `buffered`, depending on what the file system allows.
+`reads` is the file read mode in use: `unbuffered`, `buffered`, or `buffered (fallback: <reason>)`
+when the volume does not allow unbuffered reads (see [The config file](#the-config-file)). The JSON
+key is `reader`.
 
 ### Exit codes
 
@@ -242,8 +267,9 @@ valid Unicode, an internal error (an unexpected exception) and the leak report. 
   the path used), `format` (of the written data), `out` and `converters` (`name`, `runs`, `bytes`,
   `nanoseconds` each).
 - `bench`: `uri`, `device`, `format`, `width`, `height`, `frameBytes`, `frames`, `inflight`,
-  `reader` (`none` for a source that is not a file), `seconds`, `fps`, `gbps` and `stages` (`name`,
-  `runs`, `bytes`, `nanoseconds`, `gbps` each; Produce, HostToStaging, Upload, GpuUnpack).
+  `reader` (`none` for a source that is not a file), `readOnly`, `seconds`, `fps`, `gbps` and
+  `stages` (`name`, `runs`, `bytes`, `nanoseconds`, `gbps` each; Produce, HostToStaging, Upload,
+  GpuUnpack; only Produce with `--read-only`).
 - `--version`: `rawreel`, `dvv_base`, `dvv_registry`, `dvv_platform`, `dvv_gpu`, `dvv_media`.
 
 An error is `{"error": {"code", "message"}}`. `code` is `Arguments` for exit 1 and otherwise the
@@ -292,13 +318,45 @@ Set-Content -Path clip_33x17.yuv -Value 'x' -NoNewline
 On Windows the entry point is `wmain`: the arguments arrive as UTF-16 and are converted to UTF-8,
 so paths with non-ASCII characters work for both the source and `--out`.
 
+## The config file
+
+`rawreel-gui` and `rawreel-cli` read an optional JSON file, `rawreel.json`, from the folder of
+the running executable (found at run time, never from the working directory). `--config <file>`
+reads another file instead. The build does not ship one; packaging decides that in M4.
+
+```json
+{ "io": { "fileReads": "auto" } }
+```
+
+| Key | Values | Default |
+| --- | --- | --- |
+| `io.fileReads` | `auto`, `unbuffered`, `buffered` | `auto` |
+
+`io.fileReads` sets how raw and Y4M files are read (M3.1 decision U-IO2):
+
+- `unbuffered`: no OS file cache, sector-aligned reads. A file whose volume does not allow it
+  (for example some network drives or an unusual sector size) fails to open.
+- `buffered`: through the OS file cache with a sequential-access hint (the portable way; a file
+  that fits in memory plays again from RAM).
+- `auto`: on Windows, unbuffered when the file's volume passes an open-time check (its sector size,
+  an unbuffered open and a first aligned read), else buffered for that file with one log line
+  that says why; buffered elsewhere.
+
+Each file source reads one frame at a time; the player's prefetch keeps the pipeline busy. The mode
+in use shows as `reads:` in `rawreel-cli info` and in the GUI Info pane.
+
+A missing `rawreel.json` next to the executable means the defaults, silently. A missing
+`--config` file, or a file that cannot be read, is not valid JSON or has a bad value, gives one
+warning in the log ("config '<path>' ignored: <reason>; using the defaults") and the defaults. Unknown keys are ignored.
+
 ## Tests
 
 - `rawreel.unit`: the renderer without a GPU: the compositor's CPU reference and `DisplayState`
   (with its race case).
 - `rawreel.core_unit`: `rawreel_core` (no wx): the fit transform, the player logic, the command
-  table and key normaliser, format choice, drop routing, the `rawreel-gui` arguments and the status
-  and Info texts.
+  table and key normaliser, format choice, drop routing, the `rawreel-gui` arguments, the status
+  and Info texts, and the config file loader (missing, valid and invalid files, bad values,
+  `--config`, the default location next to the executable).
 - `rawreel.core_session` and `rawreel.core_timer`: the headless Session suite (a host-only store,
   a fake clock and timer, injected read, out-of-memory and device-lost errors, Reopen, shutdown
   with the leak check) and the `ThreadTimer` suite.
@@ -311,10 +369,12 @@ so paths with non-ASCII characters work for both the source and `--out`.
 - `rawreel.cli_unit`: the argument parsing of `rawreel-cli`, its text and JSON forms and the
   Windows argument conversion.
 - `rawreel.cli_e2e.info`, `.dump`, `.errors` and `.unicode`: the built `rawreel-cli` in a scratch
-  folder: `info` of synthetic, raw and Y4M sources, a `dump --via cpu` round trip, the exit codes
-  and error forms, and non-ASCII paths.
+  folder: `info` of synthetic, raw and Y4M sources (with the read mode from the default, a
+  `--config` and an invalid config file), a `dump --via cpu` round trip, the exit codes and error
+  forms, and non-ASCII paths.
 - `rawreel.cli_e2e.gpu` and `rawreel.cli_e2e.bench` (label `gpu`): `dump --via gpu` writes the
-  bytes of `dump --via cpu`, and `bench` runs every stage; both under synchronization validation
+  bytes of `dump --via cpu`, and `bench` runs every stage (only Produce with `--read-only`); both
+  under synchronization validation
   that must report nothing. They exit with 77 without a usable device unless `DVV_REQUIRE_GPU=1`.
 
 ## Platforms

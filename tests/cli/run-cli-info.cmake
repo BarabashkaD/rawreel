@@ -18,6 +18,33 @@ run_cli(0 json err info a_4x2_yuv420p.yuv --json)
 expect_json("${json}" raw provider)
 expect_json("${json}" 2 frames)
 
+# M3.1 U-IO2: the file read mode. Auto (no rawreel.json next to rawreel-cli) reads unbuffered on
+# Windows (WORK_DIR is on NTFS) and buffered elsewhere; --config forces a mode; a missing or
+# invalid --config file gives one warning and the defaults.
+if(CMAKE_HOST_WIN32)
+    set(auto_reads "unbuffered")
+else()
+    set(auto_reads "buffered")
+endif()
+# A rawreel.json in the working directory is ignored: only the one next to the executable counts.
+file(WRITE "${WORK_DIR}/rawreel.json" "{ \"io\": { \"fileReads\": \"buffered\" } }\n")
+run_cli(0 out err info a_4x2_yuv420p.yuv)
+expect_match("${out}" "\nreads: ${auto_reads}\n" "info text, default config")
+file(REMOVE "${WORK_DIR}/rawreel.json")
+# A missing --config file gives one warning and the defaults.
+run_cli(0 out err info a_4x2_yuv420p.yuv --config missing.json)
+expect_match("${out}" "\nreads: ${auto_reads}\n" "info text, missing config")
+expect_match("${err}" "config '[^']*missing.json' ignored: not found" "warning, missing config")
+file(WRITE "${WORK_DIR}/buffered.json" "{ \"io\": { \"fileReads\": \"buffered\" } }\n")
+run_cli(0 out err info a_4x2_yuv420p.yuv --config buffered.json)
+expect_match("${out}" "\nreads: buffered\n" "info text, --config buffered")
+run_cli(0 json err info a_4x2_yuv420p.yuv --json --config "${WORK_DIR}/buffered.json")
+expect_json("${json}" buffered reader)
+file(WRITE "${WORK_DIR}/bad.json" "{ \"io\": { \"fileReads\": \"fast\" } }\n")
+run_cli(0 out err info a_4x2_yuv420p.yuv --config bad.json)
+expect_match("${out}" "\nreads: ${auto_reads}\n" "info text, invalid config")
+expect_match("${err}" "config '[^']*bad.json' ignored: io.fileReads" "warning, invalid config")
+
 # A Y4M file of two 4x2 gray frames; file(CONFIGURE) writes LF line ends and appends one LF, which
 # the provider reports as a trailing byte.
 file(CONFIGURE OUTPUT "${WORK_DIR}/y.y4m"

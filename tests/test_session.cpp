@@ -542,6 +542,40 @@ TEST_SUITE("session") {
         std::filesystem::remove_all(folder, ignored);
     }
 
+    // M3.1 U-IO2: every open reads files in SessionOptions::fileReads (the config file's mode).
+    TEST_CASE("session: file sources read in the configured mode") {
+        const std::filesystem::path folder =
+            std::filesystem::temp_directory_path() /
+            ("rawreel-session-reads-" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(folder);
+        const std::filesystem::path file = folder / "clip_33x17_yuv420p.yuv";
+        {
+            std::ofstream out(file, std::ios::binary);
+            const std::string bytes(std::size_t{3} * 867, '\x40');
+            out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        }
+#if defined(_WIN32)
+        constexpr std::string_view AUTO_READS = "unbuffered";  // NTFS temporary directory
+#else
+        constexpr std::string_view AUTO_READS = "buffered";
+#endif
+        for (const auto& [mode, reads] :
+             {std::pair{dvv::platform::FileReadMode::Buffered, std::string_view("buffered")},
+              std::pair{dvv::platform::FileReadMode::Auto, AUTO_READS}}) {
+            CAPTURE(reads);
+            SessionFixture f(mode);
+            f.open(0, rawreel::fileUri(file));
+            const SessionEvent changed = waitStreamsChanged(f, 1);
+            REQUIRE(changed.streams.size() == 1);
+            CHECK(changed.streams[0].info.reader == reads);
+            REQUIRE(f.sink->waitShown(0));
+            f.shutdown();
+        }
+        std::error_code ignored;
+        std::filesystem::remove_all(folder, ignored);
+    }
+
     TEST_CASE("session: shutdown with requests in flight") {
         closeGate("g11");
         {

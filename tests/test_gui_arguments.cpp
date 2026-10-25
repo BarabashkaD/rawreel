@@ -249,3 +249,15 @@ TEST_CASE("gui arguments: the usage text") {
     CHECK(usage.find("6 a --selftest check failed") != std::string_view::npos);
     CHECK(usage.find("77") != std::string_view::npos);
 }
+
+TEST_CASE("gui arguments: --config") {
+    const auto given = parse({"--config", "dir/my config.json", "clip.yuv"});
+    REQUIRE(given.has_value());
+    CHECK(given->config == "dir/my config.json");
+    CHECK(given->uri == "clip.yuv");
+    const auto none = parse({});
+    REQUIRE(none.has_value());
+    CHECK_FALSE(none->config.has_value());
+    checkFormatError({"--config"}, "option --config needs a value");
+    checkFormatError({"--config", "a", "--config", "b"}, "option --config given twice");
+}
