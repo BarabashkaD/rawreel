@@ -29,8 +29,25 @@
 #include "dvv/gpu/gpu_registry.h"
 #include "dvv/media/display.h"
 #include "dvv/media/pixel_format.h"
+#include "dvv/media/uri_colour.h"
 
 namespace rawreel {
+namespace {
+
+// The provider's colour hint labels the file's colour; with a
+// colour= key in the URI the standard is the user's, so the hint's "no standard" does not count.
+dvv::media::FileHint labelHint(const dvv::media::SourceInfo& info) {
+    dvv::media::FileHint hint = info.colourHint;
+    if (const auto uri = dvv::parseUri(info.resolvedUri)) {
+        if (const auto spec = dvv::media::colourSpecFromQuery(*uri); spec && spec->preset) {
+            hint.nonStandard = false;
+        }
+    }
+    return hint;
+}
+
+}  // namespace
+
 namespace detail {
 
 struct Stream {
@@ -150,9 +167,16 @@ public:
                           .error()
                     : stack.error();
             DVV_LOG_WARN("session: the GPU could not be started: {}", cause.describe());
+            if (job.request && stream_set == stream_set_ && !last_stream_) {
+                // An open's request (its close-first dropped the old stream) is
+                // what the next reopen() restores.
+                last_stream_ = LastStream{.resolvedUri = dvv::formatUri(job.request->uri),
+                                          .position = job.start.value_or(0)};
+            }
             emitError(cause.wrap(
                 dvv::Errc::DeviceLost,
-                std::format("the GPU could not be started: {}. Reopen to retry.", cause.message)));
+                std::format("the GPU could not be started: {}. Restart the GPU to retry.",
+                            cause.message)));
             finishJob();
             return;
         }
@@ -440,9 +464,9 @@ private:
             DVV_LOG_INFO("session: {} opens cancelled: GPU device lost", cancelled);
         }
         releaseStack(target);
-        emitError(
-            cause.wrap(dvv::Errc::DeviceLost,
-                       std::format("GPU device lost: {}. Reopen to continue.", cause.message)));
+        emitError(cause.wrap(
+            dvv::Errc::DeviceLost,
+            std::format("GPU device lost: {}. Restart the GPU to continue.", cause.message)));
     }
 
     // §5.3 step 1 without the FIFO and the error; also a rebuild of a healthy stack (D25).
@@ -580,7 +604,12 @@ private:
         }
         Stream stream;
         stream.info = source->info();
+        // The values (and the assumed bits) are the renderer's, resolved with the
+        // default hint as dvv-media's ToDisplay does. Only the standard label takes the provider's
+        // hint, so a signalled non-standard colour is "no standard".
         stream.colour = dvv::media::resolveColour(stream.info.desc);
+        stream.colour.standard =
+            dvv::media::resolveColour(stream.info.desc, labelHint(stream.info)).standard;
         stream.origin = *attached;
         stream.view = stack_.viewFor(stream.info.desc);
         stream.source = std::move(source);
@@ -703,10 +732,12 @@ private:
         streams_.clear();
     }
 
+    // Only a file no provider could match asks for its format; a provider that recognised the
+    // file and refused it (e.g. a lossy codec) is an error (spec §7, M4 GUI D4).
     [[nodiscard]] static bool needsFormat(const dvv::media::SourceRequest& request,
                                           const dvv::Error& error) {
         return request.uri.scheme == "file" && !request.uri.param("fmt").has_value() &&
-               (error.code == dvv::Errc::Unsupported || error.code == dvv::Errc::Format);
+               dvv::media::isNoProviderMatch(error);
     }
 
     // Events: only on the executor, never while stopping.

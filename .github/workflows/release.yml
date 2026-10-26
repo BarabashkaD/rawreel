@@ -1,0 +1,227 @@
+# Release of rawreel (spec §13.4; design M4 v2 §9, D16, D20, D27). Started by hand only.
+# A dry run builds the main branches, runs the unit and CLI tests, packages, runs the package
+# smoke tests and keeps the files as workflow artifacts. A real run does the same from the
+# v<version> tags of every repository, attests the files and creates a draft release; a maintainer
+# reviews and publishes it.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, without the v (for example 1.0.0)
+        required: true
+        type: string
+      dry_run:
+        description: Build from main and keep the files as workflow artifacts only
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  # Every repository is checked out at this ref: main for a dry run, the release tag otherwise.
+  RELEASE_REF: ${{ inputs.dry_run && 'main' || format('v{0}', inputs.version) }}
+  DVV_REQUIRE_FFMPEG: "1"
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: A real run starts from main only
+        if: ${{ !inputs.dry_run && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::a real release run must be started from main"
+          exit 1
+      - name: Check the version input
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must look like 1.0.0"
+            exit 1
+          fi
+
+  windows:
+    needs: check
+    runs-on: windows-2025
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/rawreel-workspace
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: rawreel-workspace
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/dvv-base
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: dvv-base
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/dvv-registry
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: dvv-registry
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/dvv-platform
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: dvv-platform
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/dvv-gpu
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: dvv-gpu
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/dvv-media
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: dvv-media
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/dvv-components
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: dvv-components
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/rawreel
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: rawreel
+      # Tags can move: the log keeps the commit of every repository this run built.
+      - name: Record the commits
+        shell: pwsh
+        run: |
+          foreach ($r in 'rawreel-workspace', 'dvv-base', 'dvv-registry', 'dvv-platform', 'dvv-gpu', 'dvv-media', 'dvv-components', 'rawreel') {
+            "$r $(git -C $r rev-parse HEAD)"
+          }
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+      - name: Install tools
+        run: python -m pip install -r rawreel-workspace/tools/requirements.txt
+      - name: Check Visual Studio 2026
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $version = & $vswhere -latest -property catalog_productDisplayVersion
+          if (-not $version.StartsWith('18.')) { throw "Visual Studio 2026 (18.x) required, found $version" }
+          Write-Host "Visual Studio $version"
+      # No cache restore: bootstrap builds the prefix from the pinned, SHA256-checked archives
+      # (rawreel-workspace/deps/versions.cmake), so no CI cache entry reaches a release.
+      - name: Bootstrap
+        shell: pwsh
+        run: ./rawreel-workspace/bootstrap.ps1 -Toolchain msvc -NoClone
+      - name: Verify the custom_ffmpeg archive (SHA256 and attestation)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: cmake -DPREFIX=_third_party/msvc "-DWORK_DIR=${{ runner.temp }}/ffmpeg-check" -P rawreel/packaging/verify-ffmpeg-archive.cmake
+      # The linker records its temporary object path (%TMP%\lnk{GUID}.tmp) in the PDBs; the runner's
+      # default TEMP is a user-profile path, which the symbols privacy scan rejects.
+      - name: Build (Release)
+        working-directory: rawreel
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: |
+          cmake --preset vs2026
+          cmake --build --preset vs2026-release
+      - name: Unit and CLI tests
+        working-directory: rawreel
+        run: ctest --preset vs2026-release -LE "gpu|display|gui|oracle"
+      # The sources archive is built in this job only, from a --recurse-submodules checkout of the
+      # custom_ffmpeg tag whose commit equals the attestation's sourceRepositoryDigest.
+      - name: Package (and the third-party sources when FFmpeg is bundled)
+        run: cmake -DBUILD_DIR=_build/rawreel/vs2026 -DCONFIG=Release "-DOUT_DIR=${{ runner.temp }}/out" -DSOURCES=ON "-DFFMPEG_COMMIT_FILE=${{ runner.temp }}/ffmpeg-check/custom_ffmpeg-commit.txt" -P rawreel/packaging/make-packages.cmake
+      # The runner has no GPU: the GUI smoke may exit 77 here; the local dry runs run it on a GPU.
+      - name: Package smoke tests
+        env:
+          VERSION: ${{ inputs.version }}
+        run: cmake "-DOUT_DIR=${{ runner.temp }}/out" -DPLATFORM=windows "-DWORK_DIR=${{ runner.temp }}/smoke" "-DEXPECTED_VERSION=$env:VERSION" -DGUI_SMOKE=windows -DALLOW_GUI_SKIP=ON -DREQUIRE_SOURCES=ON -P rawreel/packaging/package-smoke.cmake
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows
+          path: |
+            ${{ runner.temp }}/out/rawreel-*
+            ${{ runner.temp }}/out/package-info-windows.cmake
+          if-no-files-found: error
+          overwrite: true
+
+  # No Linux job in v1.0 (Windows only): the Linux package and its job are v1.x.
+
+  publish:
+    needs: [windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: rawreel
+      # Before anything is attested: a missing notes file stops the run here.
+      - name: Check the release notes
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          notes="rawreel/docs/release-notes-${VERSION}.md"
+          if [ ! -f "$notes" ]; then
+            echo "::error::the release notes $notes are missing"
+            exit 1
+          fi
+      # By name, so a re-run of this job does not also fetch its own earlier release-files.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows
+          path: dist
+      - name: Checksums
+        working-directory: dist
+        run: |
+          rm -f package-info-*.cmake
+          sha256sum rawreel-* > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: dist/*
+          if-no-files-found: error
+          # A re-run of this job replaces the earlier attempt's artifact instead of failing.
+          overwrite: true
+      - name: Attest the release files
+        if: ${{ !inputs.dry_run }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: Create the draft release
+        if: ${{ !inputs.dry_run }}
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          notes="../rawreel/docs/release-notes-${VERSION}.md"
+          gh release create "v${VERSION}" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "rawreel ${VERSION}" --notes-file "$notes" -- rawreel-* SHA256SUMS

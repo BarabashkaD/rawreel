@@ -5,6 +5,7 @@
 
 #include "core/session_types.h"
 #include "core/status_text.h"
+#include "dvv/media/types.h"
 
 using rawreel::SessionStatus;
 using rawreel::statusFields;
@@ -69,5 +70,30 @@ TEST_SUITE("core") {
         CHECK(fields.position.empty());
         CHECK(fields.fps.empty());
         CHECK(fields.bottleneck.empty());
+    }
+
+    // D5R §2.2: the display mapping of the resolved colour (U+2192 arrows).
+    TEST_CASE("status text: mapping") {
+        using dvv::media::ColourParams;
+        using dvv::media::TransferFn;
+        const auto with = [](TransferFn transfer) {
+            return ColourParams{.matrix = dvv::media::ColourMatrix::Bt2020Ncl,
+                                .range = dvv::media::ColourRange::Limited,
+                                .transfer = transfer,
+                                .primaries = dvv::media::Primaries::Bt2020,
+                                .kr = 0,
+                                .kb = 0};
+        };
+        CHECK(rawreel::mappingText(nullptr).empty());
+        const ColourParams pq = with(TransferFn::Pq);
+        CHECK(rawreel::mappingText(&pq) ==
+              "PQ \xE2\x86\x92 SDR tone mapping (1000 \xE2\x86\x92 100 nits)");
+        const ColourParams hlg = with(TransferFn::Hlg);
+        CHECK(rawreel::mappingText(&hlg) ==
+              "HLG \xE2\x86\x92 SDR tone mapping (1000 \xE2\x86\x92 100 nits)");
+        for (const TransferFn sdr : {TransferFn::Bt1886, TransferFn::Srgb, TransferFn::Linear}) {
+            const ColourParams colour = with(sdr);
+            CHECK(rawreel::mappingText(&colour) == "SDR, no tone mapping");
+        }
     }
 }

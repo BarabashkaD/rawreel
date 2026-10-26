@@ -18,6 +18,7 @@
 
 #include "core/drop.h"
 #include "core/format_choice.h"
+#include "core/open_text.h"
 #include "core/session.h"
 #include "dvv/base/lifetime.h"
 #include "dvv/base/task.h"
@@ -542,7 +543,122 @@ TEST_SUITE("session") {
         std::filesystem::remove_all(folder, ignored);
     }
 
-    // M3.1 U-IO2: every open reads files in SessionOptions::fileReads (the config file's mode).
+    // M4 GUI D4: a file a provider recognises and refuses is an error, not the format dialog.
+    TEST_CASE("session: a recognised but refused file is an error, not a format request") {
+        const std::filesystem::path folder =
+            std::filesystem::temp_directory_path() /
+            ("rawreel-session-" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(folder);
+        const std::filesystem::path file = folder / "clip.refused";
+        {
+            std::ofstream out(file, std::ios::binary);
+            out << "not a video";
+        }
+        {
+            SessionFixture f;
+            f.open(0, rawreel::fileUri(file));
+            const SessionEvent refused = waitError(f, 1);
+            const dvv::Error error = refused.error.value_or(dvv::Error{});
+            CHECK(error.code == dvv::Errc::Unsupported);
+            CHECK(error.message.find("is not supported in v1.0") != std::string::npos);
+            CHECK(f.events->of(Kind::FormatNeeded).empty());
+            CHECK(f.events->of(Kind::StreamsChanged).empty());
+            f.shutdown();
+        }
+        std::error_code ignored;
+        std::filesystem::remove_all(folder, ignored);
+    }
+
+    // ?fmt= without a size matches no provider; no format request, but the error
+    // offers the infobar's Format... button.
+    TEST_CASE("session: a raw file with fmt but no size offers Format on its error") {
+        const std::filesystem::path folder =
+            std::filesystem::temp_directory_path() /
+            ("rawreel-session-" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(folder);
+        const std::filesystem::path file = folder / "clip.bin";
+        {
+            std::ofstream out(file, std::ios::binary);
+            const std::string bytes(std::size_t{3} * 867, '\x40');
+            out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        }
+        {
+            SessionFixture f;
+            const std::string uri = rawreel::fileUri(file) + "?fmt=yuv420p";
+            f.open(0, uri);
+            const SessionEvent failed = waitError(f, 1);
+            const dvv::Error error = failed.error.value_or(dvv::Error{});
+            CHECK(dvv::media::isNoProviderMatch(error));
+            CHECK(rawreel::offersFormat(uri, error));
+            CHECK(f.events->of(Kind::FormatNeeded).empty());
+            f.shutdown();
+        }
+        std::error_code ignored;
+        std::filesystem::remove_all(folder, ignored);
+    }
+
+    // A file no provider matches (no fmt) asks for the format with no candidates.
+    TEST_CASE("session: an unmatched raw file asks for the format with no candidates") {
+        const std::filesystem::path folder =
+            std::filesystem::temp_directory_path() /
+            ("rawreel-session-" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(folder);
+        const std::filesystem::path file = folder / "clip.bin";
+        {
+            std::ofstream out(file, std::ios::binary);
+            const std::string bytes(std::size_t{3} * 867, '\x40');
+            out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        }
+        {
+            SessionFixture f;
+            f.open(0, rawreel::fileUri(file));
+            REQUIRE(f.events->waitFor([](const std::vector<SessionEvent>& events) {
+                return rawreel::testing::countKind(events, Kind::FormatNeeded) == 1;
+            }));
+            const SessionEvent needed = f.events->of(Kind::FormatNeeded).front();
+            CHECK(needed.slot == 0);
+            CHECK(needed.candidates.candidates.empty());
+            CHECK(f.events->of(Kind::Error).empty());
+            CHECK(f.events->of(Kind::StreamsChanged).empty());
+            f.shutdown();
+        }
+        std::error_code ignored;
+        std::filesystem::remove_all(folder, ignored);
+    }
+
+    // D4 consequence: a raw file named with its size whose open fails with Format
+    // (an unknown parameter) is an error, not a format request.
+    TEST_CASE("session: a named raw file with a bad parameter is an error, not a format request") {
+        const std::filesystem::path folder =
+            std::filesystem::temp_directory_path() /
+            ("rawreel-session-" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(folder);
+        const std::filesystem::path file = folder / "clip_33x17_yuv420p.yuv";
+        {
+            std::ofstream out(file, std::ios::binary);
+            const std::string bytes(std::size_t{3} * 867, '\x40');
+            out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        }
+        {
+            SessionFixture f;
+            f.open(0, rawreel::fileUri(file) + "?unknown=1");
+            const SessionEvent failed = waitError(f, 1);
+            const dvv::Error error = failed.error.value_or(dvv::Error{});
+            CHECK(error.code == dvv::Errc::Format);
+            CHECK_FALSE(dvv::media::isNoProviderMatch(error));
+            CHECK(f.events->of(Kind::FormatNeeded).empty());
+            CHECK(f.events->of(Kind::StreamsChanged).empty());
+            f.shutdown();
+        }
+        std::error_code ignored;
+        std::filesystem::remove_all(folder, ignored);
+    }
+
+    // Every open reads files in SessionOptions::fileReads (the config file's mode).
     TEST_CASE("session: file sources read in the configured mode") {
         const std::filesystem::path folder =
             std::filesystem::temp_directory_path() /
@@ -775,7 +891,7 @@ TEST_SUITE("session") {
         REQUIRE(error.error);
         CHECK(error.error.value_or(dvv::Error{}).code == dvv::Errc::DeviceLost);
         CHECK(error.error.value_or(dvv::Error{}).message.starts_with("GPU device lost:"));
-        CHECK(error.error.value_or(dvv::Error{}).message.ends_with("Reopen to continue."));
+        CHECK(error.error.value_or(dvv::Error{}).message.ends_with("Restart the GPU to continue."));
         REQUIRE(error.status);
         const std::int64_t kept = error.status.value_or(SessionStatus{}).player.position;
         CHECK(kept >= 0);
@@ -1109,7 +1225,7 @@ TEST_SUITE("session") {
         const dvv::Error error = failed.error.value_or(dvv::Error{});
         CHECK(error.code == dvv::Errc::DeviceLost);
         CHECK(error.message ==
-              "the GPU could not be started: injected stack failure. Reopen to retry.");
+              "the GPU could not be started: injected stack failure. Restart the GPU to retry.");
         REQUIRE(error.cause);
         CHECK(error.cause->code == dvv::Errc::Io);
         REQUIRE(failed.status);
@@ -1133,6 +1249,31 @@ TEST_SUITE("session") {
         }));
         static_cast<void>(waitShow(f, 5, 2, reopened.seq));
         CHECK(f.stackCalls() == 2);
+        CHECK(errorCount(f) == 2);
+    }
+
+    // The GUI's close-first open after a loss drops the lost stream; when the
+    // new open's stack build fails, its request becomes the target of the next reopen.
+    TEST_CASE("session: a failed stack build for an open keeps that open for the reopen") {
+        SessionFixture f;
+        f.open(0, A);
+        REQUIRE(f.sink->waitShown(0));
+        f.session->reportDeviceLost(1);
+        CHECK(isDeviceLost(waitError(f, 1)));
+        const SessionEvent loss = waitEvent(f, isLoss());
+        REQUIRE(f.waitStatus([](const SessionStatus& s) { return !s.gpuAvailable; }));
+
+        f.stackLog->failNext = 1;
+        f.session->closeStreams();
+        f.open(0, B);
+        CHECK(isDeviceLost(waitError(f, 2)));
+
+        f.session->reopen();
+        const SessionEvent live = waitEvent(f, isLive(2), loss.seq);
+        static_cast<void>(waitEvent(f, holds("noise"), live.seq));
+        REQUIRE(f.waitStatus([](const SessionStatus& s) {
+            return s.gpuAvailable && s.streams == 1 && s.player.position == 0;
+        }));
         CHECK(errorCount(f) == 2);
     }
 

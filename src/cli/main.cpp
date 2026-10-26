@@ -19,6 +19,7 @@
 #include "dvv/base/leak_check.h"
 #include "dvv/base/lifetime.h"
 #include "dvv/base/log.h"
+#include "gui/crash_handler.h"
 
 namespace {
 
@@ -75,7 +76,13 @@ int lastResort() noexcept {
 #if defined(_WIN32)
 int wmain(int argc, wchar_t** argv) {
     try {
+        // The crash handler first (design M4 v2 D22), then the logger, then the test hook.
+        const std::string crash_warning = rawreel::CrashHandler::install("rawreel-cli");
         setUpLogging();
+        if (!crash_warning.empty()) {
+            DVV_LOG_WARN("{}", crash_warning);  // now that the sinks exist
+        }
+        rawreel::CrashHandler::crashIfRequested();
         auto all = rawreel::cli::utf8Arguments(argc, argv);
         if (!all) {
             std::println(stderr, "error: {}", all.error().message);
@@ -89,7 +96,13 @@ int wmain(int argc, wchar_t** argv) {
 #else
 int main(int argc, char** argv) {
     try {
+        // The crash handler first (design M4 v2 D22), then the logger, then the test hook.
+        const std::string crash_warning = rawreel::CrashHandler::install("rawreel-cli");
         setUpLogging();
+        if (!crash_warning.empty()) {
+            DVV_LOG_WARN("{}", crash_warning);  // now that the sinks exist
+        }
+        rawreel::CrashHandler::crashIfRequested();
         return guarded(std::vector<std::string>(argv, argv + argc));
     } catch (...) {
         return lastResort();

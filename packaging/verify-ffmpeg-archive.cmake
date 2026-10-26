@@ -1,0 +1,75 @@
+# Verifies the pinned custom_ffmpeg archive and its build provenance (design M4 v2 D20):
+#   cmake -DPREFIX=<third-party prefix> -DWORK_DIR=<dir> [-DOUT_FILE=<file>]
+#         -P packaging/verify-ffmpeg-archive.cmake
+# Downloads DVV_CUSTOM_FFMPEG_URL with the pinned SHA256, runs `gh attestation verify` against the
+# repository of the URL, checks that the attested ref is refs/tags/v<DVV_CUSTOM_FFMPEG_VERSION> and
+# writes the attested commit to OUT_FILE (default <WORK_DIR>/custom_ffmpeg-commit.txt).
+cmake_minimum_required(VERSION 3.25)
+include("${CMAKE_CURRENT_LIST_DIR}/check-package.cmake")
+
+function(fail text)
+    message(FATAL_ERROR "verify-ffmpeg-archive: ${text}")
+endfunction()
+
+foreach(required IN ITEMS PREFIX WORK_DIR)
+    if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
+        fail("${required} is required")
+    endif()
+endforeach()
+cmake_path(ABSOLUTE_PATH PREFIX NORMALIZE)
+cmake_path(ABSOLUTE_PATH WORK_DIR NORMALIZE)
+if(NOT OUT_FILE)
+    set(OUT_FILE "${WORK_DIR}/custom_ffmpeg-commit.txt")
+endif()
+cmake_path(ABSOLUTE_PATH OUT_FILE NORMALIZE)
+
+set(state "${PREFIX}/dvv-third-party-state.cmake")
+if(NOT EXISTS "${state}")
+    fail("${state} is missing (bootstrap the prefix first)")
+endif()
+include("${state}")
+if(NOT DVV_BUNDLE_FFMPEG)
+    fail("the prefix does not bundle FFmpeg (DVV_BUNDLE_FFMPEG is OFF)")
+endif()
+foreach(name IN ITEMS DVV_CUSTOM_FFMPEG_URL DVV_CUSTOM_FFMPEG_SHA256 DVV_CUSTOM_FFMPEG_VERSION)
+    if("${${name}}" STREQUAL "")
+        fail("${name} is missing in ${state}")
+    endif()
+endforeach()
+if(NOT DVV_CUSTOM_FFMPEG_URL MATCHES "^https://github\\.com/([^/]+/[^/]+)/releases/")
+    fail("cannot take <owner>/<repo> from ${DVV_CUSTOM_FFMPEG_URL}")
+endif()
+set(repo "${CMAKE_MATCH_1}")
+cmake_path(GET DVV_CUSTOM_FFMPEG_URL FILENAME archive_name)
+
+find_program(GH gh)
+if(NOT GH)
+    fail("gh (the GitHub CLI) is required for the attestation check")
+endif()
+
+file(MAKE_DIRECTORY "${WORK_DIR}")
+set(archive "${WORK_DIR}/${archive_name}")
+file(DOWNLOAD "${DVV_CUSTOM_FFMPEG_URL}" "${archive}"
+     EXPECTED_HASH SHA256=${DVV_CUSTOM_FFMPEG_SHA256} TLS_VERIFY ON STATUS status)
+list(GET status 0 code)
+if(NOT code EQUAL 0)
+    fail("download of ${archive_name} failed: ${status}")
+endif()
+message(STATUS "verify-ffmpeg-archive: ${archive_name}: SHA256 ok")
+
+execute_process(COMMAND "${GH}" attestation verify "${archive}" --repo "${repo}" --format json
+                RESULT_VARIABLE result OUTPUT_VARIABLE json ERROR_VARIABLE gh_error)
+if(NOT result EQUAL 0)
+    fail("the attestation of ${archive_name} could not be verified:\n${gh_error}")
+endif()
+rawreel_attestation_source(JSON "${json}" COMMIT commit REF ref ERRORS errors)
+if(errors)
+    list(JOIN errors "\n" text)
+    fail("${text}")
+endif()
+set(expected_ref "refs/tags/v${DVV_CUSTOM_FFMPEG_VERSION}")
+if(NOT ref STREQUAL expected_ref)
+    fail("the attestation names the ref ${ref}, expected ${expected_ref}")
+endif()
+file(WRITE "${OUT_FILE}" "${commit}\n")
+message(STATUS "verify-ffmpeg-archive: attested ${repo} ${ref} commit ${commit}")

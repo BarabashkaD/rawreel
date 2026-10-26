@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <set>
-#include <string>
 #include <string_view>
 
 #include "core/commands.h"
@@ -32,7 +31,7 @@ KeyChord letter(char c, bool ctrl = false) {
 
 TEST_SUITE("core") {
     TEST_CASE("commands: the table lists every command once, in order") {
-        static_assert(COMMAND_COUNT == 17);
+        static_assert(COMMAND_COUNT == 18);
         const auto table = commandTable();
         REQUIRE(table.size() == COMMAND_COUNT);
         std::set<std::string_view> ids;
@@ -129,7 +128,12 @@ TEST_SUITE("core") {
         CHECK(menuLabel(info(Command::Loop)) == "Loop (L)");
         CHECK(menuLabel(info(Command::First)) == "First frame (Home)");
         CHECK(menuLabel(info(Command::Stop)) == "Stop");
-        CHECK(menuLabel(info(Command::Reopen)) == "Reopen");
+        CHECK(menuLabel(info(Command::Reopen)) == "Restart GPU and reopen");  // M4 GUI D10
+        CHECK(info(Command::Reopen).id == "reopen");
+        CHECK(info(Command::About).menu == "Help");
+        CHECK(info(Command::About).label == "About rawreel");
+        CHECK_FALSE(info(Command::About).key.has_value());
+        CHECK(menuLabel(info(Command::About)) == "About rawreel");
         CHECK(keyText(chord(Key::F11)) == "F11");
         CHECK(keyText(chord(Key::Escape)) == "Esc");
         CHECK(keyText(KeyChord{'O', true, true}) == "Ctrl+Shift+O");

@@ -154,7 +154,7 @@ public:
     SessionFixture();  // creates the Session (REQUIREs success)
     // The production clock and timer: `clock` and `timer` stay null, tick() must not be used.
     explicit SessionFixture(RealTime);
-    // SessionOptions::fileReads = file_reads (M3.1 U-IO2); fake clock and timer.
+    // SessionOptions::fileReads = file_reads; fake clock and timer.
     explicit SessionFixture(dvv::platform::FileReadMode file_reads);
     SessionFixture(const SessionFixture&) = delete;
     SessionFixture& operator=(const SessionFixture&) = delete;

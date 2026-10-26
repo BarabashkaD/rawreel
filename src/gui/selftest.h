@@ -20,17 +20,36 @@
 #include <utility>
 #include <vector>
 
+#include <wx/eventfilter.h>
 #include <wx/timer.h>
 
 #include "core/gui_arguments.h"
 #include "core/player.h"
 #include "core/session_types.h"
 
+class wxGenericAboutDialog;  // NOLINT(readability-identifier-naming): wxWidgets' name
+class wxTextEntryDialog;
+
 namespace rawreel {
 
 class App;
 class FormatDialog;
 class MainFrame;
+
+// --selftest input isolation (an app-wide wx event filter, installed only while a SelfTest runs):
+// real keyboard, mouse-button, wheel and menu events are dropped, counted and logged, so a key
+// press or a click cannot change a step's result. The script's own key events go through
+// injectInput().
+class SelfTestInput final : public wxEventFilter {
+public:
+    int FilterEvent(wxEvent& event) override;
+    [[nodiscard]] std::uint64_t ignored() const noexcept { return ignored_; }
+
+private:
+    std::uint64_t ignored_ = 0;
+};
+// The script's input: target.ProcessEvent(event), passed by SelfTestInput. GUI thread only.
+bool injectInput(wxEvtHandler& target, wxEvent& event);
 
 struct SelfTestStep {
     std::string name;
@@ -62,6 +81,8 @@ public:
     void stop() noexcept;  // NOLINT(bugprone-virtual-near-miss)
     [[nodiscard]] MainFrame& frame() const noexcept { return *frame_; }
     [[nodiscard]] App& app() const noexcept { return *app_; }
+    // Real input events dropped so far (SelfTestInput).
+    [[nodiscard]] std::uint64_t inputIgnored() const noexcept { return input_.ignored(); }
 
 private:
     void Notify() override;  // one tick
@@ -81,10 +102,12 @@ private:
     SelfTestScript script_;
     std::size_t step_ = 0;
     std::chrono::steady_clock::time_point step_start_;
-    bool entered_ = false;   // step 1 was entered (on the first tick)
-    bool busy_ = false;      // a step's start or passed is running (LOG 20: no re-entrant tick)
-    bool finished_ = false;  // the outcome is decided
-    bool stopped_ = false;   // stop() ran: no further tick does anything
+    bool entered_ = false;    // step 1 was entered (on the first tick)
+    bool busy_ = false;       // a step's start or passed is running (no re-entrant tick)
+    bool finished_ = false;   // the outcome is decided
+    bool stopped_ = false;    // stop() ran: no further tick does anything
+    SelfTestInput input_;     // registered from start() until the destructor
+    bool filtering_ = false;  // input_ is registered
 };
 
 struct ShownSet {
@@ -136,13 +159,17 @@ private:
 // fires once.
 struct DialogHooks {
     std::move_only_function<void(FormatDialog&)> format;
+    std::move_only_function<void(wxTextEntryDialog&)> uri;       // Open URI... (D29)
+    std::move_only_function<void(wxGenericAboutDialog&)> about;  // Help -> About (D29)
 };
 [[nodiscard]] DialogHooks& dialogHooks();
-// Every ShowModal of a FormatDialog goes here. With a hook set, a CallAfter queued before
-// ShowModal runs inside the modal loop, calls the hook (it uses choice()/setChoice()) and ends the
+// Every ShowModal of these dialogs goes here. With a hook set, a CallAfter queued before ShowModal
+// runs inside the modal loop, calls the hook (e.g. choice()/setChoice(), SetValue()) and ends the
 // dialog with wxID_OK. A --selftest dialog without a hook is cancelled the same way (logged), so a
 // script never hangs on a dialog.
 [[nodiscard]] int showModal(FormatDialog& dialog);
+[[nodiscard]] int showModal(wxTextEntryDialog& dialog);
+[[nodiscard]] int showModal(wxGenericAboutDialog& dialog);
 
 // The dispatcher: Smoke -> {smokeScenario(test)}, Lost -> {lostScenario(test), false}, Player ->
 // {playerScenario(test)}, Perf -> {perfScenario(test)}; every other scenario -> nullopt.

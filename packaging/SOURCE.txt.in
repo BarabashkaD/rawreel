@@ -1,0 +1,20 @@
+FFmpeg libraries in this folder
+
+avutil, avcodec, avformat, avfilter, swscale and swresample are the unchanged "lgpl" shared
+libraries of custom_ffmpeg @CUSTOM_FFMPEG_VERSION@ (FFmpeg @FFMPEG_VERSION@). They are licensed
+under the GNU Lesser General Public License, version 2.1 or later; the licence texts are in the
+licenses folder, and build-info.txt shows how they were configured.
+
+rawreel loads these libraries at run time and is not linked with them. You may replace them with
+your own LGPL shared build of FFmpeg that uses the same file names, or delete this folder
+(rawreel then opens no container files and no lavfi: graphs). Each library must have the major
+version of the one it replaces and at least its minor version (@FFMPEG_LIBRARY_VERSIONS@); an
+older one, a GPL build or a non-free build is refused.
+
+The complete corresponding source of the LGPL components (@RAWREEL_LGPL_COMPONENTS@) is in
+@RAWREEL_SOURCES_ARCHIVE@, attached to the same release as this package:
+https://github.com/BarabashkaD/rawreel/releases/tag/v@RAWREEL_VERSION@
+It holds custom_ffmpeg @CUSTOM_FFMPEG_VERSION@ with its submodules and build scripts (the configure
+line included)@RAWREEL_LAME_SENTENCE@.
+Not included: the AMD AMF public headers (MIT) that avcodec's AMF support is built against; their
+URL and SHA256 are in custom_ffmpeg-@CUSTOM_FFMPEG_VERSION@/versions.cmake in that archive.

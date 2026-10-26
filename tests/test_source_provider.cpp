@@ -43,7 +43,9 @@ using dvv::Result;
 using dvv::media::FormatId;
 
 constexpr auto GATE_TIMEOUT = std::chrono::seconds(10);
-constexpr std::array<std::string_view, 2> SCHEMES{"slow", "fail"};
+constexpr std::array<std::string_view, 3> SCHEMES{"slow", "fail", "file"};
+// A file it recognises and refuses, as the ffmpeg provider refuses a lossy codec (M4 GUI D4).
+constexpr std::string_view REFUSED_SUFFIX = ".refused";
 
 struct Gate {
     bool closed = false;
@@ -220,6 +222,12 @@ public:
         if (std::ranges::find(SCHEMES, request.uri.scheme) == SCHEMES.end()) {
             return {.confidence = 0, .guess = {}, .why = "not a test URI"};
         }
+        if (request.uri.scheme == "file") {
+            if (!request.uri.path.ends_with(REFUSED_SUFFIX)) {
+                return {.confidence = 0, .guess = {}, .why = "not a refused test file"};
+            }
+            return {.confidence = 100, .guess = {}, .why = "refused test file"};
+        }
         return {.confidence = 100, .guess = {}, .why = "test source"};
     }
 
@@ -227,6 +235,10 @@ public:
         dvv::media::OpenTicket ticket, const dvv::media::SourceRequest& request,
         const dvv::media::FormatGuess& /*guess*/, const dvv::media::OpenContext& context) override {
         co_await dvv::resumeOn(context.io);  // never block the caller's thread
+        if (request.uri.scheme == "file") {
+            co_return dvv::makeError(Errc::Unsupported,
+                                     "codec test is not supported in v1.0 (lossless codecs only)");
+        }
         const dvv::Uri uri = co_try(dvv::parseUri("synthetic:" + request.uri.body));
         Behaviour behaviour;
         behaviour.kind = request.uri.scheme == "fail" ? Kind::Fail : Kind::Slow;

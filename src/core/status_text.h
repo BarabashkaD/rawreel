@@ -5,6 +5,7 @@
 #include <string>
 
 #include "core/session_types.h"
+#include "dvv/media/types.h"
 
 namespace rawreel {
 
@@ -16,5 +17,10 @@ struct StatusFields {
 // Without streams every field is empty. The time is position / targetFps as HH:MM:SS.mmm (left
 // out when targetFps <= 0).
 [[nodiscard]] StatusFields statusFields(const SessionStatus& status);
+
+// D5R §2.2: the display mapping of the active stream's resolved colour (StreamInfo::colour); ""
+// without one. "PQ → SDR tone mapping (1000 → 100 nits)", "HLG → SDR tone mapping (1000 → 100
+// nits)", else "SDR, no tone mapping".
+[[nodiscard]] std::string mappingText(const dvv::media::ColourParams* resolved);
 
 }  // namespace rawreel

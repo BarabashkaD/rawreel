@@ -18,7 +18,7 @@ run_cli(0 json err info a_4x2_yuv420p.yuv --json)
 expect_json("${json}" raw provider)
 expect_json("${json}" 2 frames)
 
-# M3.1 U-IO2: the file read mode. Auto (no rawreel.json next to rawreel-cli) reads unbuffered on
+# The file read mode. Auto (no rawreel.json next to rawreel-cli) reads unbuffered on
 # Windows (WORK_DIR is on NTFS) and buffered elsewhere; --config forces a mode; a missing or
 # invalid --config file gives one warning and the defaults.
 if(CMAKE_HOST_WIN32)
@@ -57,3 +57,16 @@ expect_json("${json}" "1 trailing bytes ignored" warnings 0)
 
 run_cli(0 out err dump y.y4m --frame 1 --view original --via cpu --out f1.raw)
 expect_file(f1.raw "IJKLMNOP")
+
+# The provider's notes (here: a sidecar describes the file) as "note:" lines and
+# the JSON "notes" array.
+file(WRITE "${WORK_DIR}/a_4x2_yuv420p.yuv.json"
+     "{ \"rawreelClip\": 1, \"colour\": { \"standard\": \"bt2020\" } }\n")
+run_cli(0 out err info a_4x2_yuv420p.yuv)
+expect_match("${out}" "\nnote: a_4x2_yuv420p.yuv.json describes a_4x2_yuv420p.yuv" "info text, note")
+run_cli(0 json err info a_4x2_yuv420p.yuv --json)
+string(JSON note GET "${json}" notes 0)
+if(NOT note MATCHES "^a_4x2_yuv420p.yuv.json describes a_4x2_yuv420p.yuv")
+    message(FATAL_ERROR "JSON notes 0: '${note}' in:\n${json}")
+endif()
+expect_json("${json}" bt2020 standard)

@@ -13,6 +13,7 @@
 
 #include "core/gui_arguments.h"
 #include "core/session.h"
+#include "core/startup.h"
 #include "dvv/base/executor.h"
 #include "dvv/gpu/device_id.h"
 #include "dvv/gpu/gpu_registry.h"
@@ -71,10 +72,15 @@ public:
     [[nodiscard]] std::optional<AppearanceResult> appearanceResult() const noexcept {
         return appearance_result_;
     }
+    // "<requested> -> <result>" as the startup log line has it (e.g. "dark -> Ok"); empty before
+    // OnInit(). For About.
+    [[nodiscard]] std::string appearanceText() const;
     // The objects given to the Session.
     [[nodiscard]] const std::shared_ptr<dvv::ComponentRegistry>& components() const noexcept {
-        return components_;
+        return startup_.components;
     }
+    // The FFmpeg status, capabilities and component registry of OnInit step 5 (design M4 v2 §4.6).
+    [[nodiscard]] const Startup& startup() const noexcept { return startup_; }
     [[nodiscard]] const std::shared_ptr<dvv::IExecutor>& cpu() const noexcept { return cpu_; }
     [[nodiscard]] const std::shared_ptr<dvv::IExecutor>& io() const noexcept { return io_; }
 
@@ -93,7 +99,7 @@ private:
     std::shared_ptr<dvv::IExecutor> io_;
     std::shared_ptr<dvv::gpu::GpuRegistry> registry_;
     std::optional<dvv::gpu::DeviceId> device_;
-    std::shared_ptr<dvv::ComponentRegistry> components_;
+    Startup startup_;  // the FFmpeg status and the component registry
     std::shared_ptr<DisplayState> display_;
     std::shared_ptr<ShowHistory> show_history_;
     std::shared_ptr<SessionBridge> bridge_;

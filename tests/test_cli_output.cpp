@@ -1,12 +1,12 @@
 #include <doctest/doctest.h>
 
-#include <cstdint>
 #include <optional>
 #include <string>
 
 #include "cli/output.h"
 #include "dvv/base/error.h"
 #include "dvv/base/json.h"
+#include "dvv/media/display.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/source.h"
 #include "dvv/media/types.h"
@@ -75,6 +75,8 @@ TEST_CASE("output: infoJson keys") {
     CHECK(j["colour"]["range"] == "unspecified");
     CHECK(j["colour"]["transfer"] == "unspecified");
     CHECK(j["colour"]["primaries"] == "unspecified");
+    // D5R §3.1: the standard in use; nothing given gives BT.709.
+    CHECK(j["standard"] == "bt709");
     CHECK(j["access"] == "randomCheap");
     CHECK(j["deterministic"] == true);
     CHECK(j["reader"] == "buffered");
@@ -152,4 +154,46 @@ TEST_CASE("output: infoText lines") {
     CHECK(text.find("access: random-cheap\n") != std::string::npos);
     CHECK(text.find("reads: buffered\n") != std::string::npos);
     CHECK(text.find("warning: 5 trailing bytes ignored\n") != std::string::npos);
+    CHECK(text.find("note: ") == std::string::npos);
+}
+
+// The provider's notes and its colour hint.
+TEST_CASE("output: notes and a non-standard file colour") {
+    dvv::media::SourceInfo info = v210Info();
+    info.notes = {"stream and frame differ: transfer 14, 18", "colour fits no standard"};
+    const std::string text = rawreel::cli::infoText(info);
+    CHECK(text.find("\nnote: stream and frame differ: transfer 14, 18\nnote: colour fits no "
+                    "standard\n") != std::string::npos);
+    CHECK(text.find("\ncolour: bt709 (default) ") != std::string::npos);
+    const dvv::json::Value json = rawreel::cli::infoJson(info);
+    REQUIRE(json["notes"].is_array());
+    CHECK(json["notes"][1] == "colour fits no standard");
+    CHECK(json["standard"] == "bt709");
+
+    info.colourHint.nonStandard = true;  // a signalled code that no field stands for
+    CHECK(rawreel::cli::infoText(info).find("\ncolour: no standard (from file) ") !=
+          std::string::npos);
+    CHECK(rawreel::cli::infoJson(info)["standard"].is_null());
+    // A colour= key is the user's standard: the hint's "no standard" does not count.
+    info.resolvedUri = "file:clip_34x17_v210.yuv?fmt=v210&colour=bt709";
+    CHECK(rawreel::cli::infoJson(info)["standard"] == "bt709");
+}
+
+// The values shown are the values rendered. SMPTE 240M tags
+// (M/T/P 7/7/7) map to primaries BT.601-525 only, plus the "no standard" hint. The renderer
+// (dvv-media ToDisplay) resolves with the default hint, so the primaries point to BT.601 NTSC and
+// the matrix is BT.601; the label still says "no standard".
+TEST_CASE("output: a partly standard non-standard colour shows the rendered values") {
+    dvv::media::SourceInfo info = v210Info();
+    dvv::media::ColourParams given;  // matrix, range and transfer Unspecified
+    given.primaries = dvv::media::Primaries::Bt601_525;
+    info.desc.colour = dvv::media::internColour(given);
+    info.colourHint.nonStandard = true;
+    const dvv::media::ResolvedColour rendered = dvv::media::resolveColour(info.desc);
+    REQUIRE(rendered.params.matrix == dvv::media::ColourMatrix::Bt601);
+    const std::string text = rawreel::cli::infoText(info);
+    CHECK_MESSAGE(text.find("\ncolour: no standard (from file) matrix=bt601 range=limited ") !=
+                      std::string::npos,
+                  text);
+    CHECK(rawreel::cli::infoJson(info)["standard"].is_null());
 }

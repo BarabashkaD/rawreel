@@ -31,8 +31,9 @@ enum class Command : std::uint8_t {
     Reopen,
     GpuInfo,
     Diagnostics,
+    About,
 };
-inline constexpr std::size_t COMMAND_COUNT = static_cast<std::size_t>(Command::Diagnostics) + 1;
+inline constexpr std::size_t COMMAND_COUNT = static_cast<std::size_t>(Command::About) + 1;
 
 // The full key set stays (the normaliser is kept as designed; Plus, Minus, Escape and F11 have no
 // command in v1.0 and serve v1.x zoom and fullscreen keys).

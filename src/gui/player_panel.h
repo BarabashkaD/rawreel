@@ -36,6 +36,9 @@ public:
     // Valid until destroyViewport().
     [[nodiscard]] Viewport& viewport() noexcept { return *viewport_; }
     [[nodiscard]] TransportBar& transportBar() noexcept { return *transport_; }
+    // The smallest size that keeps the viewport at MIN_VIEWPORT_DIP (M4 GUI D8), physical pixels:
+    // the transport bar's best size and the infobar's height (reserved while it is hidden).
+    [[nodiscard]] wxSize minimumSize();
     // MainFrame::onClose (design §5.5): destroys the viewport window now.
     void destroyViewport();
 

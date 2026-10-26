@@ -1,4 +1,4 @@
-// The config file loader (M3.1 U-IO2): wx-free, so it is tested in rawreel_core.
+// The config file loader (M3.1): wx-free, so it is tested in rawreel_core.
 #include <doctest/doctest.h>
 
 #include <algorithm>

@@ -44,12 +44,15 @@ constexpr std::array<CommandInfo, COMMAND_COUNT> TABLE{{
      HOOK},
     {Command::Format, "format", "View", "Format...",
      "Choose the pixel format, size, frame rate and colour of the stream", std::nullopt, ACC},
-    {Command::Reopen, "reopen", "View", "Reopen",
-     "Rebuild the GPU stack and reopen the stream at its frame", std::nullopt, ACC},
+    {Command::Reopen, "reopen", "View", "Restart GPU and reopen",
+     "Restart the GPU (after an error) and reopen the stream at the same frame, paused",
+     std::nullopt, ACC},
     {Command::GpuInfo, "gpu_info", "Help", "GPU info", "Show the GPU and its driver", std::nullopt,
      ACC},
     {Command::Diagnostics, "diagnostics", "Help", "Diagnostics",
      "Show the pipeline statistics and the log", std::nullopt, ACC},
+    {Command::About, "about", "Help", "About rawreel",
+     "Show the versions, the licence and the FFmpeg status", std::nullopt, ACC},
 }};
 
 consteval bool tableInOrder() {

@@ -26,6 +26,8 @@
 #include "cli/arguments.h"
 #include "cli/output.h"
 #include "core/config.h"
+#include "core/startup.h"
+#include "core/version_text.h"
 #include "dvv/base/error.h"
 #include "dvv/base/executors.h"
 #include "dvv/base/json.h"
@@ -33,7 +35,9 @@
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
 #include "dvv/base/when_all.h"
+#include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/execution_context.h"
+#include "dvv/gpu/gpu_info.h"
 #include "dvv/gpu/gpu_registry.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
@@ -77,7 +81,7 @@ public:
     }
 
     std::shared_ptr<dvv::ThreadPool> io, cpu;
-    std::unique_ptr<dvv::ComponentRegistry> components;
+    Startup startup;  // the FFmpeg status and the component registry
     std::unique_ptr<media::SourceFactory> factory;
     std::unique_ptr<media::ISource> source;  // until dump attaches it
     std::shared_ptr<dvv::gpu::GpuRegistry> gpu;
@@ -87,6 +91,9 @@ public:
 
 private:
     void shutdown() {
+        // 0. Queued prefetch work of an FFmpeg or lavfi source ends at once instead of decoding on
+        // (the store's queued Produce steps keep their sources alive).
+        dvv::components::stopFfmpegSources();
         // 1. detach the origin (2. the leases are already dropped).
         if (store && origin) {
             store->detach(*origin);
@@ -105,7 +112,7 @@ private:
         }
         context.reset();
         gpu.reset();
-        components.reset();
+        startup.components.reset();
         // 6. the pools.
         cpu.reset();
         io.reset();
@@ -132,29 +139,42 @@ int fail(const Arguments& arguments, const dvv::Result<void>& failed, int code) 
     return fail(arguments, failed.error(), code);
 }
 
+// The best Vulkan device of a headless GPU registry, which is destroyed right after; never fails.
+[[nodiscard]] VulkanStatus vulkanStatus() {
+    dvv::gpu::GpuRegistryOptions options;
+    options.applicationName = "rawreel-cli";
+    const auto registry = dvv::gpu::GpuRegistry::create(options);
+    if (!registry) {
+        return {.available = false, .device = {}, .api = {}, .reason = registry.error().describe()};
+    }
+    const std::optional<dvv::gpu::DeviceId> best = (*registry)->bestDevice();
+    if (!best) {
+        return {
+            .available = false, .device = {}, .api = {}, .reason = "no usable Vulkan 1.3 device"};
+    }
+    const dvv::gpu::GpuInfo& device = (*registry)->devices()[best->index()];
+    return {.available = true,
+            .device = device.name,
+            .api = dvv::gpu::formatVulkanVersion(device.apiVersion),
+            .reason = {}};
+}
+
+// rawreel-cli --version (design D21, D23): the packages, the Vulkan line and the FFmpeg status
+// line; exit 0 in every case, also without a Vulkan loader or FFmpeg.
 void printVersion(bool json) {
-    struct Component {
-        std::string_view name, key, version;
-    };
-    constexpr std::array<Component, 6> COMPONENTS{{
-        {.name = "rawreel", .key = "rawreel", .version = RAWREEL_VERSION},
-        {.name = "dvv-base", .key = "dvv_base", .version = RAWREEL_DVV_BASE_VERSION},
-        {.name = "dvv-registry", .key = "dvv_registry", .version = RAWREEL_DVV_REGISTRY_VERSION},
-        {.name = "dvv-platform", .key = "dvv_platform", .version = RAWREEL_DVV_PLATFORM_VERSION},
-        {.name = "dvv-gpu", .key = "dvv_gpu", .version = RAWREEL_DVV_GPU_VERSION},
-        {.name = "dvv-media", .key = "dvv_media", .version = RAWREEL_DVV_MEDIA_VERSION},
-    }};
+    std::string ffmpeg;
+    {
+        const Startup startup = startComponents({});
+        ffmpeg = ffmpegStatusLine(startup.ffmpeg);
+    }
+    const VersionReport report{.packages = packageVersions(),
+                               .vulkan = vulkanStatusLine(vulkanStatus()),
+                               .ffmpeg = std::move(ffmpeg)};
     if (json) {
-        dvv::json::Value value = dvv::json::Value::object();
-        for (const Component& component : COMPONENTS) {
-            value[std::string(component.key)] = component.version;
-        }
-        printJson(value);
+        printJson(versionJson(report));
         return;
     }
-    for (const Component& component : COMPONENTS) {
-        std::println("{} {}", component.name, component.version);
-    }
+    std::print("{}", versionText(report));
 }
 
 [[nodiscard]] bool isNoDevice(const dvv::Error& error) {
@@ -465,9 +485,9 @@ int runSource(const Arguments& arguments, Resources& resources) {
     }
     resources.cpu = std::move(*cpu);
 
-    // 2. and 3. The component registry and the source factory.
-    resources.components = dvv::ComponentRegistry::create(dvv::Capabilities{});
-    auto factory = media::SourceFactory::create(*resources.components, resources.io);
+    // 2. and 3. The startup (FFmpeg, capabilities, component registry) and the source factory.
+    resources.startup = startComponents({});
+    auto factory = media::SourceFactory::create(*resources.startup.components, resources.io);
     if (!factory) {
         return fail(arguments, factory.error(), exitCodeFor(factory.error(), false));
     }
@@ -479,13 +499,22 @@ int runSource(const Arguments& arguments, Resources& resources) {
         return fail(arguments, uri.error(), exit_code::INPUT_ERROR);
     }
 
-    // 5. Open the source, file reads as the config file says (M3.1 U-IO2).
+    // 5. Open the source, file reads as the config file says.
     const LoadedConfig config = loadConfig(arguments.config);
     const media::SourceRequest request{
         .uri = std::move(*uri), .hint = std::nullopt, .fileReads = config.config.io.fileReads};
     auto opened = dvv::syncWait(resources.factory->open(request));
     if (!opened) {
-        return fail(arguments, opened.error(), exitCodeFor(opened.error(), false));
+        // With the FFmpeg status line when FFmpeg is the likely reason (design v2 §4.6).
+        const dvv::Error& error = opened.error();
+        if (arguments.json) {  // error.message, as every other --json error (fail())
+            printJson(errorJson(dvv::errcName(error.code),
+                                openErrorMessage(error, arguments.uri, resources.startup.ffmpeg)));
+        } else {
+            std::println(stderr, "error: {}",
+                         openErrorText(error, arguments.uri, resources.startup.ffmpeg));
+        }
+        return exitCodeFor(error, false);
     }
     if (const auto* const ambiguous = std::get_if<media::Ambiguous>(&*opened)) {
         if (arguments.json) {

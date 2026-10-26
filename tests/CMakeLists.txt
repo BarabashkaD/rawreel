@@ -1,4 +1,8 @@
 find_package(doctest 2.5 REQUIRED CONFIG)
+# The FFmpeg of the third-party prefix (M4 Task 1): DVV_FFMPEG_PROGRAM makes the CLI fixtures,
+# DVV_FFMPEG_RUNTIME_DIR is the DVV_FFMPEG_DIR of the FFmpeg tests. dvv-components' own
+# find_package() sets these in its directory scope only.
+find_package(dvv_ffmpeg_sdk CONFIG REQUIRED)
 
 add_executable(rawreel_tests
     main.cpp test_composite_reference.cpp test_display_state.cpp)
@@ -31,14 +35,16 @@ set_tests_properties(rawreel.cli_unit PROPERTIES
 # The slow:/fail: test provider is a component of this executable.
 add_executable(rawreel_core_tests
     core_main.cpp session_fixture.cpp test_commands.cpp test_config.cpp test_drop.cpp
-    test_format_choice.cpp
-    test_gui_arguments.cpp test_info_text.cpp test_perf_stats.cpp test_player.cpp test_session.cpp
-    test_session_types.cpp
-    test_source_provider.cpp
+    test_format_choice.cpp test_format_presets.cpp
+    test_gui_arguments.cpp test_info_text.cpp test_layout.cpp test_perf_stats.cpp test_player.cpp test_session.cpp
+    test_session_storm.cpp test_session_types.cpp
+    test_open_text.cpp test_source_provider.cpp test_startup.cpp
     test_status_text.cpp test_timer.cpp test_view.cpp)
 target_link_libraries(rawreel_core_tests PRIVATE rawreel_core doctest::doctest)
 dvv_link_components(rawreel_core_tests dvv::media_sources)
-target_compile_definitions(rawreel_core_tests PRIVATE DOCTEST_CONFIG_USE_STD_HEADERS)
+# RAWREEL_VERSION: the version packageVersions() must report for rawreel.
+target_compile_definitions(rawreel_core_tests PRIVATE
+    DOCTEST_CONFIG_USE_STD_HEADERS "RAWREEL_VERSION=\"${rawreel_VERSION_STRING}\"")
 dvv_set_compiler_options(rawreel_core_tests)
 add_test(NAME rawreel.core_unit COMMAND rawreel_core_tests --test-suite-exclude=session,timer)
 set_tests_properties(rawreel.core_unit PROPERTIES
@@ -90,8 +96,9 @@ set_tests_properties(rawreel.gpu PROPERTIES
 
 # GUI selftests (spec §12; design M3 v2 §8.4): rawreel-gui --selftest <scenario>. They exit 77
 # without a usable device or display unless DVV_REQUIRE_GPU=1. Only where rawreel_gui exists (no
-# sanitizer builds).
-# Windows only (U-WIN, M1b Task 12a): outside Windows the viewport is the stub.
+# sanitizer builds). They load the prefix's FFmpeg through DVV_FFMPEG_DIR (M4 Task 7b): smoke opens
+# a lavfi: URI, player drops the FFV1 MKV of the rawreel_ffmpeg fixture.
+# Windows only (M1b Task 12a): outside Windows the viewport is the stub.
 if(TARGET rawreel_gui AND WIN32)
     add_test(NAME rawreel.gui_selftest.smoke
              COMMAND rawreel_gui --selftest smoke --appearance dark)
@@ -100,7 +107,7 @@ if(TARGET rawreel_gui AND WIN32)
         SKIP_RETURN_CODE 77
         TIMEOUT 180
         ENVIRONMENT "${gpu_test_environment};NO_AT_BRIDGE=1"
-        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
+        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT};DVV_FFMPEG_DIR=set:${DVV_FFMPEG_RUNTIME_DIR}")
     set_property(TEST rawreel.gui_selftest.smoke APPEND PROPERTY LABELS sanity)
     # Device loss (design v2 §8.4 lost, E3): injected loss -> infobar with Reopen -> the kept frame
     # presented again on the new stack.
@@ -111,7 +118,7 @@ if(TARGET rawreel_gui AND WIN32)
         SKIP_RETURN_CODE 77
         TIMEOUT 180
         ENVIRONMENT "${gpu_test_environment};NO_AT_BRIDGE=1"
-        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
+        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT};DVV_FFMPEG_DIR=set:${DVV_FFMPEG_RUNTIME_DIR}")
     # GUI scenario player (design §8.4). The URI opens at start, like a user's command line.
     add_test(NAME rawreel.gui_selftest.player
              COMMAND rawreel_gui --selftest player "synthetic:gradient?fmt=yuv420p10le&size=64x48&frames=60")
@@ -119,8 +126,25 @@ if(TARGET rawreel_gui AND WIN32)
         LABELS "gpu;display;gui"
         SKIP_RETURN_CODE 77
         TIMEOUT 180
+        ENVIRONMENT "${gpu_test_environment};NO_AT_BRIDGE=1;RAWREEL_TEST_MKV=${CMAKE_BINARY_DIR}/cli-ffmpeg-fixtures/clip.mkv"
+        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT};DVV_FFMPEG_DIR=set:${DVV_FFMPEG_RUNTIME_DIR}"
+        FIXTURES_REQUIRED rawreel_ffmpeg)
+    # Without FFmpeg (M4 Task 11): smoke's skip path with no FFmpeg, then with the
+    # FFmpeg libraries but no avfilter and a lavfi: URI on the command line (its open error names
+    # the FFmpeg status). The script sets DVV_FFMPEG_DIR for each run and unsets
+    # DVV_REQUIRE_FFMPEG itself, after failing when it is 1 and there is no FFmpeg runtime dir.
+    add_test(NAME rawreel.gui_selftest.smoke_noffmpeg
+             COMMAND ${CMAKE_COMMAND} -DGUI=$<TARGET_FILE:rawreel_gui>
+                     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/gui-noffmpeg
+                     "-DFFMPEG_DIR=${DVV_FFMPEG_RUNTIME_DIR}"
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/gui/run-gui-noffmpeg.cmake)
+    set_tests_properties(rawreel.gui_selftest.smoke_noffmpeg PROPERTIES
+        LABELS "gpu;display;gui"
+        SKIP_RETURN_CODE 77
+        TIMEOUT 300
         ENVIRONMENT "${gpu_test_environment};NO_AT_BRIDGE=1"
-        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
+        ENVIRONMENT_MODIFICATION
+            "${DVV_TEST_ENVIRONMENT};DVV_FFMPEG_DIR=unset:")
     # Injected faults (test only, RAWREEL_GUI_FAULT with --selftest): each run must exit 4.
     # presenter: every presenter fails (D25 path); stack: Session::create fails at startup.
     set(gui_fault_presenter "the presenter failed: .*injected presenter failure")
@@ -154,8 +178,9 @@ set_property(TEST rawreel.cli_e2e.info APPEND PROPERTY LABELS sanity)
 
 # GPU equals CPU (M2 exit criterion 2): dump --via gpu must write the bytes of dump --via cpu.
 # bench (M2 Task 14): frames through produce, staging, upload and unpack. Exit 77 without a usable
-# device unless DVV_REQUIRE_GPU=1.
-foreach(name IN ITEMS gpu bench)
+# device unless DVV_REQUIRE_GPU=1. oversize (M4 Task 11-pre): a plane over the GPU image limit
+# exits 3 with Unsupported and no validation message.
+foreach(name IN ITEMS gpu bench oversize)
     add_test(NAME rawreel.cli_e2e.${name}
              COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:rawreel_cli>
                      -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cli-e2e-${name}
@@ -167,3 +192,72 @@ foreach(name IN ITEMS gpu bench)
         ENVIRONMENT "${gpu_test_environment};DVV_VK_VALIDATION=sync;DVV_VK_VALIDATION_REQUIRED=1;DVV_LEAK_CHECK=fail"
         ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
 endforeach()
+
+# rawreel-cli on FFmpeg inputs (M4 Task 7a; design v2 §8.4). The fixtures are made by the prefix's
+# ffmpeg program on every run (64x48, a few frames); the tests use the prefix's FFmpeg libraries
+# through DVV_FFMPEG_DIR, and fail instead of skipping with DVV_REQUIRE_FFMPEG=1.
+set(cli_ffmpeg_fixtures ${CMAKE_BINARY_DIR}/cli-ffmpeg-fixtures)
+add_test(NAME rawreel.cli_ffmpeg_fixtures
+         COMMAND ${CMAKE_COMMAND} "-DFFMPEG=${DVV_FFMPEG_PROGRAM}" "-DOUT=${cli_ffmpeg_fixtures}"
+                 "-DLIBDIR=${DVV_FFMPEG_RUNTIME_DIR}"
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cli/make-ffmpeg-fixtures.cmake)
+set_tests_properties(rawreel.cli_ffmpeg_fixtures PROPERTIES
+    LABELS ffmpeg
+    FIXTURES_SETUP rawreel_ffmpeg
+    TIMEOUT 120)
+# rawreel_cli_e2e(<name> <script> <labels>): the test and its common properties; each caller sets
+# its environment (lists cannot pass through a function's arguments).
+function(rawreel_cli_e2e name script labels)
+    add_test(NAME rawreel.cli_e2e.${name}
+             COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:rawreel_cli>
+                     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cli-e2e-${name}
+                     "-DFIXTURES=${cli_ffmpeg_fixtures}" "-DVERSION=${rawreel_VERSION_STRING}"
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/cli/${script})
+    set_tests_properties(rawreel.cli_e2e.${name} PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    if(labels)
+        set_tests_properties(rawreel.cli_e2e.${name} PROPERTIES LABELS "${labels}")
+    endif()
+endfunction()
+set(ffmpeg_environment
+    ${gpu_test_environment} DVV_LEAK_CHECK=fail "DVV_FFMPEG_DIR=${DVV_FFMPEG_RUNTIME_DIR}")
+rawreel_cli_e2e(ffmpeg run-cli-ffmpeg.cmake ffmpeg)
+rawreel_cli_e2e(ffmpeg_gpu run-cli-ffmpeg-gpu.cmake "gpu;ffmpeg")
+rawreel_cli_e2e(version run-cli-version.cmake ffmpeg)
+set_tests_properties(rawreel.cli_e2e.ffmpeg rawreel.cli_e2e.ffmpeg_gpu PROPERTIES
+    FIXTURES_REQUIRED rawreel_ffmpeg)
+set_tests_properties(rawreel.cli_e2e.ffmpeg rawreel.cli_e2e.version PROPERTIES
+    ENVIRONMENT "${ffmpeg_environment}"
+    ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
+set_tests_properties(rawreel.cli_e2e.ffmpeg_gpu PROPERTIES
+    ENVIRONMENT "${ffmpeg_environment};DVV_VK_VALIDATION=sync;DVV_VK_VALIDATION_REQUIRED=1"
+    ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
+# Without FFmpeg: an empty (missing) or a relative DVV_FFMPEG_DIR, set by the scripts.
+rawreel_cli_e2e(ffmpeg_missing run-cli-ffmpeg-missing.cmake ffmpeg)
+rawreel_cli_e2e(ffmpeg_relative run-cli-ffmpeg-relative.cmake ffmpeg)
+set_tests_properties(rawreel.cli_e2e.ffmpeg_missing rawreel.cli_e2e.ffmpeg_relative PROPERTIES
+    ENVIRONMENT "${gpu_test_environment}"
+    ENVIRONMENT_MODIFICATION
+        "${DVV_TEST_ENVIRONMENT};DVV_REQUIRE_FFMPEG=unset:;DVV_FFMPEG_DIR=unset:")
+# The crash handler (design v2 D22): Windows only, not under MSVC ASan (it installs its own
+# exception handling).
+if(WIN32 AND NOT DVV_SANITIZE)
+    rawreel_cli_e2e(crash run-cli-crash.cmake "")
+    set_tests_properties(rawreel.cli_e2e.crash PROPERTIES
+        ENVIRONMENT DVV_LEAK_CHECK=fail
+        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
+endif()
+
+# Our binaries import no FFmpeg library (design v2 D3 c, E1); fails if a later change links it.
+if(TARGET rawreel_gui)
+    dvv_check_no_ffmpeg_imports(rawreel.no_ffmpeg_imports rawreel_cli rawreel_gui)
+else()
+    dvv_check_no_ffmpeg_imports(rawreel.no_ffmpeg_imports rawreel_cli)
+endif()
+set_tests_properties(rawreel.no_ffmpeg_imports PROPERTIES LABELS unit)
+
+# The package checks and the artifact privacy scan (packaging/check-package.cmake and
+# packaging/scan-artifact-privacy.cmake; design M4 v2 D16, §8.6).
+add_test(NAME rawreel.packaging_scripts
+         COMMAND ${CMAKE_COMMAND} -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/packaging-scripts-test
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/packaging/test_packaging_scripts.cmake)
+set_tests_properties(rawreel.packaging_scripts PROPERTIES LABELS unit)

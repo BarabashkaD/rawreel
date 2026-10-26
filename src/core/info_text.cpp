@@ -1,13 +1,19 @@
 #include "core/info_text.h"
 
-#include <cstdint>
+#include <cstddef>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 
+#include "core/format_choice.h"
+#include "core/format_presets.h"
+#include "dvv/base/uri.h"
+#include "dvv/media/colour_preset.h"
 #include "dvv/media/display.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
+#include "dvv/media/uri_colour.h"
 
 namespace rawreel {
 
@@ -71,8 +77,57 @@ std::string fpsText(dvv::media::Rational fps) {
     return std::format("{:.3f}", static_cast<double>(fps.num) / static_cast<double>(fps.den));
 }
 
-std::string_view assumed(std::uint8_t bits, std::uint8_t bit) noexcept {
-    return (bits & bit) != 0 ? " (assumed)" : "";
+// D5R §4.5: the two colour lines of a stream, and the size-mismatch hint.
+std::string colourLines(const StreamInfo& stream) {
+    const dvv::media::ColourParams& colour = stream.colour.params;
+    const dvv::media::ColourModel model = dvv::media::descriptor(stream.info.desc.format).model;
+    dvv::media::ColourSpec keys{};
+    if (const auto uri = dvv::parseUri(stream.resolvedUri)) {
+        if (auto spec = dvv::media::colourSpecFromQuery(*uri)) {
+            keys = *spec;
+        }
+    }
+    const bool lavfi = stream.resolvedUri.starts_with("lavfi:");
+    const std::string_view file_tag = lavfi ? " (from the graph)" : " (from file)";
+    // Line 1: the standard and where it comes from (no tag for the URI's colour=).
+    std::string name;
+    std::string standard_tag;
+    bool standard_from_file = false;
+    const std::optional<dvv::media::ColourPreset> standard =
+        keys.preset ? keys.preset : stream.colour.standard;
+    if (keys.preset) {
+        name = dvv::media::colourPresetInfo(*keys.preset).label;
+    } else {
+        const ColourBase base = streamColourBase(stream);
+        name = base.standard ? std::string(dvv::media::colourPresetInfo(*base.standard).label)
+                             : std::string("no standard");
+        standard_tag = originSuffix(base);
+        standard_from_file = base.origin != ColourOrigin::Default;
+    }
+    // Line 2: the range is tagged only when its origin differs from line 1's.
+    std::string_view range_tag;
+    if (keys.range == ColourRange::Unspecified) {
+        range_tag =
+            (stream.colour.assumed & dvv::media::AssumedRange) != 0 ? " (default)" : file_tag;
+        // A clip description's range comes from the same file as its standard.
+        const bool clip = standard_tag.starts_with(" (from ") && standard_tag != file_tag &&
+                          standard_tag != " (from the file name)";
+        if (range_tag == standard_tag || (clip && range_tag == file_tag)) {
+            range_tag = {};
+        }
+    }
+    std::string text = std::format("  colour: {}{}\n", name, standard_tag);
+    text += std::format(
+        "  matrix {}, range {}{}, curve {}, primaries {} (not converted)",
+        model == dvv::media::ColourModel::Yuv ? matrixName(colour) : std::string("not used"),
+        rangeName(colour.range), range_tag, transferName(colour.transfer),
+        primariesName(colour.primaries));
+    if (const std::string_view hint =
+            mismatchHint(standard, standard_from_file, stream.info.desc.height);
+        !hint.empty()) {
+        text += std::format("\n  hint: {}", hint);
+    }
+    return text;
 }
 
 }  // namespace
@@ -88,24 +143,23 @@ std::string formatInfo(std::span<const StreamInfo> streams) {
         }
         const dvv::media::SourceInfo& info = stream.info;
         const dvv::media::ColourParams& colour = stream.colour.params;
-        const std::uint8_t bits = stream.colour.assumed;
         text += std::format("Stream {}: {}\n", stream.slot + 1, stream.resolvedUri);
         text +=
             std::format("  {}, {}x{}, {} fps, {}\n", dvv::media::descriptor(info.desc.format).name,
                         info.desc.width, info.desc.height, fpsText(info.fps),
                         info.frameCount ? std::format("{} frames", *info.frameCount)
                                         : std::string("unbounded"));
-        text += std::format(
-            "  colour: matrix {}{}, range {}{}, transfer {}{}, primaries {}{}", matrixName(colour),
-            assumed(bits, dvv::media::AssumedMatrix), rangeName(colour.range),
-            assumed(bits, dvv::media::AssumedRange), transferName(colour.transfer),
-            assumed(bits, dvv::media::AssumedTransfer), primariesName(colour.primaries),
-            assumed(bits, dvv::media::AssumedPrimaries));
+        text += colourLines(stream);
         if (colour.transfer == TransferFn::Pq || colour.transfer == TransferFn::Hlg) {
             text += "\n  tone-mapped (BT.2390, 1000 → 100 nits)";  // D4
         }
+        if (!info.clipFile.empty()) {  // D5 design §5: clip=@ or the sidecar, by its file name
+            const std::size_t slash = info.clipFile.find_last_of("/\\");
+            text += "\n  clip description: " +
+                    (slash == std::string::npos ? info.clipFile : info.clipFile.substr(slash + 1));
+        }
         if (!info.reader.empty()) {
-            text += "\n  reads: " + info.reader;  // M3.1 U-IO2: the file read mode
+            text += "\n  reads: " + info.reader;  // the file read mode
         }
         for (const std::string& warning : info.warnings) {
             text += "\n  warning: " + warning;

@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 4.2)
-project(rawreel VERSION 0.1.0 DESCRIPTION "rawreel raw video player" LANGUAGES CXX)
+project(rawreel VERSION 1.0.0 DESCRIPTION "rawreel raw video player" LANGUAGES CXX)
+# Version string; a pre-release build adds its release-stage label.
+set(rawreel_VERSION_STRING "${PROJECT_VERSION}")
 
 option(DVV_BUILD_TESTS "Build the dvv tests" ${PROJECT_IS_TOP_LEVEL})
 
@@ -11,26 +13,32 @@ include(FetchContent)
 FetchContent_Declare(dvv_base
     GIT_REPOSITORY "https://github.com/BarabashkaD/dvv-base.git"
     GIT_TAG main
-    FIND_PACKAGE_ARGS 0.1)
+    FIND_PACKAGE_ARGS 1.0)
 FetchContent_Declare(dvv_platform
     GIT_REPOSITORY "https://github.com/BarabashkaD/dvv-platform.git"
     GIT_TAG main
-    FIND_PACKAGE_ARGS 0.1)
+    FIND_PACKAGE_ARGS 1.0)
 FetchContent_Declare(dvv_gpu
     GIT_REPOSITORY "https://github.com/BarabashkaD/dvv-gpu.git"
     GIT_TAG main
-    FIND_PACKAGE_ARGS 0.1)
+    FIND_PACKAGE_ARGS 1.0)
 FetchContent_Declare(dvv_media
     GIT_REPOSITORY "https://github.com/BarabashkaD/dvv-media.git"
     GIT_TAG main
-    FIND_PACKAGE_ARGS 0.1)
+    FIND_PACKAGE_ARGS 1.0)
+FetchContent_Declare(dvv_components
+    GIT_REPOSITORY "https://github.com/BarabashkaD/dvv-components.git"
+    GIT_TAG main
+    FIND_PACKAGE_ARGS 1.0)
 # A stand-alone build tests only this repository (the normal variable hides the cache entry from
 # the dependencies' option()); as a subproject the parent's value is kept, and the workspace
 # build tests every repository.
 if(PROJECT_IS_TOP_LEVEL)
     set(DVV_BUILD_TESTS OFF)
 endif()
-FetchContent_MakeAvailable(dvv_base dvv_platform dvv_gpu dvv_media)
+# Release program databases for every target of the build (packaging/symbols.cmake, D16).
+include(packaging/symbols.cmake)
+FetchContent_MakeAvailable(dvv_base dvv_platform dvv_gpu dvv_media dvv_components)
 if(PROJECT_IS_TOP_LEVEL)
     unset(DVV_BUILD_TESTS)
 endif()
@@ -58,8 +66,11 @@ add_library(rawreel_core STATIC
     src/core/config.cpp
     src/core/drop.cpp
     src/core/format_choice.cpp
+    src/core/format_presets.cpp
+    src/core/open_text.cpp
     src/core/gui_arguments.cpp
     src/core/info_text.cpp
+    src/core/layout.cpp
     src/core/perf_stats.cpp
     src/core/player.cpp
     src/core/session.cpp
@@ -70,20 +81,21 @@ target_include_directories(rawreel_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(rawreel_core PUBLIC dvv::media)
 dvv_set_compiler_options(rawreel_core)
 
-# rawreel_dvv_version(<package> <out>): the version of a dvv package, whether it was found
-# installed (find_package sets <package>_VERSION) or added in-tree (read from its directory). A
-# package made available by another dvv project (dvv_registry) is looked up through FetchContent,
-# because <package>_SOURCE_DIR is then only set in that project's scope.
+# rawreel_dvv_version(<package> <out>): the version of a dvv package with its release stage
+# (<package>_VERSION_STRING, e.g. 1.0.0), whether it was found installed (its package
+# configuration sets the variable) or added in-tree (read from its directory). A package made
+# available by another dvv project (dvv_registry) is looked up through FetchContent, because
+# <package>_SOURCE_DIR is then only set in that project's scope.
 function(rawreel_dvv_version package out)
     set(version "")
-    if(NOT DEFINED ${package}_VERSION AND NOT DEFINED ${package}_SOURCE_DIR)
+    if(NOT DEFINED ${package}_VERSION_STRING AND NOT DEFINED ${package}_SOURCE_DIR)
         FetchContent_GetProperties(${package})
     endif()
-    if(DEFINED ${package}_VERSION)
-        set(version "${${package}_VERSION}")
+    if(DEFINED ${package}_VERSION_STRING)
+        set(version "${${package}_VERSION_STRING}")
     elseif(${package}_SOURCE_DIR)
         get_directory_property(version DIRECTORY "${${package}_SOURCE_DIR}"
-                               DEFINITION ${package}_VERSION)
+                               DEFINITION ${package}_VERSION_STRING)
     endif()
     if(NOT version)
         message(FATAL_ERROR "rawreel: cannot find the version of ${package}")
@@ -97,20 +109,30 @@ add_library(rawreel_cli_core STATIC
 target_include_directories(rawreel_cli_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # rawreel_core: the config file loader (core/config.h).
 target_link_libraries(rawreel_cli_core PUBLIC rawreel_core dvv::media)
-set(cli_versions "RAWREEL_VERSION=\"${PROJECT_VERSION}\"")
-foreach(package IN ITEMS dvv_base dvv_registry dvv_platform dvv_gpu dvv_media)
+dvv_set_compiler_options(rawreel_cli_core)
+
+# Versions for rawreel-cli --version and About (design M4 v2 D23), on rawreel_core so both use them.
+set(rawreel_versions "RAWREEL_VERSION=\"${rawreel_VERSION_STRING}\"")
+foreach(package IN ITEMS dvv_base dvv_registry dvv_platform dvv_gpu dvv_media dvv_components)
     rawreel_dvv_version(${package} version)
     string(TOUPPER "${package}" upper)
-    list(APPEND cli_versions "RAWREEL_${upper}_VERSION=\"${version}\"")
+    list(APPEND rawreel_versions "RAWREEL_${upper}_VERSION=\"${version}\"")
 endforeach()
-target_compile_definitions(rawreel_cli_core PRIVATE ${cli_versions})
-dvv_set_compiler_options(rawreel_cli_core)
+target_compile_definitions(rawreel_core PRIVATE ${rawreel_versions})
+# The startup shared by both executables (design M4 v2 §4.6), the version lines and the crash
+# handler (wx-free, so rawreel-cli uses it too).
+target_sources(rawreel_core PRIVATE src/core/startup.cpp src/core/version_text.cpp
+                                    src/gui/crash_handler.cpp)
+# dvv::components: dvv/components/ffmpeg.h and loadFfmpeg (dvv::ffmpeg); no FFmpeg is linked.
+target_link_libraries(rawreel_core PUBLIC dvv::components PRIVATE dvv::platform)
 
 # rawreel-cli (spec §10.3): console, no wx; built under every preset including the sanitizers.
 add_executable(rawreel_cli src/cli/main.cpp)
 set_target_properties(rawreel_cli PROPERTIES OUTPUT_NAME rawreel-cli)
-target_link_libraries(rawreel_cli PRIVATE rawreel_cli_core)
+target_link_libraries(rawreel_cli PRIVATE rawreel_cli_core rawreel_core)
 dvv_link_components(rawreel_cli dvv::media_sources)
+# The dvv-components libraries (the ffmpeg component: providers ffmpeg and lavfi).
+dvv_components_link(rawreel_cli)
 dvv_set_compiler_options(rawreel_cli)
 
 # rawreel-gui (spec §10.2). Not built for sanitizer builds on any platform (design M1b F13): wx and
@@ -120,7 +142,9 @@ dvv_set_compiler_options(rawreel_cli)
 if(NOT DVV_SANITIZE)
     find_package(wxWidgets CONFIG REQUIRED COMPONENTS core base aui)
     add_executable(rawreel_gui WIN32
+        src/gui/about.cpp
         src/gui/app.cpp
+        src/gui/dock_manager.cpp
         src/gui/drop_target.cpp
         src/gui/format_dialog.cpp
         src/gui/info_panel.cpp
@@ -148,8 +172,28 @@ if(NOT DVV_SANITIZE)
         target_sources(rawreel_gui PRIVATE src/gui/viewport_stub.cpp)
     endif()
 endif()
+# The wxWidgets line of --version: the build's wx package version, also in rawreel-cli, which does
+# not link wx; builds without wx (the sanitizer presets) say so.
+if(DEFINED wxWidgets_VERSION)
+    target_compile_definitions(rawreel_core PRIVATE RAWREEL_WX_VERSION="${wxWidgets_VERSION}")
+else()
+    target_compile_definitions(rawreel_core PRIVATE RAWREEL_WX_VERSION="not part of this build")
+endif()
+if(TARGET rawreel_gui)
+    dvv_components_link(rawreel_gui)
+endif()
+# Release links name their PDB by file name only (packaging/symbols.cmake).
+rawreel_release_symbols(rawreel_cli)
+if(TARGET rawreel_gui)
+    rawreel_release_symbols(rawreel_gui)
+endif()
 
 if(DVV_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# The Windows package (packaging/packaging.cmake); rawreel-gui is not built under the sanitizers.
+if(NOT DVV_SANITIZE)
+    include(packaging/packaging.cmake)
 endif()

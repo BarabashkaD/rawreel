@@ -5,6 +5,8 @@
 #include <format>
 #include <string>
 
+#include "dvv/media/types.h"
+
 namespace rawreel {
 
 namespace {
@@ -44,6 +46,20 @@ StatusFields statusFields(const SessionStatus& status) {
         fields.bottleneck = "bottleneck: " + status.bottleneck;
     }
     return fields;
+}
+
+std::string mappingText(const dvv::media::ColourParams* resolved) {
+    if (resolved == nullptr) {
+        return {};
+    }
+    // "\xE2\x86\x92" is U+2192 (rightwards arrow) in UTF-8.
+    switch (resolved->transfer) {
+        case dvv::media::TransferFn::Pq:
+            return "PQ \xE2\x86\x92 SDR tone mapping (1000 \xE2\x86\x92 100 nits)";
+        case dvv::media::TransferFn::Hlg:
+            return "HLG \xE2\x86\x92 SDR tone mapping (1000 \xE2\x86\x92 100 nits)";
+        default: return "SDR, no tone mapping";
+    }
 }
 
 }  // namespace rawreel

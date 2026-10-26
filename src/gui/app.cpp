@@ -21,10 +21,11 @@
 #include "dvv/base/log.h"
 #include "dvv/base/paths.h"
 #include "dvv/base/task.h"
-#include "dvv/base/uri.h"
+#include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/gpu_info.h"
 #include "dvv/platform/native_window.h"
 #include "dvv/registry/capabilities.h"
+#include "gui/crash_handler.h"
 #include "gui/log_panel.h"
 #include "gui/main_frame.h"
 #include "gui/selftest.h"
@@ -120,6 +121,7 @@ void App::finish(int code, const std::string& message) {
 }
 
 bool App::OnInit() {
+    const std::string crash_warning = CrashHandler::install("rawreel-gui");  // first (D22)
     if (selftest()) {
         // wx's default GUI log target shows modal dialogs; the selftest runs unattended.
         delete wxLog::SetActiveTarget(new wxLogStderr());
@@ -128,14 +130,18 @@ bool App::OnInit() {
     openLogFile();    // 2. the log file and the Log pane's sink (before the Session exists)
     log_sink_ = std::make_shared<LogPanelSink>();
     dvv::Logger::instance().addSink(log_sink_);
-    // The config file (M3.1 U-IO2), after the log sinks so a warning reaches the Log pane.
+    if (!crash_warning.empty()) {
+        DVV_LOG_WARN("{}", crash_warning);  // now that the sinks exist
+    }
+    // The config file, after the log sinks so a warning reaches the Log pane.
     const LoadedConfig config = loadConfig(the_arguments.config);
     if (!startPools() || !startGpu()) {  // 3., 4.
         return false;
     }
-    // 5. The source providers.
-    components_ = dvv::ComponentRegistry::create(dvv::Capabilities{});
-    if (!components_) {
+    // 5. FFmpeg, the capabilities and the source providers (design M4 v2 §4.6).
+    startup_ = startComponents({});
+    DVV_LOG_INFO("ffmpeg: {}", ffmpegStatusLine(startup_.ffmpeg));
+    if (!startup_.components) {
         finish(exit_code::BAD_ARGUMENTS, "rawreel-gui: the component registry could not start");
         return false;
     }
@@ -169,7 +175,7 @@ bool App::OnInit() {
         };
     }
     dvv::Result<std::unique_ptr<Session>> session =
-        Session::create({.components = components_,
+        Session::create({.components = startup_.components,
                          .cpu = cpu_,
                          .io = io_,
                          .gpus = registry_,
@@ -202,13 +208,10 @@ bool App::OnInit() {
     // The native window exists and is shown once the queued call runs.
     frame->viewport().CallAfter([viewport = &frame->viewport()] { viewport->markReady(); });
 
-    // 9. The stream of the command line, at frame 0.
+    // 9. The stream of the command line, at frame 0, through the path of File -> Open URI... (its
+    // open error carries the FFmpeg status hint for a lavfi: URI, design v2 §4.6).
     if (the_arguments.uri) {
-        if (dvv::Result<dvv::Uri> uri = dvv::parseUri(*the_arguments.uri); uri) {
-            session_->open(0, dvv::media::SourceRequest{.uri = std::move(*uri), .hint = {}});
-        } else {
-            frame->onError(uri.error());
-        }
+        frame->openUri(0, *the_arguments.uri, std::nullopt);
     }
 
     // 10. A scenario without a script yet finishes with 6 (SelfTest::start).
@@ -223,6 +226,14 @@ void App::setAppearance() {
     appearance_result_ = result;
     DVV_LOG_INFO("appearance: {} -> {}", appearanceName(the_arguments.appearance),
                  appearanceResultName(result));
+}
+
+std::string App::appearanceText() const {
+    if (!appearance_result_) {
+        return {};
+    }
+    return std::format("{} -> {}", appearanceName(the_arguments.appearance),
+                       appearanceResultName(*appearance_result_));
 }
 
 void App::openLogFile() {
@@ -303,6 +314,9 @@ bool App::startGpu() {
 }
 
 void App::shutdownSession() {
+    // The FFmpeg and lavfi sources end their work at once, so the shutdown below, which waits for
+    // in-flight acquisitions, is bounded (design M4 v2 D5).
+    dvv::components::stopFfmpegSources();
     if (bridge_) {
         bridge_->detach();  // no event is queued onto the frame any more
     }
@@ -315,6 +329,7 @@ void App::shutdownSession() {
 }
 
 int App::OnExit() {
+    dvv::components::stopFfmpegSources();  // before the Session shutdown (design M4 v2 D5)
     // Every viewport, and so every presenter, is gone: MainFrame::onClose destroyed it.
     if (session_) {
         shutdownSession();
@@ -322,7 +337,7 @@ int App::OnExit() {
     bridge_.reset();
     show_history_.reset();
     display_.reset();
-    components_.reset();
+    startup_ = {};
     if (selftest() && !decided_exit_code && registry_) {
         if (const std::uint64_t messages = registry_->validationMessageCount(); messages != 0) {
             record(exit_code::SELFTEST_FAILED,

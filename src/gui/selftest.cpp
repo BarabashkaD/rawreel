@@ -27,25 +27,36 @@
 #include <wx/infobar.h>  // wxInfoBarBase, before the generic class
 #include <wx/generic/infobar.h>
 // clang-format on
+// clang-format off
+#include <wx/aboutdlg.h>  // wxAboutDialogInfo, before the generic dialog
+#include <wx/generic/aboutdlgg.h>
+// clang-format on
 #include <wx/settings.h>
 #include <wx/slider.h>
+#include <wx/textdlg.h>
 
 #include "core/commands.h"
 #include "core/format_choice.h"
+#include "core/layout.h"
 #include "core/perf_stats.h"
 #include "core/session.h"
+#include "core/startup.h"
+#include "core/version_text.h"
 #include "core/view.h"
 #include "dvv/base/error.h"
 #include "dvv/base/json.h"
 #include "dvv/base/log.h"
 #include "dvv/base/uri.h"
+#include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/gpu_info_json.h"
 #include "dvv/gpu/presenter.h"
 #include "dvv/gpu/testing/fault_injection.h"
+#include "dvv/media/format_json.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
 #include "dvv/platform/native_window.h"
+#include "gui/about.h"
 #include "gui/app.h"
 #include "gui/drop_target.h"
 #include "gui/format_dialog.h"
@@ -63,7 +74,7 @@ namespace {
 
 constexpr int TICK_MS = 50;
 
-// Sets a flag for the lifetime of the guard (the busy guard of the runner, LOG 20).
+// Sets a flag for the lifetime of the guard (the busy guard of the runner).
 class BusyGuard {
 public:
     explicit BusyGuard(bool& flag) noexcept : flag_(&flag) { *flag_ = true; }
@@ -86,11 +97,46 @@ SelfTestStep step(std::string name, std::move_only_function<void()> start,
             .deadline = deadline};
 }
 
+// Set while the script injects an event (injectInput).
+bool& injecting() {
+    static bool flag = false;
+    return flag;
+}
+
+// Keyboard, mouse-button, wheel and menu events: what a person at the machine sends.
+bool isRealInput(wxEventType type) {
+    static const std::array<wxEventType, 20> REAL_INPUT_TYPES{
+        wxEVT_KEY_DOWN,      wxEVT_KEY_UP,       wxEVT_CHAR,         wxEVT_CHAR_HOOK,
+        wxEVT_LEFT_DOWN,     wxEVT_LEFT_UP,      wxEVT_LEFT_DCLICK,  wxEVT_RIGHT_DOWN,
+        wxEVT_RIGHT_UP,      wxEVT_RIGHT_DCLICK, wxEVT_MIDDLE_DOWN,  wxEVT_MIDDLE_UP,
+        wxEVT_MIDDLE_DCLICK, wxEVT_AUX1_DOWN,    wxEVT_AUX1_UP,      wxEVT_AUX2_DOWN,
+        wxEVT_AUX2_UP,       wxEVT_MOUSEWHEEL,   wxEVT_CONTEXT_MENU, wxEVT_MENU};
+    return std::ranges::find(REAL_INPUT_TYPES, type) != REAL_INPUT_TYPES.end();
+}
+
 }  // namespace
+
+int SelfTestInput::FilterEvent(wxEvent& event) {
+    if (injecting() || !isRealInput(event.GetEventType())) {
+        return Event_Skip;
+    }
+    ++ignored_;
+    DVV_LOG_INFO("rawreel-gui --selftest: real input ignored (event type {})",
+                 event.GetEventType());
+    return Event_Processed;  // handled: no handler and no native default processing sees it
+}
+
+bool injectInput(wxEvtHandler& target, wxEvent& event) {
+    const BusyGuard mark(injecting());
+    return target.ProcessEvent(event);
+}
 
 SelfTest::SelfTest(MainFrame& frame, App& app) : frame_(&frame), app_(&app) {}
 
 SelfTest::~SelfTest() {
+    if (filtering_) {
+        wxEvtHandler::RemoveFilter(&input_);
+    }
     Stop();
     // The window closed (X or WM_CLOSE) before the script finished: the selftest fails. Every
     // decided outcome (the close step or an earlier finish()) has already set finished_.
@@ -116,6 +162,9 @@ void SelfTest::start(Scenario scenario) {
         return;
     }
     script_ = std::move(*script);
+    // Real input must not change a result (a real L once inverted the player's loop step).
+    wxEvtHandler::AddFilter(&input_);
+    filtering_ = true;
     // The first tick enters step 1 inside the event loop.
     Start(TICK_MS);
 }
@@ -250,6 +299,14 @@ struct SmokeState {
     int ticks = 0;
     std::optional<std::uint64_t> framesWhenShown;  // open stream: when the frame was first seen
     std::size_t logLength = 0;                     // menus: the Log pane's text at the step start
+    std::size_t streamsBefore = 0;                 // D3: streams shown when the open started
+    bool aboutHookRan = false;                     // about: the About hook ran
+    bool aboutButtonsOk = false;                   // about: notices and copy buttons found
+    bool aboutParentOk = false;                    // about: the dialog's parent is the frame
+    std::uint64_t about0 = 0;                      // about: aboutShown() at the step start
+    std::uint64_t presented0 = 0;                  // lavfi: frames presented at the step start
+    std::string streamUri;                         // Format... on lavfi: the stream's URI
+    std::uint64_t dialogs0 = 0;                    // Format... on lavfi: format dialogs shown
 };
 
 std::optional<dvv::gpu::PresenterStats> statsOf(const Viewport& viewport) {
@@ -257,6 +314,30 @@ std::optional<dvv::gpu::PresenterStats> statsOf(const Viewport& viewport) {
         return presenter->stats();
     }
     return std::nullopt;
+}
+
+// Frames presented so far (0 without a presenter); smoke, lost and player use it.
+std::uint64_t presented(Viewport& viewport) {
+    const dvv::gpu::Presenter* presenter = viewport.presenter();
+    return presenter != nullptr ? presenter->stats().framesPresented : 0;
+}
+
+// DVV_REQUIRE_FFMPEG=1: a missing FFmpeg fails the FFmpeg steps instead of skipping them.
+bool ffmpegRequired() {
+    wxString value;
+    return wxGetEnv("DVV_REQUIRE_FFMPEG", &value) && value == "1";
+}
+
+// The step a scenario gets instead of its FFmpeg steps under DVV_REQUIRE_FFMPEG=1: it fails at its
+// deadline with `reason`.
+SelfTestStep ffmpegRequiredStep(std::string reason) {
+    return step(
+        "FFmpeg required", {},
+        [reason = std::move(reason)](std::string& seen) {
+            seen = reason;
+            return false;
+        },
+        std::chrono::seconds(1));
 }
 
 std::string describe(const Viewport& viewport, const SmokeState& state) {
@@ -297,16 +378,19 @@ SelfTestStep firstFramesStep(SelfTest* test, const SharedState& state) {
     return {.name = "first frames", .start = {}, .passed = std::move(passed)};
 }
 
-// Logical pixels (no FromDIP): the checks compare with the physical size, so any DPI scale
-// passes, and every size differs from the one before it at every scale. `size` is the viewport's
-// size: the frame grows by what the panes, the infobar and the borders around the viewport take
-// (the docked panes keep their size when the frame is resized).
+// `size` is the viewport's size in logical pixels (no FromDIP): the frame grows by what the panes,
+// the infobar and the borders around the viewport take (the docks keep their sash size while the
+// viewport has room, D8). At a high scale (250 %) or on a small screen that client can be below the
+// minimum the shrink step reached, so the client is at least the minimum plus more
+// than the docks give way (Info 160 DIP, Log 100 DIP) and the viewport differs at every scale.
 SelfTestStep resizeStep(SelfTest* test, const SharedState& state, std::string name, wxSize size) {
     auto start = [test, state, size] {
         markStart(test->frame().viewport(), *state);
         MainFrame& frame = test->frame();
         const wxSize around = frame.GetClientSize() - frame.viewport().GetClientSize();
-        frame.SetClientSize(size + around);
+        const wxSize least = frame.GetMinClientSize() + frame.FromDIP(wxSize(240, 160));
+        const wxSize client = size + around;
+        frame.SetClientSize(std::max(client.x, least.x), std::max(client.y, least.y));
     };
     auto passed = [test, state](std::string& seen) {
         const Viewport& viewport = test->frame().viewport();
@@ -319,6 +403,81 @@ SelfTestStep resizeStep(SelfTest* test, const SharedState& state, std::string na
     return {.name = std::move(name), .start = std::move(start), .passed = std::move(passed)};
 }
 
+// The window shrinks below its minimum (M4 GUI D8): asked for a 100x80 viewport, the frame
+// stops at its minimum client size, the docks give way and the viewport keeps 320x240 DIP; the
+// smaller viewport gets a new swapchain of its size.
+SelfTestStep shrinkStep(SelfTest* test, const SharedState& state) {
+    auto start = [test, state] {
+        markStart(test->frame().viewport(), *state);
+        MainFrame& frame = test->frame();
+        const wxSize around = frame.GetClientSize() - frame.viewport().GetClientSize();
+        frame.SetClientSize(wxSize(100, 80) + around);
+    };
+    auto passed = [test, state](std::string& seen) {
+        MainFrame& frame = test->frame();
+        const Viewport& viewport = frame.viewport();
+        const std::optional<dvv::gpu::PresenterStats> stats = statsOf(viewport);
+        const dvv::platform::PixelSize now = viewport.physicalClientSize();
+        const wxSize client = frame.GetClientSize();
+        const wxSize minimum = frame.GetMinClientSize();
+        const wxSize least = frame.FromDIP(wxSize(MIN_VIEWPORT_DIP.width, MIN_VIEWPORT_DIP.height));
+        const bool minimal = std::cmp_greater_equal(now.width, least.x) &&
+                             std::cmp_greater_equal(now.height, least.y);
+        seen = std::format("{}; client {}x{}, minimum client {}x{}, viewport minimum {}x{}",
+                           describe(viewport, *state), client.x, client.y, minimum.x, minimum.y,
+                           least.x, least.y);
+        return stats && minimum.x > 0 && minimum.y > 0 && client.x >= minimum.x &&
+               client.y >= minimum.y && minimal && stats->presentedExtent == now &&
+               stats->swapchainsCreated > state->startSwapchains && now != state->previousSize;
+    };
+    return {.name = "shrink stops at the minimum",
+            .start = std::move(start),
+            .passed = std::move(passed)};
+}
+
+// A pane moved at the minimum: Info docked as a second bottom row raises the
+// minimum client height, the frame grows to it and the viewport keeps 320x240 DIP. `back` docks
+// Info on the right again, as the later steps expect.
+SelfTestStep movedPaneStep(SelfTest* test, const SharedState& state, bool back) {
+    auto start = [test, state, back] {
+        markStart(test->frame().viewport(), *state);
+        MainFrame& frame = test->frame();
+        wxAuiPaneInfo& info = frame.aui().GetPane("info");
+        if (back) {
+            info.Right().Row(0);
+        } else {
+            info.Bottom().Row(1);
+        }
+        frame.aui().Update();
+        const wxSize around = frame.GetClientSize() - frame.viewport().GetClientSize();
+        frame.SetClientSize(wxSize(100, 80) + around);
+    };
+    auto passed = [test, state, back](std::string& seen) {
+        MainFrame& frame = test->frame();
+        const Viewport& viewport = frame.viewport();
+        const std::optional<dvv::gpu::PresenterStats> stats = statsOf(viewport);
+        const dvv::platform::PixelSize now = viewport.physicalClientSize();
+        const wxSize least = frame.FromDIP(wxSize(MIN_VIEWPORT_DIP.width, MIN_VIEWPORT_DIP.height));
+        const wxSize panel = frame.playerPanel().GetClientSize();
+        const wxSize centre = frame.playerPanel().minimumSize();
+        const int direction = frame.aui().GetPane("info").dock_direction;
+        const bool docked = direction == (back ? wxAUI_DOCK_RIGHT : wxAUI_DOCK_BOTTOM);
+        // The panel holds the infobar's reserve too, so the viewport alone would pass without the
+        // fix while no message is shown. No tolerance: the frame's minimum carries a 2 DIP margin
+        // for wxAUI's rounding.
+        const bool minimal = std::cmp_greater_equal(now.width, least.x) &&
+                             std::cmp_greater_equal(now.height, least.y) && panel.x >= centre.x &&
+                             panel.y >= centre.y;
+        seen = std::format("{}; info dock {}, player panel {}x{}, its minimum {}x{}",
+                           describe(viewport, *state), direction, panel.x, panel.y, centre.x,
+                           centre.y);
+        return stats && docked && minimal && stats->presentedExtent == now;
+    };
+    return {.name = back ? "pane moved back" : "moved pane keeps the minimum",
+            .start = std::move(start),
+            .passed = std::move(passed)};
+}
+
 // 4. Hidden: no frames (one in flight when the window was hidden is tolerated).
 SelfTestStep hideStep(SelfTest* test, const SharedState& state) {
     auto start = [test, state] {
@@ -326,7 +485,7 @@ SelfTestStep hideStep(SelfTest* test, const SharedState& state) {
 #if defined(_WIN32)
         test->frame().Iconize(true);
 #else
-        test->frame().Hide();  // compiled, not run in v1.0 (U-WIN)
+        test->frame().Hide();  // compiled, not run in v1.0 (Windows only)
 #endif
     };
     auto passed = [test, state](std::string& seen) {
@@ -476,10 +635,12 @@ SelfTestStep pauseStep(SelfTest* test) {
 // D20: the position and rate fields.
 SelfTestStep statusBarStep(SelfTest* test) {
     auto passed = [test](std::string& seen) {
-        const std::array<wxString, 3> texts = test->frame().statusTexts();
-        seen = std::format("status bar '{}' '{}' '{}'", texts[0].utf8_string(),
-                           texts[1].utf8_string(), texts[2].utf8_string());
-        return texts[0].StartsWith("frame ") && texts[1].EndsWith("fps");
+        const std::array<wxString, 4> texts = test->frame().statusTexts();
+        seen = std::format("status bar '{}' '{}' '{}' '{}'", texts[0].utf8_string(),
+                           texts[1].utf8_string(), texts[2].utf8_string(), texts[3].utf8_string());
+        // D5R §2.2: an SDR stream's mapping field.
+        return texts[0].StartsWith("frame ") && texts[1].EndsWith("fps") &&
+               texts[3] == "SDR, no tone mapping";
     };
     return step("status bar", {}, std::move(passed));
 }
@@ -582,7 +743,186 @@ SelfTestStep infobarStep(SelfTest* test) {
     return step("infobar", std::move(start), std::move(passed));
 }
 
+// D29: Help -> About through its hook (the hook closes the dialog).
+SelfTestStep aboutStep(SelfTest* test, const std::shared_ptr<SmokeState>& state) {
+    auto start = [test, state] {
+        dialogHooks().about = [test, state](wxGenericAboutDialog& dialog) {
+            state->aboutHookRan = true;
+            state->aboutParentOk = dialog.GetParent() == &test->frame();
+            // The About layout: the notices and copy buttons are in the dialog.
+            state->aboutButtonsOk =
+                wxWindow::FindWindowByLabel(
+                    wxString::FromUTF8(ABOUT_NOTICES_LABEL.data(), ABOUT_NOTICES_LABEL.size()),
+                    &dialog) != nullptr &&
+                wxWindow::FindWindowByLabel(
+                    wxString::FromUTF8(ABOUT_COPY_LABEL.data(), ABOUT_COPY_LABEL.size()),
+                    &dialog) != nullptr;
+        };
+        state->about0 = test->frame().aboutShown();
+        test->frame().execute(Command::About);
+    };
+    auto passed = [test, state](std::string& seen) {
+        const MainFrame& frame = test->frame();
+        const std::string& text = frame.lastAboutText();
+        const VulkanStatus vulkan = frame.vulkanStatus();
+        const dvv::components::FfmpegStatus& ffmpeg = test->app().startup().ffmpeg;
+        // The status only: no FFmpeg directory in About (users share its text).
+        const bool no_path =
+            !ffmpeg.core || !text.contains(dvv::media::utf8FromPath(ffmpeg.directory));
+        // About: the name and version once, the licence, the device, the FFmpeg version, the
+        // components; the copied text is the full aboutText().
+        const std::string heading = std::format("rawreel {}", packageVersions().front().second);
+        const bool lines =
+            text.find(heading) != std::string::npos && text.find(heading) == text.rfind(heading) &&
+            text.contains("MIT licence") && vulkan.available && text.contains(vulkan.device) &&
+            (!ffmpeg.core || text.contains(ffmpeg.version)) && text.contains("dvv-base ") &&
+            no_path;
+        // Only the checked facts, not the text (it names the FFmpeg version and the device).
+        seen = std::format(
+            "hook ran {}, parent the frame {}, buttons {}, About shown {} ({} at the step start), "
+            "lines {}, no FFmpeg path {}",
+            state->aboutHookRan, state->aboutParentOk, state->aboutButtonsOk, frame.aboutShown(),
+            state->about0, lines, no_path);
+        return state->aboutHookRan && state->aboutParentOk && state->aboutButtonsOk &&
+               frame.aboutShown() > state->about0 && lines;
+    };
+    return step("about", std::move(start), std::move(passed));
+}
+
+// D29: a lavfi: URI through File -> Open URI... and its hook.
+SelfTestStep lavfiUriStep(SelfTest* test, const std::shared_ptr<SmokeState>& state) {
+    auto start = [test, state] {
+        MainFrame& frame = test->frame();
+        state->presented0 = presented(frame.viewport());
+        dialogHooks().uri = [](wxTextEntryDialog& dialog) {
+            dialog.SetValue("lavfi:testsrc2=s=64x48:r=25,format=yuv420p");
+        };
+        frame.execute(Command::OpenUri);
+    };
+    auto passed = [test, state](std::string& seen) {
+        MainFrame& frame = test->frame();
+        const auto& streams = frame.streams();
+        const bool lavfi =
+            streams.size() == 1 && streams[0].resolvedUri.starts_with("lavfi:testsrc2=s=64x48");
+        const DisplaySnapshot snapshot = frame.viewport().display()->snapshot();
+        const std::uint64_t now = presented(frame.viewport());
+        seen = std::format("{} streams, URI '{}', shown count {}, presented {} ({} at the start)",
+                           streams.size(), streams.empty() ? "-" : streams[0].resolvedUri,
+                           snapshot.frames.count, now, state->presented0);
+        return lavfi && snapshot.frames.count == 1 && now > state->presented0;
+    };
+    return step("lavfi through Open URI", std::move(start), std::move(passed));
+}
+
+// D28: View -> Format... on a lavfi: stream explains the graph instead of the dialog.
+SelfTestStep lavfiFormatStep(SelfTest* test, const std::shared_ptr<SmokeState>& state) {
+    auto start = [test, state] {
+        MainFrame& frame = test->frame();
+        state->streamUri = frame.streams().empty() ? std::string{} : frame.streams()[0].resolvedUri;
+        state->dialogs0 = frame.formatDialogsShown();
+        frame.execute(Command::Format);
+    };
+    auto passed = [test, state](std::string& seen) {
+        const MainFrame& frame = test->frame();
+        const auto& streams = frame.streams();
+        const bool message = frame.lastMessage().Contains("setparams");
+        const bool same = streams.size() == 1 && streams[0].resolvedUri == state->streamUri;
+        seen = std::format("message '{}', same stream {}, format dialogs {} ({} at the start)",
+                           frame.lastMessage().utf8_string(), same, frame.formatDialogsShown(),
+                           state->dialogs0);
+        return message && same && frame.formatDialogsShown() == state->dialogs0;
+    };
+    return step("Format... on a lavfi stream", std::move(start), std::move(passed));
+}
+
 }  // namespace
+
+// M4 GUI D1, D2, D3 through MainFrame::openUri and the commands. A relative file
+// name that does not exist (no machine path).
+constexpr const char* MISSING_FILE = "rawreel-selftest-missing_64x64.yuv";
+
+void addOpenUriSteps(std::vector<SelfTestStep>& steps, SelfTest* test,
+                     const std::shared_ptr<SmokeState>& state) {
+    // D1: a cancelled Open URI... leaves one Log line (no hook: the selftest cancels it).
+    steps.push_back(step(
+        "Open URI cancel logs it",
+        [test, state] {
+            state->logLength = test->frame().logPanel().text().length();
+            test->frame().execute(Command::OpenUri);
+        },
+        [test, state](std::string& seen) {
+            const wxString log = test->frame().logPanel().text();
+            const bool logged = log.length() > state->logLength &&
+                                log.Mid(state->logLength).Contains("open cancelled");
+            seen = std::format("'open cancelled' logged {}", logged);
+            return logged;
+        }));
+    // D3: the open closes the shown stream first; the failed open leaves none, with its error.
+    steps.push_back(step(
+        "a failed open leaves no stream",
+        [test, state] {
+            // Precondition: a stream is shown, so close-first has one to close.
+            state->streamsBefore = test->frame().streams().size();
+            test->frame().openUri(0, MISSING_FILE, std::nullopt);
+        },
+        [test, state](std::string& seen) {
+            MainFrame& frame = test->frame();
+            const bool shown = frame.playerPanel().infoBar().IsShown();
+            const bool named = frame.lastMessage().Contains(MISSING_FILE);
+            const std::uint32_t streams = frame.session().status().streams;
+            seen = std::format(
+                "{} streams before, {} frame streams, {} session streams, infobar shown {}, "
+                "message '{}'",
+                state->streamsBefore, frame.streams().size(), streams, shown,
+                frame.lastMessage().utf8_string());
+            return state->streamsBefore == 1 && frame.streams().empty() && streams == 0 && shown &&
+                   named;
+        }));
+    // D2: the next good open ends the open error.
+    steps.push_back(step(
+        "a good open clears the error",
+        [test] { test->frame().openUri(0, std::string(SMOKE_STREAM), {}); },
+        [test](std::string& seen) {
+            MainFrame& frame = test->frame();
+            const bool shown = frame.playerPanel().infoBar().IsShown();
+            seen = std::format("{} streams, infobar shown {}, message '{}'", frame.streams().size(),
+                               shown, frame.lastMessage().utf8_string());
+            return frame.streams().size() == 1 && !shown;
+        }));
+    // D2: Close stream ends a message shown with the stream (the slot 1 refusal).
+    steps.push_back(step(
+        "a refusal is shown with the stream",
+        [test] {
+            dvv::Result<dvv::Uri> uri = dvv::parseUri(REFUSED_STREAM);
+            if (uri) {
+                test->frame().session().open(
+                    1, dvv::media::SourceRequest{.uri = std::move(*uri), .hint = {}});
+            }
+        },
+        [test](std::string& seen) {
+            MainFrame& frame = test->frame();
+            const bool shown = frame.playerPanel().infoBar().IsShown();
+            seen = std::format("{} streams, infobar shown {}, message '{}'", frame.streams().size(),
+                               shown, frame.lastMessage().utf8_string());
+            return frame.streams().size() == 1 && shown &&
+                   frame.lastMessage().Contains("one stream in v1.0");
+        }));
+    steps.push_back(step(
+        "Close stream clears the message", [test] { test->frame().execute(Command::CloseStreams); },
+        [test](std::string& seen) {
+            MainFrame& frame = test->frame();
+            const bool shown = frame.playerPanel().infoBar().IsShown();
+            seen = std::format("{} streams, infobar shown {}", frame.streams().size(), shown);
+            return frame.streams().empty() && frame.session().status().streams == 0 && !shown;
+        }));
+    steps.push_back(step(
+        "the smoke stream again",
+        [test] { test->frame().openUri(0, std::string(SMOKE_STREAM), {}); },
+        [test](std::string& seen) {
+            seen = std::format("{} streams", test->frame().streams().size());
+            return test->frame().streams().size() == 1;
+        }));
+}
 
 std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
     SelfTest* const t = &test;
@@ -590,11 +930,13 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
     std::vector<SelfTestStep> steps;
     steps.push_back(firstFramesStep(t, state));
     steps.push_back(resizeStep(t, state, "resize 800x600", wxSize(800, 600)));
-    steps.push_back(resizeStep(t, state, "resize 333x177", wxSize(333, 177)));
+    steps.push_back(shrinkStep(t, state));
+    steps.push_back(movedPaneStep(t, state, false));
+    steps.push_back(movedPaneStep(t, state, true));
     steps.push_back(hideStep(t, state));
     steps.push_back(restoreStep(t, state));
     steps.push_back(openStreamStep(t, state));
-    steps.push_back(resizeStep(t, state, "resize with a stream", wxSize(640, 360)));
+    steps.push_back(resizeStep(t, state, "resize with a stream", wxSize(1024, 640)));
     steps.push_back(panesStep(t));
     steps.push_back(menuTransportStep(t));
     steps.push_back(pauseStep(t));
@@ -602,20 +944,21 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
     steps.push_back(diagnosticsStep(t));
     steps.push_back(menusStep(t, state));
     steps.push_back(infobarStep(t));
+    steps.push_back(aboutStep(t, state));
+    if (test.app().startup().ffmpeg.lavfi) {
+        steps.push_back(lavfiUriStep(t, state));
+        steps.push_back(lavfiFormatStep(t, state));
+    } else if (ffmpegRequired()) {
+        steps.push_back(ffmpegRequiredStep(ffmpegStatusLine(test.app().startup().ffmpeg)));
+    } else {
+        DVV_LOG_INFO("selftest: FFmpeg not available, lavfi steps skipped");
+    }
+    addOpenUriSteps(steps, t, state);
     steps.push_back(appearanceStep(t));
     return steps;
 }
 
 // --- lost (design v2 §8.4 lost, D7, D25, E3) -----------------------------------------------------
-
-namespace {
-
-std::uint64_t presented(Viewport& viewport) {
-    const dvv::gpu::Presenter* presenter = viewport.presenter();
-    return presenter != nullptr ? presenter->stats().framesPresented : 0;
-}
-
-}  // namespace
 
 std::vector<SelfTestStep> lostScenario(SelfTest& test) {
     MainFrame& frame = test.frame();
@@ -795,11 +1138,15 @@ DialogHooks& dialogHooks() {
     return hooks;
 }
 
-int showModal(FormatDialog& dialog) {
-    std::move_only_function<void(FormatDialog&)>& slot = dialogHooks().format;
+namespace {
+
+// One body for the three dialogs (format, Open URI, About).
+template <class Dialog>
+int showModalWith(Dialog& dialog, std::move_only_function<void(Dialog&)>& slot,
+                  std::string_view kind) {
     if (slot) {
         // One shot; CallAfter needs a copyable functor, so the hook is shared.
-        auto hook = std::make_shared<std::move_only_function<void(FormatDialog&)>>(std::move(slot));
+        auto hook = std::make_shared<std::move_only_function<void(Dialog&)>>(std::move(slot));
         slot = nullptr;
         dialog.CallAfter([&dialog, hook] {
             (*hook)(dialog);
@@ -807,12 +1154,24 @@ int showModal(FormatDialog& dialog) {
         });
     } else if (App::arguments().selftest != Scenario::None) {
         // A dialog the script did not expect: cancel it, so the run never waits for a user.
-        dialog.CallAfter([&dialog] {
-            DVV_LOG_WARN("rawreel-gui --selftest: a format dialog without a hook was cancelled");
+        dialog.CallAfter([&dialog, kind] {
+            DVV_LOG_WARN("rawreel-gui --selftest: {} dialog without a hook was cancelled", kind);
             dialog.EndModal(wxID_CANCEL);
         });
     }
     return dialog.ShowModal();
+}
+
+}  // namespace
+
+int showModal(FormatDialog& dialog) {
+    return showModalWith(dialog, dialogHooks().format, "a format");
+}
+int showModal(wxTextEntryDialog& dialog) {
+    return showModalWith(dialog, dialogHooks().uri, "an Open URI");
+}
+int showModal(wxGenericAboutDialog& dialog) {
+    return showModalWith(dialog, dialogHooks().about, "an About");
 }
 
 // --- player (design v2 §8.4 player) -------------------------------------------------------------
@@ -828,7 +1187,7 @@ void sendKey(wxFrame& frame, int keycode, bool shift = false) {
         event.m_uniChar = static_cast<wxChar>(keycode);
     }
     event.SetShiftDown(shift);
-    frame.GetEventHandler()->ProcessEvent(event);
+    injectInput(*frame.GetEventHandler(), event);
 }
 
 void sendSliderTrack(wxSlider& slider, int value) {
@@ -879,11 +1238,16 @@ bool consecutive(std::span<const ShownSet> shows, std::uint32_t count,
     return true;
 }
 
-// The Info line of a colour field without "(assumed)" right after it, e.g. "matrix bt601,".
+// The Info line of a colour field with no origin tag right after it (D5R §4.5), e.g.
+// "matrix bt601,": neither " (default)" nor " (from file)" follows.
 bool infoHas(MainFrame& frame, std::string_view field) {
     const std::string text = frame.infoPanel().text().utf8_string();
     const std::size_t at = text.find(field);
-    return at != std::string::npos && text.compare(at + field.size(), 10, " (assumed)") != 0;
+    if (at == std::string::npos) {
+        return false;
+    }
+    const std::string_view rest = std::string_view(text).substr(at + field.size());
+    return !rest.starts_with(" (default)") && !rest.starts_with(" (from file)");
 }
 
 }  // namespace
@@ -899,6 +1263,15 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
         std::filesystem::path dir;
         std::uint64_t dialogs0 = 0;
         bool formatHookRan = false;
+        dvv::media::ColourParams colourBefore{};  // the stream's colour before View > Format
+        ColourChoice colourRead{};                // the colour a format hook read
+        FormatChoice choiceRead{};                // the choice a format hook read (D5 T5b)
+        bool lockedRead = false;                  // FormatDialog::fieldsLocked() in a hook
+        bool flagRead = false;                    // another yes/no a format hook read
+        std::vector<std::string> textsRead;       // dialog texts a format hook read
+        bool loopBefore = false;                  // loop wraps: the GUI's loop flag before the step
+        std::uint64_t ignored0 = 0;  // real input is ignored: SelfTestInput's count before
+        std::chrono::steady_clock::time_point at;  // real input is ignored: the step start
         State() = default;
         State(const State&) = delete;
         State& operator=(const State&) = delete;
@@ -920,6 +1293,11 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
         return streams.size() == 1 && streams[0].info.desc.width == w &&
                streams[0].info.desc.height == h &&
                dvv::media::descriptor(streams[0].info.desc.format).name == format;
+    };
+    // The resolved URI of the one stream; "" while none is open (a reopen).
+    auto stream_uri = [&frame] {
+        const auto& streams = frame.streams();
+        return streams.size() == 1 ? streams[0].resolvedUri : std::string();
     };
     std::vector<SelfTestStep> steps;
 
@@ -1002,8 +1380,14 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
         }));
     steps.push_back(step(
         "loop wraps",
-        [&frame, &history, st] {
-            frame.execute(Command::Loop);
+        [&frame, &history, st, status] {
+            // Set, not toggled; the state before is logged (evidence if an outside toggle recurs).
+            st->loopBefore = frame.loop();
+            DVV_LOG_INFO("rawreel-gui --selftest: loop before the loop step: GUI {}, Session {}",
+                         st->loopBefore, status().loop);
+            if (!frame.loop()) {
+                frame.execute(Command::Loop);
+            }
             st->mark = history.size();
             frame.execute(Command::PlayPause);
         },
@@ -1011,18 +1395,52 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             const auto shows = history.since(st->mark);
             const bool wrapped =
                 std::ranges::any_of(shows, [](const ShownSet& s) { return s.index == 0; });
-            seen = std::format("loop {}, shows {}", status().loop, shows.size());
+            seen = std::format("loop {} (GUI before the step {}), shows {}", status().loop,
+                               st->loopBefore, shows.size());
             return status().loop && wrapped && consecutive(shows, 1, 60, seen);
         }));
     steps.push_back(step(
         "pause",
         [&frame] {
             frame.execute(Command::PlayPause);
-            frame.execute(Command::Loop);  // loop off again
+            if (frame.loop()) {
+                frame.execute(Command::Loop);  // loop off again
+            }
         },
         [status](std::string& seen) {
             seen = std::format("playing {}, loop {}", status().playing, status().loop);
             return !status().playing && !status().loop;
+        }));
+    // Input isolation (SelfTestInput): events sent without the script's mark stand in for a real
+    // L key, a menu click (Play/Pause) and a mouse click; none may change the state. The native
+    // mapping (a real WM_* message to these wx events) is not covered: it needs OS-level input
+    // injection into the user's desktop.
+    steps.push_back(step(
+        "real input is ignored",
+        [&frame, st, t = &test] {
+            st->ignored0 = t->inputIgnored();
+            st->at = std::chrono::steady_clock::now();
+            wxKeyEvent key(wxEVT_CHAR_HOOK);
+            key.SetEventObject(&frame);
+            key.m_keyCode = 'L';
+            key.m_uniChar = 'L';
+            frame.GetEventHandler()->ProcessEvent(key);
+            wxCommandEvent menu(wxEVT_MENU, COMMAND_ID_BASE + static_cast<int>(Command::PlayPause));
+            menu.SetEventObject(&frame);
+            frame.GetEventHandler()->ProcessEvent(menu);
+            wxMouseEvent click(wxEVT_LEFT_DOWN);
+            click.SetEventObject(&frame.transportBar());
+            frame.transportBar().GetEventHandler()->ProcessEvent(click);
+        },
+        [&frame, st, status, t = &test](std::string& seen) {
+            const std::uint64_t ignored = t->inputIgnored() - st->ignored0;
+            const bool settled =
+                std::chrono::steady_clock::now() - st->at >= std::chrono::milliseconds(300);
+            // At least 3: real input during the step (e.g. typing while the window has the focus)
+            // is ignored and counted too.
+            seen = std::format("ignored {} (at least 3), loop {} (GUI {}), playing {}", ignored,
+                               status().loop, frame.loop(), status().playing);
+            return settled && ignored >= 3 && !status().loop && !frame.loop() && !status().playing;
         }));
     steps.push_back(step(
         "resize keeps the fit",
@@ -1057,23 +1475,118 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             return status().position == st->position;
         }));
     steps.push_back(step(
-        "View > Format... sets BT.601 and full range",
-        [&frame] {
+        "View > Format... BT.601 (PAL) with full range writes colour= and range=",
+        [&frame, st] {
             // The position stepped to above (> 0), so a reopen that loses it fails the check.
-            dialogHooks().format = [](FormatDialog& dialog) {
-                FormatChoice choice = dialog.choice();
-                choice.colour.matrix = dvv::media::ColourMatrix::Bt601;
-                choice.colour.range = dvv::media::ColourRange::Full;
-                dialog.setChoice(choice);
+            st->textsRead.clear();
+            dialogHooks().format = [st](FormatDialog& dialog) {
+                using Control = FormatDialog::Control;
+                // The stream has no colour key: the default entry, no key written.
+                st->textsRead.push_back(
+                    (dialog.colourText() + "|" + dialog.colourOptionsText()).utf8_string());
+                st->flagRead = !dialog.choice().colour.standard;
+                dialog.userPick(Control::Colour, "BT.601 (PAL)");
+                dialog.userPick(Control::Range, 1);
+                st->textsRead.push_back(
+                    (dialog.colourOptionsText() + "|" + dialog.colourValuesText()).utf8_string());
+                st->colourRead = dialog.choice().colour;
             };
             frame.execute(Command::Format);  // ShowModal; the hook fills and closes the dialog
         },
-        [&frame, st, status](std::string& seen) {
-            const bool info = infoHas(frame, "matrix bt601,") && infoHas(frame, "range full,");
-            seen = std::format("Info bt601/full {}, position {} (kept {}), playing {}", info,
-                               status().position, st->position, status().playing);
-            return info && st->position > 0 && status().position == st->position &&
-                   !status().playing;
+        [&frame, st, status, stream_uri](std::string& seen) {
+            const bool info = infoHas(frame, "matrix bt601,") && infoHas(frame, "range full,") &&
+                              infoHas(frame, "colour: BT.601 (PAL)");
+            const std::vector<std::string> expected{
+                "BT.709 (default)|BT.1886|Limited|1",
+                "BT.1886|Full (not standard)|1|Matrix BT.601, primaries BT.601-625 (not "
+                "converted)"};
+            const bool read = st->colourRead.standard == dvv::media::ColourPreset::Bt601Pal &&
+                              st->colourRead.range == dvv::media::ColourRange::Full;
+            const std::string uri = stream_uri();
+            const bool keys = uri.contains("colour=bt601-pal") && uri.contains("range=full");
+            std::string texts;
+            for (const std::string& text : st->textsRead) {
+                texts += std::format("'{}' ", text);
+            }
+            seen = std::format(
+                "Info bt601/full {}, no key first {}, texts {}, read {}, URI keys {}, position {} "
+                "(kept {}), playing {}",
+                info, st->flagRead, texts, read, keys, status().position, st->position,
+                status().playing);
+            return info && st->flagRead && st->textsRead == expected && read && keys &&
+                   st->position > 0 && status().position == st->position && !status().playing;
+        }));
+    steps.push_back(step(
+        "BT.2100 PQ with limited range writes colour=bt2100-pq and Info shows pq",
+        [&frame, st] {
+            st->textsRead.clear();
+            dialogHooks().format = [st](FormatDialog& dialog) {
+                using Control = FormatDialog::Control;
+                dialog.userPick(Control::Colour, "BT.2100");
+                dialog.userPick(Control::Range, 0);  // limited: the base's range, no range key
+                st->textsRead.push_back(dialog.colourOptionsText().utf8_string());
+                st->colourRead = dialog.choice().colour;
+            };
+            frame.execute(Command::Format);
+        },
+        [&frame, st, status, stream_uri](std::string& seen) {
+            const std::string uri = stream_uri();
+            const bool read = st->colourRead.standard == dvv::media::ColourPreset::Bt2100Pq &&
+                              st->colourRead.range == dvv::media::ColourRange::Unspecified;
+            const bool keys = uri.contains("colour=bt2100-pq") && !uri.contains("matrix=") &&
+                              !uri.contains("range=") && !uri.contains("transfer=");
+            const bool info = infoHas(frame, "curve pq,") && infoHas(frame, "colour: BT.2100 PQ");
+            const std::string options = st->textsRead.empty() ? "" : st->textsRead.front();
+            // D5R §2.2: the 4th status field names the PQ tone mapping.
+            const std::string mapping = frame.statusTexts()[3].utf8_string();
+            seen = std::format(
+                "options '{}', read {}, URI keys {}, Info pq {}, mapping '{}', position {} (kept "
+                "{})",
+                options, read, keys, info, mapping, status().position, st->position);
+            return options == "PQ|Limited|1" && read && keys && info &&
+                   mapping == "PQ → SDR tone mapping (1000 → 100 nits)" &&
+                   status().position == st->position;
+        }));
+    steps.push_back(step(
+        "open colour=bt709&range=full",
+        [&frame, st] {
+            std::string uri = frame.streams().front().resolvedUri;
+            const std::string_view pq = "colour=bt2100-pq";
+            if (const std::size_t at = uri.find(pq); at != std::string::npos) {
+                uri.replace(at, pq.size(), "colour=bt709&range=full");
+            }
+            frame.openUri(0, uri, st->position);
+        },
+        [st, status, stream_uri](std::string& seen) {
+            const std::string uri = stream_uri();
+            const bool keys = uri.contains("colour=bt709") && uri.contains("range=full") &&
+                              !uri.contains("bt2100-pq");
+            seen = std::format("URI keys {}, position {} (kept {})", keys, status().position,
+                               st->position);
+            return keys && status().position == st->position;
+        }));
+    steps.push_back(step(
+        "View > Format... reads colour=bt709&range=full back",
+        [&frame, st] {
+            st->colourRead = {};
+            st->textsRead.clear();
+            dialogHooks().format = [st](FormatDialog& dialog) {
+                st->textsRead.push_back(
+                    (dialog.colourText() + "|" + dialog.colourOptionsText()).utf8_string());
+                st->colourRead = dialog.choice().colour;  // OK writes the same keys
+            };
+            frame.execute(Command::Format);
+        },
+        [st, stream_uri](std::string& seen) {
+            const bool read = st->colourRead.standard == dvv::media::ColourPreset::Bt709 &&
+                              st->colourRead.range == dvv::media::ColourRange::Full;
+            const std::string shown = st->textsRead.empty() ? "" : st->textsRead.front();
+            const std::string uri = stream_uri();
+            const bool keys = uri.contains("colour=bt709") && uri.contains("range=full") &&
+                              !uri.contains("matrix=") && !uri.contains("transfer=");
+            seen =
+                std::format("shown '{}', read back bt709/full {}, URI keys {}", shown, read, keys);
+            return shown == "BT.709 (default)|BT.1886|Full (not standard)|1" && read && keys;
         }));
     steps.push_back(step(
         "drop a named file",
@@ -1115,6 +1628,471 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                    stream_is(16, 16, "gray") &&
                    frame.streams()[0].resolvedUri.find("clip.yuv") != std::string::npos;
         }));
+    // The user's picks run the real handlers and the enabling rules hold.
+    steps.push_back(step(
+        "View > Format... picks drive the colour options and the values line",
+        [&frame, st] {
+            st->textsRead.clear();
+            st->flagRead = true;
+            st->colourRead = {};
+            dialogHooks().format = [st](FormatDialog& dialog) {
+                using Control = FormatDialog::Control;
+                std::vector<std::string>& texts = st->textsRead;
+                const auto read = [&dialog, &texts] {
+                    texts.push_back((dialog.colourText() + "|" + dialog.colourOptionsText() + "|" +
+                                     dialog.colourValuesText())
+                                        .utf8_string());
+                };
+                const FormatChoice original = dialog.choice();  // gray 16x16, no colour key
+                read();  // 0: the default entry, the read-only curve, gray's full range
+                // A hidden control takes no pick: the curve is a choice for BT.2100 only.
+                st->flagRead = !dialog.userPick(Control::Curve, 0);
+                dialog.userPick(Control::Colour, "BT.2100");
+                read();  // 1: BT.2100 PQ, the range kept
+                dialog.userPick(Control::Curve, "HLG");
+                dialog.userPick(Control::Format, "yuv420p");
+                read();  // 2: HLG on YUV: the BT.2020 matrix, the range follows (limited)
+                // The unpicked range followed gray -> yuv420p: no range= key.
+                st->colourRead = dialog.choice().colour;
+                dialog.userPick(Control::Format, "rgb24");
+                dialog.userPick(Control::Colour, "BT.709 (default)");
+                read();  // 3: RGB: no matrix
+                dialog.userPick(Control::Format, "yuv420p");
+                dialog.userPick(Control::Size, "720x576 (SD 625)");
+                texts.push_back(dialog.colourHintText().utf8_string());  // 4: the size hint
+                dialog.userPick(Control::Size, "1280x720 (720p)");
+                texts.push_back(dialog.colourHintText().utf8_string());  // 5: none
+                const FormatChoice sized = dialog.choice();
+                texts.push_back(std::format("{}x{}", sized.width, sized.height));
+                dialog.userPick(Control::Fps, "29.97");
+                const dvv::media::Rational fps = dialog.choice().fps;  // the NTSC rule
+                texts.push_back(std::format("{}/{}", fps.num, fps.den));
+                // The dialog's size, logged once (not resizable, grows for its lines).
+                DVV_LOG_INFO("selftest: format dialog size {}x{}", dialog.GetSize().x,
+                             dialog.GetSize().y);
+                // The spins drive the size choice (wxEVT_SPINCTRL).
+                dialog.userSpin(false, 720);
+                dialog.userSpin(true, 576);
+                texts.push_back(dialog.sizeText().utf8_string());  // 8
+                // Auto detect guesses BT.601 (PAL) for 576 lines; OK writes it.
+                dialog.userAutoDetect(true);
+                texts.push_back(
+                    (dialog.colourText() + "|" + dialog.colourHintText()).utf8_string());
+                const ColourChoice guessed = dialog.choice().colour;
+                texts.push_back(std::format("{} {}",
+                                            guessed.standard == dvv::media::ColourPreset::Bt601Pal,
+                                            guessed.autoDetect));
+                dialog.userSpin(true, 720);  // the guess follows the height
+                texts.push_back(dialog.colourText().utf8_string());
+                dialog.userAutoDetect(false);  // off again: later dialogs start without it
+                texts.push_back(dialog.colourText().utf8_string());
+                dialog.setChoice(original);  // OK keeps the stream as it was
+            };
+            frame.execute(Command::Format);
+        },
+        [st, stream_is](std::string& seen) {
+            const std::vector<std::string>& t = st->textsRead;
+            std::string texts;
+            for (const std::string& text : t) {
+                texts += std::format("'{}' ", text);
+            }
+            const bool hlg = st->colourRead.standard == dvv::media::ColourPreset::Bt2100Hlg &&
+                             st->colourRead.range == dvv::media::ColourRange::Unspecified;
+            seen = std::format("hidden pick refused {}, HLG without range= {}, texts {}",
+                               st->flagRead, hlg, texts);
+            // The options text and the values line of one pick, joined explicitly.
+            const auto row = [](std::string_view options, std::string_view values) {
+                return std::string(options) + std::string(values);
+            };
+            const std::vector<std::string> expected{
+                row("BT.709 (default)|BT.1886|Full|1|",
+                    "Matrix not used (gray format), primaries BT.709 (not converted)"),
+                row("BT.2100|PQ|Full|1|",
+                    "Matrix not used (gray format), primaries BT.2020 (not converted)"),
+                "BT.2100|HLG|Limited|1|Matrix BT.2020 NCL, primaries BT.2020 (not converted)",
+                row("BT.709 (default)|BT.1886|Full|1|",
+                    "Matrix not used (RGB format), primaries BT.709 (not converted)"),
+                "SD size: BT.601 is common for SD",
+                "",
+                "1280x720",
+                "30000/1001",
+                "720x576 (SD 625)",
+                "BT.601 (PAL) (auto)|",
+                "true true",
+                "BT.709 (auto)",
+                "BT.709 (default)"};
+            return st->flagRead && hlg && t == expected && stream_is(16, 16, "gray");
+        }));
+    // D5 T5b: the size presets follow the spins; Load JSON of a clip description fills the groups.
+    steps.push_back(step(
+        "View > Format... size presets and Load JSON of a clip description",
+        [&frame, st] {
+            const auto file = st->dir / "desc.json";
+            const std::string_view json =
+                R"({"rawreelClip": 1, "format": "gray", "size": {"width": 32, "height": 8},)"
+                R"( "frameRate": "30000/1001",)"
+                R"( "colour": {"standard": "bt601-pal", "range": "limited"}})";
+            std::ofstream(file, std::ios::binary)
+                .write(json.data(), static_cast<std::streamsize>(json.size()));
+            st->textsRead.clear();
+            st->choiceRead = {};
+            dialogHooks().format = [st,
+                                    path = dvv::media::utf8FromPath(file)](FormatDialog& dialog) {
+                FormatChoice qcif = dialog.choice();
+                qcif.width = 176;
+                qcif.height = 144;
+                dialog.setChoice(qcif);
+                st->textsRead.push_back(dialog.sizeText().utf8_string());
+                dialog.loadJson(path);
+                st->textsRead.push_back(dialog.sizeText().utf8_string());
+                const dvv::media::Rational fps = dialog.choice().fps;
+                st->textsRead.push_back(std::format("{}/{}", fps.num, fps.den));
+                st->textsRead.push_back(dialog.errorText().utf8_string());
+                st->choiceRead = dialog.choice();
+            };
+            frame.execute(Command::Format);
+        },
+        [st, stream_is, stream_uri](std::string& seen) {
+            const std::vector<std::string> expected{"176x144 (QCIF)", "Custom", "30000/1001", ""};
+            const FormatChoice& read = st->choiceRead;
+            const bool filled = read.format == "gray" && read.width == 32 && read.height == 8 &&
+                                read.fps == dvv::media::Rational{30000, 1001} &&
+                                read.colour.standard == dvv::media::ColourPreset::Bt601Pal &&
+                                read.colour.range == dvv::media::ColourRange::Limited;
+            const std::string uri = stream_uri();
+            // Gray's range is full without a key, so the limited range is written.
+            const bool keys = uri.contains("colour=bt601-pal") && uri.contains("range=limited") &&
+                              uri.contains("fps=30000/1001");
+            seen = std::format("texts '{}', filled {}, gray 32x8 {}, URI keys {}",
+                               st->textsRead.empty() ? "" : st->textsRead.front(), filled,
+                               stream_is(32, 8, "gray"), keys);
+            return st->textsRead == expected && filled && stream_is(32, 8, "gray") && keys;
+        }));
+    // D5R §4.4: the header of a size-only name, the Custom pixel-format entry and its width
+    // rule (the 641 case), and that a candidate pick drops a stale Load JSON error.
+    steps.push_back(step(
+        "the format dialog header, the Custom (from json) entry and the stale-error drop",
+        [&frame, st] {
+            const auto file = st->dir / "size_16x16.yuv";
+            writeFile(file, 768, '\x80');  // 2 frames of yuv420p 16x16
+            // A copy of v210 (6-pixel groups: the width must be a multiple of its widthMultiple).
+            const dvv::media::FormatId v210 = dvv::media::findFormat("v210").value();
+            dvv::json::Value format = dvv::media::formatToJson(v210);
+            format["name"] = "selftest_v210";
+            const std::string text = dvv::json::dump(format);
+            std::ofstream(st->dir / "custom.json", std::ios::binary)
+                .write(text.data(), static_cast<std::streamsize>(text.size()));
+            std::ofstream(st->dir / "bad-format.json", std::ios::binary).write("{\"name\": 1}", 11);
+            st->textsRead.clear();
+            st->flagRead = false;
+            st->dialogs0 = frame.formatDialogsShown();
+            dialogHooks().format = [st, dir = st->dir](FormatDialog& dialog) {
+                using Control = FormatDialog::Control;
+                std::vector<std::string>& texts = st->textsRead;
+                texts.push_back(dialog.GetTitle().utf8_string());
+                const wxString header = dialog.headerText();
+                const wxString path = header.AfterFirst('|').BeforeFirst('|');
+                texts.push_back((header.BeforeFirst('|') + "|" +
+                                 (path.EndsWith("size_16x16.yuv") ? wxString("path") : path) + "|" +
+                                 header.AfterFirst('|').AfterFirst('|').BeforeLast('|'))
+                                    .utf8_string());
+                texts.emplace_back(header.AfterLast('\n').utf8_string());  // the tooltip's end
+                // A bad pixel-format JSON: the red line, no entry.
+                dialog.loadJson(dvv::media::utf8FromPath(dir / "bad-format.json"));
+                texts.emplace_back(dialog.errorText().empty() ? "no error" : "error");
+                texts.push_back(dialog.formatLabel().BeforeFirst('|').utf8_string());
+                dialog.loadJson(dvv::media::utf8FromPath(dir / "custom.json"));
+                const wxString label = dialog.formatLabel();
+                texts.push_back(
+                    (label.BeforeFirst('|') + "|" +
+                     (label.AfterFirst('|').EndsWith("custom.json") ? "path" : "no path"))
+                        .utf8_string());
+                // The width spin drives the geometry check as the user does.
+                const bool spun641 = dialog.userSpin(false, 641);
+                texts.emplace_back(!spun641                     ? "641 not spun"
+                                   : dialog.errorText().empty() ? "641 accepted"
+                                                                : "641 refused");
+                const bool spun642 = dialog.userSpin(false, 642);
+                texts.push_back((spun642 ? "642 " : "642 not spun ") +
+                                dialog.errorText().utf8_string());
+                st->flagRead = dialog.choice().format.starts_with('@');
+                // A Load JSON error goes when the user picks a candidate.
+                dialog.loadJson(dvv::media::utf8FromPath(dir / "bad-format.json"));
+                const bool picked = dialog.userPick(Control::Candidate, 0);
+                texts.push_back(
+                    std::format("picked {} '{}'", picked, dialog.errorText().utf8_string()));
+            };
+            dropFiles(frame.viewport(), {file});
+        },
+        [&frame, st, stream_is](std::string& seen) {
+            std::string texts;
+            for (const std::string& text : st->textsRead) {
+                texts += std::format("'{}' ", text);
+            }
+            const std::vector<std::string> expected{
+                "Format of the stream - size_16x16.yuv",
+                std::string("Size detected from the file name; format and frame rate not "
+                            "detected|path|") +
+                    "Name the file <name>_WxH[_fmt][_fps]|Example: clip_1920x1080_yuv420p_25.yuv",
+                "Or put a clip description size_16x16.yuv.json next to the file.",
+                "error",
+                "yuv420p",
+                "Custom (from custom.json)|path",
+                "641 refused",
+                "642 ",
+                "picked true ''"};
+            seen = std::format("dialogs {}, custom written {}, texts {}",
+                               frame.formatDialogsShown() - st->dialogs0, st->flagRead, texts);
+            return st->flagRead && st->textsRead == expected &&
+                   frame.formatDialogsShown() > st->dialogs0 && stream_is(16, 16, "yuv420p");
+        }));
+    // A long name without a size (the title cut in the middle, "Format
+    // not detected: <reason>", the Log line), a non-file title, and Auto detect on the open path.
+    steps.push_back(step(
+        "drop a long name without a size with Auto detect on",
+        [&frame, st] {
+            const auto file = st->dir / "a_clip_with_a_rather_long_name_and_no_size.yuv";
+            writeFile(file, 720 * 576 * 3 / 2, '\x80');  // 1 frame of yuv420p 720x576
+            st->textsRead.clear();
+            st->flagRead = false;
+            st->dialogs0 = frame.formatDialogsShown();
+            dialogHooks().format = [st](FormatDialog& dialog) {
+                using Control = FormatDialog::Control;
+                std::vector<std::string>& texts = st->textsRead;
+                texts.push_back(dialog.GetTitle().utf8_string());
+                texts.push_back(dialog.headerText().BeforeFirst('|').utf8_string());
+                texts.push_back(
+                    formatDialogTitle("synthetic:gradient?fmt=gray&size=16x16").utf8_string());
+                dialog.userPick(Control::Format, "yuv420p");
+                dialog.userPick(Control::Size, "720x576 (SD 625)");
+                dialog.userAutoDetect(true);  // kept for the session: the next dialog starts on
+                st->flagRead = dialog.autoDetect();
+            };
+            dropFiles(frame.viewport(), {file});
+        },
+        [&frame, st, stream_is, stream_uri](std::string& seen) {
+            const std::vector<std::string>& t = st->textsRead;
+            const std::string detection = t.size() > 1 ? t[1] : std::string();
+            const bool reason = detection.starts_with("Format not detected: ") &&
+                                detection.size() > std::string_view("Format not detected: ").size();
+            const wxString log = frame.logPanel().text();
+            const bool logged = !detection.empty() && log.Contains("needs a format") &&
+                                log.Contains(wxString::FromUTF8(detection));
+            const std::string uri = stream_uri();
+            const std::vector<std::string> titles{
+                "Format of the stream - a_clip_with_a_rathe...me_and_no_size.yuv",
+                "Format of the stream - synthetic:gradient"};
+            const bool titled = t.size() == 3 && t[0] == titles[0] && t[2] == titles[1];
+            seen = std::format("titles {} ('{}'), detection '{}', log line {}, auto {}, URI '{}'",
+                               titled, t.empty() ? "" : t[0], detection, logged, st->flagRead, uri);
+            return titled && reason && logged && st->flagRead && uri.contains("colour=bt601-pal") &&
+                   stream_is(720, 576, "yuv420p");
+        }));
+    steps.push_back(step(
+        "the next format dialog starts with Auto detect on",
+        [&frame, st] {
+            st->flagRead = false;
+            st->textsRead.clear();
+            dialogHooks().format = [st](FormatDialog& dialog) {
+                st->flagRead = dialog.autoDetect();
+                dialog.userAutoDetect(false);  // off again for the later steps
+                st->textsRead.push_back(dialog.autoDetect() ? "on" : "off");
+            };
+            frame.execute(Command::Format);
+        },
+        [st, stream_is](std::string& seen) {
+            const bool off = st->textsRead == std::vector<std::string>{"off"};
+            seen = std::format("started on {}, turned off {}", st->flagRead, off);
+            return st->flagRead && off && stream_is(720, 576, "yuv420p");
+        }));
+    // A colour-only sidecar does not claim the format the file name gave.
+    steps.push_back(step(
+        "drop a named file with a colour-only sidecar",
+        [&frame, st] {
+            const auto file = st->dir / "m3_16x16_yuv420p.yuv";
+            writeFile(file, 768, '\x80');  // 2 frames of yuv420p 16x16
+            const std::string_view json = R"({"rawreelClip": 1, "colour": {"standard": "bt2020"}})";
+            std::ofstream(st->dir / "m3_16x16_yuv420p.yuv.json", std::ios::binary)
+                .write(json.data(), static_cast<std::streamsize>(json.size()));
+            st->dialogs0 = frame.formatDialogsShown();
+            dropFiles(frame.viewport(), {file});
+        },
+        [&frame, st, stream_is](std::string& seen) {
+            const bool bt2020 = !frame.streams().empty() && frame.streams()[0].colour.standard ==
+                                                                dvv::media::ColourPreset::Bt2020;
+            seen =
+                std::format("yuv420p 16x16 {}, bt2020 {}, dialogs {}", stream_is(16, 16, "yuv420p"),
+                            bt2020, frame.formatDialogsShown() - st->dialogs0);
+            return stream_is(16, 16, "yuv420p") && bt2020 &&
+                   frame.formatDialogsShown() == st->dialogs0;
+        }));
+    steps.push_back(step(
+        "View > Format... credits the file name, not the colour-only sidecar",
+        [&frame, st] {
+            st->textsRead.clear();
+            dialogHooks().format = [st](FormatDialog& dialog) {
+                st->textsRead.push_back(dialog.headerText().BeforeFirst('|').utf8_string());
+            };
+            frame.execute(Command::Format);
+        },
+        [st, stream_is](std::string& seen) {
+            const std::string line = st->textsRead.empty() ? "-" : st->textsRead.front();
+            seen = std::format("detection '{}'", line);
+            return line.contains("file name") && !line.contains(".json") &&
+                   stream_is(16, 16, "yuv420p");
+        }));
+    steps.push_back(step(
+        "drop a Y4M file",
+        [&frame, st] {
+            const auto file = st->dir / "clip.y4m";
+            std::string y4m = "YUV4MPEG2 W16 H16 F25:1 Ip A1:1 C420jpeg\n";
+            for (int i = 0; i < 2; ++i) {
+                y4m += "FRAME\n" + std::string(384, '\x50');
+            }
+            std::ofstream(file, std::ios::binary)
+                .write(y4m.data(), static_cast<std::streamsize>(y4m.size()));
+            st->dialogs0 = frame.formatDialogsShown();
+            dropFiles(frame.viewport(), {file});
+        },
+        [&frame, st, stream_is](std::string& seen) {
+            const auto& streams = frame.streams();
+            const bool y4m = streams.size() == 1 && streams[0].info.provider == "y4m";
+            seen = std::format("yuv420p 16x16 {}, y4m {}, dialogs {}", stream_is(16, 16, "yuv420p"),
+                               y4m, frame.formatDialogsShown() - st->dialogs0);
+            return stream_is(16, 16, "yuv420p") && y4m &&
+                   frame.formatDialogsShown() == st->dialogs0;
+        }));
+    steps.push_back(step(
+        "View > Format... of a Y4M stream locks format, size and frame rate",
+        [&frame, st] {
+            const auto file = st->dir / "colour.json";
+            const std::string_view json = R"({"rawreelClip": 1, "size": {"width": 8, "height": 8},)"
+                                          R"( "colour": {"standard": "bt2020"}})";
+            std::ofstream(file, std::ios::binary)
+                .write(json.data(), static_cast<std::streamsize>(json.size()));
+            const std::string_view size_only =
+                R"({"rawreelClip": 1, "size": {"width": 8, "height": 8}})";
+            std::ofstream(st->dir / "size-only.json", std::ios::binary)
+                .write(size_only.data(), static_cast<std::streamsize>(size_only.size()));
+            std::ofstream(st->dir / "broken.json", std::ios::binary).write("{", 1);
+            st->textsRead.clear();
+            st->choiceRead = {};
+            st->lockedRead = false;
+            st->flagRead = false;
+            dialogHooks().format = [st,
+                                    path = dvv::media::utf8FromPath(file)](FormatDialog& dialog) {
+                using Control = FormatDialog::Control;
+                std::vector<std::string>& texts = st->textsRead;
+                st->lockedRead = dialog.fieldsLocked();
+                st->flagRead = dialog.colourTakesInitialFocus();  // Enter presses OK
+                texts.push_back(dialog.lockedText().utf8_string());
+                // The Y4M header gives no colour: BT.709 by default, the range as the header says.
+                texts.push_back(
+                    (dialog.colourText() + "|" + dialog.colourOptionsText()).utf8_string());
+                // Load JSON never shrinks a dialog the user enlarged.
+                const wxSize enlarged = dialog.GetSize() + dialog.FromDIP(wxSize(120, 160));
+                dialog.SetSize(enlarged);
+                dialog.loadJson(
+                    dvv::media::utf8FromPath(st->dir / "size-only.json"));  // no colour group
+                texts.push_back(dialog.noteText().utf8_string());
+                dialog.loadJson(path);
+                texts.push_back(dialog.noteText().utf8_string());
+                const wxSize after = dialog.GetSize();
+                texts.push_back(after.x >= enlarged.x && after.y >= enlarged.y
+                                    ? std::string("size kept")
+                                    : std::format("shrunk {}x{} -> {}x{}", enlarged.x, enlarged.y,
+                                                  after.x, after.y));
+                st->choiceRead = dialog.choice();
+                // A Load JSON error goes when the user changes a control.
+                dialog.loadJson(dvv::media::utf8FromPath(st->dir / "broken.json"));
+                texts.emplace_back(dialog.errorText().empty() ? "no error" : "error");
+                dialog.userPick(Control::Colour, "BT.601 (NTSC)");
+                texts.push_back((dialog.errorText() + "|" + dialog.colourText()).utf8_string());
+                // D5R §4.4: the title and the detection line of a Y4M stream, no template lines.
+                const wxString header = dialog.headerText();
+                texts.push_back((dialog.GetTitle() + "|" + header.BeforeFirst('|') + "|" +
+                                 header.AfterFirst('|').AfterFirst('|'))
+                                    .utf8_string());
+                // Back to the standard of the JSON, which OK writes.
+                dialog.userPick(Control::Colour, "BT.2020");
+            };
+            frame.execute(Command::Format);
+        },
+        [st, stream_is, stream_uri](std::string& seen) {
+            const std::string_view prefix = "Format, size and frame rate come from the file; ";
+            const std::vector<std::string> expected{
+                "yuv420p  (from file)|16x16 @ 25  (from file)",  // D5R §4.4: one Size text
+                "BT.709 (default)|BT.1886|Limited|1",  // no XCOLORRANGE: limited by default
+                std::format("{}nothing was loaded.", prefix),
+                std::format("{}only the colour was loaded.", prefix),
+                "size kept",
+                "error",
+                "|BT.601 (NTSC)",  // a pick drops the Load JSON error
+                "Format of the stream - clip.y4m|Format detected from the Y4M header|||"};
+            const FormatChoice& read = st->choiceRead;
+            const bool colour_only = read.width == 16 && read.height == 16 &&
+                                     read.colour.standard == dvv::media::ColourPreset::Bt2020;
+            const std::string uri = stream_uri();
+            std::string texts;
+            for (const std::string& text : st->textsRead) {
+                texts += std::format("'{}' ", text);
+            }
+            seen = std::format("locked {}, Colour first {}, texts {}, colour only {}, URI '{}'",
+                               st->lockedRead, st->flagRead, texts, colour_only, uri);
+            return st->lockedRead && st->flagRead && st->textsRead == expected && colour_only &&
+                   uri.contains("colour=bt2020") && stream_is(16, 16, "yuv420p");
+        }));
+    // A gray Y4M with XCOLORRANGE=LIMITED keeps its range under BT.709 (the default
+    // range of gray is full).
+    steps.push_back(step(
+        "drop a gray Y4M with XCOLORRANGE=LIMITED",
+        [&frame, st] {
+            const auto file = st->dir / "gray.y4m";
+            std::string y4m = "YUV4MPEG2 W16 H16 F25:1 Ip A1:1 Cmono XCOLORRANGE=LIMITED\n";
+            for (int i = 0; i < 2; ++i) {
+                y4m += "FRAME\n" + std::string(256, '\x50');
+            }
+            std::ofstream(file, std::ios::binary)
+                .write(y4m.data(), static_cast<std::streamsize>(y4m.size()));
+            dropFiles(frame.viewport(), {file});
+        },
+        [&frame, stream_is](std::string& seen) {
+            const auto& streams = frame.streams();
+            const bool y4m = streams.size() == 1 && streams[0].info.provider == "y4m";
+            seen = std::format("gray 16x16 {}, y4m {}", stream_is(16, 16, "gray"), y4m);
+            return stream_is(16, 16, "gray") && y4m;
+        }));
+    steps.push_back(step(
+        "gray Y4M LIMITED keeps its range under BT.709",
+        [&frame, st] {
+            st->textsRead.clear();
+            dialogHooks().format = [st](FormatDialog& dialog) {
+                using Control = FormatDialog::Control;
+                std::vector<std::string>& texts = st->textsRead;
+                texts.push_back(
+                    (dialog.colourText() + "|" + dialog.colourOptionsText()).utf8_string());
+                dialog.userPick(Control::Colour, "BT.2020");
+                dialog.userPick(Control::Colour, "BT.709 (default)");
+                texts.push_back(
+                    (dialog.colourText() + "|" + dialog.colourOptionsText()).utf8_string());
+                st->choiceRead = dialog.choice();
+            };
+            frame.execute(Command::Format);
+        },
+        [&frame, st, stream_is](std::string& seen) {
+            const std::vector<std::string> expected{"BT.709 (default)|BT.1886|Limited|1",
+                                                    "BT.709 (default)|BT.1886|Limited|1"};
+            const std::string info = frame.infoPanel().text().utf8_string();
+            const bool limited = info.contains("range limited");
+            std::string texts;
+            for (const std::string& text : st->textsRead) {
+                texts += std::format("'{}' ", text);
+            }
+            seen = std::format("texts {}, Info range limited {}", texts, limited);
+            return st->textsRead == expected && !st->choiceRead.colour.standard &&
+                   st->choiceRead.colour.range == dvv::media::ColourRange::Unspecified && limited &&
+                   stream_is(16, 16, "gray");
+        }));
     steps.push_back(step(
         "drop two files",
         [&frame, st] {
@@ -1130,6 +2108,99 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             seen = std::format("gray 32x16 {}, log line {}", stream_is(32, 16, "gray"), logged);
             return stream_is(32, 16, "gray") && logged;
         }));
+    // §8.5: an FFV1/MKV drop opens through the ffmpeg provider without a format dialog.
+    wxString mkv_text;
+    const bool mkv_named = wxGetEnv("RAWREEL_TEST_MKV", &mkv_text) && !mkv_text.empty();
+    const std::filesystem::path mkv =
+        mkv_named ? dvv::media::pathFromUtf8(mkv_text.utf8_string()) : std::filesystem::path{};
+    std::error_code mkv_error;
+    const bool mkv_exists = mkv_named && std::filesystem::is_regular_file(mkv, mkv_error);
+    if (test.app().startup().ffmpeg.core && mkv_exists) {
+        steps.push_back(step(
+            "drop the FFV1 MKV",
+            [&frame, st, mkv] {
+                st->dialogs0 = frame.formatDialogsShown();
+                st->presented0 = presented(frame.viewport());
+                dropFiles(frame.viewport(), {mkv});
+            },
+            [&frame, st, stream_is](std::string& seen) {
+                const auto& streams = frame.streams();
+                const bool ffmpeg =
+                    streams.size() == 1 && streams[0].resolvedUri.contains("impl=ffmpeg");
+                // The Session clears the display before streamsChanged, so a shown frame of the
+                // current epoch is an MKV frame (presented alone grows with every tick).
+                const DisplaySnapshot snapshot = frame.viewport().display()->snapshot();
+                const bool shown =
+                    snapshot.frames.count == 1 && snapshot.frames.epoch == frame.viewport().epoch();
+                seen = std::format(
+                    "yuv420p10le 64x48 {}, URI '{}', dialogs {} ({} at the start), shown {}",
+                    stream_is(64, 48, "yuv420p10le"),
+                    streams.empty() ? "-" : streams[0].resolvedUri, frame.formatDialogsShown(),
+                    st->dialogs0, shown);
+                return stream_is(64, 48, "yuv420p10le") && ffmpeg &&
+                       frame.formatDialogsShown() == st->dialogs0 && shown &&
+                       presented(frame.viewport()) > st->presented0;
+            }));
+        // View > Format on the locked MKV, OK without a change reopens it unchanged.
+        steps.push_back(step(
+            "View > Format... OK on the locked MKV",
+            [&frame, st] {
+                st->textsRead.clear();
+                st->lockedRead = false;
+                st->dialogs0 = frame.formatDialogsShown();
+                dialogHooks().format = [st](FormatDialog& dialog) {
+                    st->lockedRead = dialog.fieldsLocked();
+                    st->textsRead.push_back(dialog.lockedText().utf8_string());
+                    st->textsRead.push_back(dialog.colourText().utf8_string());
+                    st->choiceRead = dialog.choice();
+                };
+                frame.execute(Command::Format);
+            },
+            [&frame, st, stream_is, stream_uri](std::string& seen) {
+                const std::string uri = stream_uri();
+                const bool no_key = !st->choiceRead.colour.standard && !uri.contains("colour=");
+                std::string texts;
+                for (const std::string& text : st->textsRead) {
+                    texts += std::format("'{}' ", text);
+                }
+                seen = std::format("locked {}, texts {}, no key {}, URI '{}'", st->lockedRead,
+                                   texts, no_key, uri);
+                const std::vector<std::string> expected{
+                    "yuv420p10le  (from file)|64x48 @ 25  (from file)", "BT.709 (from file)"};
+                return st->lockedRead && st->textsRead == expected && no_key &&
+                       frame.formatDialogsShown() > st->dialogs0 &&
+                       stream_is(64, 48, "yuv420p10le") && uri.contains("impl=ffmpeg");
+            }));
+        steps.push_back(step(
+            "play the MKV 5 frames", [&frame] { frame.execute(Command::PlayPause); },
+            [status](std::string& seen) {
+                seen = std::format("position {}", status().position);
+                return status().position >= 5;
+            }));
+        steps.push_back(step(
+            "pause the MKV",
+            [&frame, status] {
+                if (status().playing) {
+                    frame.execute(Command::PlayPause);
+                }
+            },
+            [status](std::string& seen) {
+                seen = std::format("playing {}", status().playing);
+                return !status().playing;
+            }));
+    } else if (ffmpegRequired()) {
+        std::string reason;
+        if (!test.app().startup().ffmpeg.core) {
+            reason = ffmpegStatusLine(test.app().startup().ffmpeg);
+        } else if (!mkv_named) {
+            reason = "RAWREEL_TEST_MKV is not set";
+        } else {
+            reason = std::format("RAWREEL_TEST_MKV names no file: {}", mkv_text.utf8_string());
+        }
+        steps.push_back(ffmpegRequiredStep(std::move(reason)));
+    } else {
+        DVV_LOG_INFO("selftest: FFmpeg or RAWREEL_TEST_MKV not available, MKV steps skipped");
+    }
     steps.push_back(step(
         "close stream and clean up", [&frame] { frame.execute(Command::CloseStreams); },
         [&frame, st](std::string& seen) {
@@ -1159,7 +2230,8 @@ std::vector<SelfTestStep> perfScenario(SelfTest& test) {
         std::uint64_t presented = 0, overwritten = 0, stalls = 0;
         std::string bottleneck = "none";
         ShowTiming timing;
-        std::mt19937_64 random{1};
+        // Fixed seed on purpose: the perf seek pattern must be the same in every run.
+        std::mt19937_64 random{1};  // NOLINT(bugprone-random-generator-seed)
         std::int64_t target = 0;
         Clock::time_point seekStart{};
         std::vector<double> seekMs;

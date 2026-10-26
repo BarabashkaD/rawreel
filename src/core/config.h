@@ -1,6 +1,6 @@
 #pragma once
 
-// The application config file (M3.1 U-IO2): an optional rawreel.json in the directory of the
+// The application config file (M3.1): an optional rawreel.json in the directory of the
 // running executable (rawreel-gui, rawreel-cli), or the file that --config names. A typed loader,
 // wx-free, so a GUI editor can use it later. The keys:
 //
@@ -9,7 +9,7 @@
 // A missing file next to the executable means the defaults; a missing --config file, an
 // unreadable or invalid file, or a bad value, means one warning in the log and the defaults.
 // Unknown keys are ignored, so a future save must merge into the original JSON (keep unknown
-// keys) and report a folder it cannot write (U-IO2-config).
+// keys) and report a folder it cannot write.
 
 #include <filesystem>
 #include <optional>
