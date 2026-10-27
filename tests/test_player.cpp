@@ -327,6 +327,30 @@ TEST_SUITE("core") {
         CHECK(p.status(T0 + 20 * P).stalls == 0);
     }
 
+    TEST_CASE("player: a step past either end wraps with loop and stops there without") {
+        const PlayerConfig clip{.length = 20, .fps = {25, 1}, .window = 8, .inflight = 4};
+        PlayerLogic p(clip);
+        Feeder feeder;
+        feeder.reset(p, clip, 19);
+        feeder.fill(p, T0);
+        CHECK(p.takeShow() == 19);
+        p.step(1);
+        CHECK(p.target() == 19);  // no loop: the last frame stays
+        p.setLoop(true);
+        p.step(1);
+        CHECK(p.target() == 0);
+        p.step(-1);
+        CHECK(p.target() == 19);
+        p.step(10);
+        CHECK(p.target() == 9);
+        p.step(-10);
+        CHECK(p.target() == 19);
+        p.setLoop(false);
+        p.seek(0);
+        p.step(-1);
+        CHECK(p.target() == 0);  // no loop: the first frame stays
+    }
+
     TEST_CASE("player: a failure ahead of the position pauses when it is due") {
         PlayerLogic p(config(100));
         Feeder feeder;

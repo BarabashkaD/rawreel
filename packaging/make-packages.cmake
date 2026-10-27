@@ -1,9 +1,10 @@
 # Builds the v1.0 packages from a Release build tree (design M4 v2 D16-D19, D27):
 #   cmake -DBUILD_DIR=<rawreel build dir> [-DCONFIG=Release] -DOUT_DIR=<dir> [-DWORK_DIR=<dir>]
 #         [-DSOURCES=ON -DFFMPEG_COMMIT_FILE=<file>] -P packaging/make-packages.cmake
-# Runs CPack (component rawreel), names the zip rawreel-<v>-windows-x64.zip, builds the symbols zip
-# and, with SOURCES=ON when FFmpeg is bundled, the third-party sources archive; writes
-# <OUT_DIR>/package-info-windows.cmake (read by package-smoke.cmake; no absolute paths).
+# Runs CPack (component rawreel), names the package rawreel-<v>-windows-x64.zip or
+# rawreel-<v>-linux-x64.tar.xz, builds the symbols archive (-symbols.zip or -symbols.tar.xz) and,
+# with SOURCES=ON (Windows only) when FFmpeg is bundled, the third-party sources archive; writes
+# <OUT_DIR>/package-info-<platform>.cmake (read by package-smoke.cmake; no absolute paths).
 cmake_minimum_required(VERSION 3.25)
 
 function(fail check)
@@ -44,9 +45,19 @@ if(NOT EXISTS "${RAWREEL_GUI_EXE}")
 endif()
 
 set(version "${RAWREEL_VERSION}")
-set(package "${RAWREEL_PACKAGE_NAME}.${RAWREEL_EXTENSION}")
-set(symbols "rawreel-${version}-${RAWREEL_PLATFORM}-x64-symbols.zip")
+rawreel_package_files(VERSION "${version}" PLATFORM "${RAWREEL_PLATFORM}" PACKAGE package
+                      SYMBOLS symbols CPACK cpack_name EXTENSION extension GENERATOR generator
+                      ERRORS errors)
+if(errors)
+    fail("packaging-info" "${errors}")
+endif()
 set(sources "rawreel-${version}-third-party-sources.tar.xz")
+# The Windows job builds the one sources archive; it serves both packages (the same custom_ffmpeg
+# commit).
+if(SOURCES AND NOT RAWREEL_PLATFORM STREQUAL "windows")
+    fail("sources" "SOURCES=ON is for the Windows package only (its sources archive also covers "
+         "the ${RAWREEL_PLATFORM} package)")
+endif()
 
 file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}" "${OUT_DIR}")
@@ -66,24 +77,37 @@ endif()
 execute_process(COMMAND "${cpack}" --config "${RAWREEL_CPACK_CONFIG}" -C "${CONFIG}"
                         -B "${WORK_DIR}/cpack"
                 RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE output)
-set(cpack_zip "${WORK_DIR}/cpack/rawreel-${version}.zip")
-if(NOT result EQUAL 0 OR NOT EXISTS "${cpack_zip}")
-    fail("cpack" "exit ${result}, no rawreel-${version}.zip:\n${output}")
+set(cpack_output "${WORK_DIR}/cpack/${cpack_name}")
+if(NOT result EQUAL 0 OR NOT EXISTS "${cpack_output}")
+    fail("cpack" "exit ${result}, no ${cpack_name}:\n${output}")
 endif()
-file(RENAME "${cpack_zip}" "${OUT_DIR}/${package}")
+file(RENAME "${cpack_output}" "${OUT_DIR}/${package}")
 set(outputs "${package}")
 
-# The symbols zip: the two PDBs at its root.
+# The symbols archive: the exes' symbol files (the PDBs, or the .debug files on Linux) at its root.
 set(symbol_names "")
-foreach(pdb IN LISTS RAWREEL_PDBS)
-    if(NOT EXISTS "${pdb}")
-        fail("symbols" "${pdb} is missing (build ${CONFIG} with packaging/symbols.cmake)")
+foreach(symbol_file IN LISTS RAWREEL_SYMBOL_FILES)
+    if(NOT EXISTS "${symbol_file}")
+        fail("symbols" "${symbol_file} is missing (build ${CONFIG} with packaging/symbols.cmake)")
     endif()
-    file(COPY "${pdb}" DESTINATION "${WORK_DIR}/symbols")
-    cmake_path(GET pdb FILENAME name)
+    if(extension STREQUAL "zip")
+        file(COPY "${symbol_file}" DESTINATION "${WORK_DIR}/symbols")
+    else()
+        # Mode 644 in the tar, whatever the build tree's file system reports.
+        file(COPY "${symbol_file}" DESTINATION "${WORK_DIR}/symbols"
+             FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
+    endif()
+    cmake_path(GET symbol_file FILENAME name)
     list(APPEND symbol_names "${name}")
 endforeach()
-execute_process(COMMAND "${CMAKE_COMMAND}" -E tar cf "${OUT_DIR}/${symbols}" --format=zip
+if(extension STREQUAL "zip")
+    set(tar_mode cf)
+    set(tar_format --format=zip)
+else()
+    set(tar_mode cJf)
+    set(tar_format "")
+endif()
+execute_process(COMMAND "${CMAKE_COMMAND}" -E tar ${tar_mode} "${OUT_DIR}/${symbols}" ${tar_format}
                         ${symbol_names}
                 WORKING_DIRECTORY "${WORK_DIR}/symbols" RESULT_VARIABLE result)
 if(NOT result EQUAL 0)
@@ -138,6 +162,14 @@ set(RAWREEL_LAME ${lame})
 set(RAWREEL_LAME_FILE \"${lame_file}\")
 set(RAWREEL_LICENCE_SUPPLEMENTS \"${RAWREEL_LICENCE_SUPPLEMENTS}\")
 ")
+# The ELF rules of package-smoke.cmake (Linux only, so the Windows file stays as it was).
+if(RAWREEL_PLATFORM STREQUAL "linux")
+    file(APPEND "${OUT_DIR}/package-info-${RAWREEL_PLATFORM}.cmake"
+"set(RAWREEL_LINUX_SYSTEM_SONAMES \"${RAWREEL_LINUX_SYSTEM_SONAMES}\")
+set(RAWREEL_LINUX_GLIBC_MAX \"${RAWREEL_LINUX_GLIBC_MAX}\")
+set(RAWREEL_LINUX_GLIBCXX_MAX \"${RAWREEL_LINUX_GLIBCXX_MAX}\")
+")
+endif()
 
 foreach(name IN LISTS outputs)
     file(SIZE "${OUT_DIR}/${name}" bytes)

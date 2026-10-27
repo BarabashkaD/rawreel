@@ -853,7 +853,20 @@ void MainFrame::checkLayoutLimits() {
     limits_check_pending_ = true;
     CallAfter([this] {  // after the Update() that sent the size event has finished
         limits_check_pending_ = false;
-        if (!closing_ && aui_.minimumClientSize() != applied_minimum_) {
+        if (closing_) {
+            return;
+        }
+        bool stale = aui_.minimumClientSize() != applied_minimum_;
+#if defined(__WXGTK__)
+        // wxGTK keeps a minimum as a window size, converted with the decoration size it knew at
+        // SetMinClientSize(); the menu bar, status bar and window decorations are known only after
+        // the map, so the minimum client size can end up below the one applied: apply it again.
+        const wxSize wanted =
+            applied_minimum_ + FromDIP(wxSize(LAYOUT_MARGIN_DIP, LAYOUT_MARGIN_DIP));
+        const wxSize effective = GetMinClientSize();
+        stale = stale || effective.x < wanted.x || effective.y < wanted.y;
+#endif
+        if (stale) {
             applyLayoutLimits();
         }
     });

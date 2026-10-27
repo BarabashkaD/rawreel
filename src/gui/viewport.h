@@ -94,6 +94,8 @@ private:
     std::shared_ptr<dvv::gpu::ExecutionContext> context_;
     std::uint64_t epoch_ = 0;
     std::uint64_t serial_ = 0;  // +1 for every presenter created
+    // wxGTK: the presenter's own X connection (ViewportWindow); released after the presenter.
+    std::shared_ptr<void> connection_;
     // Destroyed after the presenter: the presenter's frame provider uses the renderer.
     std::unique_ptr<ViewportRenderer> renderer_;
     std::unique_ptr<dvv::gpu::Presenter> presenter_;

@@ -1,0 +1,24 @@
+
+Version symbols section '.gnu.version' contains 251 entries:
+ Addr: 0x0000000000003c70  Offset: 0x00003c70  Link: 6 (.dynsym)
+  000:   0 (*local*)       2 (GLIBCXX_3.4)   3 (GLIBC_2.2.5)   3 (GLIBC_2.2.5)
+  004:   2 (GLIBCXX_3.4)   4 (GLIBCXX_3.4.19)    5 (GLIBCXX_3.4.15)    3 (GLIBC_2.2.5)
+  008:   3 (GLIBC_2.2.5)   6 (CXXABI_1.3.13)   7 (GLIBCXX_3.4.29)    8 (GLIBCXX_3.4.9)
+  02c:   a (GLIBCXX_3.4.26)   10 (CXXABI_1.3)    c (GLIBCXX_3.4.11)   11 (GLIBC_2.38)
+
+Version definition section '.gnu.version_d' contains 2 entries:
+ Addr: 0x0000000000000f00  Offset: 0x00000f00  Link: 4 (.dynstr)
+  000000: Rev: 1  Flags: BASE  Index: 1  Cnt: 1  Name: libexample.so.6
+  0x001c: Rev: 1  Flags: none  Index: 2  Cnt: 1  Name: LIBEXAMPLE_6
+
+Version needs section '.gnu.version_r' contains 3 entries:
+ Addr: 0x0000000000000f38  Offset: 0x00000f38  Link: 4 (.dynstr)
+  000000: Version: 1  File: libm.so.6  Cnt: 2
+  0x0010:   Name: GLIBC_2.29  Flags: none  Version: 6
+  0x0020:   Name: GLIBC_2.2.5  Flags: none  Version: 5
+  0x0030: Version: 1  File: libc.so.6  Cnt: 2
+  0x0040:   Name: GLIBC_2.38  Flags: none  Version: 7
+  0x0050:   Name: GLIBC_2.14  Flags: none  Version: 4
+  0x0060: Version: 1  File: libstdc++.so.6  Cnt: 2
+  0x0070:   Name: GLIBCXX_3.4.32  Flags: none  Version: 3
+  0x0080:   Name: GLIBCXX_3.4.9  Flags: none  Version: 8

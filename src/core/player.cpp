@@ -116,6 +116,11 @@ void PlayerLogic::step(std::int64_t delta) {
         return;
     }
     direction_ = delta > 0 ? 1 : -1;
+    if (config_.length && loop_) {
+        // With loop a step past either end continues from the other end, as playback does.
+        moveTo(floorMod(base() + delta, *config_.length));
+        return;
+    }
     moveTo(clampIndex(base() + delta));
 }
 

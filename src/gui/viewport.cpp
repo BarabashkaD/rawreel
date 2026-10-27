@@ -10,7 +10,6 @@
 #include <optional>
 #include <stdexcept>
 #include <utility>
-#include <variant>
 
 #include <wx/settings.h>
 
@@ -37,6 +36,11 @@ Viewport::Viewport(wxWindow* parent, std::shared_ptr<DisplayState> display)
     // wxWANTS_CHARS: the arrows and Space reach the frame's char hook instead of moving the focus.
     Create(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
            wxFULL_REPAINT_ON_RESIZE | wxWANTS_CHARS);
+#if defined(__WXGTK__)
+    // Vulkan presents to the window directly; GTK's double buffer would paint over it. Only after
+    // Create(): before it the widget does not exist and wx asserts.
+    SetDoubleBuffered(false);
+#endif
     Bind(wxEVT_PAINT, &Viewport::onPaint, this);
     Bind(wxEVT_SIZE, &Viewport::onSize, this);
     // R5: a click gives the viewport the keyboard focus (no other mouse handling in v1.0).
@@ -72,11 +76,10 @@ void Viewport::startPresenting() {
     if (!ready_ || !context_ || presenter_) {
         return;
     }
-    const dvv::platform::NativeWindow window = nativeWindowOf(*this);
-    if (std::holds_alternative<std::monostate>(window)) {
-        reportFailure(
-            dvv::makeError(dvv::Errc::Internal, "the viewport has no native Win32 or X11 window")
-                .error());
+    // On failure paths below, `window` (and its connection) is released after the failed creation.
+    dvv::Result<ViewportWindow> window = nativeWindowOf(*this);
+    if (!window) {
+        reportFailure(window.error());
         return;
     }
     if (std::exchange(fail_next_start_, false)) {
@@ -92,7 +95,7 @@ void Viewport::startPresenting() {
     renderer_ = std::move(*renderer);
     const std::uint64_t serial = ++serial_;
     auto presenter = context_->createPresenter(
-        {.window = window,
+        {.window = window->window,
          .extent = physicalClientSize(),
          .visible = IsShownOnScreen() && !iconized_,
          .frames =
@@ -126,6 +129,7 @@ void Viewport::startPresenting() {
         return;
     }
     presenter_ = std::move(*presenter);
+    connection_ = std::move(window->connection);
     last_failure_.reset();
     // Safe with a raw pointer: stopPresenting() clears the callback before the presenter dies,
     // and after setOnChanged({}) returns no callback runs (DisplayState binding rule).
@@ -153,8 +157,9 @@ void Viewport::stopPresenting() {
         {});  // first (M1b order): no callback can reach the presenter after this
     // reset() clears the member before ~Presenter runs, so a handler of this window that runs
     // while the presenter waits (Windows dispatches cross-thread sent messages) sees no presenter.
-    presenter_.reset();  // joins the presenter thread (about one frame)
-    renderer_.reset();   // after the presenter: its provider used the renderer
+    presenter_.reset();   // joins the presenter thread (about one frame)
+    renderer_.reset();    // after the presenter: its provider used the renderer
+    connection_.reset();  // after the presenter's surface and swapchain; the window still exists
 }
 
 void Viewport::detachStack() {
@@ -245,6 +250,7 @@ void Viewport::onMouseDown(wxMouseEvent& event) {
 void Viewport::onSize(wxSizeEvent& event) {
     // Only the presenter is resized: the renderer fits from the presenter's extent (D23).
     if (presenter_) {
+        syncNativeWindow(*this);
         presenter_->resize(physicalClientSize());
     }
     event.Skip();

@@ -31,6 +31,7 @@
 #include <wx/aboutdlg.h>  // wxAboutDialogInfo, before the generic dialog
 #include <wx/generic/aboutdlgg.h>
 // clang-format on
+#include <wx/collpane.h>
 #include <wx/settings.h>
 #include <wx/slider.h>
 #include <wx/textdlg.h>
@@ -112,6 +113,22 @@ bool isRealInput(wxEventType type) {
         wxEVT_MIDDLE_DCLICK, wxEVT_AUX1_DOWN,    wxEVT_AUX1_UP,      wxEVT_AUX2_DOWN,
         wxEVT_AUX2_UP,       wxEVT_MOUSEWHEEL,   wxEVT_CONTEXT_MENU, wxEVT_MENU};
     return std::ranges::find(REAL_INPUT_TYPES, type) != REAL_INPUT_TYPES.end();
+}
+
+// The About dialog's size from its creation until the hook clicks: a dialog that is resized,
+// re-laid out or hidden and shown again after it appears flashes on screen.
+struct AboutShowLog {
+    int shows = 0;           // wxEVT_SHOW events that showed it
+    wxSize atShow;           // its size when it was first shown
+    int sizeChanges = 0;     // size events with another size after it was first shown
+    wxSize last;             // its size at the last size event
+    bool closed = false;     // it was hidden before the hook ran
+    bool recording = false;  // set by showModal, cleared by the hook before its clicks
+};
+
+AboutShowLog& aboutShowLog() {
+    static AboutShowLog log;
+    return log;
 }
 
 }  // namespace
@@ -303,10 +320,23 @@ struct SmokeState {
     bool aboutHookRan = false;                     // about: the About hook ran
     bool aboutButtonsOk = false;                   // about: notices and copy buttons found
     bool aboutParentOk = false;                    // about: the dialog's parent is the frame
-    std::uint64_t about0 = 0;                      // about: aboutShown() at the step start
-    std::uint64_t presented0 = 0;                  // lavfi: frames presented at the step start
-    std::string streamUri;                         // Format... on lavfi: the stream's URI
-    std::uint64_t dialogs0 = 0;                    // Format... on lavfi: format dialogs shown
+    int aboutWidth = 0;             // about: the dialog's width before the Components pane opens
+    int aboutWidthExpanded = 0;     // about: its width (or wanted width) with the pane open
+    int aboutHeightOpen = 0;        // about: its client height with the pane open the first time
+    int aboutHeightClosed = 0;      // about: its client height with the pane closed again
+    int aboutHeightReopen = 0;      // about: its client height with the pane open again
+    wxSize aboutListReopen;         // about: the Components list size with the pane open again
+    int aboutListMin = 0;           // about: the list's minimum height (all its lines)
+    bool aboutListShown = false;    // about: the list is shown on screen with the pane open again
+    std::uint64_t about0 = 0;       // about: aboutShown() at the step start
+    int aboutShows = 0;             // about: times it was shown before the hook's clicks
+    int aboutSizeChanges = 0;       // about: size changes after it was first shown
+    bool aboutClosedEarly = false;  // about: it was hidden before the hook's clicks
+    wxSize aboutAtShow;             // about: its size when it was first shown
+    wxSize aboutAtHook;             // about: its size 1 s later
+    std::uint64_t presented0 = 0;   // lavfi: frames presented at the step start
+    std::string streamUri;          // Format... on lavfi: the stream's URI
+    std::uint64_t dialogs0 = 0;     // Format... on lavfi: format dialogs shown
 };
 
 std::optional<dvv::gpu::PresenterStats> statsOf(const Viewport& viewport) {
@@ -423,9 +453,16 @@ SelfTestStep shrinkStep(SelfTest* test, const SharedState& state) {
         const wxSize least = frame.FromDIP(wxSize(MIN_VIEWPORT_DIP.width, MIN_VIEWPORT_DIP.height));
         const bool minimal = std::cmp_greater_equal(now.width, least.x) &&
                              std::cmp_greater_equal(now.height, least.y);
-        seen = std::format("{}; client {}x{}, minimum client {}x{}, viewport minimum {}x{}",
-                           describe(viewport, *state), client.x, client.y, minimum.x, minimum.y,
-                           least.x, least.y);
+        const wxSize panel = frame.playerPanel().GetClientSize();
+        const wxSize centre = frame.playerPanel().minimumSize();
+        wxWindow& bar = frame.playerPanel().transportBar();
+        seen = std::format(
+            "{}; client {}x{}, minimum client {}x{}, viewport minimum {}x{}, player panel {}x{} "
+            "(minimum {}x{}), transport {}x{} (best {}x{}), frame {}x{} (minimum {}x{})",
+            describe(viewport, *state), client.x, client.y, minimum.x, minimum.y, least.x, least.y,
+            panel.x, panel.y, centre.x, centre.y, bar.GetSize().x, bar.GetSize().y,
+            bar.GetBestSize().x, bar.GetBestSize().y, frame.GetSize().x, frame.GetSize().y,
+            frame.GetMinSize().x, frame.GetMinSize().y);
         return stats && minimum.x > 0 && minimum.y > 0 && client.x >= minimum.x &&
                client.y >= minimum.y && minimal && stats->presentedExtent == now &&
                stats->swapchainsCreated > state->startSwapchains && now != state->previousSize;
@@ -485,7 +522,7 @@ SelfTestStep hideStep(SelfTest* test, const SharedState& state) {
 #if defined(_WIN32)
         test->frame().Iconize(true);
 #else
-        test->frame().Hide();  // compiled, not run in v1.0 (Windows only)
+        test->frame().Hide();  // X11: no WM-independent iconify (Xvfb has no WM); Hide/Show
 #endif
     };
     auto passed = [test, state](std::string& seen) {
@@ -505,7 +542,7 @@ SelfTestStep restoreStep(SelfTest* test, const SharedState& state) {
 #if defined(_WIN32)
         test->frame().Iconize(false);
 #else
-        test->frame().Show();
+        test->frame().Show();  // X11: no WM-independent iconify; Hide/Show
 #endif
     };
     auto passed = [test, state](std::string& seen) {
@@ -584,6 +621,9 @@ SelfTestStep appearanceStep(SelfTest* test) {
             return dark == (requested == Appearance::Dark);
         }
 #endif
+        // GTK: SetAppearance switches the GTK theme variant, but whether the theme has a dark
+        // variant and what wxSystemSettings then reports depend on the installed theme, so only
+        // the request is checked there (lenient by design).
         return true;
     };
     return {.name = "appearance", .start = {}, .passed = std::move(passed)};
@@ -743,6 +783,19 @@ SelfTestStep infobarStep(SelfTest* test) {
     return step("infobar", std::move(start), std::move(passed));
 }
 
+// The first wxCollapsiblePane under `window` (depth first), or nullptr.
+wxCollapsiblePane* findCollapsiblePane(wxWindow& window) {
+    for (wxWindow* child : window.GetChildren()) {
+        if (auto* pane = dynamic_cast<wxCollapsiblePane*>(child)) {
+            return pane;
+        }
+        if (wxCollapsiblePane* pane = findCollapsiblePane(*child)) {
+            return pane;
+        }
+    }
+    return nullptr;
+}
+
 // D29: Help -> About through its hook (the hook closes the dialog).
 SelfTestStep aboutStep(SelfTest* test, const std::shared_ptr<SmokeState>& state) {
     auto start = [test, state] {
@@ -757,6 +810,49 @@ SelfTestStep aboutStep(SelfTest* test, const std::shared_ptr<SmokeState>& state)
                 wxWindow::FindWindowByLabel(
                     wxString::FromUTF8(ABOUT_COPY_LABEL.data(), ABOUT_COPY_LABEL.size()),
                     &dialog) != nullptr;
+            // Opening the Components pane must not widen the dialog. Open, closed and open again,
+            // the list must show at its full height (a window manager resizes asynchronously, so
+            // each state gets 0.3 s to settle, as a user's clicks would).
+            if (auto* pane = findCollapsiblePane(dialog)) {
+                const auto wait = [] {
+                    for (int i = 0; i < 30; ++i) {
+                        wxTheApp->Yield(true);
+                        wxMilliSleep(10);
+                    }
+                };
+                // What a click does: the new state, then the changed event.
+                const auto click = [pane, &wait](bool open) {
+                    pane->Collapse(!open);
+                    wxCollapsiblePaneEvent changed(pane, pane->GetId(), !open);
+                    pane->GetEventHandler()->ProcessEvent(changed);
+                    wait();
+                };
+                // On screen first (about 1 s); the size it was shown with must still be its size.
+                for (int i = 0; i < 3; ++i) {
+                    wait();
+                }
+                AboutShowLog& log = aboutShowLog();
+                log.recording = false;
+                state->aboutShows = log.shows;
+                state->aboutSizeChanges = log.sizeChanges;
+                state->aboutClosedEarly = log.closed;
+                state->aboutAtShow = log.atShow;
+                state->aboutAtHook = dialog.GetSize();
+                state->aboutWidth = dialog.GetSize().x;
+                click(true);
+                state->aboutWidthExpanded = std::max(dialog.GetSize().x, dialog.GetBestSize().x);
+                state->aboutHeightOpen = dialog.GetClientSize().y;
+                click(false);
+                state->aboutHeightClosed = dialog.GetClientSize().y;
+                click(true);
+                state->aboutHeightReopen = dialog.GetClientSize().y;
+                const wxWindowList& inner = pane->GetPane()->GetChildren();
+                if (!inner.empty()) {
+                    state->aboutListReopen = inner.front()->GetSize();
+                    state->aboutListMin = inner.front()->GetMinSize().y;
+                    state->aboutListShown = inner.front()->IsShownOnScreen();
+                }
+            }
         };
         state->about0 = test->frame().aboutShown();
         test->frame().execute(Command::About);
@@ -780,11 +876,30 @@ SelfTestStep aboutStep(SelfTest* test, const std::shared_ptr<SmokeState>& state)
         // Only the checked facts, not the text (it names the FFmpeg version and the device).
         seen = std::format(
             "hook ran {}, parent the frame {}, buttons {}, About shown {} ({} at the step start), "
-            "lines {}, no FFmpeg path {}",
+            "lines {}, no FFmpeg path {}, width {} -> {} with Components open, height {} -> {} "
+            "closed -> {} open again, list {}x{} (min height {}) shown {}; at open: shown {} "
+            "time(s), "
+            "hidden early {}, {}x{} when shown -> {}x{} after about 1 s, {} size change(s)",
             state->aboutHookRan, state->aboutParentOk, state->aboutButtonsOk, frame.aboutShown(),
-            state->about0, lines, no_path);
+            state->about0, lines, no_path, state->aboutWidth, state->aboutWidthExpanded,
+            state->aboutHeightOpen, state->aboutHeightClosed, state->aboutHeightReopen,
+            state->aboutListReopen.x, state->aboutListReopen.y, state->aboutListMin,
+            state->aboutListShown, state->aboutShows, state->aboutClosedEarly, state->aboutAtShow.x,
+            state->aboutAtShow.y, state->aboutAtHook.x, state->aboutAtHook.y,
+            state->aboutSizeChanges);
+        // No flash at open: shown once, at its final size, and not resized or hidden after.
+        const bool steady_open = state->aboutShows == 1 && !state->aboutClosedEarly &&
+                                 state->aboutSizeChanges == 0 &&
+                                 state->aboutAtShow == state->aboutAtHook;
+        const bool width_kept =
+            state->aboutWidth > 0 && state->aboutWidthExpanded <= state->aboutWidth;
+        const bool list_again =
+            state->aboutHeightOpen > 0 && state->aboutHeightReopen >= state->aboutHeightOpen &&
+            state->aboutListReopen.x > 0 && state->aboutListMin > 0 &&
+            state->aboutListReopen.y >= state->aboutListMin && state->aboutListShown;
         return state->aboutHookRan && state->aboutParentOk && state->aboutButtonsOk &&
-               frame.aboutShown() > state->about0 && lines;
+               frame.aboutShown() > state->about0 && lines && width_kept && list_again &&
+               steady_open;
     };
     return step("about", std::move(start), std::move(passed));
 }
@@ -1171,6 +1286,35 @@ int showModal(wxTextEntryDialog& dialog) {
     return showModalWith(dialog, dialogHooks().uri, "an Open URI");
 }
 int showModal(wxGenericAboutDialog& dialog) {
+    if (dialogHooks().about) {
+        // The dialog is already at its final size here (the hook checks that it stays so).
+        AboutShowLog& start = aboutShowLog();
+        start = AboutShowLog{};
+        start.last = dialog.GetSize();
+        start.recording = true;
+        dialog.Bind(wxEVT_SHOW, [&dialog](wxShowEvent& event) {
+            event.Skip();
+            AboutShowLog& log = aboutShowLog();
+            if (!log.recording) {
+                return;
+            }
+            if (!event.IsShown()) {
+                log.closed = true;
+            } else if (++log.shows == 1) {
+                log.atShow = dialog.GetSize();
+            }
+        });
+        dialog.Bind(wxEVT_SIZE, [](wxSizeEvent& event) {
+            event.Skip();
+            AboutShowLog& log = aboutShowLog();
+            if (log.recording && log.shows > 0 && event.GetSize() != log.last) {
+                ++log.sizeChanges;
+            }
+            if (log.recording) {
+                log.last = event.GetSize();
+            }
+        });
+    }
     return showModalWith(dialog, dialogHooks().about, "an About");
 }
 
@@ -1574,12 +1718,36 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                 st->textsRead.push_back(
                     (dialog.colourText() + "|" + dialog.colourOptionsText()).utf8_string());
                 st->colourRead = dialog.choice().colour;  // OK writes the same keys
+#if defined(__WXGTK__)
+                // A window manager that resizes the dialog anyway (as WSLg's does): the dialog
+                // goes back to its own size, as it cannot be resized on Windows.
+                const wxSize fixed = dialog.GetClientSize();
+                dialog.SetClientSize(wxSize(fixed.x + 50, 1));
+                wxSizeEvent resized(dialog.GetSize(), dialog.GetId());
+                resized.SetEventObject(&dialog);
+                dialog.HandleWindowEvent(resized);
+                for (int i = 0; i < 50 && dialog.GetClientSize() != fixed; ++i) {
+                    wxTheApp->Yield(true);
+                    wxMilliSleep(10);
+                }
+                const wxSize now = dialog.GetClientSize();
+                st->textsRead.push_back(now == fixed ? std::string("fixed size")
+                                                     : std::format("client {}x{} (fixed {}x{})",
+                                                                   now.x, now.y, fixed.x, fixed.y));
+#else
+                st->textsRead.push_back("fixed size");  // a dialog without a resize border
+#endif
             };
             frame.execute(Command::Format);
         },
         [st, stream_uri](std::string& seen) {
             const bool read = st->colourRead.standard == dvv::media::ColourPreset::Bt709 &&
                               st->colourRead.range == dvv::media::ColourRange::Full;
+            const std::string fixed = st->textsRead.size() >= 2 ? st->textsRead[1] : "";
+            if (fixed != "fixed size") {
+                seen = std::format("dialog size: '{}'", fixed);
+                return false;
+            }
             const std::string shown = st->textsRead.empty() ? "" : st->textsRead.front();
             const std::string uri = stream_uri();
             const bool keys = uri.contains("colour=bt709") && uri.contains("range=full") &&

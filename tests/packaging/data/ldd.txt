@@ -1,0 +1,7 @@
+	linux-vdso.so.1 (0x0000744b31551000)
+	libavcodec.so.62 => /opt/pkg/rawreel-1.2.3/ffmpeg/libavcodec.so.62 (0x0000744b2ec00000)
+	libavutil.so.60 => /opt/pkg/rawreel-1.2.3/ffmpeg/libavutil.so.60 (0x0000744b2e800000)
+	libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x0000744b2eb17000)
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x0000744b2e400000)
+	libstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (0x0000744b2e000000)
+	/lib64/ld-linux-x86-64.so.2 (0x0000744b31553000)

@@ -7,6 +7,7 @@
 #include <format>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 
 #include "dvv/base/environment.h"
@@ -156,6 +157,19 @@ dvv::Result<GuiArguments> parseGuiArguments(std::span<const std::string_view> ar
 int skipExitCode() {
     return dvv::getEnvironment("DVV_REQUIRE_GPU") == "1" ? exit_code::GPU_ERROR
                                                          : exit_code::SKIPPED;
+}
+
+std::optional<std::string> x11DisplayProblem(const std::optional<std::string>& display,
+                                             bool can_open) {
+    if (!display || display->empty()) {
+        return std::string(
+            "no X11 display (DISPLAY is not set); rawreel-gui needs X11 or XWayland");
+    }
+    if (!can_open) {
+        return std::format("cannot open X display '{}'; rawreel-gui needs X11 or XWayland",
+                           *display);
+    }
+    return std::nullopt;
 }
 
 }  // namespace rawreel

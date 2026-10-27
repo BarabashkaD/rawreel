@@ -1,8 +1,11 @@
 # Package smoke test (design M4 v2 §8.6, D16): checks the outputs of make-packages.cmake.
-#   cmake -DOUT_DIR=<make-packages output> -DPLATFORM=windows -DWORK_DIR=<dir>
-#         [-DEXPECTED_VERSION=<v>] [-DGUI_SMOKE=off|windows] [-DALLOW_GUI_SKIP=ON]
+#   cmake -DOUT_DIR=<make-packages output> -DPLATFORM=windows|linux -DWORK_DIR=<dir>
+#         [-DEXPECTED_VERSION=<v>] [-DGUI_SMOKE=off|windows|linux] [-DALLOW_GUI_SKIP=ON]
 #         [-DREQUIRE_SOURCES=ON] [-DEXTRA_TERMS=<term>;...] -P packaging/package-smoke.cmake
 # Each step prints "-- package-smoke: <step>: ok"; the first failure stops with FATAL_ERROR.
+# PLATFORM linux runs on a Linux host with readelf, ldd and GNU tar. GUI_SMOKE=linux needs a display from the
+# caller (xvfb-run in CI, the desktop's X server locally); the GUI and CLI runs unset
+# LD_LIBRARY_PATH, which the loader searches before RUNPATH and so could hide a broken bundle.
 cmake_minimum_required(VERSION 3.25)
 include("${CMAKE_CURRENT_LIST_DIR}/check-package.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/scan-artifact-privacy.cmake")
@@ -20,8 +23,8 @@ function(fail_list step errors)
 endfunction()
 
 # 1. Platform and package information.
-if(NOT PLATFORM STREQUAL "windows")
-    fail("platform" "packages are built on Windows only in v1.0 (the Linux package is v1.x)")
+if(NOT PLATFORM MATCHES "^(windows|linux)$")
+    fail("platform" "PLATFORM must be windows or linux")
 endif()
 foreach(required IN ITEMS OUT_DIR WORK_DIR)
     if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
@@ -38,17 +41,35 @@ endif()
 if(NOT GUI_SMOKE)
     set(GUI_SMOKE off)
 endif()
-if(NOT GUI_SMOKE MATCHES "^(off|windows)$")
-    fail("platform" "GUI_SMOKE must be off or windows (the xvfb and display modes are v1.x)")
+if(NOT GUI_SMOKE STREQUAL "off" AND NOT GUI_SMOKE STREQUAL PLATFORM)
+    fail("platform" "GUI_SMOKE must be off or ${PLATFORM}")
 endif()
-set(info "${OUT_DIR}/package-info-windows.cmake")
+set(info "${OUT_DIR}/package-info-${PLATFORM}.cmake")
 if(NOT EXISTS "${info}")
-    fail("platform" "package-info-windows.cmake is missing in OUT_DIR (run make-packages.cmake)")
+    fail("platform" "package-info-${PLATFORM}.cmake is missing in OUT_DIR (run make-packages.cmake)")
 endif()
 include("${info}")
 set(version "${RAWREEL_VERSION}")
 if(DEFINED EXPECTED_VERSION AND NOT EXPECTED_VERSION STREQUAL version)
     fail("platform" "the package version is ${version}, expected ${EXPECTED_VERSION}")
+endif()
+set(exe_suffix ".exe")
+set(no_ld_path "")
+if(PLATFORM STREQUAL "linux")
+    set(exe_suffix "")
+    set(no_ld_path --unset=LD_LIBRARY_PATH)
+    foreach(required IN ITEMS RAWREEL_LINUX_SYSTEM_SONAMES RAWREEL_LINUX_GLIBC_MAX
+                              RAWREEL_LINUX_GLIBCXX_MAX)
+        if("${${required}}" STREQUAL "")
+            fail("platform" "package-info-linux.cmake has no ${required} (run make-packages.cmake)")
+        endif()
+    endforeach()
+    find_program(readelf NAMES readelf llvm-readelf llvm-readelf-19)
+    find_program(ldd NAMES ldd)
+    find_program(gnu_tar NAMES tar)
+    if(NOT readelf OR NOT ldd OR NOT gnu_tar)
+        fail("platform" "readelf, ldd and tar are required on PATH (binutils, libc-bin, tar)")
+    endif()
 endif()
 ok("platform")
 
@@ -70,15 +91,26 @@ ok("extract")
 
 # 2b. No VC++ runtime DLL: users install the Microsoft Visual C++ Redistributable; the
 # GUI smoke below runs on the installed one.
-rawreel_vc_runtime_files(ROOT "${extract}" FILES vc_runtime)
-if(vc_runtime)
-    list(JOIN vc_runtime ", " vc_runtime)
-    fail("no-vcrt" "the package holds VC++ runtime DLLs: ${vc_runtime}")
+# On Linux: no C/C++ runtime or Vulkan loader library (system packages provide them) and no
+# shared library outside ffmpeg/.
+if(PLATFORM STREQUAL "windows")
+    rawreel_vc_runtime_files(ROOT "${extract}" FILES vc_runtime)
+    if(vc_runtime)
+        list(JOIN vc_runtime ", " vc_runtime)
+        fail("no-vcrt" "the package holds VC++ runtime DLLs: ${vc_runtime}")
+    endif()
+    ok("no-vcrt")
+else()
+    rawreel_linux_runtime_files(ROOT "${extract}" FILES runtime)
+    if(runtime)
+        list(JOIN runtime ", " runtime)
+        fail("no-runtime" "the package holds runtime or stray shared libraries: ${runtime}")
+    endif()
+    ok("no-runtime")
 endif()
-ok("no-vcrt")
 
 # 3. Manifest.
-rawreel_check_manifest(ROOT "${extract}" MANIFEST "${CMAKE_CURRENT_LIST_DIR}/manifest-windows.txt"
+rawreel_check_manifest(ROOT "${extract}" MANIFEST "${CMAKE_CURRENT_LIST_DIR}/manifest-${PLATFORM}.txt"
                        VERSION "${version}" BUNDLED ${RAWREEL_BUNDLED} ERRORS errors
                        CLASSES classes)
 if(errors)
@@ -110,6 +142,120 @@ foreach(item IN LISTS classes)
     endif()
 endforeach()
 
+function(readelf_text step file out)
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E env LC_ALL=C "${readelf}" ${ARGN} "${file}"
+                    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_QUIET)
+    if(NOT result EQUAL 0)
+        cmake_path(GET file FILENAME name)
+        fail("${step}" "readelf ${ARGN} ${name} failed (${result})")
+    endif()
+    set(${out} "${output}" PARENT_SCOPE)
+endfunction()
+
+# 3b. ELF rules (Linux): the exes have no RUNPATH and need only the listed system libraries; the
+# FFmpeg libraries find their siblings through RUNPATH $ORIGIN and are named by their SONAME (the
+# name the loader opens); ldd resolves everything; no symbol version is newer than the baseline.
+if(PLATFORM STREQUAL "linux")
+    file(GLOB_RECURSE files LIST_DIRECTORIES false "${app}/*")
+    set(errors "")
+    set(elf_files "")
+    foreach(file IN LISTS files)
+        rawreel_is_elf(FILE "${file}" RESULT elf)
+        if(NOT elf)
+            continue()
+        endif()
+        list(APPEND elf_files "${file}")
+        cmake_path(GET file FILENAME name)
+        cmake_path(RELATIVE_PATH file BASE_DIRECTORY "${app}" OUTPUT_VARIABLE relative)
+        if(relative MATCHES "^rawreel-(gui|cli)$")
+            set(kind exe)
+        elseif(relative MATCHES "^ffmpeg/[^/]+$")
+            set(kind library)
+        else()
+            list(APPEND errors "unexpected ELF file ${relative}")
+            continue()
+        endif()
+        readelf_text("elf" "${file}" dynamic -d)
+        readelf_text("elf" "${file}" versions -V)
+        rawreel_elf_errors(NAME "${name}" KIND ${kind} DYNAMIC "${dynamic}" VERSIONS "${versions}"
+                           ALLOWED ${RAWREEL_LINUX_SYSTEM_SONAMES}
+                           GLIBC_MAX "${RAWREEL_LINUX_GLIBC_MAX}"
+                           GLIBCXX_MAX "${RAWREEL_LINUX_GLIBCXX_MAX}" ERRORS found)
+        list(APPEND errors ${found})
+        execute_process(COMMAND "${CMAKE_COMMAND}" -E env LC_ALL=C ${no_ld_path} "${ldd}" "${file}"
+                        RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
+        rawreel_ldd_errors(NAME "${name}" TEXT "${output}${error}" ERRORS found)
+        list(APPEND errors ${found})
+        if(NOT result EQUAL 0 AND NOT found)
+            list(APPEND errors "${name}: ldd exited ${result}")
+        endif()
+    endforeach()
+    foreach(exe IN ITEMS rawreel-gui rawreel-cli)
+        if(NOT "${app}/${exe}" IN_LIST elf_files)
+            list(APPEND errors "${exe} is no ELF file")
+        endif()
+    endforeach()
+    if(errors)
+        fail_list("elf" "${errors}")
+    endif()
+    ok("elf")
+
+    # 3c. Modes and owners (Linux), read from the archives as stored: the ELF files of the package
+    # are 755, every other file 644 (the .debug files too), no folder is world-writable. A CI build
+    # records only root or the account and primary group that run this smoke (read with id, so no
+    # guess about the runner image); a local build records the developer's account, so the owners
+    # are only printed.
+    set(executables "")
+    foreach(file IN LISTS elf_files)
+        cmake_path(RELATIVE_PATH file BASE_DIRECTORY "${extract}" OUTPUT_VARIABLE relative)
+        list(APPEND executables "${relative}")
+    endforeach()
+    set(owner_rule "")
+    if(DEFINED ENV{CI} AND NOT "$ENV{CI}" STREQUAL "")
+        execute_process(COMMAND id -un RESULT_VARIABLE user_result OUTPUT_VARIABLE run_user
+                        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        execute_process(COMMAND id -gn RESULT_VARIABLE group_result OUTPUT_VARIABLE run_group
+                        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(NOT user_result EQUAL 0 OR NOT group_result EQUAL 0 OR run_user STREQUAL ""
+           OR run_group STREQUAL "")
+            fail("modes" "id -un / id -gn failed (${user_result}, ${group_result})")
+        endif()
+        set(owner_rule OWNERS root ${run_user} GROUPS root ${run_group})
+    endif()
+    set(errors "")
+    set(archives "${RAWREEL_PACKAGE}")
+    if(EXISTS "${OUT_DIR}/${RAWREEL_SYMBOLS}")
+        list(APPEND archives "${RAWREEL_SYMBOLS}")
+    endif()
+    foreach(archive IN LISTS archives)
+        execute_process(COMMAND "${CMAKE_COMMAND}" -E env LC_ALL=C "${gnu_tar}" tvf
+                                "${OUT_DIR}/${archive}"
+                        RESULT_VARIABLE result OUTPUT_VARIABLE listing ERROR_VARIABLE error)
+        if(NOT result EQUAL 0)
+            fail("modes" "tar tvf ${archive} failed (${result}): ${error}")
+        endif()
+        set(archive_executables "")
+        if(archive STREQUAL RAWREEL_PACKAGE)
+            set(archive_executables ${executables})
+        endif()
+        rawreel_tar_listing_errors(TEXT "${listing}" EXECUTABLES ${archive_executables}
+                                   ${owner_rule} ERRORS found OWNER_NAMES owners)
+        foreach(item IN LISTS found)
+            list(APPEND errors "${archive}: ${item}")
+        endforeach()
+        if(NOT owner_rule)
+            list(JOIN owners ", " owners)
+            message(STATUS "package-smoke: modes: note: ${archive} records the owners ${owners} "
+                           "(checked in CI only); local packages record the local account, "
+                           "do not share them")
+        endif()
+    endforeach()
+    if(errors)
+        fail_list("modes" "${errors}")
+    endif()
+    ok("modes")
+endif()
+
 # 4. Shipped notices.
 rawreel_check_notices(FILE "${notices}" SHIPPED ${RAWREEL_SHIPPED} ERRORS errors)
 if(errors)
@@ -121,7 +267,8 @@ ok("notices")
 set(findings "")
 foreach(file IN LISTS ours)
     set(binary "")
-    if(file MATCHES "\\.(exe|dll)$")
+    rawreel_is_elf(FILE "${file}" RESULT elf)
+    if(file MATCHES "\\.(exe|dll)$" OR elf)
         set(binary BINARY)
     endif()
     rawreel_scan_privacy(FILE "${file}" MODE full ${binary} EXTRA_TERMS ${EXTRA_TERMS}
@@ -130,7 +277,11 @@ foreach(file IN LISTS ours)
 endforeach()
 rawreel_scan_privacy(FILE "${notices}" MODE notices EXTRA_TERMS ${EXTRA_TERMS} FINDINGS found)
 list(APPEND findings ${found})
-foreach(exe IN ITEMS rawreel-gui rawreel-cli)
+set(pdb_exes "")
+if(PLATFORM STREQUAL "windows")
+    set(pdb_exes rawreel-gui rawreel-cli)
+endif()
+foreach(exe IN LISTS pdb_exes)
     rawreel_check_pdb_reference(FILE "${app}/${exe}.exe" ERRORS errors)
     foreach(error IN LISTS errors)
         list(APPEND findings "${exe}.exe: ${error}")
@@ -148,9 +299,9 @@ endif()
 ok("privacy")
 
 # 7. CLI.
-set(cli "${app}/rawreel-cli.exe")
+set(cli "${app}/rawreel-cli${exe_suffix}")
 set(cli_env "${CMAKE_COMMAND}" -E env --unset=DVV_FFMPEG_DIR --unset=DVV_REQUIRE_FFMPEG
-            DVV_LEAK_CHECK=fail)
+            DVV_LEAK_CHECK=fail ${no_ld_path})
 function(run_cli out_result out_output out_error)
     execute_process(COMMAND ${cli_env} ${ARGN} TIMEOUT 120 RESULT_VARIABLE result
                     OUTPUT_VARIABLE output ERROR_VARIABLE error)
@@ -177,17 +328,10 @@ ffmpeg_line("${output}" line)
 set(lavfi "lavfi:testsrc2=s=64x48:r=25,format=yuv420p")
 if(RAWREEL_BUNDLED)
     string(REPLACE "." "\\." ffmpeg_regex "${RAWREEL_FFMPEG_VERSION}")
-    if(NOT line MATCHES "^FFmpeg ${ffmpeg_regex} \\(LGPL.*\\) from (.+)$")
+    # The line names the bundled version and the repository it is built from, never a folder (a
+    # folder names the user's machine); the bundled version shows the package's ffmpeg/ was loaded.
+    if(NOT line MATCHES "^FFmpeg ${ffmpeg_regex} \\(LGPL[^/\\\\]*\\) from https://github\\.com/[^ ]+$")
         fail("cli" "unexpected FFmpeg line: ${line}")
-    endif()
-    set(from "${CMAKE_MATCH_1}")
-    string(REPLACE "\\" "/" from "${from}")
-    cmake_path(NORMAL_PATH from)
-    string(REGEX REPLACE "/$" "" from "${from}")
-    string(TOLOWER "${from}" from)
-    string(TOLOWER "${app}/ffmpeg" expected)
-    if(NOT from STREQUAL expected)
-        fail("cli" "FFmpeg is loaded from another folder than the package's ffmpeg/")
     endif()
     run_cli(result output error "${cli}" info "${lavfi}" --json)
     if(NOT result EQUAL 0)
@@ -208,7 +352,7 @@ if(RAWREEL_BUNDLED)
         fail("cli" "dump wrote ${bytes} bytes, expected 4608")
     endif()
     file(MAKE_DIRECTORY "${WORK_DIR}/empty-ffmpeg")
-    execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=DVV_REQUIRE_FFMPEG
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=DVV_REQUIRE_FFMPEG ${no_ld_path}
                             DVV_LEAK_CHECK=fail "DVV_FFMPEG_DIR=${WORK_DIR}/empty-ffmpeg"
                             "${cli}" --version
                     TIMEOUT 120 RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
@@ -247,9 +391,13 @@ endif()
 ok("config")
 
 # 8. GUI.
-if(GUI_SMOKE STREQUAL "windows")
+if(NOT GUI_SMOKE STREQUAL "off")
     set(gui_env DVV_LEAK_CHECK=fail --unset=DVV_VK_VALIDATION --unset=DVV_VK_VALIDATION_REQUIRED
                 --unset=DVV_FFMPEG_DIR)
+    if(PLATFORM STREQUAL "linux")
+        # NO_AT_BRIDGE: no accessibility bus in a test session (its warning is noise there).
+        list(APPEND gui_env ${no_ld_path} NO_AT_BRIDGE=1)
+    endif()
     if(ALLOW_GUI_SKIP)
         list(APPEND gui_env --unset=DVV_REQUIRE_GPU)
     else()
@@ -260,7 +408,7 @@ if(GUI_SMOKE STREQUAL "windows")
     else()
         list(APPEND gui_env --unset=DVV_REQUIRE_FFMPEG)
     endif()
-    execute_process(COMMAND "${CMAKE_COMMAND}" -E env ${gui_env} "${app}/rawreel-gui.exe"
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E env ${gui_env} "${app}/rawreel-gui${exe_suffix}"
                             --selftest smoke
                     TIMEOUT 300 RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
     if(result EQUAL 77 AND ALLOW_GUI_SKIP)
@@ -274,8 +422,14 @@ else()
 endif()
 
 # 9. Symbols.
+set(symbol_ext pdb)
+set(archive_kind zip)
+if(PLATFORM STREQUAL "linux")
+    set(symbol_ext debug)
+    set(archive_kind tar.xz)
+endif()
 if(RAWREEL_SYMBOLS STREQUAL "" OR NOT EXISTS "${OUT_DIR}/${RAWREEL_SYMBOLS}")
-    fail("symbols" "the symbols zip is missing")
+    fail("symbols" "the symbols ${archive_kind} is missing")
 endif()
 set(symbols "${WORK_DIR}/symbols")
 file(MAKE_DIRECTORY "${symbols}")
@@ -283,8 +437,9 @@ execute_process(COMMAND "${CMAKE_COMMAND}" -E tar xf "${OUT_DIR}/${RAWREEL_SYMBO
                 WORKING_DIRECTORY "${symbols}" RESULT_VARIABLE result)
 file(GLOB_RECURSE pdbs LIST_DIRECTORIES true RELATIVE "${symbols}" "${symbols}/*")
 list(SORT pdbs)
-if(NOT result EQUAL 0 OR NOT pdbs STREQUAL "rawreel-cli.pdb;rawreel-gui.pdb")
-    fail("symbols" "the symbols zip must hold exactly rawreel-gui.pdb and rawreel-cli.pdb, has: ${pdbs}")
+if(NOT result EQUAL 0 OR NOT pdbs STREQUAL "rawreel-cli.${symbol_ext};rawreel-gui.${symbol_ext}")
+    fail("symbols" "the symbols ${archive_kind} must hold exactly rawreel-gui.${symbol_ext} and "
+         "rawreel-cli.${symbol_ext}, has: ${pdbs}")
 endif()
 set(findings "")
 foreach(pdb IN LISTS pdbs)
@@ -292,12 +447,41 @@ foreach(pdb IN LISTS pdbs)
                          FINDINGS found)
     list(APPEND findings ${found})
 endforeach()
+# Linux: each exe names its .debug file and shares its build ID; no debug section is compressed
+# (the privacy scan above reads the sections as stored).
+if(PLATFORM STREQUAL "linux")
+    foreach(exe IN ITEMS rawreel-gui rawreel-cli)
+        readelf_text("symbols" "${app}/${exe}" exe_notes -n -p .gnu_debuglink)
+        readelf_text("symbols" "${symbols}/${exe}.debug" debug_notes -n)
+        readelf_text("symbols" "${symbols}/${exe}.debug" debug_sections -S -W)
+        rawreel_readelf_debuglink(TEXT "${exe_notes}" NAME link)
+        if(NOT link STREQUAL "${exe}.debug")
+            list(APPEND findings "${exe}: the debuglink names '${link}', expected ${exe}.debug")
+        endif()
+        rawreel_readelf_build_id(TEXT "${exe_notes}" ID exe_id)
+        rawreel_readelf_build_id(TEXT "${debug_notes}" ID debug_id)
+        if(exe_id STREQUAL "" OR NOT exe_id STREQUAL debug_id)
+            list(APPEND findings "${exe}: build ID '${exe_id}' differs from ${exe}.debug '${debug_id}'")
+        endif()
+        rawreel_readelf_compressed_sections(TEXT "${debug_sections}" SECTIONS compressed)
+        if(compressed)
+            list(JOIN compressed ", " compressed)
+            list(APPEND findings "${exe}.debug: compressed sections ${compressed}")
+        endif()
+        if(NOT debug_sections MATCHES "\\.debug_info ")
+            list(APPEND findings "${exe}.debug: no .debug_info section")
+        endif()
+    endforeach()
+endif()
 if(findings)
     fail_list("symbols" "${findings}")
 endif()
 ok("symbols")
 
 # 10. Third-party sources.
+if(REQUIRE_SOURCES AND NOT PLATFORM STREQUAL "windows")
+    fail("sources" "REQUIRE_SOURCES is for the Windows package (its sources archive covers both)")
+endif()
 if(RAWREEL_BUNDLED AND REQUIRE_SOURCES)
     if(RAWREEL_SOURCES STREQUAL "" OR NOT EXISTS "${OUT_DIR}/${RAWREEL_SOURCES}")
         fail("sources" "the third-party sources archive is missing")
@@ -310,6 +494,21 @@ if(RAWREEL_BUNDLED AND REQUIRE_SOURCES)
     set(stage "rawreel-${version}-third-party-sources")
     if(NOT listing MATCHES "(^|\n)${stage}/README\\.txt(\r?\n|$)")
         fail("sources" "no ${stage}/README.txt")
+    endif()
+    # The one sources archive covers both packages, and its README says so.
+    set(readme_dir "${WORK_DIR}/sources-readme")
+    file(MAKE_DIRECTORY "${readme_dir}")
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E tar xf "${OUT_DIR}/${RAWREEL_SOURCES}"
+                            "${stage}/README.txt"
+                    WORKING_DIRECTORY "${readme_dir}" RESULT_VARIABLE result)
+    if(NOT result EQUAL 0 OR NOT EXISTS "${readme_dir}/${stage}/README.txt")
+        fail("sources" "cannot extract ${stage}/README.txt (${result})")
+    endif()
+    file(READ "${readme_dir}/${stage}/README.txt" readme)
+    string(REGEX REPLACE "[ \t\r\n]+" " " readme "${readme}")
+    string(FIND "${readme}" "the Windows zip and the Linux tar.xz" position)
+    if(position EQUAL -1)
+        fail("sources" "README.txt does not name both packages (the Windows zip and the Linux tar.xz)")
     endif()
     string(REPLACE "." "\\." cf "${RAWREEL_CUSTOM_FFMPEG_VERSION}")
     if(NOT listing MATCHES "(^|\n)${stage}/custom_ffmpeg-${cf}/[^\n]")

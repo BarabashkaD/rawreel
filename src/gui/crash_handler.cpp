@@ -258,6 +258,7 @@ void CrashHandler::crashIfRequested() {
 
 }  // namespace rawreel
 #else
+// No crash handler outside Windows in v1.0: Linux relies on core dumps.
 namespace rawreel {
 std::string CrashHandler::install(std::string_view /*exe*/) {
     return {};

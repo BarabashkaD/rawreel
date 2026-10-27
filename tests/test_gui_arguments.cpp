@@ -261,3 +261,17 @@ TEST_CASE("gui arguments: --config") {
     checkFormatError({"--config"}, "option --config needs a value");
     checkFormatError({"--config", "a", "--config", "b"}, "option --config given twice");
 }
+
+TEST_CASE("gui arguments: the X11 display check") {
+    constexpr std::string_view NOT_SET =
+        "no X11 display (DISPLAY is not set); rawreel-gui needs X11 or XWayland";
+    const std::optional<std::string> unset = rawreel::x11DisplayProblem(std::nullopt, false);
+    CHECK(unset == std::string(NOT_SET));
+    // An empty value counts as unset, whatever the probe says.
+    const std::optional<std::string> empty = rawreel::x11DisplayProblem(std::string(), true);
+    CHECK(empty == std::string(NOT_SET));
+    CHECK_FALSE(rawreel::x11DisplayProblem(std::string(":0"), true).has_value());
+    const std::optional<std::string> closed =
+        rawreel::x11DisplayProblem(std::string(":987"), false);
+    CHECK(closed == std::string("cannot open X display ':987'; rawreel-gui needs X11 or XWayland"));
+}

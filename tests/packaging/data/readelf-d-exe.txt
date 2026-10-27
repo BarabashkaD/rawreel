@@ -1,0 +1,12 @@
+
+Dynamic section at offset 0x2b1cb8 contains 29 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libstdc++.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000000c (INIT)               0x12000
+ 0x000000000000000d (FINI)               0x21ad00
+ 0x0000000000000019 (INIT_ARRAY)         0x2ac300
+ 0x000000000000001b (INIT_ARRAYSZ)       56 (bytes)
+ 0x0000000000000000 (NULL)               0x0

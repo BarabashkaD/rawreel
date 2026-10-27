@@ -40,7 +40,7 @@ public:
     void play(Clock::time_point now);
     void pause();
     void stop();                    // pause + seek(0)
-    void step(std::int64_t delta);  // pauses; clamps; sets the direction
+    void step(std::int64_t delta);  // pauses; wraps with loop, else clamps; sets the direction
     void seek(std::int64_t index);  // pauses; clamps; sets the direction
     void setLoop(bool loop);
     void setWindow(std::uint32_t window);  // plan addition (OutOfMemory halving)

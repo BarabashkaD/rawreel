@@ -24,7 +24,6 @@
 #include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/gpu_info.h"
 #include "dvv/platform/native_window.h"
-#include "dvv/registry/capabilities.h"
 #include "gui/crash_handler.h"
 #include "gui/log_panel.h"
 #include "gui/main_frame.h"

@@ -19,6 +19,9 @@
 #include "dvv/base/leak_check.h"
 #include "dvv/base/log.h"
 #include "gui/app.h"
+#if !defined(_WIN32) && !defined(__APPLE__)
+#include "gui/gui_platform.h"
+#endif
 
 wxIMPLEMENT_APP_NO_MAIN(rawreel::App);
 
@@ -37,6 +40,15 @@ int run(std::span<const std::string_view> args, StartWx start_wx) {
         std::fputs(rawreel::USAGE, stdout);
         return rawreel::exit_code::SUCCESS;
     }
+#if !defined(_WIN32) && !defined(__APPLE__)
+    // Before wxEntry(): XInitThreads(), GDK limited to X11, then the DISPLAY check.
+    // Without a usable X display, GTK would fail inside wxEntry() with an unclear message.
+    if (const std::optional<std::string> problem = rawreel::prepareX11StartUp(); problem) {
+        std::fprintf(stderr, "rawreel-gui: %s\n", problem->c_str());
+        return arguments->selftest != rawreel::Scenario::None ? rawreel::skipExitCode()
+                                                              : rawreel::exit_code::BAD_ARGUMENTS;
+    }
+#endif
     dvv::Logger::instance().addSink(std::make_shared<dvv::StderrSink>());
     rawreel::App::setArguments(std::move(*arguments));
     const int wx_result = start_wx();
@@ -68,8 +80,8 @@ int wmain(int argc, wchar_t** argv) {
     }
 }
 #else
-// Other platforms: the arguments are UTF-8 already. Compiled, not run in v1.0; the Linux start-up
-// (XInitThreads, GDK_BACKEND=x11, the DISPLAY check) comes with Linux support.
+// Linux: the arguments are UTF-8 already. run() parses them, then does the X11 start-up
+// (XInitThreads, GDK limited to X11, the DISPLAY check) after --help and before wxEntry().
 int main(int argc, char** argv) {
     try {
         const std::vector<std::string_view> args(argv + 1, argv + argc);

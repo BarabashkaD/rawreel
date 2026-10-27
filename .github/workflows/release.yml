@@ -130,10 +130,11 @@ jobs:
       - name: Bootstrap
         shell: pwsh
         run: ./rawreel-workspace/bootstrap.ps1 -Toolchain msvc -NoClone
+      # The commit file goes to out/ with the packages: publish compares it with the Linux job's.
       - name: Verify the custom_ffmpeg archive (SHA256 and attestation)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: cmake -DPREFIX=_third_party/msvc "-DWORK_DIR=${{ runner.temp }}/ffmpeg-check" -P rawreel/packaging/verify-ffmpeg-archive.cmake
+        run: cmake -DPREFIX=_third_party/msvc "-DWORK_DIR=${{ runner.temp }}/ffmpeg-check" "-DOUT_FILE=${{ runner.temp }}/out/custom_ffmpeg-commit-windows.txt" -P rawreel/packaging/verify-ffmpeg-archive.cmake
       # The linker records its temporary object path (%TMP%\lnk{GUID}.tmp) in the PDBs; the runner's
       # default TEMP is a user-profile path, which the symbols privacy scan rejects.
       - name: Build (Release)
@@ -150,25 +151,183 @@ jobs:
       # The sources archive is built in this job only, from a --recurse-submodules checkout of the
       # custom_ffmpeg tag whose commit equals the attestation's sourceRepositoryDigest.
       - name: Package (and the third-party sources when FFmpeg is bundled)
-        run: cmake -DBUILD_DIR=_build/rawreel/vs2026 -DCONFIG=Release "-DOUT_DIR=${{ runner.temp }}/out" -DSOURCES=ON "-DFFMPEG_COMMIT_FILE=${{ runner.temp }}/ffmpeg-check/custom_ffmpeg-commit.txt" -P rawreel/packaging/make-packages.cmake
+        run: cmake -DBUILD_DIR=_build/rawreel/vs2026 -DCONFIG=Release "-DOUT_DIR=${{ runner.temp }}/out" -DSOURCES=ON "-DFFMPEG_COMMIT_FILE=${{ runner.temp }}/out/custom_ffmpeg-commit-windows.txt" -P rawreel/packaging/make-packages.cmake
       # The runner has no GPU: the GUI smoke may exit 77 here; the local dry runs run it on a GPU.
       - name: Package smoke tests
         env:
           VERSION: ${{ inputs.version }}
         run: cmake "-DOUT_DIR=${{ runner.temp }}/out" -DPLATFORM=windows "-DWORK_DIR=${{ runner.temp }}/smoke" "-DEXPECTED_VERSION=$env:VERSION" -DGUI_SMOKE=windows -DALLOW_GUI_SKIP=ON -DREQUIRE_SOURCES=ON -P rawreel/packaging/package-smoke.cmake
+      # Only out/ paths, so the artifact root stays out/ and publish finds the files at its top.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows
           path: |
             ${{ runner.temp }}/out/rawreel-*
             ${{ runner.temp }}/out/package-info-windows.cmake
+            ${{ runner.temp }}/out/custom_ffmpeg-commit-windows.txt
           if-no-files-found: error
           overwrite: true
 
-  # No Linux job in v1.0 (Windows only): the Linux package and its job are v1.x.
+  linux:
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/rawreel-workspace
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: rawreel-workspace
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/dvv-base
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: dvv-base
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/dvv-registry
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: dvv-registry
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/dvv-platform
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: dvv-platform
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/dvv-gpu
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: dvv-gpu
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/dvv-media
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: dvv-media
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/dvv-components
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: dvv-components
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/rawreel
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: rawreel
+      # Tags can move: the log keeps the commit of every repository this run built.
+      - name: Record the commits
+        run: |
+          for r in rawreel-workspace dvv-base dvv-registry dvv-platform dvv-gpu dvv-media dvv-components rawreel; do
+            echo "$r $(git -C "$r" rev-parse HEAD)"
+          done
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+      - name: Install tools
+        run: python -m pip install -r rawreel-workspace/tools/requirements.txt
+      - name: Install the compiler
+        run: sudo apt-get update && sudo apt-get install -y clang-19 libclang-rt-19-dev libstdc++-14-dev
+      # bootstrap builds wxWidgets on GTK 3 and the validation layer with Xlib, XCB and Wayland
+      # support; xvfb and xauth give the GUI smoke a display, lavapipe is its Vulkan device.
+      - name: Install the window-system and Vulkan packages
+        run: sudo apt-get install -y libgtk-3-dev pkgconf libx11-dev libxcb1-dev libxrandr-dev libwayland-dev zlib1g-dev libpng-dev xvfb xauth mesa-vulkan-drivers libvulkan1
+      # No cache restore: bootstrap builds the prefix from the pinned, SHA256-checked archives
+      # (rawreel-workspace/deps/versions.cmake), so no CI cache entry reaches a release.
+      - name: Bootstrap
+        run: ./rawreel-workspace/bootstrap.sh --toolchain clang --no-clone
+      # The commit file goes to out/ with the packages: publish compares it with the Windows job's.
+      - name: Verify the custom_ffmpeg archive (SHA256 and attestation)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: cmake -DPREFIX=_third_party/clang "-DWORK_DIR=${{ runner.temp }}/ffmpeg-check" "-DOUT_FILE=${{ runner.temp }}/out/custom_ffmpeg-commit-linux.txt" -P rawreel/packaging/verify-ffmpeg-archive.cmake
+      - name: Build (Release)
+        working-directory: rawreel
+        run: |
+          cmake --preset ninja-clang
+          cmake --build --preset ninja-clang-release
+      - name: Unit and CLI tests
+        working-directory: rawreel
+        run: ctest --preset ninja-clang-release -LE "gpu|display|gui|oracle"
+      # No sources archive here: the Windows job's archive covers both packages (one commit).
+      - name: Package
+        run: cmake -DBUILD_DIR=_build/rawreel/ninja-clang -DCONFIG=Release "-DOUT_DIR=${{ runner.temp }}/out" -DSOURCES=OFF -P rawreel/packaging/make-packages.cmake
+      # Lavapipe is a Vulkan device, so the GUI smoke must run here (no skip allowed).
+      - name: Package smoke tests
+        env:
+          VERSION: ${{ inputs.version }}
+          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.json
+          NO_AT_BRIDGE: "1"
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" cmake "-DOUT_DIR=${{ runner.temp }}/out" -DPLATFORM=linux "-DWORK_DIR=${{ runner.temp }}/smoke" "-DEXPECTED_VERSION=$VERSION" -DGUI_SMOKE=linux -P rawreel/packaging/package-smoke.cmake
+      # The only proof of the dependency list in README.md: a fresh Ubuntu 24.04 with just those
+      # packages (from the build's packaging-info) runs the package. xvfb and xauth are for the
+      # test only. The runner has the dev packages, so its own ldd proves less.
+      - name: Clean-system check
+        timeout-minutes: 20
+        env:
+          IMAGE: ubuntu:24.04@sha256:24737cef17f4e22b1977df7d9a05e77c4e28b7da5b8911f8d8ccda136bf3573c
+          TEST_PACKAGES: xvfb xauth
+          OUT: ${{ runner.temp }}/out
+          APP: ${{ runner.temp }}/clean-system
+        run: |
+          info=_build/rawreel/ninja-clang/packaging-info-Release.cmake
+          packages=$(sed -n 's/^set(RAWREEL_LINUX_APT_PACKAGES "\(.*\)")$/\1/p' "$info" | tr ';' ' ')
+          if [ -z "$packages" ]; then
+            echo "::error::no RAWREEL_LINUX_APT_PACKAGES in $info"
+            exit 1
+          fi
+          echo "packages: $packages"
+          set -- "$OUT"/rawreel-*-linux-x64.tar.xz
+          if [ $# -ne 1 ] || [ ! -f "$1" ]; then
+            echo "::error::expected one Linux package in $OUT"
+            exit 1
+          fi
+          rm -rf "$APP"
+          mkdir -p "$APP"
+          tar xJf "$1" -C "$APP" --strip-components=1
+          docker run --rm -v "$APP:/app" \
+            -e DEBIAN_FRONTEND=noninteractive -e PACKAGES="$packages" -e TEST_PACKAGES \
+            -e NO_AT_BRIDGE=1 -e VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json \
+            -e DVV_REQUIRE_GPU=1 -e DVV_REQUIRE_FFMPEG=1 -e DVV_LEAK_CHECK=fail \
+            "$IMAGE" bash -euo pipefail -c '
+              apt-get update
+              apt-get install -y --no-install-recommends $PACKAGES $TEST_PACKAGES
+              cd /tmp
+              for f in /app/rawreel-gui /app/rawreel-cli /app/ffmpeg/*.so.*; do
+                echo "$f:"
+                ldd "$f"
+              done > ldd.txt
+              cat ldd.txt
+              if grep -q "not found" ldd.txt; then
+                echo "::error::a library of the package is not found on a clean system"
+                exit 1
+              fi
+              /app/rawreel-cli --version
+              /app/rawreel-cli info "lavfi:testsrc2=s=64x48:r=25,format=yuv420p" --json
+              xvfb-run -a -s "-screen 0 1920x1080x24" /app/rawreel-gui --selftest smoke
+            '
+      # Only out/ paths, so the artifact root stays out/ and publish finds the files at its top.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux
+          path: |
+            ${{ runner.temp }}/out/rawreel-*
+            ${{ runner.temp }}/out/package-info-linux.cmake
+            ${{ runner.temp }}/out/custom_ffmpeg-commit-linux.txt
+          if-no-files-found: error
+          overwrite: true
 
   publish:
-    needs: [windows]
+    needs: [windows, linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -197,10 +356,32 @@ jobs:
         with:
           name: windows
           path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux
+          path: dist
+      # The sources archive is built by the Windows job only: it covers the Linux package only if
+      # both jobs bundled FFmpeg from the same custom_ffmpeg commit. Line ends are dropped before
+      # the compare (the Windows file may end in CRLF).
+      - name: Check the custom_ffmpeg commits
+        working-directory: dist
+        run: |
+          windows=$(tr -d '\r\n' < custom_ffmpeg-commit-windows.txt)
+          linux=$(tr -d '\r\n' < custom_ffmpeg-commit-linux.txt)
+          if [[ ! "$windows" =~ ^[0-9a-f]{40}$ ]] || [ "$windows" != "$linux" ]; then
+            echo "::error::the Windows and Linux packages bundle FFmpeg from different custom_ffmpeg commits ('$windows', '$linux')"
+            exit 1
+          fi
+          echo "custom_ffmpeg commit $windows"
       - name: Checksums
         working-directory: dist
         run: |
-          rm -f package-info-*.cmake
+          rm -f package-info-*.cmake custom_ffmpeg-commit-*.txt
+          set -- rawreel-*
+          if [ $# -ne 5 ]; then
+            echo "::error::expected 5 release files, found $#: $*"
+            exit 1
+          fi
           sha256sum rawreel-* > SHA256SUMS
           cat SHA256SUMS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

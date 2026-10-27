@@ -98,11 +98,14 @@ set_tests_properties(rawreel.gpu PROPERTIES
 # without a usable device or display unless DVV_REQUIRE_GPU=1. Only where rawreel_gui exists (no
 # sanitizer builds). They load the prefix's FFmpeg through DVV_FFMPEG_DIR (M4 Task 7b): smoke opens
 # a lavfi: URI, player drops the FFV1 MKV of the rawreel_ffmpeg fixture.
-# Windows only (M1b Task 12a): outside Windows the viewport is the stub.
-if(TARGET rawreel_gui AND WIN32)
+# Windows and Linux: on Linux they need an X11 display (WSLg or Xvfb). Every GUI
+# test fails on an X error (FAIL_REGULAR_EXPRESSION here, the same check in the two scripts).
+set(gui_x_error "X Window System error|BadWindow|BadDrawable|BadMatch")
+if(TARGET rawreel_gui)
     add_test(NAME rawreel.gui_selftest.smoke
              COMMAND rawreel_gui --selftest smoke --appearance dark)
     set_tests_properties(rawreel.gui_selftest.smoke PROPERTIES
+        FAIL_REGULAR_EXPRESSION "${gui_x_error}"
         LABELS "gpu;display;gui"
         SKIP_RETURN_CODE 77
         TIMEOUT 180
@@ -114,6 +117,7 @@ if(TARGET rawreel_gui AND WIN32)
     add_test(NAME rawreel.gui_selftest.lost
              COMMAND rawreel_gui --selftest lost "synthetic:gradient?fmt=yuv420p10le&size=64x48&frames=40")
     set_tests_properties(rawreel.gui_selftest.lost PROPERTIES
+        FAIL_REGULAR_EXPRESSION "${gui_x_error}"
         LABELS "gpu;display;gui"
         SKIP_RETURN_CODE 77
         TIMEOUT 180
@@ -123,6 +127,7 @@ if(TARGET rawreel_gui AND WIN32)
     add_test(NAME rawreel.gui_selftest.player
              COMMAND rawreel_gui --selftest player "synthetic:gradient?fmt=yuv420p10le&size=64x48&frames=60")
     set_tests_properties(rawreel.gui_selftest.player PROPERTIES
+        FAIL_REGULAR_EXPRESSION "${gui_x_error}"
         LABELS "gpu;display;gui"
         SKIP_RETURN_CODE 77
         TIMEOUT 180
@@ -161,6 +166,18 @@ if(TARGET rawreel_gui AND WIN32)
             ENVIRONMENT "${gpu_test_environment};NO_AT_BRIDGE=1;RAWREEL_GUI_FAULT=${fault}"
             ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
     endforeach()
+endif()
+# Linux start-up without a usable X11 display: DISPLAY and WAYLAND_DISPLAY are unset by
+# the script, so no window opens (label gui, not display).
+if(TARGET rawreel_gui AND NOT WIN32)
+    add_test(NAME rawreel.gui_start.no_display
+             COMMAND ${CMAKE_COMMAND} -DGUI=$<TARGET_FILE:rawreel_gui>
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/gui/run-gui-no-display.cmake)
+    set_tests_properties(rawreel.gui_start.no_display PROPERTIES
+        LABELS "gui"
+        TIMEOUT 300
+        ENVIRONMENT "NO_AT_BRIDGE=1"
+        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
 endif()
 
 # rawreel-cli end to end (M2 Task 13): each script runs the built CLI in its own scratch folder.
@@ -239,7 +256,7 @@ set_tests_properties(rawreel.cli_e2e.ffmpeg_missing rawreel.cli_e2e.ffmpeg_relat
     ENVIRONMENT_MODIFICATION
         "${DVV_TEST_ENVIRONMENT};DVV_REQUIRE_FFMPEG=unset:;DVV_FFMPEG_DIR=unset:")
 # The crash handler (design v2 D22): Windows only, not under MSVC ASan (it installs its own
-# exception handling).
+# exception handling). Linux has no crash handler in v1.0: a crash leaves a core dump.
 if(WIN32 AND NOT DVV_SANITIZE)
     rawreel_cli_e2e(crash run-cli-crash.cmake "")
     set_tests_properties(rawreel.cli_e2e.crash PROPERTIES

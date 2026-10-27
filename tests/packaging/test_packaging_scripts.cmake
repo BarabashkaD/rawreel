@@ -477,6 +477,285 @@ expect_item("${case}" "${errors}" "the minimum VC++ Redistributable 14 is no 14.
 expect_item("${case}" "${errors}" "the MSVC version 20.1.0 is no 19.<minor> version")
 pass("${case}")
 
+set(case "apt packages: the documents name the package list in one apt install line")
+file(WRITE "${WORK_DIR}/apt-readme.md" "```sh\nsudo apt install liba1 libb2\n```\n")
+file(WRITE "${WORK_DIR}/apt-notes.md" "`sudo apt install liba1`.\n")
+rawreel_apt_packages_doc_errors(PACKAGES liba1 libb2 DOCS "${WORK_DIR}/apt-readme.md"
+                                ERRORS errors)
+expect_empty("${case}" "${errors}")
+rawreel_apt_packages_doc_errors(PACKAGES liba1 libb2
+                                DOCS "${WORK_DIR}/apt-readme.md" "${WORK_DIR}/apt-notes.md"
+                                "${WORK_DIR}/apt-missing.md" ERRORS errors)
+expect_item("${case}" "${errors}" "apt-notes.md does not say \"sudo apt install liba1 libb2\"")
+expect_item("${case}" "${errors}" "apt-missing.md is missing")
+expect_count("${case}" "${errors}" 2)
+pass("${case}")
+
+# --- package file names and FFmpeg library names per platform ---------------------------------
+
+set(case "package names: Windows zip, Linux tar.xz, unknown platform refused")
+rawreel_package_files(VERSION 1.2.3 PLATFORM windows PACKAGE package SYMBOLS symbols CPACK cpack
+                      EXTENSION extension GENERATOR generator ERRORS errors)
+expect_empty("${case}" "${errors}")
+expect_equal("${case}" "${package}" "rawreel-1.2.3-windows-x64.zip")
+expect_equal("${case}" "${symbols}" "rawreel-1.2.3-windows-x64-symbols.zip")
+expect_equal("${case}" "${cpack}" "rawreel-1.2.3.zip")
+expect_equal("${case}" "${extension}" "zip")
+expect_equal("${case}" "${generator}" "ZIP")
+rawreel_package_files(VERSION 1.2.3 PLATFORM linux PACKAGE package SYMBOLS symbols CPACK cpack
+                      EXTENSION extension GENERATOR generator ERRORS errors)
+expect_empty("${case}" "${errors}")
+expect_equal("${case}" "${package}" "rawreel-1.2.3-linux-x64.tar.xz")
+expect_equal("${case}" "${symbols}" "rawreel-1.2.3-linux-x64-symbols.tar.xz")
+expect_equal("${case}" "${cpack}" "rawreel-1.2.3.tar.xz")
+expect_equal("${case}" "${extension}" "tar.xz")
+expect_equal("${case}" "${generator}" "TXZ")
+rawreel_package_files(VERSION 1.2.3 PLATFORM macos PACKAGE package SYMBOLS symbols CPACK cpack
+                      EXTENSION extension GENERATOR generator ERRORS errors)
+expect_item("${case}" "${errors}" "no package for the platform 'macos' (windows, linux)")
+expect_equal("${case}" "${package}" "")
+pass("${case}")
+
+set(case "FFmpeg library names: the file the loader opens and its major")
+set(names "x/avutil-60.dll;x/avutil.dll;x/avutil-60.lib;x/avcodec-62.dll;x/libavutil.so.60"
+          "x/libavutil.so.60.26.103;x/libavutil.so;x/libswscale.so.9")
+rawreel_ffmpeg_library_pattern(PLATFORM windows LIBRARY avutil GLOB glob REGEX regex)
+expect_equal("${case}" "${glob}" "avutil-*.dll")
+set(matched "${names}")
+list(FILTER matched INCLUDE REGEX "${regex}")
+expect_equal("${case}" "${matched}" "x/avutil-60.dll")
+string(REGEX MATCH "${regex}" ignored "x/avutil-60.dll")
+expect_equal("${case}" "${CMAKE_MATCH_1}" "60")
+rawreel_ffmpeg_library_pattern(PLATFORM linux LIBRARY avutil GLOB glob REGEX regex)
+expect_equal("${case}" "${glob}" "libavutil.so.*")
+set(matched "${names}")
+list(FILTER matched INCLUDE REGEX "${regex}")
+expect_equal("${case}" "${matched}" "x/libavutil.so.60")
+string(REGEX MATCH "${regex}" ignored "x/libavutil.so.60")
+expect_equal("${case}" "${CMAKE_MATCH_1}" "60")
+pass("${case}")
+
+# --- Linux ELF checks (readelf and ldd text fixtures in data/) --------------------------------
+
+set(data "${CMAKE_CURRENT_LIST_DIR}/data")
+file(READ "${data}/readelf-d-exe.txt" exe_dynamic)
+file(READ "${data}/readelf-d-library.txt" library_dynamic)
+file(READ "${data}/readelf-V.txt" versions)
+set(allowed libstdc++.so.6 libm.so.6 libgcc_s.so.1 libc.so.6)
+
+set(case "ELF: an ELF file is found by its magic, not by its name")
+string(ASCII 127 del)
+file(WRITE "${WORK_DIR}/elf/rawreel-cli" "${del}ELF rest")
+file(WRITE "${WORK_DIR}/elf/libx.so.1" "not an ELF file")
+file(WRITE "${WORK_DIR}/elf/short" "${del}E")
+rawreel_is_elf(FILE "${WORK_DIR}/elf/rawreel-cli" RESULT elf)
+expect_equal("${case}" "${elf}" "ON")
+rawreel_is_elf(FILE "${WORK_DIR}/elf/libx.so.1" RESULT elf)
+expect_equal("${case}" "${elf}" "OFF")
+rawreel_is_elf(FILE "${WORK_DIR}/elf/short" RESULT elf)
+expect_equal("${case}" "${elf}" "OFF")
+pass("${case}")
+
+set(case "ELF: readelf -d gives NEEDED, SONAME, RUNPATH and RPATH")
+rawreel_readelf_dynamic(TEXT "${exe_dynamic}" NEEDED needed SONAME soname RUNPATH runpath
+                        RPATH rpath)
+expect_equal("${case}" "${needed}" "libstdc++.so.6;libm.so.6;libgcc_s.so.1;libc.so.6")
+expect_equal("${case}" "${soname}" "")
+expect_equal("${case}" "${runpath}" "")
+expect_equal("${case}" "${rpath}" "")
+rawreel_readelf_dynamic(TEXT "${library_dynamic}" NEEDED needed SONAME soname RUNPATH runpath
+                        RPATH rpath)
+expect_equal("${case}" "${needed}" "libavutil.so.60;libm.so.6;libc.so.6")
+expect_equal("${case}" "${soname}" "libswresample.so.6")
+expect_equal("${case}" "${runpath}" "$ORIGIN")
+expect_equal("${case}" "${rpath}" "")
+pass("${case}")
+
+set(case "ELF: readelf -V gives the highest GLIBC_ and GLIBCXX_ versions, compared as numbers")
+rawreel_readelf_max_versions(TEXT "${versions}" GLIBC glibc GLIBCXX glibcxx)
+expect_equal("${case}" "${glibc}" "2.38")
+expect_equal("${case}" "${glibcxx}" "3.4.32")
+rawreel_readelf_max_versions(TEXT "no versions" GLIBC glibc GLIBCXX glibcxx)
+expect_equal("${case}" "${glibc}" "")
+expect_equal("${case}" "${glibcxx}" "")
+pass("${case}")
+
+set(elf_args ALLOWED ${allowed} GLIBC_MAX 2.39 GLIBCXX_MAX 3.4.33)
+set(case "ELF: the good exe and library pass")
+rawreel_elf_errors(NAME rawreel-cli KIND exe DYNAMIC "${exe_dynamic}" VERSIONS "${versions}"
+                   ${elf_args} ERRORS errors)
+expect_empty("${case}" "${errors}")
+rawreel_elf_errors(NAME libswresample.so.6 KIND library DYNAMIC "${library_dynamic}"
+                   VERSIONS "${versions}" ${elf_args} ERRORS errors)
+expect_empty("${case}" "${errors}")
+pass("${case}")
+
+set(case "ELF: a symbol version above the baseline fails")
+string(REPLACE "GLIBC_2.29" "GLIBC_2.99" bad "${versions}")
+rawreel_elf_errors(NAME rawreel-cli KIND exe DYNAMIC "${exe_dynamic}" VERSIONS "${bad}"
+                   ${elf_args} ERRORS errors)
+expect_item("${case}" "${errors}" "rawreel-cli needs GLIBC_2.99, the baseline is 2.39")
+expect_count("${case}" "${errors}" 1)
+string(REPLACE "GLIBCXX_3.4.9 " "GLIBCXX_3.4.34 " bad "${versions}")
+rawreel_elf_errors(NAME rawreel-cli KIND exe DYNAMIC "${exe_dynamic}" VERSIONS "${bad}"
+                   ${elf_args} ERRORS errors)
+expect_item("${case}" "${errors}" "rawreel-cli needs GLIBCXX_3.4.34, the baseline is 3.4.33")
+expect_count("${case}" "${errors}" 1)
+pass("${case}")
+
+set(case "ELF: an exe with RUNPATH or RPATH fails")
+string(REPLACE " 0x000000000000000c (INIT)"
+               " 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/x]\n 0x000000000000000c (INIT)"
+               bad "${exe_dynamic}")
+rawreel_elf_errors(NAME rawreel-cli KIND exe DYNAMIC "${bad}" VERSIONS "${versions}" ${elf_args}
+                   ERRORS errors)
+expect_item("${case}" "${errors}" "rawreel-cli has RUNPATH $ORIGIN/x (the exes need none)")
+expect_count("${case}" "${errors}" 1)
+string(REPLACE "RUNPATH)            Library runpath" "RPATH)              Library rpath" bad "${bad}")
+rawreel_elf_errors(NAME rawreel-cli KIND exe DYNAMIC "${bad}" VERSIONS "${versions}" ${elf_args}
+                   ERRORS errors)
+expect_item("${case}" "${errors}" "rawreel-cli has RPATH $ORIGIN/x (the exes need none)")
+expect_count("${case}" "${errors}" 1)
+pass("${case}")
+
+set(case "ELF: an exe that needs a soname outside the list or an FFmpeg library fails")
+string(REPLACE "[libm.so.6]" "[libfoo.so.1]" bad "${exe_dynamic}")
+rawreel_elf_errors(NAME rawreel-gui KIND exe DYNAMIC "${bad}" VERSIONS "${versions}" ${elf_args}
+                   ERRORS errors)
+expect_item("${case}" "${errors}" "rawreel-gui needs libfoo.so.1, which is not in the system list")
+expect_count("${case}" "${errors}" 1)
+string(REPLACE "[libm.so.6]" "[libavutil.so.60]" bad "${exe_dynamic}")
+rawreel_elf_errors(NAME rawreel-gui KIND exe DYNAMIC "${bad}" VERSIONS "${versions}"
+                   ALLOWED ${allowed} libavutil.so.60 GLIBC_MAX 2.39 GLIBCXX_MAX 3.4.33
+                   ERRORS errors)
+expect_item("${case}" "${errors}"
+            "rawreel-gui links the FFmpeg library libavutil.so.60 (FFmpeg is loaded at run time)")
+expect_count("${case}" "${errors}" 1)
+pass("${case}")
+
+set(case "ELF: a library without RUNPATH \$ORIGIN or named other than its SONAME fails")
+rawreel_elf_errors(NAME libswresample.so.6.1.100 KIND library DYNAMIC "${library_dynamic}"
+                   VERSIONS "${versions}" ${elf_args} ERRORS errors)
+expect_item("${case}" "${errors}"
+            "libswresample.so.6.1.100 is not named by its SONAME libswresample.so.6")
+expect_count("${case}" "${errors}" 1)
+string(REPLACE "[$ORIGIN]" "[$ORIGIN/../lib]" bad "${library_dynamic}")
+rawreel_elf_errors(NAME libswresample.so.6 KIND library DYNAMIC "${bad}" VERSIONS "${versions}"
+                   ${elf_args} ERRORS errors)
+expect_item("${case}" "${errors}"
+            "libswresample.so.6 has RUNPATH '$ORIGIN/../lib', expected exactly $ORIGIN")
+expect_count("${case}" "${errors}" 1)
+string(REPLACE " 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN]\n" "" bad
+               "${library_dynamic}")
+string(REPLACE "(SONAME)             Library soname: [libswresample.so.6]" "(SYMBOLIC) 0x0" bad
+               "${bad}")
+rawreel_elf_errors(NAME libswresample.so.6 KIND library DYNAMIC "${bad}" VERSIONS "${versions}"
+                   ${elf_args} ERRORS errors)
+expect_item("${case}" "${errors}" "libswresample.so.6 has RUNPATH '', expected exactly $ORIGIN")
+expect_item("${case}" "${errors}" "libswresample.so.6 has no SONAME")
+expect_count("${case}" "${errors}" 2)
+pass("${case}")
+
+set(case "ELF: ldd 'not found' lines fail")
+file(READ "${data}/ldd.txt" ldd)
+rawreel_ldd_errors(NAME libavformat.so.62 TEXT "${ldd}" ERRORS errors)
+expect_empty("${case}" "${errors}")
+string(REPLACE "libavutil.so.60 => /opt/pkg/rawreel-1.2.3/ffmpeg/libavutil.so.60 (0x0000744b2e800000)"
+               "libavutil.so.60 => not found" bad "${ldd}")
+string(REPLACE "libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x0000744b2eb17000)"
+               "libm.so.6 => not found" bad "${bad}")
+rawreel_ldd_errors(NAME libavformat.so.62 TEXT "${bad}" ERRORS errors)
+expect_item("${case}" "${errors}" "libavformat.so.62: ldd finds no libavutil.so.60")
+expect_item("${case}" "${errors}" "libavformat.so.62: ldd finds no libm.so.6")
+expect_count("${case}" "${errors}" 2)
+pass("${case}")
+
+set(case "no runtime in the tar: C/C++ runtime and Vulkan libraries, .so outside ffmpeg/")
+set(rt_tree "${WORK_DIR}/rt-tree")
+file(WRITE "${rt_tree}/rawreel-1.2.3/rawreel-gui" "exe")
+file(WRITE "${rt_tree}/rawreel-1.2.3/ffmpeg/libavutil.so.60" "library")
+file(WRITE "${rt_tree}/rawreel-1.2.3/ffmpeg/licenses/zlib/LICENSE" "text")
+rawreel_linux_runtime_files(ROOT "${rt_tree}" FILES found)
+expect_empty("${case}" "${found}")
+foreach(name IN ITEMS libbogus.so ffmpeg/libstdc++.so.6 ffmpeg/libgcc_s.so.1 ffmpeg/libc.so.6
+                      ffmpeg/libvulkan.so.1 lib/libx.so.2)
+    file(WRITE "${rt_tree}/rawreel-1.2.3/${name}" "runtime")
+endforeach()
+rawreel_linux_runtime_files(ROOT "${rt_tree}" FILES found)
+expect_count("${case}" "${found}" 6)
+expect_item("${case}" "${found}" "rawreel-1.2.3/libbogus.so")
+expect_item("${case}" "${found}" "rawreel-1.2.3/ffmpeg/libvulkan.so.1")
+expect_item("${case}" "${found}" "rawreel-1.2.3/lib/libx.so.2")
+pass("${case}")
+
+set(case "symbols: build ID, debuglink and compressed debug sections")
+file(READ "${data}/readelf-n-and-debuglink.txt" notes)
+rawreel_readelf_build_id(TEXT "${notes}" ID id)
+expect_equal("${case}" "${id}" "de9410499bc003859e683e1d504a5e708d8d24d9")
+rawreel_readelf_build_id(TEXT "no notes" ID id)
+expect_equal("${case}" "${id}" "")
+rawreel_readelf_debuglink(TEXT "${notes}" NAME link)
+expect_equal("${case}" "${link}" "rawreel-cli.debug")
+rawreel_readelf_debuglink(TEXT "no dump" NAME link)
+expect_equal("${case}" "${link}" "")
+file(READ "${data}/readelf-S.txt" sections)
+rawreel_readelf_compressed_sections(TEXT "${sections}" SECTIONS compressed)
+expect_empty("${case}" "${compressed}")
+string(REPLACE "1465763 00      0" "1465763 00   C  0" bad "${sections}")
+string(REPLACE "69c389 01  MS  0" "69c389 01 MSC  0" bad "${bad}")
+rawreel_readelf_compressed_sections(TEXT "${bad}" SECTIONS compressed)
+expect_equal("${case}" "${compressed}" ".debug_info;.debug_str")
+pass("${case}")
+
+# --- Linux tar modes and owners (GNU tar tvf text) -------------------------------------------
+
+set(case "modes: a good listing passes and reports its owners")
+file(READ "${data}/tar-tvf.txt" listing)
+set(executables rawreel-1.0.0/rawreel-gui rawreel-1.0.0/ffmpeg/libavutil.so.60)
+rawreel_tar_listing_errors(TEXT "${listing}" EXECUTABLES ${executables}
+                           ERRORS errors OWNER_NAMES owners)
+expect_empty("${case}" "${errors}")
+expect_equal("${case}" "${owners}" "builder/staff")
+pass("${case}")
+
+set(case "modes: a 777 file, a 644 exe or a world-writable folder fails")
+string(REPLACE "-rw-r--r-- builder/staff  1083" "-rwxrwxrwx builder/staff  1083" bad "${listing}")
+string(REPLACE "-rwxr-xr-x builder/staff 9000000" "-rw-r--r-- builder/staff 9000000" bad "${bad}")
+string(REPLACE "drwxr-xr-x builder/staff     0 2026-10-27 10:00 rawreel-1.0.0/ffmpeg/"
+               "drwxrwxrwx builder/staff     0 2026-10-27 10:00 rawreel-1.0.0/ffmpeg/" bad "${bad}")
+rawreel_tar_listing_errors(TEXT "${bad}" EXECUTABLES ${executables} ERRORS errors OWNER_NAMES owners)
+expect_count("${case}" "${errors}" 3)
+expect_item("${case}" "${errors}" "rawreel-1.0.0/LICENSE: mode rwxrwxrwx, expected rw-r--r--")
+expect_item("${case}" "${errors}" "rawreel-1.0.0/rawreel-gui: mode rw-r--r--, expected rwxr-xr-x")
+expect_item("${case}" "${errors}" "rawreel-1.0.0/ffmpeg/: world-writable folder (rwxrwxrwx)")
+pass("${case}")
+
+set(case "modes: links, unreadable lines and an empty listing fail")
+set(bad "${listing}lrwxrwxrwx builder/staff 0 2026-10-27 10:00 rawreel-1.0.0/ffmpeg/libx.so -> libavutil.so.60\n")
+string(APPEND bad "garbage line\n")
+rawreel_tar_listing_errors(TEXT "${bad}" EXECUTABLES ${executables} ERRORS errors OWNER_NAMES owners)
+expect_count("${case}" "${errors}" 2)
+expect_item("${case}" "${errors}"
+            "rawreel-1.0.0/ffmpeg/libx.so -> libavutil.so.60: entry type l (only files and folders)")
+expect_item("${case}" "${errors}" "cannot read the tar listing line: garbage line")
+rawreel_tar_listing_errors(TEXT "\n" ERRORS errors OWNER_NAMES owners)
+expect_equal("${case}" "${errors}" "the tar listing is empty")
+pass("${case}")
+
+set(case "owners: only the allowed owners and groups pass when they are checked")
+rawreel_tar_listing_errors(TEXT "${listing}" EXECUTABLES ${executables} OWNERS root runner
+                           GROUPS root runner docker ERRORS errors OWNER_NAMES owners)
+expect_count("${case}" "${errors}" 2)
+expect_item("${case}" "${errors}" "owner builder is not allowed (allowed: root, runner)")
+expect_item("${case}" "${errors}" "group staff is not allowed (allowed: root, runner, docker)")
+string(REPLACE "builder/staff" "runner/docker" good "${listing}")
+string(REPLACE "-rw-r--r-- runner/docker  1083" "-rw-r--r-- root/root  1083" good "${good}")
+rawreel_tar_listing_errors(TEXT "${good}" EXECUTABLES ${executables} OWNERS root runner
+                           GROUPS root runner docker ERRORS errors OWNER_NAMES owners)
+expect_empty("${case}" "${errors}")
+expect_equal("${case}" "${owners}" "runner/docker;root/root")
+pass("${case}")
+
 get_property(passed GLOBAL PROPERTY test_packaging_passed)
 list(LENGTH passed passed_count)
 message(STATUS "test_packaging_scripts: all ${passed_count} checks passed")

@@ -36,7 +36,7 @@ FetchContent_Declare(dvv_components
 if(PROJECT_IS_TOP_LEVEL)
     set(DVV_BUILD_TESTS OFF)
 endif()
-# Release program databases for every target of the build (packaging/symbols.cmake, D16).
+# Release debug symbols for every target of the build (packaging/symbols.cmake, D16).
 include(packaging/symbols.cmake)
 FetchContent_MakeAvailable(dvv_base dvv_platform dvv_gpu dvv_media dvv_components)
 if(PROJECT_IS_TOP_LEVEL)
@@ -137,8 +137,7 @@ dvv_set_compiler_options(rawreel_cli)
 
 # rawreel-gui (spec §10.2). Not built for sanitizer builds on any platform (design M1b F13): wx and
 # GTK are not instrumented, and MSVC ASan cannot link the non-ASan static wx. rawreel_render and its
-# tests still build and run there. v1.0 runs it on Windows only; elsewhere it is built with a stub
-# native window, so the GUI code stays portable.
+# tests still build and run there. Windows and Linux (X11, also through XWayland).
 if(NOT DVV_SANITIZE)
     find_package(wxWidgets CONFIG REQUIRED COMPONENTS core base aui)
     add_executable(rawreel_gui WIN32
@@ -167,8 +166,15 @@ if(NOT DVV_SANITIZE)
         target_sources(rawreel_gui PRIVATE src/gui/viewport_msw.cpp src/gui/rawreel-gui.rc)
         # wmain() in a GUI-subsystem program; the manifest comes from wx.rc (rawreel-gui.rc).
         target_link_options(rawreel_gui PRIVATE /ENTRY:wmainCRTStartup /MANIFEST:NO)
+    elseif(UNIX AND NOT APPLE)
+        # Linux (wxGTK): the X11 start-up (gui_platform_gtk.cpp) and the viewport's X11 window.
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(GTK3 REQUIRED IMPORTED_TARGET gtk+-3.0)
+        find_package(X11 REQUIRED)
+        target_sources(rawreel_gui PRIVATE src/gui/gui_platform_gtk.cpp src/gui/viewport_gtk.cpp)
+        target_link_libraries(rawreel_gui PRIVATE PkgConfig::GTK3 X11::X11)
     else()
-        # No native viewport outside Windows yet (Linux support follows).
+        # Other toolkits: no native viewport yet (the viewport reports a failure).
         target_sources(rawreel_gui PRIVATE src/gui/viewport_stub.cpp)
     endif()
 endif()
@@ -182,7 +188,8 @@ endif()
 if(TARGET rawreel_gui)
     dvv_components_link(rawreel_gui)
 endif()
-# Release links name their PDB by file name only (packaging/symbols.cmake).
+# Release symbols: the PDB named by file name only on Windows, a split .debug file on Linux
+# (packaging/symbols.cmake).
 rawreel_release_symbols(rawreel_cli)
 if(TARGET rawreel_gui)
     rawreel_release_symbols(rawreel_gui)
@@ -193,7 +200,8 @@ if(DVV_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-# The Windows package (packaging/packaging.cmake); rawreel-gui is not built under the sanitizers.
+# The Windows and Linux packages (packaging/packaging.cmake); rawreel-gui is not built under the
+# sanitizers.
 if(NOT DVV_SANITIZE)
     include(packaging/packaging.cmake)
 endif()

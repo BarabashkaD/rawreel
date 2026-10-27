@@ -4,6 +4,7 @@
 
 #include "gui/about.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -13,6 +14,7 @@
 // clang-format off
 #include <wx/aboutdlg.h>  // wxAboutDialogInfo, before the generic dialog
 #include <wx/clipbrd.h>
+#include <wx/collpane.h>
 #include <wx/filename.h>
 #include <wx/generic/aboutdlgg.h>
 #include <wx/stdpaths.h>
@@ -62,7 +64,59 @@ public:
 protected:
     void DoAddCustomControls() override {
         AddText(linesOf(content_.system, " "));
-        AddCollapsiblePane("Components", linesOf(content_.components, " "));
+        addComponentsPane();
+    }
+
+    // The stock AddCollapsiblePane() sizes its text for a third of the display, so opening the
+    // pane widened the dialog to that. This pane is as wide as its longest line (at most 60
+    // characters, longer lines wrap) and as tall as its lines. The dialog follows the pane in
+    // fitToPane(), not in wx (see there).
+    void addComponentsPane() {
+        auto* pane = new wxCollapsiblePane(GetCustomControlParent(), wxID_ANY, "Components",
+                                           wxDefaultPosition, wxDefaultSize,
+                                           wxCP_DEFAULT_STYLE | wxCP_NO_TLW_RESIZE);
+        pane->Bind(wxEVT_COLLAPSIBLEPANE_CHANGED, [this, pane](wxCollapsiblePaneEvent& event) {
+            event.Skip();
+            fitToPane(*pane);
+        });
+        wxWindow* const inner = pane->GetPane();
+        const wxString text = linesOf(content_.components, " ");
+        const wxArrayString lines = wxSplit(text, '\n', '\0');
+        int width = 0;
+        for (const wxString& line : lines) {
+            width = std::max(width, inner->GetTextExtent(line).x);
+        }
+        const int cap = 60 * inner->GetCharWidth();
+        long style = wxTE_MULTILINE | wxTE_READONLY | wxBORDER_NONE;
+        if (width <= cap) {
+            style |= wxTE_NO_VSCROLL;
+        }
+        auto* lines_text =
+            new wxTextCtrl(inner, wxID_ANY, text, wxDefaultPosition, wxDefaultSize, style);
+        const int rows = static_cast<int>(lines.size()) + (width > cap ? 1 : 0);
+        lines_text->SetInitialSize(lines_text->GetSizeFromTextSize(
+            std::min(width, cap), rows * lines_text->GetCharHeight()));
+        auto* sizer = new wxBoxSizer(wxHORIZONTAL);
+        sizer->Add(lines_text, wxSizerFlags(1).Expand());
+        inner->SetSizer(sizer);
+        AddControl(pane, wxSizerFlags(0).Expand().Border(wxBOTTOM));
+    }
+
+    // The dialog's height follows the pane; its width stays. A window manager may not shrink
+    // the window when the pane closes (WSLg does not), so opening it again can change no window
+    // size; then no size event lays out the panel that holds the pane, the pane keeps its closed
+    // height and the list stays 1 pixel high. So the pane's parent is laid out here every time,
+    // and the window stays resizable (wx's own resize on GTK makes it fixed-size while closed).
+    void fitToPane(wxCollapsiblePane& pane) {
+        for (wxWindow* window = &pane; window != nullptr && window != this;
+             window = window->GetParent()) {
+            window->InvalidateBestSize();
+        }
+        const wxSize fit = GetSizer()->ComputeFittingClientSize(this);
+        SetMinClientSize(fit);
+        SetClientSize(std::max(GetClientSize().x, fit.x), fit.y);
+        Layout();
+        pane.GetParent()->Layout();
     }
 
 private:

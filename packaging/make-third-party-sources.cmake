@@ -154,9 +154,10 @@ file(CONFIGURE OUTPUT "${stage}/README.txt" @ONLY NEWLINE_STYLE LF CONTENT
 "Third-party sources for rawreel @VERSION@
 
 The complete corresponding source of the LGPL components (@LGPL_COMPONENTS@) of the FFmpeg
-libraries in the rawreel @VERSION@ package (folder ffmpeg/ in the Windows zip). Not included: the
-AMD AMF public headers (MIT) that avcodec's AMF support is built against; their URL and SHA256 are
-in custom_ffmpeg-@CF_VERSION@/versions.cmake.
+libraries in the rawreel @VERSION@ packages (folder ffmpeg/ in the Windows zip and the Linux
+tar.xz; both are built from the same custom_ffmpeg commit). Not included: the AMD AMF public
+headers (MIT) that avcodec's AMF support is built against; their URL and SHA256 are in
+custom_ffmpeg-@CF_VERSION@/versions.cmake.
 - custom_ffmpeg-@CF_VERSION@/: custom_ffmpeg @CF_VERSION@, tag v@CF_VERSION@, commit @COMMIT@, with
   every submodule and the build scripts (the configure line included). Submodules:
 @SUBMODULES@

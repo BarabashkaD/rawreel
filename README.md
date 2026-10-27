@@ -20,41 +20,66 @@ A release has these files (`<v>` is the version, e.g. `1.0.0`):
   start.
 - `rawreel-<v>-windows-x64-symbols.zip`: the debug symbols (`rawreel-gui.pdb`, `rawreel-cli.pdb`)
   for crash dumps (see [Bug reports](#bug-reports)); not needed to run rawreel.
-- `rawreel-<v>-third-party-sources.tar.xz`: the complete source of the bundled FFmpeg (see
-  [FFmpeg in the package](#ffmpeg-in-the-package)).
+- `rawreel-<v>-linux-x64.tar.xz`: the application for Linux x86-64. Extract it anywhere
+  (`tar xf rawreel-<v>-linux-x64.tar.xz`) and start `./rawreel-gui` in the extracted folder;
+  nothing is installed.
+- `rawreel-<v>-linux-x64-symbols.tar.xz`: the debug symbols (`rawreel-gui.debug`,
+  `rawreel-cli.debug`) for core dumps (see [Bug reports](#bug-reports)); not needed to run rawreel.
+- `rawreel-<v>-third-party-sources.tar.xz`: the complete source of the bundled FFmpeg of both
+  packages (see [FFmpeg in the package](#ffmpeg-in-the-package)).
 - `SHA256SUMS`: the checksums of the files above (see [Verifying downloads](#verifying-downloads)).
 
 The zip holds one folder, `rawreel-<v>/`, with `rawreel-gui.exe`, `rawreel-cli.exe`, `README.md`,
 `LICENSE`, `THIRD_PARTY_NOTICES.txt` and `ffmpeg/` (the six FFmpeg libraries, their `licenses/`,
-`build-info.txt` and `SOURCE.txt`). Keep all files of the zip together. It has no `rawreel.json`;
-the built-in defaults apply (see [Configuration](#configuration)).
+`build-info.txt` and `SOURCE.txt`). The Linux tar.xz holds the same folder with `rawreel-gui` and
+`rawreel-cli` instead of the `.exe` files. Keep all files of a package together. It has no
+`rawreel.json`; the built-in defaults apply (see [Configuration](#configuration)).
 
-**Requirements:** Windows 10 or newer, 64-bit, with a GPU driver that supports Vulkan 1.4, and the
-Microsoft Visual C++ Redistributable (x64) 14.51 or newer, which the zip does not include: install
-Microsoft's latest one from https://aka.ms/vc14/vc_redist.x64.exe. "MSVCP140.dll was not found"
-at the start means it is missing or too old. Linux will be supported soon.
+**Requirements (Windows):** Windows 10 or newer, 64-bit, with a GPU driver that supports Vulkan
+1.4, and the Microsoft Visual C++ Redistributable (x64) 14.51 or newer, which the zip does not
+include: install Microsoft's latest one from https://aka.ms/vc14/vc_redist.x64.exe. "MSVCP140.dll
+was not found" at the start means it is missing or too old.
+
+**Requirements (Linux):** Ubuntu 24.04 (x86-64) with its current updates (glibc 2.39); an X11
+desktop, or a Wayland desktop with XWayland (Ubuntu's default);
+GTK 3; the Vulkan loader `libvulkan1`; and a Vulkan 1.4 driver: Mesa from Ubuntu's updates
+(`noble-updates`; the Mesa of the 24.04 release is too old) or the GPU vendor's driver. Install
+the system packages rawreel needs with:
+
+```sh
+sudo apt install libgtk-3-0t64 libsm6 libice6 libvulkan1 mesa-vulkan-drivers
+```
+
+The tar.xz ships no C++ runtime and no Vulkan loader; it uses the system's. `rawreel-gui` uses
+X11: on a Wayland desktop it runs through XWayland, so `DISPLAY` must be set (as it is in a
+desktop session, and in WSL on Windows 11 with WSLg). Without a display it exits with 1 and "no
+X11 display (DISPLAY is not set); rawreel-gui needs X11 or XWayland".
 
 ## FFmpeg in the package
 
-The Windows zip includes the FFmpeg libraries avutil, avcodec, avformat, avfilter, swscale and
-swresample of custom_ffmpeg 1.0.0 (FFmpeg n8.1.3, LGPL 2.1 or later) in `ffmpeg/`. rawreel loads
-them at run time and is not linked with them; you may replace them with your own LGPL shared build
-of FFmpeg 8.1 or a newer 8.x with the same file names, or delete the folder. Each library must have
+The Windows zip and the Linux tar.xz include the FFmpeg libraries avutil, avcodec, avformat,
+avfilter, swscale and swresample of custom_ffmpeg 1.0.0 (FFmpeg n8.1.3, LGPL 2.1 or later) in
+`ffmpeg/` (on Linux named `libavutil.so.60`, `libavcodec.so.62`, …). rawreel loads them at run
+time and is not linked with them; you may replace them with your own LGPL shared build of FFmpeg
+8.1 or a newer 8.x with the same file names, or delete the folder. Each library must have
 the major version rawreel was built with and at least its minor version (avutil 60.26, avcodec
 62.28, avformat 62.12, avfilter 11.14, swscale 9.5, swresample 6.3); an older one, a GPL build or
 a non-free build is refused. Their complete source is the release asset
 `rawreel-<v>-third-party-sources.tar.xz` (custom_ffmpeg with its submodules and build scripts, and
-LAME 3.100); `ffmpeg/SOURCE.txt` says the same. These libraries contain decoders for
-codecs such as H.264, HEVC and AAC, which may be covered by patents in some countries; licensing
+LAME 3.100); one archive covers both packages, and `ffmpeg/SOURCE.txt` says the same. These
+libraries contain decoders for codecs such as H.264, HEVC and AAC, which may be covered by
+patents in some countries; licensing
 them is a matter for the user and the distributor. rawreel itself opens only lossless video
 codecs. This is not legal advice.
 
-**A package without FFmpeg.** A zip built on a third-party prefix configured with
-`-DDVV_BUNDLE_FFMPEG=OFF` (bootstrap `-BundleFfmpeg OFF`; the default is `ON`) has no `ffmpeg/`
-folder and no sources archive. To open container files and `lavfi:` graphs with it, put an LGPL
-shared build of FFmpeg 8.1 or a newer 8.x (`avutil-60.dll`, `avcodec-62.dll`, `avformat-62.dll`,
-`avfilter-11.dll`, `swscale-9.dll`, `swresample-6.dll`, same version rule) into `ffmpeg/` next to
-`rawreel-gui.exe`, or set `DVV_FFMPEG_DIR` to its absolute path.
+**A package without FFmpeg.** A package built on a third-party prefix configured with
+`-DDVV_BUNDLE_FFMPEG=OFF` (bootstrap `-BundleFfmpeg OFF`, or `--bundle-ffmpeg OFF` on Linux; the
+default is `ON`) has no `ffmpeg/` folder and no sources archive. To open container files and
+`lavfi:` graphs with it, put an LGPL shared build of FFmpeg 8.1 or a newer 8.x (`avutil-60.dll`,
+`avcodec-62.dll`, `avformat-62.dll`, `avfilter-11.dll`, `swscale-9.dll`, `swresample-6.dll`; on
+Linux `libavutil.so.60`, `libavcodec.so.62`, `libavformat.so.62`, `libavfilter.so.11`,
+`libswscale.so.9`, `libswresample.so.6`; same version rule) into `ffmpeg/` next to `rawreel-gui`,
+or set `DVV_FFMPEG_DIR` to its absolute path.
 
 ## FFmpeg sources
 
@@ -110,9 +135,11 @@ The first folder of 2 and 3 that holds the avutil library is final too, so a bro
 FFmpeg is reported, not skipped. A GPL or non-free build, a different major version, or an older
 minor one than rawreel was built with, is refused. Without FFmpeg the raw, Y4M and synthetic
 sources still work. The last line of `rawreel-cli --version`, and the About box of `rawreel-gui`,
-show the FFmpeg status: `FFmpeg <version> (<licence>) from <folder>` (About leaves out the folder,
-and shows "details in the log" instead of the reason), with ", lavfi not available" when avfilter
-is missing, or `FFmpeg: not available (<reason>)`.
+show the FFmpeg status: `FFmpeg <version> (<licence>) from https://github.com/BarabashkaD/custom_ffmpeg`
+for the bundled FFmpeg, or `... from DVV_FFMPEG_DIR` when the variable is set (never a folder),
+with ", lavfi not available" when avfilter is missing, or `FFmpeg: not available (<reason>)`
+(About shows "details in the log" instead of the reason). The reason, in the log too, writes the
+program's folder as `<app>`, the variable's folder as `$DVV_FFMPEG_DIR` and the home folder as `~`.
 
 ## rawreel-gui
 
@@ -120,7 +147,8 @@ is missing, or `FFmpeg: not available (<reason>)`.
 an Info pane, a Log pane, a status bar (frame and length, target / actual fps, the pipeline's
 bottleneck, and the colour mapping, e.g. "SDR, no tone mapping" or "PQ → SDR tone mapping (1000 →
 100 nits)") and an infobar for warnings and errors. The log also goes to `rawreel.log` in the
-user's data folder.
+user's data folder (`%APPDATA%\rawreel\` on Windows, `~/.local/share/rawreel/` on Linux, or
+`$XDG_DATA_HOME/rawreel/` when that is set).
 
 The Info pane shows the stream: URI, format, size, frame rate, frame count, colour and, for files,
 the read mode (e.g. "reads: unbuffered"). The colour names the standard ("no standard" when the
@@ -151,6 +179,15 @@ in PowerShell):
 ```powershell
 & .\rawreel-gui.exe --appearance dark 'synthetic:gradient?fmt=yuv420p10le&size=1920x1080&frames=250'
 ```
+
+On Linux, in the extracted folder (in a development build, from `$bin`, see
+[Building and testing (Linux)](#building-and-testing-linux)):
+
+```sh
+./rawreel-gui 'synthetic:gradient?fmt=yuv420p10le&size=1920x1080&frames=250'
+```
+
+On Linux, `--appearance dark` does not darken the windows yet; they follow the GTK theme.
 
 **Opening.** File → Open… (Ctrl+O), File → Open URI… (Ctrl+U), a URI on the command line (at most
 one) or a file dropped on the window opens one stream; it replaces the stream that was open. When
@@ -260,6 +297,8 @@ rawreel-cli --help
 Each option is valid only for the commands above and may be given once. `--frame` is at least 0;
 `--count`, `--frames` and `--inflight` are at least 1.
 
+### Source URIs
+
 A `<uri>` is one of:
 
 - a file path whose name carries the size and the format (`clip_1920x1080_v210.yuv`), and
@@ -318,6 +357,15 @@ $cli = (Resolve-Path .\rawreel-cli.exe).Path
 Set-Location (New-Item -ItemType Directory -Force $env:TEMP/rawreel-cli-example)
 & $cli dump 'synthetic:gradient?fmt=v210&size=1920x1080' --count 3 --out clip_1920x1080_v210.yuv
 & $cli info clip_1920x1080_v210.yuv
+```
+
+On Linux the same in bash:
+
+```sh
+cli="$PWD/rawreel-cli"
+mkdir -p /tmp/rawreel-cli-example && cd /tmp/rawreel-cli-example
+"$cli" dump 'synthetic:gradient?fmt=v210&size=1920x1080' --count 3 --out clip_1920x1080_v210.yuv
+"$cli" info clip_1920x1080_v210.yuv
 ```
 
 The dump prints `wrote 3 frames (16588800 bytes) of v210 to clip_1920x1080_v210.yuv via gpu`
@@ -418,8 +466,8 @@ goes to stderr.
 `rawreel-gui` and `rawreel-cli` read an optional JSON file, `rawreel.json`, from the folder of
 the executable (never from the working directory). `--config <file>` on either executable reads
 another file instead. No `rawreel.json` is shipped, so the built-in defaults apply until you
-create one; to keep one next to the executables, unzip rawreel to a folder you can write to (not
-under Program Files).
+create one; to keep one next to the executables, unzip or extract rawreel to a folder you can
+write to (not under Program Files).
 
 ```json
 { "io": { "fileReads": "auto" } }
@@ -465,6 +513,8 @@ Unknown keys are ignored. To try another file:
 - FFV1 decoding is CPU-bound, so 4K FFV1 does not reach 60 fps: about 50 fps on a typical 8-core
   desktop CPU for easy content, far less for noisy content. Raw and Y4M files play 4K at 60 fps.
 - The Windows zip is not code-signed.
+- On Linux, `rawreel-gui` uses X11; on a Wayland desktop it runs through XWayland.
+- On Linux, a crash writes no crash report; use a core dump (see [Bug reports](#bug-reports)).
 
 ## Bug reports
 
@@ -474,6 +524,17 @@ When `rawreel-gui` or `rawreel-cli` crashes, it writes a minidump to `%APPDATA%\
 which includes the `rawreel: crash dump <path>` line. Add the output of `rawreel-cli --version`.
 The maintainer reads the dump with the symbols of the same release,
 `rawreel-<v>-windows-x64-symbols.zip`. `abort` and `__fastfail` end the process without a dump.
+
+On Linux, rawreel writes no crash report; the system can write a core dump instead. Run
+`ulimit -c unlimited` in the shell that starts rawreel. Where the core goes depends on the system
+(`cat /proc/sys/kernel/core_pattern`): on Ubuntu, apport usually stores it below
+`/var/lib/apport/coredump/`; with systemd-coredump, `coredumpctl` lists it. Attach the
+core, the log (`~/.local/share/rawreel/rawreel.log` for `rawreel-gui`, the console output for
+`rawreel-cli`) and the output of `rawreel-cli --version`. A core holds the program's memory,
+including frames of the open video. The maintainer reads it with the symbols of the same release,
+`rawreel-<v>-linux-x64-symbols.tar.xz`, extracted into the package folder
+(`tar xf rawreel-<v>-linux-x64-symbols.tar.xz -C rawreel-<v>`), so that gdb finds
+`rawreel-gui.debug` next to `rawreel-gui`.
 
 ## Verifying downloads
 
@@ -485,11 +546,15 @@ $want = (Select-String -Path SHA256SUMS -SimpleMatch $f).Line.Split(' ')[0]
 (Get-FileHash $f -Algorithm SHA256).Hash -eq $want    # True
 ```
 
-Where coreutils exist: `sha256sum -c --ignore-missing SHA256SUMS`. Every release file also has a
-build attestation from the release workflow; with the GitHub CLI:
+On Linux (or wherever coreutils exist): `sha256sum -c --ignore-missing SHA256SUMS`. Every release
+file also has a build attestation from the release workflow; with the GitHub CLI:
 
 ```powershell
 gh attestation verify rawreel-1.0.0-windows-x64.zip --repo BarabashkaD/rawreel
+```
+
+```sh
+gh attestation verify rawreel-1.0.0-linux-x64.tar.xz --repo BarabashkaD/rawreel
 ```
 
 ## Building and testing (Windows)
@@ -515,7 +580,8 @@ $bin = (Resolve-Path _build/rawreel/vs2026/Release).Path
 & "$bin/rawreel-gui.exe" 'lavfi:testsrc2=s=1280x720:r=25,format=yuv420p'
 ```
 
-`--version` ends with the FFmpeg line, which names the folder FFmpeg was loaded from.
+`--version` ends with the FFmpeg line, which names the FFmpeg version, its licence and the
+repository it is built from.
 
 CTest sets these variables itself. The tests (`ctest --preset vs2026` from `rawreel`, or
 `vs2026-release`) include:
@@ -539,10 +605,44 @@ GPU tests exit with 77 (skipped) without a usable Vulkan 1.4 device unless `DVV_
 Under `vs2026-asan`, `rawreel-gui` and its selftests are not built (wxWidgets is not
 instrumented).
 
+## Building and testing (Linux)
+
+Ubuntu 24.04 (also in WSL on Windows 11) with Clang 19, libstdc++ 14, CMake and Ninja (see the
+rawreel-workspace README). From the workspace folder, in bash, after
+`rawreel-workspace/bootstrap.sh` (it names the apt packages it still needs), configure, build
+Debug and Release and run all tests:
+
+```sh
+(cd rawreel && cmake --workflow --preset ninja-clang)
+```
+
+The executables are `_build/rawreel/ninja-clang/<Debug|Release>/rawreel-gui` and `rawreel-cli` in
+the workspace folder. As on Windows, point rawreel at the FFmpeg of the third-party prefix and,
+optionally, turn on Vulkan synchronization validation:
+
+```sh
+export DVV_FFMPEG_DIR="$PWD/_third_party/clang/custom_ffmpeg/linux-x64/shared/lgpl/lib"
+export VK_ADD_LAYER_PATH="$PWD/_third_party/clang/share/vulkan/explicit_layer.d"
+export DVV_VK_VALIDATION=sync
+bin="$PWD/_build/rawreel/ninja-clang/Release"
+"$bin/rawreel-cli" --version
+"$bin/rawreel-gui" 'lavfi:testsrc2=s=1280x720:r=25,format=yuv420p'
+```
+
+The tests (`ctest --preset ninja-clang` from `rawreel`, or `ninja-clang-release`) are those of
+[Building and testing (Windows)](#building-and-testing-windows), plus
+`rawreel.gui_start.no_display` (a start without a display exits as described above). The GUI
+tests (label `display`) need an X display: a desktop session, WSLg, or Xvfb
+(`xvfb-run -a -s "-screen 0 1920x1080x24" ctest --preset ninja-clang`). Without a GPU, Mesa's
+software driver lavapipe works: `export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`.
+`rawreel-workspace/tools/sanity.sh` runs the quick sanity cycle (see the rawreel-workspace
+README). Under `ninja-clang-asan` and `ninja-clang-tsan`, `rawreel-gui` and its selftests are not
+built. The Linux packages are built and checked by the same `dry-run.cmake` command as on Windows.
+
 ## Licence
 
-MIT (see `LICENSE`). `THIRD_PARTY_NOTICES.txt` in the zip lists the licences of the third-party
-code it ships. The FFmpeg libraries in `ffmpeg/` are LGPL (see
+MIT (see `LICENSE`). `THIRD_PARTY_NOTICES.txt` in each package lists the licences of the
+third-party code it ships. The FFmpeg libraries in `ffmpeg/` are LGPL (see
 [FFmpeg in the package](#ffmpeg-in-the-package)); they include LAME (`LGPL-2.0-or-later`) and
 SVT-AV1 (`BSD-3-Clause-Clear`). wxWidgets includes code under the `libpng-2.0`, `IJG` and `X11`
 licences.

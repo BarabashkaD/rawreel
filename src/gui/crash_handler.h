@@ -1,7 +1,8 @@
 #pragma once
 
 // Windows minidump on an unhandled exception (design M4 v2 D22; spec §11). wx-free; compiled into
-// rawreel_core. Other platforms: both functions do nothing.
+// rawreel_core. Other platforms: both functions do nothing; Linux has no crash handler in v1.0:
+// a crash leaves a core dump where the system enables them.
 
 #include <string>
 #include <string_view>

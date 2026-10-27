@@ -8,7 +8,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "dvv/base/error.h"
 
@@ -45,6 +44,12 @@ struct GuiArguments {
 [[nodiscard]] dvv::Result<GuiArguments> parseGuiArguments(std::span<const std::string_view> args);
 // 77, or 4 when DVV_REQUIRE_GPU=1 turns a skip into a failure (M1b D12).
 [[nodiscard]] int skipExitCode();
+// rawreel-gui's X11 start-up check (Linux, XWayland included): `display` is DISPLAY's value
+// (nullopt when unset), `can_open` whether XOpenDisplay succeeded. nullopt when the GUI can start,
+// else "no X11 display (DISPLAY is not set); rawreel-gui needs X11 or XWayland" (unset or empty)
+// or "cannot open X display '<value>'; rawreel-gui needs X11 or XWayland".
+[[nodiscard]] std::optional<std::string> x11DisplayProblem(
+    const std::optional<std::string>& display, bool can_open);
 
 inline constexpr char USAGE[] =
     R"(Usage: rawreel-gui [--appearance system|light|dark] [--gpu N] [--selftest SCENARIO]

@@ -1,0 +1,12 @@
+
+Dynamic section at offset 0x21d80 contains 32 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libavutil.so.60]
+ 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000000e (SONAME)             Library soname: [libswresample.so.6]
+ 0x0000000000000010 (SYMBOLIC)           0x0
+ 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN]
+ 0x000000000000000c (INIT)               0x3000
+ 0x000000000000000d (FINI)               0x1bf9c
+ 0x0000000000000000 (NULL)               0x0

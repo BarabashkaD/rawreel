@@ -22,14 +22,19 @@ rawreel is a player for raw and lossless video on the GPU (Vulkan). Version 1.0 
   MP4, NUT, …) with a lossless video codec, and `lavfi:` filter graphs;
 - a GPU device loss shows an error with Reopen instead of ending the program.
 
-v1.0 runs on Windows. Linux will be supported soon.
+v1.0 runs on Windows and on Linux (Ubuntu 24.04, X11 or XWayland).
 
 ## Downloads
 
-- `rawreel-1.0.0-windows-x64.zip`: the application. Unzip it anywhere, keep all its files
-  together, and start `rawreel-gui.exe`.
+- `rawreel-1.0.0-windows-x64.zip`: the application for Windows. Unzip it anywhere, keep all its
+  files together, and start `rawreel-gui.exe`.
 - `rawreel-1.0.0-windows-x64-symbols.zip`: debug symbols for crash dumps.
-- `rawreel-1.0.0-third-party-sources.tar.xz`: the complete source of the bundled FFmpeg.
+- `rawreel-1.0.0-linux-x64.tar.xz`: the application for Linux x86-64. Extract it anywhere
+  (`tar xf rawreel-1.0.0-linux-x64.tar.xz`), keep all its files together, and start
+  `./rawreel-gui` in the extracted folder.
+- `rawreel-1.0.0-linux-x64-symbols.tar.xz`: debug symbols for core dumps.
+- `rawreel-1.0.0-third-party-sources.tar.xz`: the complete source of the bundled FFmpeg; one
+  archive covers both packages.
 - `SHA256SUMS`: the checksums.
 
 To verify a download, compare `(Get-FileHash <file> -Algorithm SHA256).Hash` with its line in
@@ -38,15 +43,22 @@ attestation with `gh attestation verify <file> --repo BarabashkaD/rawreel`.
 
 ## Requirements
 
-Windows 10 or newer, 64-bit, with a GPU driver that supports Vulkan 1.4, and the Microsoft Visual
-C++ Redistributable (x64) 14.51 or newer, which the zip does not include: install Microsoft's
+Windows: Windows 10 or newer, 64-bit, with a GPU driver that supports Vulkan 1.4, and the
+Microsoft Visual C++ Redistributable (x64) 14.51 or newer, which the zip does not include:
+install Microsoft's
 latest one from https://aka.ms/vc14/vc_redist.x64.exe. "MSVCP140.dll was not found" at the start
 means it is missing or too old.
 
+Linux: Ubuntu 24.04 (x86-64) with its current updates (glibc 2.39); an X11 desktop, or a Wayland
+desktop with XWayland; GTK 3; the Vulkan loader `libvulkan1`; and a Vulkan 1.4 driver (Mesa from
+`noble-updates` or the GPU vendor's driver). Install the system packages with
+`sudo apt install libgtk-3-0t64 libsm6 libice6 libvulkan1 mesa-vulkan-drivers`.
+
 ## FFmpeg in the package
 
-The Windows zip includes the FFmpeg libraries avutil, avcodec, avformat, avfilter, swscale and
-swresample of custom_ffmpeg 1.0.0 (FFmpeg n8.1.3, LGPL 2.1 or later) in `ffmpeg/`. rawreel loads
+The Windows zip and the Linux tar.xz include the FFmpeg libraries avutil, avcodec, avformat,
+avfilter, swscale and swresample of custom_ffmpeg 1.0.0 (FFmpeg n8.1.3, LGPL 2.1 or later) in
+`ffmpeg/`. rawreel loads
 them at run time and is not linked with them; you may replace them with your own LGPL shared build
 of FFmpeg 8.1 or a newer 8.x with the same file names, or delete the folder. Each library must have
 the major version rawreel was built with and at least its minor version (avutil 60.26, avcodec
@@ -76,17 +88,22 @@ codecs. This is not legal advice.
 - FFV1 decoding is CPU-bound, so 4K FFV1 does not reach 60 fps: about 50 fps on a typical 8-core
   desktop CPU for easy content, far less for noisy content. Raw and Y4M files play 4K at 60 fps.
 - The zip is not code-signed, so Windows SmartScreen may warn at the first start.
+- On Linux, `rawreel-gui` uses X11; on a Wayland desktop it runs through XWayland.
 
 ## Bug reports
 
-A crash writes a minidump to `%APPDATA%\rawreel\crashes\`. Attach it and the log to the report:
-`%APPDATA%\rawreel\rawreel.log` for `rawreel-gui`, the console output (with its
+On Windows a crash writes a minidump to `%APPDATA%\rawreel\crashes\`. Attach it and the log to the
+report: `%APPDATA%\rawreel\rawreel.log` for `rawreel-gui`, the console output (with its
 `rawreel: crash dump <path>` line) for `rawreel-cli`. The maintainer reads the dump with the
 symbols zip.
 
+On Linux rawreel writes no crash report; attach a core dump (`ulimit -c unlimited` before the
+start) and the log, `~/.local/share/rawreel/rawreel.log` for `rawreel-gui`. The README says where
+the core goes. The maintainer reads it with the Linux symbols tar.xz.
+
 ## Licence
 
-rawreel is MIT-licensed. `THIRD_PARTY_NOTICES.txt` in the zip lists the licences of the
+rawreel is MIT-licensed. `THIRD_PARTY_NOTICES.txt` in each package lists the licences of the
 third-party code it ships. The FFmpeg libraries in `ffmpeg/` are LGPL; they include LAME
 (`LGPL-2.0-or-later`) and SVT-AV1 (`BSD-3-Clause-Clear`). wxWidgets includes code under the
 `libpng-2.0`, `IJG` and `X11` licences.

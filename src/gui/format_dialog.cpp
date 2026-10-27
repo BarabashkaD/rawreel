@@ -341,10 +341,17 @@ FormatDialog::FormatDialog(wxWindow* parent, const wxString& title, const Format
     }
     size_->Append(fromUtf8(CUSTOM_LABEL));
     size_text_ = new wxStaticText(this, wxID_ANY, wxEmptyString);
-    width_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition,
-                            FromDIP(wxSize(72, -1)), wxSP_ARROW_KEYS, 1, MAX_SIZE, 1920);
-    height_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition,
-                             FromDIP(wxSize(72, -1)), wxSP_ARROW_KEYS, 1, MAX_SIZE, 1080);
+#if defined(__WXGTK__)
+    // A GTK 3 spin button draws its - and + buttons beside the entry; 72 DIP is less than its
+    // minimum (Gtk-CRITICAL "size >= 0" in GtkSpinButton), so GTK gets its best width.
+    const wxSize spin_size = wxDefaultSize;
+#else
+    const wxSize spin_size = FromDIP(wxSize(72, -1));
+#endif
+    width_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, spin_size,
+                            wxSP_ARROW_KEYS, 1, MAX_SIZE, 1920);
+    height_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, spin_size,
+                             wxSP_ARROW_KEYS, 1, MAX_SIZE, 1080);
     fps_ = new wxComboBox(this, wxID_ANY, "25", wxDefaultPosition, FromDIP(wxSize(90, -1)));
     for (const std::string_view entry : frameRatePresets()) {
         fps_->Append(fromUtf8(entry));
@@ -511,8 +518,29 @@ FormatDialog::FormatDialog(wxWindow* parent, const wxString& title, const Format
     setChoice(initial);
     // Room for the longest validation message without a relayout.
     SetMinSize(GetSize());
+#if defined(__WXGTK__)
+    fixed_client_ = GetClientSize();
+    Bind(wxEVT_SIZE, &FormatDialog::keepFixedSize, this);
+#endif
     CentreOnParent();
 }
+
+#if defined(__WXGTK__)
+void FormatDialog::keepFixedSize(wxSizeEvent& event) {
+    event.Skip();
+    if (restore_pending_ || GetClientSize() == fixed_client_) {
+        return;
+    }
+    restore_pending_ = true;
+    CallAfter([this] {
+        restore_pending_ = false;
+        if (GetClientSize() != fixed_client_) {
+            SetClientSize(fixed_client_);
+            Layout();
+        }
+    });
+}
+#endif
 
 void FormatDialog::selectFormat(const std::string& format) {
     const wxString name = wxString::FromUTF8(format);
@@ -780,6 +808,9 @@ void FormatDialog::setLine(wxStaticText& line, const wxString& text) {
     const wxSize now = GetSize();
     SetMinSize(wxSize(std::max(GetMinSize().x, best.x), std::max(GetMinSize().y, best.y)));
     SetSize(wxSize(std::max(now.x, best.x), std::max(now.y, best.y)));
+#if defined(__WXGTK__)
+    fixed_client_ = GetClientSize();
+#endif
     Layout();
 }
 

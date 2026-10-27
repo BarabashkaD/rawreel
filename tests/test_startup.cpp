@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstddef>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -14,10 +15,16 @@
 #include "dvv/base/error.h"
 #include "dvv/base/json.h"
 #include "dvv/components/ffmpeg.h"
+#include "dvv/media/types.h"
 
 namespace {
 
 using dvv::components::FfmpegStatus;
+namespace fs = std::filesystem;
+
+std::string utf8(const fs::path& path) {
+    return dvv::media::utf8FromPath(path);
+}
 
 dvv::Error errorOf(dvv::Errc code, std::string message) {
     return dvv::Error{.code = code, .message = std::move(message), .where = {}, .cause = nullptr};
@@ -27,34 +34,117 @@ dvv::Error errorOf(dvv::Errc code, std::string message) {
 
 TEST_SUITE("core") {
     TEST_CASE("startup: FFmpeg status line") {
+        using rawreel::StatusPaths;
+        const fs::path app = fs::path("/") / "opt" / "rawreel";
+        const rawreel::FfmpegOrigin origin{
+            .appFolder = app, .ffmpegDirVariable = {}, .homeFolder = {}};
         FfmpegStatus status{.core = true,
                             .lavfi = true,
                             .reason = {},
                             .version = "n8.1.3",
                             .licence = "LGPL version 2.1 or later",
-                            .directory = "ffmpeg",
+                            .directory = (app / "ffmpeg").lexically_normal(),
                             .libraryVersions = {}};
-        CHECK(rawreel::ffmpegStatusLine(status) ==
-              "FFmpeg n8.1.3 (LGPL version 2.1 or later) from ffmpeg");
+        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Shown, origin) ==
+              "FFmpeg n8.1.3 (LGPL version 2.1 or later) from "
+              "https://github.com/BarabashkaD/custom_ffmpeg");
         status.lavfi = false;
-        CHECK(rawreel::ffmpegStatusLine(status) ==
-              "FFmpeg n8.1.3 (LGPL version 2.1 or later) from ffmpeg, lavfi not available");
+        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Shown, origin) ==
+              "FFmpeg n8.1.3 (LGPL version 2.1 or later) from "
+              "https://github.com/BarabashkaD/custom_ffmpeg, "
+              "lavfi not available");
         FfmpegStatus missing;
         missing.reason = "DVV_FFMPEG_DIR must be absolute";
-        CHECK(rawreel::ffmpegStatusLine(missing) ==
+        CHECK(rawreel::ffmpegStatusLine(missing, StatusPaths::Shown, origin) ==
               "FFmpeg: not available (DVV_FFMPEG_DIR must be absolute)");
 
-        // About and the GUI infobar: the status only, no directory and no reason (both may hold a
-        // path; the log keeps the full line).
-        using rawreel::StatusPaths;
-        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Hidden) ==
-              "FFmpeg n8.1.3 (LGPL version 2.1 or later), lavfi not available");
+        // About and the GUI infobar: the status only, no directory and no reason.
+        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Hidden, origin) ==
+              "FFmpeg n8.1.3 (LGPL version 2.1 or later) from "
+              "https://github.com/BarabashkaD/custom_ffmpeg, "
+              "lavfi not available");
         status.lavfi = true;
-        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Hidden) ==
-              "FFmpeg n8.1.3 (LGPL version 2.1 or later)");
+        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Hidden, origin) ==
+              "FFmpeg n8.1.3 (LGPL version 2.1 or later) from "
+              "https://github.com/BarabashkaD/custom_ffmpeg");
         missing.reason = "FFmpeg not found (looked in some/dir)";
-        CHECK(rawreel::ffmpegStatusLine(missing, StatusPaths::Hidden) ==
+        CHECK(rawreel::ffmpegStatusLine(missing, StatusPaths::Hidden, origin) ==
               "FFmpeg: not available (details in the log)");
+    }
+
+    TEST_CASE("startup: FFmpeg line names the origin only when it is known") {
+        using rawreel::StatusPaths;
+        const fs::path app = fs::path("/") / "opt" / "rawreel" / "bin";
+        rawreel::FfmpegOrigin origin{.appFolder = app, .ffmpegDirVariable = {}, .homeFolder = {}};
+        FfmpegStatus status{.core = true,
+                            .lavfi = true,
+                            .reason = {},
+                            .version = "n8.1.3",
+                            .licence = "LGPL",
+                            .directory = (app / ".." / "lib" / "ffmpeg").lexically_normal(),
+                            .libraryVersions = {}};
+        const std::string bundled =
+            "FFmpeg n8.1.3 (LGPL) from https://github.com/BarabashkaD/custom_ffmpeg";
+        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Shown, origin) == bundled);
+
+        // Another folder (an explicit directory): no claim about where the build comes from.
+        status.directory = (fs::path("/") / "elsewhere" / "ffmpeg").lexically_normal();
+        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Shown, origin) ==
+              "FFmpeg n8.1.3 (LGPL)");
+
+        // DVV_FFMPEG_DIR is final for the loader, so it wins even over a bundled folder; the line
+        // names the variable, never its value.
+        origin.ffmpegDirVariable = utf8(status.directory);
+        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Shown, origin) ==
+              "FFmpeg n8.1.3 (LGPL) from DVV_FFMPEG_DIR");
+        status.directory = (app / "ffmpeg").lexically_normal();
+        origin.ffmpegDirVariable = utf8(status.directory);
+        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Hidden, origin) ==
+              "FFmpeg n8.1.3 (LGPL) from DVV_FFMPEG_DIR");
+
+        // The executable's folder unknown: no claim either.
+        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Shown, rawreel::FfmpegOrigin{}) ==
+              "FFmpeg n8.1.3 (LGPL)");
+    }
+
+    TEST_CASE("startup: FFmpeg failure reason without machine folders") {
+        using rawreel::StatusPaths;
+        const fs::path home = fs::path("/") / "home" / "someone";
+        const fs::path app = home / "rawreel-1.0.0";
+        rawreel::FfmpegOrigin origin{.appFolder = app, .ffmpegDirVariable = {}, .homeFolder = home};
+        const std::string hint = "set DVV_FFMPEG_DIR to the folder of an LGPL FFmpeg shared build";
+
+        // Not found: the loader's "looked in" list of the bundled folders.
+        FfmpegStatus missing;
+        missing.reason =
+            "FFmpeg not found (looked in " + utf8((app / "ffmpeg").lexically_normal()) + " and " +
+            utf8((app / ".." / "lib" / "ffmpeg").lexically_normal()) + "; " + hint + ")";
+        const std::string looked = rawreel::ffmpegStatusLine(missing, StatusPaths::Shown, origin);
+        CHECK(looked == "FFmpeg: not available (FFmpeg not found (looked in " +
+                            utf8(fs::path("<app>") / "ffmpeg") + " and " +
+                            utf8(fs::path("<app>") / ".." / "lib" / "ffmpeg") + "; " + hint + "))");
+        CHECK(looked.find("someone") == std::string::npos);
+
+        // A refused build from DVV_FFMPEG_DIR whose error names a library below the home folder.
+        const fs::path variable = home / "builds" / "ffmpeg";
+        origin.ffmpegDirVariable = utf8(variable);
+        const fs::path where = variable.lexically_normal();
+        missing.reason = "FFmpeg in " + utf8(where) +
+                         " (DVV_FFMPEG_DIR): " + utf8(where / "libavutil.so.60") + ": needs " +
+                         utf8(home / "lib" / "libz.so.1");
+        const std::string refused = rawreel::ffmpegStatusLine(missing, StatusPaths::Shown, origin);
+        CAPTURE(refused);
+        CHECK(refused.starts_with(
+            "FFmpeg: not available (FFmpeg in $DVV_FFMPEG_DIR (DVV_FFMPEG_DIR): $DVV_FFMPEG_DIR"));
+        CHECK(refused.find(utf8(fs::path("~") / "lib" / "libz.so.1")) != std::string::npos);
+        CHECK(refused.find("someone") == std::string::npos);
+
+        // A relative variable is masked too; a root folder is never replaced.
+        origin.ffmpegDirVariable = "relative/ffmpeg";
+        origin.homeFolder = fs::path("/");
+        missing.reason = "DVV_FFMPEG_DIR must be absolute (got 'relative/ffmpeg'); /usr/lib";
+        CHECK(rawreel::maskFolders(missing.reason, origin) ==
+              "DVV_FFMPEG_DIR must be absolute (got '$DVV_FFMPEG_DIR'); /usr/lib");
     }
 
     TEST_CASE("startup: open error text") {
@@ -87,7 +177,8 @@ TEST_SUITE("core") {
               unsupported.describe());
         CHECK(rawreel::openErrorText(unsupported, lavfi_uri, core_only,
                                      rawreel::StatusPaths::Hidden) ==
-              unsupported.describe() + "; FFmpeg n8.1.3 (LGPL), lavfi not available");
+              unsupported.describe() + "; " +
+                  rawreel::ffmpegStatusLine(core_only, rawreel::StatusPaths::Hidden));
 
         // FFmpeg missing: a file open (not only lavfi) gets the status line too (design D21).
         CHECK(rawreel::openErrorText(unsupported, "file:clip.mkv", missing) ==
