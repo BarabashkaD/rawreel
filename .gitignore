@@ -1,5 +1,5 @@
-# Build output lives outside the repositories (../_build, ../_third_party); these guard against
-# accidental in-tree builds and editor files.
+# Build output lives in libs/_build and libs/_third_party (the last two lines); the others guard
+# against accidental in-tree builds and editor files.
 /build/
 /out/
 /.vs/
@@ -7,3 +7,5 @@
 /.idea/
 CMakeUserPresets.json
 *.user
+/libs/_build/
+/libs/_third_party/

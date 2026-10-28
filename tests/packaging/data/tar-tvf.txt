@@ -1,6 +1,6 @@
-drwxr-xr-x builder/staff     0 2026-10-27 10:00 rawreel-1.0.0/
--rw-r--r-- builder/staff  1083 2026-10-27 10:00 rawreel-1.0.0/LICENSE
--rwxr-xr-x builder/staff 9000000 2026-10-27 10:00 rawreel-1.0.0/rawreel-gui
-drwxr-xr-x builder/staff     0 2026-10-27 10:00 rawreel-1.0.0/ffmpeg/
--rwxr-xr-x builder/staff 1200000 2026-10-27 10:00 rawreel-1.0.0/ffmpeg/libavutil.so.60
--rw-r--r-- builder/staff   512 2026-10-27 10:00 rawreel-1.0.0/ffmpeg/build-info.txt
+drwxr-xr-x builder/staff     0 2026-10-27 10:00 rawreel-0.9.0/
+-rw-r--r-- builder/staff  1083 2026-10-27 10:00 rawreel-0.9.0/LICENSE
+-rwxr-xr-x builder/staff 9000000 2026-10-27 10:00 rawreel-0.9.0/rawreel-gui
+drwxr-xr-x builder/staff     0 2026-10-27 10:00 rawreel-0.9.0/ffmpeg/
+-rwxr-xr-x builder/staff 1200000 2026-10-27 10:00 rawreel-0.9.0/ffmpeg/libavutil.so.60
+-rw-r--r-- builder/staff   512 2026-10-27 10:00 rawreel-0.9.0/ffmpeg/build-info.txt

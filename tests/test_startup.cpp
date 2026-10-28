@@ -110,7 +110,7 @@ TEST_SUITE("core") {
     TEST_CASE("startup: FFmpeg failure reason without machine folders") {
         using rawreel::StatusPaths;
         const fs::path home = fs::path("/") / "home" / "someone";
-        const fs::path app = home / "rawreel-1.0.0";
+        const fs::path app = home / "rawreel-0.9.0";
         rawreel::FfmpegOrigin origin{.appFolder = app, .ffmpegDirVariable = {}, .homeFolder = home};
         const std::string hint = "set DVV_FFMPEG_DIR to the folder of an LGPL FFmpeg shared build";
 

@@ -1,4 +1,4 @@
-# Artifact privacy scan (design M4 v2 D16): the rules of rawreel-workspace/tools/privacy-lint.cmake,
+# Artifact privacy scan: the rules of libs/dvv-build/tools/privacy-lint.cmake,
 # narrowed to what may leak into a built package. Absolute drive paths outside user profiles (the
 # runners' generic build roots, the subst drive of the local dry run) and the runner's own home
 # folder are accepted.

@@ -1,4 +1,4 @@
-# Builds the third-party sources archive of a bundled-FFmpeg package (design M4 v2 D27):
+# Builds the third-party sources archive of a bundled-FFmpeg package:
 #   cmake -DSTATE=<dvv-third-party-state.cmake> -DCOMMIT=<attested commit> -DVERSION=<rawreel v>
 #         -DOUT_DIR=<dir> -DWORK_DIR=<dir> -P packaging/make-third-party-sources.cmake
 # Clones custom_ffmpeg at the tag v<DVV_CUSTOM_FFMPEG_VERSION> with every submodule (shallow, no

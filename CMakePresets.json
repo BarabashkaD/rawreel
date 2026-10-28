@@ -1,4 +1,4 @@
 {
   "version": 6,
-  "include": [ "../rawreel-workspace/cmake/DvvPresets.json" ]
+  "include": [ "libs/dvv-build/cmake/DvvAppPresets.json" ]
 }

@@ -1,4 +1,4 @@
-# Packages of rawreel v1.0 (design M4 v2 D16-D19, D27, §8.6): install rules for the component
+# Packages of rawreel: install rules for the component
 # "rawreel" (Release only), the bundled FFmpeg libraries when the third-party prefix ships them, and
 # CPack. make-packages.cmake drives it. Included by CMakeLists.txt only without DVV_SANITIZE
 # (rawreel-gui is not built there).
@@ -8,7 +8,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/check-package.cmake")
 # The zip ships no VC++ runtime; users install the Microsoft Visual C++ Redistributable
 # (x64), at least as recent as the build tools (Microsoft's rule). This is the one place of that
 # minimum: it fails when the toolset is newer or when README.md or the release notes are missing or
-# do not name it. It also covers the custom_ffmpeg DLLs (Task 0: MSVC STL of VS 2022 17.14, runtime
+# do not name it. It also covers the custom_ffmpeg DLLs (MSVC STL of VS 2022 17.14, runtime
 # 14.44). Every configure only warns; the packaging path (the Release install of the
 # component "rawreel", which CPack runs) fails, so Debug and PR builds stay green.
 set(RAWREEL_MIN_VCRT_VERSION "14.51")
@@ -188,11 +188,11 @@ if(DVV_BUNDLE_FFMPEG)
     list(JOIN rawreel_library_versions ", " FFMPEG_LIBRARY_VERSIONS)
     install(DIRECTORY "${rawreel_ffmpeg_root}/share/licenses/"
             DESTINATION "${rawreel_ffmpeg_dir}/licenses" COMPONENT rawreel CONFIGURATIONS Release)
-    # Task 0 layout: build-info.txt is share/custom_ffmpeg/build-info.txt below the FFmpeg root.
+    # build-info.txt is share/custom_ffmpeg/build-info.txt below the FFmpeg root.
     install(FILES "${rawreel_ffmpeg_root}/share/custom_ffmpeg/build-info.txt"
             DESTINATION "${rawreel_ffmpeg_dir}" COMPONENT rawreel CONFIGURATIONS Release)
 
-    # The licence supplements of custom_ffmpeg (texts its archive lacks; Task 1):
+    # The licence supplements of custom_ffmpeg (texts its archive lacks):
     # the superbuild copies the SHA256-pinned files into the prefix unchanged and records
     # "<path>|<sha256>" for each. They ship as they are, as
     # ffmpeg/licenses/<path>; each one must still match its pin.

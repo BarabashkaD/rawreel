@@ -103,7 +103,7 @@ public:
     // The App's Session; valid until onClose (closing_ guards the rest).
     [[nodiscard]] Session& session() const noexcept;
     // A drop or File -> Open (D21): the first file replaces the stream at frame 0; the others are
-    // logged as ignored (one stream in v1.0).
+    // logged as ignored (one stream at a time).
     void openFiles(std::vector<std::filesystem::path> files);
     // File -> Open URI..., a format choice and the command line's URI: session().closeStreams()
     // first (M4 GUI D3), then parseUri (an error: log + infobar), then session().open(slot, {uri},

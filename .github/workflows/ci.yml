@@ -5,12 +5,21 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      test_libs:
+        description: Also run the tests of every library at the pinned commits
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   dvv:
-    uses: BarabashkaD/rawreel-workspace/.github/workflows/dvv-ci.yml@main
+    uses: BarabashkaD/dvv-build/.github/workflows/dvv-ci.yml@v0.1.0
     with:
       repo: rawreel
+      app: true
+      # Every push to main runs the library tests at the pins; other runs only when started by
+      # hand with test_libs.
+      test-dependencies: ${{ github.event_name == 'push' || inputs.test_libs == true }}

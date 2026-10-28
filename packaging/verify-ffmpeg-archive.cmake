@@ -1,4 +1,4 @@
-# Verifies the pinned custom_ffmpeg archive and its build provenance (design M4 v2 D20):
+# Verifies the pinned custom_ffmpeg archive and its build provenance:
 #   cmake -DPREFIX=<third-party prefix> -DWORK_DIR=<dir> [-DOUT_FILE=<file>]
 #         -P packaging/verify-ffmpeg-archive.cmake
 # Downloads DVV_CUSTOM_FFMPEG_URL with the pinned SHA256, runs `gh attestation verify` against the

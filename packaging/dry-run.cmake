@@ -1,8 +1,11 @@
-# Local dry run of the release build (design M4 v2 D16), on Windows or on Linux:
-#   cmake -DWORKSPACE_ROOT=<workspace> -DBUNDLE=ON|OFF [-DOWN_PREFIX=ON|OFF] [-DSOURCES=ON]
+# Local dry run of the release build, on Windows or on Linux:
+#   cmake [-DWORKSPACE_ROOT=<root>] -DBUNDLE=ON|OFF [-DOWN_PREFIX=ON|OFF] [-DSOURCES=ON]
 #         [-DGUI_SMOKE=off|windows|linux] [-DEXTRA_TERMS=<term>;...] [-DDRIVE=<letter>:]
-#         [-DDRYRUN_ROOT=<dir>] [-DWINDOWS_PREFIX=<dir>] -P rawreel/packaging/dry-run.cmake
-# Windows: maps the workspace to a free drive letter with subst (a neutral root, as a CI runner
+#         [-DDRYRUN_ROOT=<dir>] [-DWINDOWS_PREFIX=<dir>] -P <clone>/packaging/dry-run.cmake
+# <clone> is the rawreel clone (any folder name) with its submodules in libs/; WORKSPACE_ROOT is
+# the folder that holds it (default: its parent). The developer prefix is
+# <clone>/libs/_third_party/<toolchain>, the superbuild source <clone>/libs/dvv-build/deps.
+# Windows: maps WORKSPACE_ROOT to a free drive letter with subst (a neutral root, as a CI runner
 # has) and works below <drive>/_dryrun. The subst drive is removed even when the inner run fails;
 # after a Ctrl+C or a killed run, remove it with subst <drive> /D.
 # Linux: no subst; the build, package and smoke trees live below DRYRUN_ROOT (default
@@ -11,21 +14,34 @@
 # Both build rawreel Release in a separate tree, run the unit and CLI tests of release.yml, build
 # the packages and run package-smoke.cmake on them. On Linux with BUNDLE=ON the FFmpeg archive of
 # the clang prefix and the one of the Windows prefix (WINDOWS_PREFIX, default
-# <workspace>/_third_party/msvc) are verified, and both must name the same custom_ffmpeg commit.
+# <clone>/libs/_third_party/msvc) are verified, and both must name the same custom_ffmpeg commit.
 # The packages are local test artifacts; only the release workflow builds published ones.
 cmake_minimum_required(VERSION 3.25)
 
 if(NOT CMAKE_HOST_WIN32 AND NOT CMAKE_HOST_LINUX)
     message(FATAL_ERROR "dry-run: Windows or Linux only")
 endif()
+# The clone is the folder above packaging/; its name is not fixed.
+cmake_path(GET CMAKE_CURRENT_LIST_DIR PARENT_PATH clone_dir)
+cmake_path(GET clone_dir FILENAME clone)
 if(NOT INNER)
     if(NOT WORKSPACE_ROOT)
-        message(FATAL_ERROR "dry-run: WORKSPACE_ROOT (the folder holding rawreel/) is required")
+        cmake_path(GET clone_dir PARENT_PATH WORKSPACE_ROOT)
     endif()
     cmake_path(ABSOLUTE_PATH WORKSPACE_ROOT NORMALIZE)
-    if(NOT IS_DIRECTORY "${WORKSPACE_ROOT}/rawreel")
-        message(FATAL_ERROR "dry-run: WORKSPACE_ROOT (the folder holding rawreel/) is required")
+    set(clone_real "")
+    if(IS_DIRECTORY "${WORKSPACE_ROOT}/${clone}")
+        file(REAL_PATH "${WORKSPACE_ROOT}/${clone}" clone_real)
     endif()
+    file(REAL_PATH "${clone_dir}" clone_dir_real)
+    if(NOT clone_real STREQUAL clone_dir_real)
+        message(FATAL_ERROR "dry-run: WORKSPACE_ROOT ${WORKSPACE_ROOT} is not the folder holding "
+                            "this clone (${clone_dir}); omit it or pass the clone's parent folder")
+    endif()
+endif()
+if(NOT IS_DIRECTORY "${clone_dir}/libs/dvv-build/deps")
+    message(FATAL_ERROR "dry-run: ${clone_dir}/libs/dvv-build is missing: "
+                        "run git submodule update --init in the clone")
 endif()
 if(CMAKE_HOST_WIN32 AND NOT INNER)
     if(NOT DRIVE)
@@ -54,7 +70,7 @@ if(CMAKE_HOST_WIN32 AND NOT INNER)
     execute_process(COMMAND "${CMAKE_COMMAND}" -DINNER=ON "-DWORKSPACE_ROOT=${DRIVE}/"
                             "-DREAL_ROOT=${WORKSPACE_ROOT}" ${forward}
                             "-DEXTRA_TERMS=${EXTRA_TERMS}"
-                            -P "${DRIVE}/rawreel/packaging/dry-run.cmake"
+                            -P "${DRIVE}/${clone}/packaging/dry-run.cmake"
                     RESULT_VARIABLE inner_result)
     execute_process(COMMAND subst "${DRIVE}" /D)
     if(NOT inner_result EQUAL 0)
@@ -103,6 +119,19 @@ else()
     set(BUNDLE OFF)
     set(variant ${toolchain}-off)
 endif()
+if(platform STREQUAL "linux" AND BUNDLE)
+    # The FFmpeg archive of the Windows prefix is verified too (below): stop before the build when
+    # that prefix is not there, as in a Linux-only clone.
+    if(NOT WINDOWS_PREFIX)
+        set(WINDOWS_PREFIX "${N}/${clone}/libs/_third_party/msvc")
+    endif()
+    if(NOT EXISTS "${WINDOWS_PREFIX}/dvv-third-party-state.cmake")
+        message(FATAL_ERROR "dry-run: with BUNDLE=ON on Linux the FFmpeg archive of the Windows "
+                            "prefix is verified too, but ${WINDOWS_PREFIX} is not a bootstrapped "
+                            "prefix: pass -DWINDOWS_PREFIX=<a bootstrapped msvc prefix> or use "
+                            "BUNDLE=OFF")
+    endif()
+endif()
 if(CMAKE_HOST_WIN32)
     # The linker writes temporary objects (lnk{GUID}.tmp, the embedded manifest) to TMP and the PDB
     # records their paths: a temporary folder below the neutral root keeps user-profile paths out of
@@ -112,8 +141,8 @@ if(CMAKE_HOST_WIN32)
     set(ENV{TMP} "${area_native}\\tmp")
     set(ENV{TEMP} "${area_native}\\tmp")
 endif()
-# Task 0 found no user-home paths in the MSVC prefix's wx libraries: the developer prefix is reused
-# by default.
+# A check of the MSVC prefix found no user-home paths in its wx libraries: the developer prefix
+# is reused by default.
 if(NOT DEFINED OWN_PREFIX)
     set(OWN_PREFIX OFF)
 endif()
@@ -122,7 +151,8 @@ if(NOT GUI_SMOKE)
 endif()
 
 # Prefix.
-set(developer_state "${REAL_ROOT}/_third_party/${toolchain}/dvv-third-party-state.cmake")
+set(developer_state
+    "${REAL_ROOT}/${clone}/libs/_third_party/${toolchain}/dvv-third-party-state.cmake")
 set(developer_bundle "")
 if(EXISTS "${developer_state}")
     include("${developer_state}")
@@ -133,8 +163,9 @@ if(EXISTS "${developer_state}")
     endif()
 endif()
 if(NOT OWN_PREFIX AND developer_bundle STREQUAL BUNDLE)
-    set(prefix "${N}/_third_party/${toolchain}")
-    message(STATUS "dry-run: prefix: the developer prefix (_third_party/${toolchain})")
+    set(prefix "${N}/${clone}/libs/_third_party/${toolchain}")
+    message(STATUS "dry-run: prefix: the developer prefix "
+                   "(${clone}/libs/_third_party/${toolchain})")
 else()
     set(prefix "${area}/third_party/${variant}")
     set(prefix_build "${area}/build/third-party-${variant}")
@@ -148,9 +179,12 @@ else()
         # The compilers of bootstrap.sh --toolchain clang.
         set(generator -G Ninja -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19)
     endif()
-    # Configured on every run, so the state file follows deps/; the build is incremental.
-    step("superbuild configure" "${CMAKE_COMMAND}" -S "${N}/rawreel-workspace/deps"
+    # Configured on every run, so the state file follows deps/; the build is incremental. The
+    # project include gives the short dependency trees of bootstrap.
+    set(dvv_build "${N}/${clone}/libs/dvv-build")
+    step("superbuild configure" "${CMAKE_COMMAND}" -S "${dvv_build}/deps"
          -B "${prefix_build}" "-DDVV_THIRD_PARTY_PREFIX=${prefix}"
+         "-DCMAKE_PROJECT_INCLUDE=${dvv_build}/cmake/DvvEpBase.cmake"
          "-DDVV_BUNDLE_FFMPEG=${BUNDLE}" ${generator})
     step("superbuild build" "${CMAKE_COMMAND}" --build "${prefix_build}" --config Release
          --parallel)
@@ -163,7 +197,7 @@ set(build "${area}/build/rawreel-${variant}")
 message(STATUS "dry-run: rawreel configure")
 execute_process(COMMAND "${CMAKE_COMMAND}" --preset ${preset} --fresh -B "${build}"
                         "-DCMAKE_PREFIX_PATH=${prefix}"
-                WORKING_DIRECTORY "${N}/rawreel" RESULT_VARIABLE result)
+                WORKING_DIRECTORY "${N}/${clone}" RESULT_VARIABLE result)
 if(NOT result EQUAL 0)
     message(FATAL_ERROR "dry-run: rawreel configure failed (${result})")
 endif()
@@ -173,7 +207,7 @@ step("rawreel tests" "${CMAKE_COMMAND}" -E env DVV_LEAK_CHECK=fail DVV_REQUIRE_F
 
 # Packages.
 set(out "${area}/out/${variant}")
-set(packaging "${N}/rawreel/packaging")
+set(packaging "${N}/${clone}/packaging")
 if(SOURCES)
     set(check "${area}/ffmpeg-check")
     step("verify-ffmpeg-archive" "${CMAKE_COMMAND}" "-DPREFIX=${prefix}" "-DWORK_DIR=${check}"
@@ -185,10 +219,7 @@ if(SOURCES)
 else()
     if(platform STREQUAL "linux" AND BUNDLE)
         # One custom_ffmpeg commit for both packages: the Windows job's sources archive covers the
-        # Linux package too.
-        if(NOT WINDOWS_PREFIX)
-            set(WINDOWS_PREFIX "${N}/_third_party/msvc")
-        endif()
+        # Linux package too. WINDOWS_PREFIX is set and checked above.
         set(check "${area}/ffmpeg-check")
         step("verify-ffmpeg-archive (linux)" "${CMAKE_COMMAND}" "-DPREFIX=${prefix}"
              "-DWORK_DIR=${check}/linux" -P "${packaging}/verify-ffmpeg-archive.cmake")
@@ -219,10 +250,11 @@ if(NOT result EQUAL 0)
     message(FATAL_ERROR "dry-run: package-smoke failed (${result})")
 endif()
 
-file(GLOB outputs "${out}/rawreel-*")
-foreach(file IN LISTS outputs)
-    cmake_path(GET file FILENAME name)
-    file(SIZE "${file}" bytes)
-    file(SHA256 "${file}" hash)
+# Only this run's files: the output folder can still hold packages of older runs.
+include("${packaging}/check-package.cmake")
+rawreel_package_outputs(INFO "${out}/package-info-${platform}.cmake" FILES outputs)
+foreach(name IN LISTS outputs)
+    file(SIZE "${out}/${name}" bytes)
+    file(SHA256 "${out}/${name}" hash)
     message(STATUS "dry-run: ${name} ${bytes} bytes SHA256 ${hash}")
 endforeach()

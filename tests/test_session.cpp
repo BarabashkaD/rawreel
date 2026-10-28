@@ -435,7 +435,7 @@ TEST_SUITE("session") {
         const SessionEvent refused = f.events->of(Kind::Error).front();
         REQUIRE(refused.error);
         CHECK(refused.error.value_or(dvv::Error{}).code == dvv::Errc::Unsupported);
-        CHECK(refused.error.value_or(dvv::Error{}).message.find("one stream in v1.0") !=
+        CHECK(refused.error.value_or(dvv::Error{}).message.find("one stream at a time") !=
               std::string::npos);
         CHECK(f.session->status().streams == 1);
         CHECK(f.events->of(Kind::StreamsChanged).size() == 1);
@@ -561,7 +561,8 @@ TEST_SUITE("session") {
             const SessionEvent refused = waitError(f, 1);
             const dvv::Error error = refused.error.value_or(dvv::Error{});
             CHECK(error.code == dvv::Errc::Unsupported);
-            CHECK(error.message.find("is not supported in v1.0") != std::string::npos);
+            CHECK(error.message.find("is not supported (lossless codecs only)") !=
+                  std::string::npos);
             CHECK(f.events->of(Kind::FormatNeeded).empty());
             CHECK(f.events->of(Kind::StreamsChanged).empty());
             f.shutdown();

@@ -69,7 +69,7 @@ expect_json("${out}" full colour range)
 # 8. A lossy codec is refused while FFmpeg is loaded (Task 0: "mpeg4 encoder: yes").
 if(EXISTS "${WORK_DIR}/lossy.mp4")
     run_cli(3 out err info lossy.mp4)
-    expect_match("${err}" "codec mpeg4 is not supported in v1\\.0 \\(lossless codecs only\\)"
+    expect_match("${err}" "codec mpeg4 is not supported \\(lossless codecs only\\)"
                  "info lossy.mp4")
     if(err MATCHES "FFmpeg: not available")
         message(FATAL_ERROR "info lossy.mp4: FFmpeg is loaded, but:\n${err}")
