@@ -227,14 +227,6 @@ void App::setAppearance() {
                  appearanceResultName(result));
 }
 
-std::string App::appearanceText() const {
-    if (!appearance_result_) {
-        return {};
-    }
-    return std::format("{} -> {}", appearanceName(the_arguments.appearance),
-                       appearanceResultName(*appearance_result_));
-}
-
 void App::openLogFile() {
     // Spec §11: without a log file the program goes on with a warning.
     const dvv::Result<std::filesystem::path> directory = dvv::paths::userDataDir("rawreel");

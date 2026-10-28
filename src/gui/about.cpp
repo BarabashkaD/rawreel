@@ -17,6 +17,8 @@
 #include <wx/collpane.h>
 #include <wx/filename.h>
 #include <wx/generic/aboutdlgg.h>
+#include <wx/hyperlink.h>
+#include <wx/settings.h>
 #include <wx/stdpaths.h>
 // clang-format on
 
@@ -49,8 +51,38 @@ wxString linesOf(const std::vector<std::pair<std::string, std::string>>& lines,
     return wxString::FromUTF8(text);
 }
 
-// The About layout: the stock generic dialog plus the system lines, the
-// Components pane and two buttons in the OK row. Create() runs here so DoAddCustomControls is ours.
+// The text stays on the clipboard after rawreel exits.
+void copyToClipboard(const std::string& text) {
+    if (wxTheClipboard->Open()) {
+        // NOLINTNEXTLINE(cppcoreguidelines-owning-memory): the clipboard takes ownership
+        if (wxTheClipboard->SetData(new wxTextDataObject(fromUtf8(text)))) {
+            static_cast<void>(wxTheClipboard->Flush());
+        }
+        wxTheClipboard->Close();
+    }
+}
+
+// One line of texts and links in a row, on a panel with the background of `parent`.
+wxWindow* lineRow(wxWindow* parent, const TextLine& line) {
+    auto* row = new wxPanel(parent);
+    row->SetBackgroundColour(parent->GetBackgroundColour());
+    auto* sizer = new wxBoxSizer(wxHORIZONTAL);
+    for (const TextPart& part : line) {
+        wxWindow* control = nullptr;
+        if (part.url.empty()) {
+            control = new wxStaticText(row, wxID_ANY, fromUtf8(part.text));
+        } else {
+            control = new wxHyperlinkCtrl(row, wxID_ANY, fromUtf8(part.text), fromUtf8(part.url));
+        }
+        sizer->Add(control, wxSizerFlags().CentreVertical());
+    }
+    row->SetSizer(sizer);
+    return row;
+}
+
+// The About layout: the stock generic dialog with the heading only; below it the description,
+// the copyright line, the website, the FFmpeg and wxWidgets lines, the Components pane, and two
+// buttons in the OK row. Create() runs here so DoAddCustomControls is ours.
 class AboutDialog final : public wxGenericAboutDialog {
 public:
     AboutDialog(const wxAboutDialogInfo& info, wxWindow* parent, AboutContent content,
@@ -63,7 +95,20 @@ public:
 
 protected:
     void DoAddCustomControls() override {
-        AddText(linesOf(content_.system, " "));
+        wxWindow* const parent = GetCustomControlParent();
+        // Two lines, broken after the colon, so the description does not set the dialog's width.
+        std::string description = content_.description;
+        if (const std::size_t colon = description.find(": "); colon != std::string::npos) {
+            description.replace(colon, 2, ":\n");
+        }
+        AddText(fromUtf8(description));
+        AddControl(lineRow(parent, content_.copyright));
+        const std::string_view site = content_.website;
+        AddControl(new wxHyperlinkCtrl(parent, wxID_ANY, fromUtf8(site.substr(site.find("//") + 2)),
+                                       fromUtf8(site)));
+        for (const TextLine& line : content_.system) {
+            AddControl(lineRow(parent, line));
+        }
         addComponentsPane();
     }
 
@@ -125,7 +170,7 @@ private:
         auto* notices = new wxButton(this, wxID_ANY, fromUtf8(ABOUT_NOTICES_LABEL));
         auto* copy = new wxButton(this, wxID_ANY, fromUtf8(ABOUT_COPY_LABEL));
         notices->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { openNotices(); });
-        copy->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { copyText(); });
+        copy->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { copyToClipboard(text_); });
         wxWindow* const ok = FindWindow(wxID_OK);
         wxSizer* const row = ok != nullptr ? ok->GetContainingSizer() : nullptr;
         if (row != nullptr) {
@@ -161,17 +206,6 @@ private:
         }
     }
 
-    void copyText() {
-        if (wxTheClipboard->Open()) {
-            // NOLINTNEXTLINE(cppcoreguidelines-owning-memory): the clipboard takes ownership
-            if (wxTheClipboard->SetData(new wxTextDataObject(fromUtf8(text_)))) {
-                // The text stays on the clipboard after rawreel exits.
-                static_cast<void>(wxTheClipboard->Flush());
-            }
-            wxTheClipboard->Close();
-        }
-    }
-
     AboutContent content_;
     std::string text_;
 };
@@ -181,19 +215,17 @@ private:
 void showAbout(MainFrame& frame) {
     const VersionReport report{
         .packages = packageVersions(),
-        .vulkan = vulkanStatusLine(frame.vulkanStatus()),
+        .vulkan = {},  // Help -> GPU information
         // No directory or path in About (users share its text).
         .ffmpeg = ffmpegStatusLine(wxGetApp().startup().ffmpeg, StatusPaths::Hidden)};
-    AboutContent content = aboutContent(report, wxGetApp().appearanceText());
+    AboutContent content = aboutContent(report);
     std::string text = aboutText(content);
     wxAboutDialogInfo info;
     info.SetName("rawreel");
     info.SetVersion(wxString::FromUTF8(report.packages.front().second));
-    // The copyright goes in the description: wx would put SetCopyright below the custom
-    // controls. No SetLicence: it would add a second dialog.
-    info.SetDescription(wxString::FromUTF8(content.description + "\n" + content.copyright));
-    const std::string_view site = content.website;
-    info.SetWebSite(fromUtf8(site), fromUtf8(site.substr(site.find("//") + 2)));
+    // No description, copyright or website here: wx would put them as plain text or out of
+    // order; DoAddCustomControls adds them with their links. No SetLicence: it would add a
+    // second dialog.
     frame.noteAbout(text);  // lastAboutText(), aboutShown()
     AboutDialog dialog(info, &frame, std::move(content), std::move(text));  // parent: the frame
     static_cast<void>(showModal(dialog));  // the selftest hook closes it with EndModal

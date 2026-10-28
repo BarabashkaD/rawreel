@@ -31,25 +31,37 @@ struct VersionReport {
 [[nodiscard]] std::string vulkanStatusLine(const VulkanStatus& status);
 // "<name> <version>\n" per package, then the Vulkan line and the FFmpeg line, each ending in "\n".
 [[nodiscard]] std::string versionText(const VersionReport& report);
+// A piece of an About line: plain text, or a link to `url` when it is not empty.
+struct TextPart {
+    std::string text;
+    std::string url;
+    bool operator==(const TextPart&) const = default;
+};
+using TextLine = std::vector<TextPart>;
+// The line as plain text, each link followed by " (<url>)".
+[[nodiscard]] std::string plainText(const TextLine& line);
 // The Help -> About content (design M4 v2 §4.7). No directory or path anywhere:
-// users share it in bug reports.
+// users share it in bug reports. No GPU line: Help -> GPU info shows it.
 struct AboutContent {
     std::string heading;      // "rawreel <version>", the dialog heading (the only name + version)
-    std::string description;  // "Raw video player (Vulkan)"
-    std::string copyright;    // "Copyright (c) 2026 BarabashkaD · MIT licence" (the GitHub handle)
-    std::string website;      // "https://github.com/BarabashkaD/rawreel"
-    // {"GPU:", <Vulkan line without "Vulkan: ">}, {"FFmpeg:", <FFmpeg line without its "FFmpeg "
-    // or "FFmpeg: ">}, {"wxWidgets:", "<version> · appearance: <appearance or unknown>"}.
-    std::vector<std::pair<std::string, std::string>> system;
+    std::string description;  // "Play and inspect raw and Y4M video frame by frame: ..."
+    // "Copyright (c) 2026 BarabashkaD · " (the GitHub handle), then "MIT licence" linked to the
+    // LICENSE file on GitHub.
+    TextLine copyright;
+    std::string website;  // "https://github.com/BarabashkaD/rawreel"
+    // FFmpeg, then wxWidgets: "<name> <version> (<licence name>)", the name and version linked to
+    // the project, the licence name to the licence text, then the rest of the FFmpeg line (e.g.
+    // ", lavfi not available"). FFmpeg: an unknown licence stays plain text; not available: the
+    // status text only, without links.
+    std::vector<TextLine> system;
     std::vector<std::pair<std::string, std::string>> components;  // the dvv-* packages, in order
 };
-// The About content of a report (from packageVersions(), the Vulkan line and the FFmpeg line with
-// StatusPaths::Hidden) and the appearance outcome (e.g. "dark -> Ok"; empty: "unknown").
-[[nodiscard]] AboutContent aboutContent(const VersionReport& report, std::string_view appearance);
+// The About content of a report (from packageVersions() and the FFmpeg line with
+// StatusPaths::Hidden; the Vulkan line is not used).
+[[nodiscard]] AboutContent aboutContent(const VersionReport& report);
 // The full About text ("Copy to clipboard"; the selftest reads it): heading, description,
-// copyright and website lines, the system lines with their labels padded to one column,
-// "Components:" and "  <name> <version>" per component ("  none" without any), each line ending
-// in "\n".
+// copyright and website lines, the system lines (plainText()), "Components:" and
+// "  <name> <version>" per component ("  none" without any), each line ending in "\n".
 [[nodiscard]] std::string aboutText(const AboutContent& content);
 // {"<key>": "<version>", ..., "vulkan": "<line>", "ffmpeg": "<line>"}; key = the package name in
 // lower case with '-' replaced by '_' (M2's keys "rawreel", "dvv_base", ... stay; new:

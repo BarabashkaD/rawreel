@@ -136,8 +136,8 @@ is not supported"; for a filter that reads files or URLs (`movie`, `amovie`, `su
 The first folder of 2 and 3 that holds the avutil library is final too, so a broken bundled
 FFmpeg is reported, not skipped. A GPL or non-free build, a different major version, or an older
 minor one than rawreel was built with, is refused. Without FFmpeg the raw, Y4M and synthetic
-sources still work. The last line of `rawreel-cli --version`, and the About box of `rawreel-gui`,
-show the FFmpeg status: `FFmpeg <version> (<licence>) from https://github.com/BarabashkaD/custom_ffmpeg`
+sources still work. The last line of `rawreel-cli --version` shows the FFmpeg status (the About
+box of `rawreel-gui` shows its version and licence as links): `FFmpeg <version> (<licence>) from https://github.com/BarabashkaD/custom_ffmpeg`
 for the bundled FFmpeg, or `... from DVV_FFMPEG_DIR` when the variable is set (never a folder),
 with ", lavfi not available" when avfilter is missing, or `FFmpeg: not available (<reason>)`
 (About shows "details in the log" instead of the reason). The reason, in the log too, writes the
