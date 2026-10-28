@@ -404,7 +404,7 @@ private:
             OpenJob job = std::move(opens_.front());
             opens_.pop_front();
             if (job.slot >= MAX_STREAMS) {  // D2: slot 0 only
-                emitError(dvv::Errc::Unsupported, "one stream in v1.0");
+                emitError(dvv::Errc::Unsupported, "one stream at a time");
                 continue;
             }
             if (job.rebuild) {
@@ -588,7 +588,7 @@ private:
         emitError(error.wrap(error.code, where));
     }
 
-    // D21 (one stream in v1.0): any size, format or colour replaces the stream in slot 0.
+    // D21 (one stream at a time): any size, format or colour replaces the stream in slot 0.
     void attachSource(std::uint32_t slot, std::shared_ptr<dvv::media::ISource> source,
                       std::optional<std::int64_t> start) {
         static_cast<void>(slot);  // slot 0: startNextOpen() refused every other slot

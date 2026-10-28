@@ -1,4 +1,4 @@
-# Package smoke test (design M4 v2 §8.6, D16): checks the outputs of make-packages.cmake.
+# Package smoke test: checks the outputs of make-packages.cmake.
 #   cmake -DOUT_DIR=<make-packages output> -DPLATFORM=windows|linux -DWORK_DIR=<dir>
 #         [-DEXPECTED_VERSION=<v>] [-DGUI_SMOKE=off|windows|linux] [-DALLOW_GUI_SKIP=ON]
 #         [-DREQUIRE_SOURCES=ON] [-DEXTRA_TERMS=<term>;...] -P packaging/package-smoke.cmake
@@ -263,7 +263,7 @@ if(errors)
 endif()
 ok("notices")
 
-# 6. Privacy scan (D16).
+# 6. Privacy scan.
 set(findings "")
 foreach(file IN LISTS ours)
     set(binary "")

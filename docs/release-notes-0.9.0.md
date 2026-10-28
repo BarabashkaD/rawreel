@@ -1,6 +1,7 @@
-# rawreel 1.0.0
+# rawreel 0.9.0
 
-rawreel is a player for raw and lossless video on the GPU (Vulkan). Version 1.0 plays one stream:
+rawreel is a player for raw and lossless video on the GPU (Vulkan). Version 0.9.0, the first
+public preview, plays one stream at a time:
 
 - any pixel format of the catalogue (YUV and RGB; packed, planar and semi-planar, e.g.
   `yuv420p`, `yuv420p10le`, `nv12`, `v210`), and custom formats from a JSON file;
@@ -22,18 +23,18 @@ rawreel is a player for raw and lossless video on the GPU (Vulkan). Version 1.0 
   MP4, NUT, …) with a lossless video codec, and `lavfi:` filter graphs;
 - a GPU device loss shows an error with Reopen instead of ending the program.
 
-v1.0 runs on Windows and on Linux (Ubuntu 24.04, X11 or XWayland).
+rawreel 0.9.0 runs on Windows and on Linux (Ubuntu 24.04, X11 or XWayland).
 
 ## Downloads
 
-- `rawreel-1.0.0-windows-x64.zip`: the application for Windows. Unzip it anywhere, keep all its
+- `rawreel-0.9.0-windows-x64.zip`: the application for Windows. Unzip it anywhere, keep all its
   files together, and start `rawreel-gui.exe`.
-- `rawreel-1.0.0-windows-x64-symbols.zip`: debug symbols for crash dumps.
-- `rawreel-1.0.0-linux-x64.tar.xz`: the application for Linux x86-64. Extract it anywhere
-  (`tar xf rawreel-1.0.0-linux-x64.tar.xz`), keep all its files together, and start
+- `rawreel-0.9.0-windows-x64-symbols.zip`: debug symbols for crash dumps.
+- `rawreel-0.9.0-linux-x64.tar.xz`: the application for Linux x86-64. Extract it anywhere
+  (`tar xf rawreel-0.9.0-linux-x64.tar.xz`), keep all its files together, and start
   `./rawreel-gui` in the extracted folder.
-- `rawreel-1.0.0-linux-x64-symbols.tar.xz`: debug symbols for core dumps.
-- `rawreel-1.0.0-third-party-sources.tar.xz`: the complete source of the bundled FFmpeg; one
+- `rawreel-0.9.0-linux-x64-symbols.tar.xz`: debug symbols for core dumps.
+- `rawreel-0.9.0-third-party-sources.tar.xz`: the complete source of the bundled FFmpeg; one
   archive covers both packages.
 - `SHA256SUMS`: the checksums.
 
@@ -64,7 +65,7 @@ of FFmpeg 8.1 or a newer 8.x with the same file names, or delete the folder. Eac
 the major version rawreel was built with and at least its minor version (avutil 60.26, avcodec
 62.28, avformat 62.12, avfilter 11.14, swscale 9.5, swresample 6.3); an older one, a GPL build or
 a non-free build is refused. Their complete source is the release asset
-`rawreel-1.0.0-third-party-sources.tar.xz` (custom_ffmpeg with its submodules and build scripts,
+`rawreel-0.9.0-third-party-sources.tar.xz` (custom_ffmpeg with its submodules and build scripts,
 and LAME 3.100); `ffmpeg/SOURCE.txt` says the same. These libraries contain decoders for
 codecs such as H.264, HEVC and AAC, which may be covered by patents in some countries; licensing
 them is a matter for the user and the distributor. rawreel itself opens only lossless video

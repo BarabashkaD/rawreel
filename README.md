@@ -2,18 +2,21 @@
 
 rawreel is a raw video player. This repository holds two programs: `rawreel-gui`, the
 application, and `rawreel-cli`, a console tool that describes, dumps and benchmarks a source. They
-are built on the dvv libraries ([dvv-base](https://github.com/BarabashkaD/dvv-base),
-[dvv-registry](https://github.com/BarabashkaD/dvv-registry),
-[dvv-platform](https://github.com/BarabashkaD/dvv-platform),
-[dvv-gpu](https://github.com/BarabashkaD/dvv-gpu),
-[dvv-media](https://github.com/BarabashkaD/dvv-media) and
-[dvv-components](https://github.com/BarabashkaD/dvv-components)) through
-[rawreel-workspace](https://github.com/BarabashkaD/rawreel-workspace), which provides the presets,
-the third-party dependencies and the CI workflow.
+are built on the dvv libraries, which this repository pins as git submodules in `libs/`:
+
+| Repository | Content |
+|---|---|
+| [dvv-build](https://github.com/BarabashkaD/dvv-build) | presets, bootstrap, third-party superbuild and licence gate, privacy lint, CI workflow |
+| [dvv-base](https://github.com/BarabashkaD/dvv-base) | errors, tasks and executors, logger, lifetime registry and leak check, JSON, URIs, paths |
+| [dvv-registry](https://github.com/BarabashkaD/dvv-registry) | component registry, capabilities, parameter schemas, component kind check |
+| [dvv-platform](https://github.com/BarabashkaD/dvv-platform) | native windows, Vulkan surfaces, dynamic libraries, `FileReader` |
+| [dvv-gpu](https://github.com/BarabashkaD/dvv-gpu) | Vulkan 1.4 core: devices, buffers and images, submission, Slang shaders, compute pipelines, presentation |
+| [dvv-media](https://github.com/BarabashkaD/dvv-media) | pixel-format catalogue, custom JSON formats, frames and the frame store, synthetic, raw and Y4M sources |
+| [dvv-components](https://github.com/BarabashkaD/dvv-components) | `dvv_add_component()`, the FFmpeg run-time binding, the `ffmpeg` and `lavfi` sources |
 
 ## Packages
 
-A release has these files (`<v>` is the version, e.g. `1.0.0`):
+A release has these files (`<v>` is the version, e.g. `0.9.0`):
 
 - `rawreel-<v>-windows-x64.zip`: the application. Unzip it anywhere and start `rawreel-gui.exe`;
   nothing is installed. The zip is not code-signed, so Windows SmartScreen may warn at the first
@@ -89,8 +92,7 @@ filter graphs. Raw and Y4M files use their own readers.
 **Container files (`file:`).** Any container FFmpeg demuxes (AVI, MKV, MOV, MP4, NUT, …) with a
 lossless video codec: `rawvideo`, `v210`, `v410`, `r210`, `ffv1`, `huffyuv`, `ffvhuff`,
 `utvideo`, `magicyuv`, `png` or `qtrle`. Any other codec, e.g. H.264, HEVC, MPEG-1/2/4 or another
-lossy codec, is refused at open with "codec <name> is not supported in v1.0 (lossless codecs
-only)".
+lossy codec, is refused at open with "codec <name> is not supported (lossless codecs only)".
 
 - rawreel plays FFmpeg's best video stream of the file (cover art never counts).
 - MKV and NUT files have no complete frame index, so rawreel scans them when they open: large
@@ -114,7 +116,7 @@ may use only these 31 generators and simple filters: `testsrc`, `testsrc2`, `smp
 `colorspectrum`, `color`, `gradients`, `allrgb`, `allyuv`, `nullsrc`, `mandelbrot`, `format`,
 `scale`, `setparams`, `setsar`, `setdar`, `crop`, `pad`, `hflip`, `vflip`, `transpose`, `null`,
 `loop`, `tpad`, `drawbox` and `drawgrid`. Any other filter is refused with "lavfi: filter <name>
-is not supported in v1.0"; for a filter that reads files or URLs (`movie`, `amovie`, `subtitles`,
+is not supported"; for a filter that reads files or URLs (`movie`, `amovie`, `subtitles`,
 `drawtext`, `sendcmd`, …) the text goes on with "; open files with file: instead".
 
 - A graph is one chain with one output (a filter with a second input is refused).
@@ -191,8 +193,8 @@ On Linux, `--appearance dark` does not darken the windows yet; they follow the G
 
 **Opening.** File → Open… (Ctrl+O), File → Open URI… (Ctrl+U), a URI on the command line (at most
 one) or a file dropped on the window opens one stream; it replaces the stream that was open. When
-several files are dropped, the first opens and the Log pane says "N files ignored: one stream in
-v1.0". A file whose format the name does not give (e.g. `clip.yuv`), or an ambiguous one, opens
+several files are dropped, the first opens and the Log pane says "N files ignored: one stream at
+a time". A file whose format the name does not give (e.g. `clip.yuv`), or an ambiguous one, opens
 the format dialog, filled with the best guess, else the last choice, else 1920×1080 `yuv420p`
 25 fps. The dialog sets:
 
@@ -499,7 +501,7 @@ Unknown keys are ignored. To try another file:
 & $cli info <uri> --config <folder>/rawreel.json
 ```
 
-## Limits of v1.0
+## Current limits
 
 - Only lossless video codecs open (see [FFmpeg sources](#ffmpeg-sources)); lossy codecs are
   refused at open.
@@ -541,7 +543,7 @@ including frames of the open video. The maintainer reads it with the symbols of 
 `SHA256SUMS` lists the SHA256 of every release file. In PowerShell, in the download folder:
 
 ```powershell
-$f = 'rawreel-1.0.0-windows-x64.zip'
+$f = 'rawreel-0.9.0-windows-x64.zip'
 $want = (Select-String -Path SHA256SUMS -SimpleMatch $f).Line.Split(' ')[0]
 (Get-FileHash $f -Algorithm SHA256).Hash -eq $want    # True
 ```
@@ -550,32 +552,61 @@ On Linux (or wherever coreutils exist): `sha256sum -c --ignore-missing SHA256SUM
 file also has a build attestation from the release workflow; with the GitHub CLI:
 
 ```powershell
-gh attestation verify rawreel-1.0.0-windows-x64.zip --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.9.0-windows-x64.zip --repo BarabashkaD/rawreel
 ```
 
 ```sh
-gh attestation verify rawreel-1.0.0-linux-x64.tar.xz --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.9.0-linux-x64.tar.xz --repo BarabashkaD/rawreel
 ```
+
+## Getting the source
+
+```sh
+git clone --recursive https://github.com/BarabashkaD/rawreel
+```
+
+This also checks out the dvv libraries in `libs/`; after a clone without `--recursive`, run
+`git submodule update --init`. Keep the clone folder's name `rawreel`: the build paths below
+contain it. On Windows the clone path must be at most 63 characters long (e.g. `X:\src\rawreel`),
+because the builds go up to 196 characters deeper and Windows paths end at 259; bootstrap checks
+it. A fork resolves the submodules against its own account, so clone from BarabashkaD and add the
+fork as a second remote.
+
+To change a dvv library, work in its folder in `libs/` as `libs/dvv-build/README.md` describes
+("Changing a library"):
+
+1. Create a branch there (the submodule is detached at its release tag), make the change, and run
+   that library's tests and rawreel's.
+2. Raise its version and `CHANGELOG.md`, merge to its `main`, tag `v<version>`, push both, and
+   wait for its CI to pass.
+3. In rawreel, `git add libs/dvv-<name>` and commit "build: pin dvv-<name> <version>". A pin
+   change is merged only after a green run of the `ci` workflow that includes every library's
+   tests at the pins: a pull request does not run them, so start `ci` by hand on its branch with
+   `test_libs` (every push to `main` runs them).
+4. Raise the library's line in rawreel's `dvv-deps.txt` only when rawreel needs the new version.
+5. A dvv-build change follows the same flow; the `@v<version>` of `dvv-ci.yml` in
+   `.github/workflows/` moves with its pin (check-pins checks it).
 
 ## Building and testing (Windows)
 
-From the workspace folder, in PowerShell 7, after `rawreel-workspace/bootstrap.ps1 -Toolchain
-msvc`, configure, build Debug and Release and run all tests:
+From the `rawreel` folder, in PowerShell 7, after `libs/dvv-build/bootstrap.ps1 -Toolchain
+msvc` (prerequisites and the pip tools: `libs/dvv-build/README.md`, "Prerequisites" and
+"Building an application"), configure, build Debug and Release and run all tests:
 
 ```powershell
-Push-Location rawreel; cmake --workflow --preset vs2026; Pop-Location
+cmake --workflow --preset vs2026
 ```
 
-The executables are `_build/rawreel/vs2026/<Debug|Release>/rawreel-gui.exe` and `rawreel-cli.exe`
-in the workspace folder. A build tree has no `ffmpeg/` folder next to them, so point rawreel at
+The executables are `libs/_build/rawreel/vs2026/<Debug|Release>/rawreel-gui.exe` and
+`rawreel-cli.exe`. A build tree has no `ffmpeg/` folder next to them, so point rawreel at
 the FFmpeg of the third-party prefix (an absolute path) and, optionally, turn on Vulkan
 synchronization validation:
 
 ```powershell
-$env:DVV_FFMPEG_DIR = (Get-ChildItem -Recurse _third_party/msvc/custom_ffmpeg -Filter 'avutil-*.dll' | Select-Object -First 1).DirectoryName
-$env:VK_ADD_LAYER_PATH = (Resolve-Path _third_party/msvc/bin).Path
+$env:DVV_FFMPEG_DIR = (Get-ChildItem -Recurse libs/_third_party/msvc/custom_ffmpeg -Filter 'avutil-*.dll' | Select-Object -First 1).DirectoryName
+$env:VK_ADD_LAYER_PATH = (Resolve-Path libs/_third_party/msvc/bin).Path
 $env:DVV_VK_VALIDATION = 'sync'
-$bin = (Resolve-Path _build/rawreel/vs2026/Release).Path
+$bin = (Resolve-Path libs/_build/rawreel/vs2026/Release).Path
 & "$bin/rawreel-cli.exe" --version
 & "$bin/rawreel-gui.exe" 'lavfi:testsrc2=s=1280x720:r=25,format=yuv420p'
 ```
@@ -583,7 +614,7 @@ $bin = (Resolve-Path _build/rawreel/vs2026/Release).Path
 `--version` ends with the FFmpeg line, which names the FFmpeg version, its licence and the
 repository it is built from.
 
-CTest sets these variables itself. The tests (`ctest --preset vs2026` from `rawreel`, or
+CTest sets these variables itself. The tests (`ctest --preset vs2026`, or
 `vs2026-release`) include:
 
 - `rawreel.unit`, `rawreel.core_unit`, `rawreel.core_session`, `rawreel.core_timer`: the
@@ -598,8 +629,8 @@ CTest sets these variables itself. The tests (`ctest --preset vs2026` from `rawr
   the built `rawreel-cli` (`info`, `dump`, exit codes, non-ASCII paths, `dump --via gpu`, `bench`,
   FFmpeg sources and `--version`).
 - `rawreel.packaging_scripts`: the package checks and the artifact privacy scan. The packages
-  themselves are built and checked by `cmake -DWORKSPACE_ROOT=<root> -DBUNDLE=ON -P
-  rawreel/packaging/dry-run.cmake` from the workspace folder.
+  themselves are built and checked by `cmake -DBUNDLE=ON -P packaging/dry-run.cmake`, run in the
+  `rawreel` folder; it works in `_dryrun` next to that folder.
 
 GPU tests exit with 77 (skipped) without a usable Vulkan 1.4 device unless `DVV_REQUIRE_GPU=1`.
 Under `vs2026-asan`, `rawreel-gui` and its selftests are not built (wxWidgets is not
@@ -607,37 +638,41 @@ instrumented).
 
 ## Building and testing (Linux)
 
-Ubuntu 24.04 (also in WSL on Windows 11) with Clang 19, libstdc++ 14, CMake and Ninja (see the
-rawreel-workspace README). From the workspace folder, in bash, after
-`rawreel-workspace/bootstrap.sh` (it names the apt packages it still needs), configure, build
+Ubuntu 24.04 (also in WSL on Windows 11) with Clang 19, libstdc++ 14, CMake and Ninja (see
+`libs/dvv-build/README.md`). From the `rawreel` folder, in bash, after
+`libs/dvv-build/bootstrap.sh` (it names the apt packages it still needs), configure, build
 Debug and Release and run all tests:
 
 ```sh
-(cd rawreel && cmake --workflow --preset ninja-clang)
+cmake --workflow --preset ninja-clang
 ```
 
-The executables are `_build/rawreel/ninja-clang/<Debug|Release>/rawreel-gui` and `rawreel-cli` in
-the workspace folder. As on Windows, point rawreel at the FFmpeg of the third-party prefix and,
+The executables are `libs/_build/rawreel/ninja-clang/<Debug|Release>/rawreel-gui` and
+`rawreel-cli`. As on Windows, point rawreel at the FFmpeg of the third-party prefix and,
 optionally, turn on Vulkan synchronization validation:
 
 ```sh
-export DVV_FFMPEG_DIR="$PWD/_third_party/clang/custom_ffmpeg/linux-x64/shared/lgpl/lib"
-export VK_ADD_LAYER_PATH="$PWD/_third_party/clang/share/vulkan/explicit_layer.d"
+export DVV_FFMPEG_DIR="$PWD/libs/_third_party/clang/custom_ffmpeg/linux-x64/shared/lgpl/lib"
+export VK_ADD_LAYER_PATH="$PWD/libs/_third_party/clang/share/vulkan/explicit_layer.d"
 export DVV_VK_VALIDATION=sync
-bin="$PWD/_build/rawreel/ninja-clang/Release"
+bin="$PWD/libs/_build/rawreel/ninja-clang/Release"
 "$bin/rawreel-cli" --version
 "$bin/rawreel-gui" 'lavfi:testsrc2=s=1280x720:r=25,format=yuv420p'
 ```
 
-The tests (`ctest --preset ninja-clang` from `rawreel`, or `ninja-clang-release`) are those of
+The tests (`ctest --preset ninja-clang`, or `ninja-clang-release`) are those of
 [Building and testing (Windows)](#building-and-testing-windows), plus
 `rawreel.gui_start.no_display` (a start without a display exits as described above). The GUI
 tests (label `display`) need an X display: a desktop session, WSLg, or Xvfb
 (`xvfb-run -a -s "-screen 0 1920x1080x24" ctest --preset ninja-clang`). Without a GPU, Mesa's
 software driver lavapipe works: `export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`.
-`rawreel-workspace/tools/sanity.sh` runs the quick sanity cycle (see the rawreel-workspace
-README). Under `ninja-clang-asan` and `ninja-clang-tsan`, `rawreel-gui` and its selftests are not
-built. The Linux packages are built and checked by the same `dry-run.cmake` command as on Windows.
+`libs/dvv-build/tools/sanity.sh` runs the quick sanity cycle (see `libs/dvv-build/README.md`).
+Under `ninja-clang-asan` and `ninja-clang-tsan`, `rawreel-gui` and its selftests are not built.
+The Linux packages are built and checked by the same `dry-run.cmake` command as on Windows; on
+Linux it works in `/tmp/rawreel-dryrun`. With `-DBUNDLE=ON` it also verifies the FFmpeg archive
+of the Windows prefix (`libs/_third_party/msvc` of the same clone, or `-DWINDOWS_PREFIX=<dir>`)
+and stops before the build when that prefix is not bootstrapped; `-DBUNDLE=OFF` needs only the
+Linux prefix.
 
 ## Licence
 

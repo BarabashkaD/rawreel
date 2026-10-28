@@ -14,7 +14,7 @@ namespace rawreel {
 [[nodiscard]] std::string fileUri(const std::filesystem::path& path);
 
 // The first file opens (it replaces the stream); `ignored` = the number of other files (the GUI
-// logs "<ignored> files ignored: one stream in v1.0"). No files -> uri nullopt, ignored 0.
+// logs "<ignored> files ignored: one stream at a time"). No files -> uri nullopt, ignored 0.
 struct DropPlan {
     std::optional<std::string> uri;
     std::size_t ignored = 0;

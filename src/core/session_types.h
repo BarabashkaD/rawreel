@@ -33,7 +33,7 @@ struct StreamInfo {
     dvv::media::SourceInfo info;
     dvv::media::ResolvedColour colour;
 };
-// One shown frame: the display views of every stream for one index (one stream in v1.0; the array
+// One shown frame: the display views of every stream for one index (one stream at a time; the array
 // keeps the v1.x tile shape, D2).
 struct FrameSet {
     std::int64_t index = -1;

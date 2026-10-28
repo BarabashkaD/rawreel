@@ -10,7 +10,7 @@
 //                                       the first K produce(N) calls fail, counted per URI text
 //                                       across every source opened from it (times is ignored).
 // It also matches a file: whose path ends in ".refused" (confidence 100) and refuses it in open()
-// with Unsupported "codec test is not supported in v1.0 (lossless codecs only)"; other files get
+// with Unsupported "codec test is not supported (lossless codecs only)"; other files get
 // confidence 0.
 // Waits happen on the I/O executor, never on the caller's thread.
 

@@ -1,4 +1,4 @@
-# Builds the v1.0 packages from a Release build tree (design M4 v2 D16-D19, D27):
+# Builds the packages from a Release build tree:
 #   cmake -DBUILD_DIR=<rawreel build dir> [-DCONFIG=Release] -DOUT_DIR=<dir> [-DWORK_DIR=<dir>]
 #         [-DSOURCES=ON -DFFMPEG_COMMIT_FILE=<file>] -P packaging/make-packages.cmake
 # Runs CPack (component rawreel), names the package rawreel-<v>-windows-x64.zip or
@@ -115,7 +115,7 @@ if(NOT result EQUAL 0)
 endif()
 list(APPEND outputs "${symbols}")
 
-# The third-party sources archive (D27), only for a bundled FFmpeg.
+# The third-party sources archive, only for a bundled FFmpeg.
 set(sources_name "")
 if(SOURCES)
     if(RAWREEL_BUNDLED)

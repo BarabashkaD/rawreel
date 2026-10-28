@@ -572,7 +572,7 @@ void MainFrame::openFiles(std::vector<std::filesystem::path> files) {
         openUri(0, *plan.uri, std::nullopt);  // frame 0 (design v2 §4.3)
     }
     if (plan.ignored > 0) {
-        DVV_LOG_INFO("{} files ignored: one stream in v1.0", plan.ignored);
+        DVV_LOG_INFO("{} files ignored: one stream at a time", plan.ignored);
     }
 }
 

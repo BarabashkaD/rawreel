@@ -10,7 +10,7 @@
 
 namespace rawreel {
 
-inline constexpr std::uint32_t MAX_STREAMS = 1;  // D2: one stream in v1.0; v1.x tiles raise it
+inline constexpr std::uint32_t MAX_STREAMS = 1;  // D2: one stream at a time; v1.x tiles raise it
 
 struct PointD {
     double x = 0, y = 0;

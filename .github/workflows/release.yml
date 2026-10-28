@@ -1,15 +1,15 @@
-# Release of rawreel (spec §13.4; design M4 v2 §9, D16, D20, D27). Started by hand only.
-# A dry run builds the main branches, runs the unit and CLI tests, packages, runs the package
-# smoke tests and keeps the files as workflow artifacts. A real run does the same from the
-# v<version> tags of every repository, attests the files and creates a draft release; a maintainer
-# reviews and publishes it.
+# Release of rawreel (spec §13.4). Started by hand only.
+# A dry run builds main, runs the unit and CLI tests, packages, runs the package smoke tests and
+# keeps the files as workflow artifacts. A real run does the same from the v<version> tag of
+# rawreel (the libraries at its pins), attests the files and creates a draft release (a
+# pre-release while the major version is 0); a maintainer reviews and publishes it.
 name: release
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version to release, without the v (for example 1.0.0)
+        description: Version to release, without the v (for example 0.9.0)
         required: true
         type: string
       dry_run:
@@ -26,7 +26,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Every repository is checked out at this ref: main for a dry run, the release tag otherwise.
+  # rawreel is checked out at this ref (main for a dry run, the release tag otherwise), the
+  # libraries at its pins.
   RELEASE_REF: ${{ inputs.dry_run && 'main' || format('v{0}', inputs.version) }}
   DVV_REQUIRE_FFMPEG: "1"
 
@@ -46,7 +47,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::version must look like 1.0.0"
+            echo "::error::version must look like 0.9.0"
             exit 1
           fi
 
@@ -58,66 +59,28 @@ jobs:
       contents: read
       attestations: read
     steps:
+      # One checkout: the libraries come as submodules at the commits rawreel pins.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          repository: ${{ github.repository_owner }}/rawreel-workspace
           ref: ${{ env.RELEASE_REF }}
-          persist-credentials: false
-          path: rawreel-workspace
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          repository: ${{ github.repository_owner }}/dvv-base
-          ref: ${{ env.RELEASE_REF }}
-          persist-credentials: false
-          path: dvv-base
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          repository: ${{ github.repository_owner }}/dvv-registry
-          ref: ${{ env.RELEASE_REF }}
-          persist-credentials: false
-          path: dvv-registry
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          repository: ${{ github.repository_owner }}/dvv-platform
-          ref: ${{ env.RELEASE_REF }}
-          persist-credentials: false
-          path: dvv-platform
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          repository: ${{ github.repository_owner }}/dvv-gpu
-          ref: ${{ env.RELEASE_REF }}
-          persist-credentials: false
-          path: dvv-gpu
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          repository: ${{ github.repository_owner }}/dvv-media
-          ref: ${{ env.RELEASE_REF }}
-          persist-credentials: false
-          path: dvv-media
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          repository: ${{ github.repository_owner }}/dvv-components
-          ref: ${{ env.RELEASE_REF }}
-          persist-credentials: false
-          path: dvv-components
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          repository: ${{ github.repository_owner }}/rawreel
-          ref: ${{ env.RELEASE_REF }}
+          submodules: recursive
           persist-credentials: false
           path: rawreel
-      # Tags can move: the log keeps the commit of every repository this run built.
+      # Tags can move: the log keeps the commit of rawreel and of every library this run built.
       - name: Record the commits
         shell: pwsh
         run: |
-          foreach ($r in 'rawreel-workspace', 'dvv-base', 'dvv-registry', 'dvv-platform', 'dvv-gpu', 'dvv-media', 'dvv-components', 'rawreel') {
-            "$r $(git -C $r rev-parse HEAD)"
-          }
+          git -C rawreel rev-parse HEAD
+          git -C rawreel submodule status
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
       - name: Install tools
-        run: python -m pip install -r rawreel-workspace/tools/requirements.txt
+        run: python -m pip install -r rawreel/libs/dvv-build/tools/requirements.txt
+      # Every pin is the commit of its library's version tag, the submodule URLs are relative and
+      # the workflows use the pinned dvv-build version.
+      - name: Check the pins
+        run: cmake -DREPO=rawreel -DMODE=app -P rawreel/libs/dvv-build/tools/check-pins.cmake
       - name: Check Visual Studio 2026
         shell: pwsh
         run: |
@@ -126,15 +89,15 @@ jobs:
           if (-not $version.StartsWith('18.')) { throw "Visual Studio 2026 (18.x) required, found $version" }
           Write-Host "Visual Studio $version"
       # No cache restore: bootstrap builds the prefix from the pinned, SHA256-checked archives
-      # (rawreel-workspace/deps/versions.cmake), so no CI cache entry reaches a release.
+      # (libs/dvv-build/deps/versions.cmake), so no CI cache entry reaches a release.
       - name: Bootstrap
         shell: pwsh
-        run: ./rawreel-workspace/bootstrap.ps1 -Toolchain msvc -NoClone
+        run: ./rawreel/libs/dvv-build/bootstrap.ps1 -Toolchain msvc
       # The commit file goes to out/ with the packages: publish compares it with the Linux job's.
       - name: Verify the custom_ffmpeg archive (SHA256 and attestation)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: cmake -DPREFIX=_third_party/msvc "-DWORK_DIR=${{ runner.temp }}/ffmpeg-check" "-DOUT_FILE=${{ runner.temp }}/out/custom_ffmpeg-commit-windows.txt" -P rawreel/packaging/verify-ffmpeg-archive.cmake
+        run: cmake -DPREFIX=rawreel/libs/_third_party/msvc "-DWORK_DIR=${{ runner.temp }}/ffmpeg-check" "-DOUT_FILE=${{ runner.temp }}/out/custom_ffmpeg-commit-windows.txt" -P rawreel/packaging/verify-ffmpeg-archive.cmake
       # The linker records its temporary object path (%TMP%\lnk{GUID}.tmp) in the PDBs; the runner's
       # default TEMP is a user-profile path, which the symbols privacy scan rejects.
       - name: Build (Release)
@@ -151,7 +114,7 @@ jobs:
       # The sources archive is built in this job only, from a --recurse-submodules checkout of the
       # custom_ffmpeg tag whose commit equals the attestation's sourceRepositoryDigest.
       - name: Package (and the third-party sources when FFmpeg is bundled)
-        run: cmake -DBUILD_DIR=_build/rawreel/vs2026 -DCONFIG=Release "-DOUT_DIR=${{ runner.temp }}/out" -DSOURCES=ON "-DFFMPEG_COMMIT_FILE=${{ runner.temp }}/out/custom_ffmpeg-commit-windows.txt" -P rawreel/packaging/make-packages.cmake
+        run: cmake -DBUILD_DIR=rawreel/libs/_build/rawreel/vs2026 -DCONFIG=Release "-DOUT_DIR=${{ runner.temp }}/out" -DSOURCES=ON "-DFFMPEG_COMMIT_FILE=${{ runner.temp }}/out/custom_ffmpeg-commit-windows.txt" -P rawreel/packaging/make-packages.cmake
       # The runner has no GPU: the GUI smoke may exit 77 here; the local dry runs run it on a GPU.
       - name: Package smoke tests
         env:
@@ -176,65 +139,27 @@ jobs:
       contents: read
       attestations: read
     steps:
+      # One checkout: the libraries come as submodules at the commits rawreel pins.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          repository: ${{ github.repository_owner }}/rawreel-workspace
           ref: ${{ env.RELEASE_REF }}
-          persist-credentials: false
-          path: rawreel-workspace
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          repository: ${{ github.repository_owner }}/dvv-base
-          ref: ${{ env.RELEASE_REF }}
-          persist-credentials: false
-          path: dvv-base
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          repository: ${{ github.repository_owner }}/dvv-registry
-          ref: ${{ env.RELEASE_REF }}
-          persist-credentials: false
-          path: dvv-registry
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          repository: ${{ github.repository_owner }}/dvv-platform
-          ref: ${{ env.RELEASE_REF }}
-          persist-credentials: false
-          path: dvv-platform
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          repository: ${{ github.repository_owner }}/dvv-gpu
-          ref: ${{ env.RELEASE_REF }}
-          persist-credentials: false
-          path: dvv-gpu
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          repository: ${{ github.repository_owner }}/dvv-media
-          ref: ${{ env.RELEASE_REF }}
-          persist-credentials: false
-          path: dvv-media
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          repository: ${{ github.repository_owner }}/dvv-components
-          ref: ${{ env.RELEASE_REF }}
-          persist-credentials: false
-          path: dvv-components
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          repository: ${{ github.repository_owner }}/rawreel
-          ref: ${{ env.RELEASE_REF }}
+          submodules: recursive
           persist-credentials: false
           path: rawreel
-      # Tags can move: the log keeps the commit of every repository this run built.
+      # Tags can move: the log keeps the commit of rawreel and of every library this run built.
       - name: Record the commits
         run: |
-          for r in rawreel-workspace dvv-base dvv-registry dvv-platform dvv-gpu dvv-media dvv-components rawreel; do
-            echo "$r $(git -C "$r" rev-parse HEAD)"
-          done
+          git -C rawreel rev-parse HEAD
+          git -C rawreel submodule status
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
       - name: Install tools
-        run: python -m pip install -r rawreel-workspace/tools/requirements.txt
+        run: python -m pip install -r rawreel/libs/dvv-build/tools/requirements.txt
+      # Every pin is the commit of its library's version tag, the submodule URLs are relative and
+      # the workflows use the pinned dvv-build version.
+      - name: Check the pins
+        run: cmake -DREPO=rawreel -DMODE=app -P rawreel/libs/dvv-build/tools/check-pins.cmake
       - name: Install the compiler
         run: sudo apt-get update && sudo apt-get install -y clang-19 libclang-rt-19-dev libstdc++-14-dev
       # bootstrap builds wxWidgets on GTK 3 and the validation layer with Xlib, XCB and Wayland
@@ -242,14 +167,14 @@ jobs:
       - name: Install the window-system and Vulkan packages
         run: sudo apt-get install -y libgtk-3-dev pkgconf libx11-dev libxcb1-dev libxrandr-dev libwayland-dev zlib1g-dev libpng-dev xvfb xauth mesa-vulkan-drivers libvulkan1
       # No cache restore: bootstrap builds the prefix from the pinned, SHA256-checked archives
-      # (rawreel-workspace/deps/versions.cmake), so no CI cache entry reaches a release.
+      # (libs/dvv-build/deps/versions.cmake), so no CI cache entry reaches a release.
       - name: Bootstrap
-        run: ./rawreel-workspace/bootstrap.sh --toolchain clang --no-clone
+        run: ./rawreel/libs/dvv-build/bootstrap.sh --toolchain clang
       # The commit file goes to out/ with the packages: publish compares it with the Windows job's.
       - name: Verify the custom_ffmpeg archive (SHA256 and attestation)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: cmake -DPREFIX=_third_party/clang "-DWORK_DIR=${{ runner.temp }}/ffmpeg-check" "-DOUT_FILE=${{ runner.temp }}/out/custom_ffmpeg-commit-linux.txt" -P rawreel/packaging/verify-ffmpeg-archive.cmake
+        run: cmake -DPREFIX=rawreel/libs/_third_party/clang "-DWORK_DIR=${{ runner.temp }}/ffmpeg-check" "-DOUT_FILE=${{ runner.temp }}/out/custom_ffmpeg-commit-linux.txt" -P rawreel/packaging/verify-ffmpeg-archive.cmake
       - name: Build (Release)
         working-directory: rawreel
         run: |
@@ -260,7 +185,7 @@ jobs:
         run: ctest --preset ninja-clang-release -LE "gpu|display|gui|oracle"
       # No sources archive here: the Windows job's archive covers both packages (one commit).
       - name: Package
-        run: cmake -DBUILD_DIR=_build/rawreel/ninja-clang -DCONFIG=Release "-DOUT_DIR=${{ runner.temp }}/out" -DSOURCES=OFF -P rawreel/packaging/make-packages.cmake
+        run: cmake -DBUILD_DIR=rawreel/libs/_build/rawreel/ninja-clang -DCONFIG=Release "-DOUT_DIR=${{ runner.temp }}/out" -DSOURCES=OFF -P rawreel/packaging/make-packages.cmake
       # Lavapipe is a Vulkan device, so the GUI smoke must run here (no skip allowed).
       - name: Package smoke tests
         env:
@@ -279,7 +204,7 @@ jobs:
           OUT: ${{ runner.temp }}/out
           APP: ${{ runner.temp }}/clean-system
         run: |
-          info=_build/rawreel/ninja-clang/packaging-info-Release.cmake
+          info=rawreel/libs/_build/rawreel/ninja-clang/packaging-info-Release.cmake
           packages=$(sed -n 's/^set(RAWREEL_LINUX_APT_PACKAGES "\(.*\)")$/\1/p' "$info" | tr ';' ' ')
           if [ -z "$packages" ]; then
             echo "::error::no RAWREEL_LINUX_APT_PACKAGES in $info"
@@ -404,5 +329,10 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           notes="../rawreel/docs/release-notes-${VERSION}.md"
-          gh release create "v${VERSION}" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+          # A 0.x version is a preview: its release is marked as a pre-release.
+          prerelease=()
+          if [[ "$VERSION" == 0.* ]]; then
+            prerelease=(--prerelease)
+          fi
+          gh release create "v${VERSION}" --repo "$GITHUB_REPOSITORY" --draft --verify-tag "${prerelease[@]}" \
             --title "rawreel ${VERSION}" --notes-file "$notes" -- rawreel-* SHA256SUMS

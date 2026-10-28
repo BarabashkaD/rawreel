@@ -1,0 +1,21 @@
+[submodule "libs/dvv-build"]
+	path = libs/dvv-build
+	url = ../dvv-build
+[submodule "libs/dvv-base"]
+	path = libs/dvv-base
+	url = ../dvv-base
+[submodule "libs/dvv-registry"]
+	path = libs/dvv-registry
+	url = ../dvv-registry
+[submodule "libs/dvv-platform"]
+	path = libs/dvv-platform
+	url = ../dvv-platform
+[submodule "libs/dvv-gpu"]
+	path = libs/dvv-gpu
+	url = ../dvv-gpu
+[submodule "libs/dvv-media"]
+	path = libs/dvv-media
+	url = ../dvv-media
+[submodule "libs/dvv-components"]
+	path = libs/dvv-components
+	url = ../dvv-components

@@ -1,47 +1,28 @@
 cmake_minimum_required(VERSION 4.2)
-project(rawreel VERSION 1.0.0 DESCRIPTION "rawreel raw video player" LANGUAGES CXX)
+project(rawreel VERSION 0.9.0 DESCRIPTION "rawreel raw video player" LANGUAGES CXX)
 # Version string; a pre-release build adds its release-stage label.
 set(rawreel_VERSION_STRING "${PROJECT_VERSION}")
 
-option(DVV_BUILD_TESTS "Build the dvv tests" ${PROJECT_IS_TOP_LEVEL})
-
-# The dvv libraries. Inside the workspace build cmake/dvv-versions.cmake has declared them first,
-# so these declarations are ignored there (spec §3.1). Stand-alone builds take them from the
-# sibling folders (FETCHCONTENT_SOURCE_DIR_<NAME> in the workspace presets), from installed
-# packages or from Git.
-include(FetchContent)
-FetchContent_Declare(dvv_base
-    GIT_REPOSITORY "https://github.com/BarabashkaD/dvv-base.git"
-    GIT_TAG main
-    FIND_PACKAGE_ARGS 1.0)
-FetchContent_Declare(dvv_platform
-    GIT_REPOSITORY "https://github.com/BarabashkaD/dvv-platform.git"
-    GIT_TAG main
-    FIND_PACKAGE_ARGS 1.0)
-FetchContent_Declare(dvv_gpu
-    GIT_REPOSITORY "https://github.com/BarabashkaD/dvv-gpu.git"
-    GIT_TAG main
-    FIND_PACKAGE_ARGS 1.0)
-FetchContent_Declare(dvv_media
-    GIT_REPOSITORY "https://github.com/BarabashkaD/dvv-media.git"
-    GIT_TAG main
-    FIND_PACKAGE_ARGS 1.0)
-FetchContent_Declare(dvv_components
-    GIT_REPOSITORY "https://github.com/BarabashkaD/dvv-components.git"
-    GIT_TAG main
-    FIND_PACKAGE_ARGS 1.0)
-# A stand-alone build tests only this repository (the normal variable hides the cache entry from
-# the dependencies' option()); as a subproject the parent's value is kept, and the workspace
-# build tests every repository.
-if(PROJECT_IS_TOP_LEVEL)
-    set(DVV_BUILD_TESTS OFF)
+# dvv-build (libs/dvv-build) provides the shared CMake modules and the dependency check
+# (dvv-deps.txt); the dvv presets set DVV_BUILD_CMAKE_DIR to its cmake folder.
+if(NOT DVV_BUILD_CMAKE_DIR OR NOT IS_ABSOLUTE "${DVV_BUILD_CMAKE_DIR}"
+   OR NOT EXISTS "${DVV_BUILD_CMAKE_DIR}/DvvDeps.cmake")
+    message(FATAL_ERROR "rawreel: DVV_BUILD_CMAKE_DIR is not set, not absolute or "
+                        "has no DvvDeps.cmake (it must be dvv-build's cmake folder); configure "
+                        "with a dvv-build preset (e.g. `cmake --preset vs2026`, see README.md) "
+                        "or pass -DDVV_BUILD_CMAKE_DIR=<absolute path of dvv-build>/cmake")
 endif()
-# Release debug symbols for every target of the build (packaging/symbols.cmake, D16).
+include("${DVV_BUILD_CMAKE_DIR}/DvvDeps.cmake")
+# Release debug symbols for every target of the build, the dvv libraries included
+# (packaging/symbols.cmake, D16), so before the libraries are added.
 include(packaging/symbols.cmake)
-FetchContent_MakeAvailable(dvv_base dvv_platform dvv_gpu dvv_media dvv_components)
-if(PROJECT_IS_TOP_LEVEL)
-    unset(DVV_BUILD_TESTS)
-endif()
+# Declared before the libraries are added, so that a library's own option cannot set it first.
+option(DVV_BUILD_TESTS "Build the dvv tests" ${PROJECT_IS_TOP_LEVEL})
+# Adds the six dvv libraries from libs/ (dvv-deps.txt; the submodule commits are the pins) and
+# checks their versions; they build without their tests unless DVV_TEST_DEPENDENCIES is set.
+dvv_dependencies()
+
+# dvv-base sets DVV_CMAKE_DIR to the shared modules (in-tree: dvv-build's cmake folder).
 if(NOT DVV_CMAKE_DIR)
     message(FATAL_ERROR "dvv_base did not define DVV_CMAKE_DIR")
 endif()
@@ -82,18 +63,11 @@ target_link_libraries(rawreel_core PUBLIC dvv::media)
 dvv_set_compiler_options(rawreel_core)
 
 # rawreel_dvv_version(<package> <out>): the version of a dvv package with its release stage
-# (<package>_VERSION_STRING, e.g. 1.0.0), whether it was found installed (its package
-# configuration sets the variable) or added in-tree (read from its directory). A package made
-# available by another dvv project (dvv_registry) is looked up through FetchContent, because
-# <package>_SOURCE_DIR is then only set in that project's scope.
+# (<package>_VERSION_STRING, e.g. 0.1.0). dvv_dependencies() sets <package>_SOURCE_DIR here but
+# not the version, so the version is read from the package's directory (DEFINITION).
 function(rawreel_dvv_version package out)
     set(version "")
-    if(NOT DEFINED ${package}_VERSION_STRING AND NOT DEFINED ${package}_SOURCE_DIR)
-        FetchContent_GetProperties(${package})
-    endif()
-    if(DEFINED ${package}_VERSION_STRING)
-        set(version "${${package}_VERSION_STRING}")
-    elseif(${package}_SOURCE_DIR)
+    if(${package}_SOURCE_DIR)
         get_directory_property(version DIRECTORY "${${package}_SOURCE_DIR}"
                                DEFINITION ${package}_VERSION_STRING)
     endif()

@@ -1,6 +1,7 @@
-# Unit tests of packaging/check-package.cmake and packaging/scan-artifact-privacy.cmake (design M4
-# v2 D16, §8.6). Run as cmake -DWORK_DIR=<dir> -P test_packaging_scripts.cmake (CTest
-# rawreel.packaging_scripts). Every tree and file is built inside WORK_DIR, which is emptied first.
+# Unit tests of packaging/check-package.cmake and packaging/scan-artifact-privacy.cmake, and the
+# argument checks of packaging/dry-run.cmake. Run as
+# cmake -DWORK_DIR=<dir> -P test_packaging_scripts.cmake (CTest rawreel.packaging_scripts). Every
+# tree and file is built inside WORK_DIR, which is emptied first.
 # Each case prints "PASS <case>"; the first failed assertion stops the script. Lines that hold a
 # deliberate privacy pattern carry the repository lint's allow marker; the paths use the drive X:
 # and made-up names.
@@ -63,7 +64,7 @@ file(SHA256 "${pkg}/ffmpeg/x.dll" x_sha)
 set(manifest "${WORK_DIR}/manifest.txt")
 # The comment holds a non-ASCII character (file(STRINGS) would split the line there), ';', '[',
 # ']' and a CRLF ending, as the real manifest's header does.
-file(WRITE "${manifest}" "# design §8.6; kind path [sha256]\r\n\nours rawreel-@V@/a.exe\n"
+file(WRITE "${manifest}" "# a comment; kind path [sha256]\r\n\nours rawreel-@V@/a.exe\n"
                          "notices rawreel-@V@/THIRD_PARTY_NOTICES.txt\n"
                          "ffmpeg rawreel-@V@/ffmpeg/x.dll ${x_sha}\n"
                          "ours-bundled rawreel-@V@/ffmpeg/SOURCE.txt\n")
@@ -354,18 +355,18 @@ pass("${case}")
 set(case "cli: the FFmpeg line of --version")
 string(CONCAT missing_line "FFmpeg: not available (FFmpeg not found (looked in x\\ffmpeg and "
               "x\\lib\\ffmpeg; set DVV_FFMPEG_DIR [a b]))")
-rawreel_ffmpeg_version_line(TEXT "rawreel 1.0.0\nwxWidgets 3.3.4\n${missing_line}\n"
+rawreel_ffmpeg_version_line(TEXT "rawreel 0.9.0\nwxWidgets 3.3.4\n${missing_line}\n"
                             LINE line ERRORS errors)
 expect_empty("${case}" "${errors}")
 expect_equal("${case}" "${line}" "${missing_line}")
-rawreel_ffmpeg_version_line(TEXT "rawreel 1.0.0\r\nFFmpeg 8.0.1 (LGPL) from x\\ffmpeg\r\n"
+rawreel_ffmpeg_version_line(TEXT "rawreel 0.9.0\r\nFFmpeg 8.0.1 (LGPL) from x\\ffmpeg\r\n"
                             LINE line ERRORS errors)
 expect_empty("${case}" "${errors}")
 expect_equal("${case}" "${line}" "FFmpeg 8.0.1 (LGPL) from x\\ffmpeg")
 rawreel_ffmpeg_version_line(TEXT "FFmpeg a; b\nlibFFmpeg c\nFFmpeg d\n" LINE line ERRORS errors)
 expect_item("${case}" "${errors}" "--version must print one line starting with FFmpeg, printed 2")
 expect_count("${case}" "${errors}" 1)
-rawreel_ffmpeg_version_line(TEXT "rawreel 1.0.0\n x FFmpeg\n" LINE line ERRORS errors)
+rawreel_ffmpeg_version_line(TEXT "rawreel 0.9.0\n x FFmpeg\n" LINE line ERRORS errors)
 expect_item("${case}" "${errors}" "--version must print one line starting with FFmpeg, printed 0")
 pass("${case}")
 
@@ -514,6 +515,25 @@ rawreel_package_files(VERSION 1.2.3 PLATFORM macos PACKAGE package SYMBOLS symbo
                       EXTENSION extension GENERATOR generator ERRORS errors)
 expect_item("${case}" "${errors}" "no package for the platform 'macos' (windows, linux)")
 expect_equal("${case}" "${package}" "")
+pass("${case}")
+
+set(case "package outputs: only the files of the run's package info, never older ones in OUT_DIR")
+set(outputs_dir "${WORK_DIR}/outputs")
+file(REMOVE_RECURSE "${outputs_dir}")
+file(MAKE_DIRECTORY "${outputs_dir}")
+file(WRITE "${outputs_dir}/rawreel-0.1.0-windows-x64.zip" "older run")
+file(WRITE "${outputs_dir}/rawreel-0.1.0-third-party-sources.tar.xz" "older run")
+file(WRITE "${outputs_dir}/package-info-windows.cmake"
+     "set(RAWREEL_VERSION \"1.2.3\")\nset(RAWREEL_PACKAGE \"rawreel-1.2.3-windows-x64.zip\")\n"
+     "set(RAWREEL_SYMBOLS \"rawreel-1.2.3-windows-x64-symbols.zip\")\nset(RAWREEL_SOURCES \"\")\n")
+rawreel_package_outputs(INFO "${outputs_dir}/package-info-windows.cmake" FILES files)
+expect_equal("${case}" "${files}"
+             "rawreel-1.2.3-windows-x64.zip;rawreel-1.2.3-windows-x64-symbols.zip")
+file(APPEND "${outputs_dir}/package-info-windows.cmake"
+     "set(RAWREEL_SOURCES \"rawreel-1.2.3-third-party-sources.tar.xz\")\n")
+rawreel_package_outputs(INFO "${outputs_dir}/package-info-windows.cmake" FILES files)
+expect_count("${case}" "${files}" 3)
+expect_item("${case}" "${files}" "rawreel-1.2.3-third-party-sources.tar.xz")
 pass("${case}")
 
 set(case "FFmpeg library names: the file the loader opens and its major")
@@ -711,7 +731,7 @@ pass("${case}")
 
 set(case "modes: a good listing passes and reports its owners")
 file(READ "${data}/tar-tvf.txt" listing)
-set(executables rawreel-1.0.0/rawreel-gui rawreel-1.0.0/ffmpeg/libavutil.so.60)
+set(executables rawreel-0.9.0/rawreel-gui rawreel-0.9.0/ffmpeg/libavutil.so.60)
 rawreel_tar_listing_errors(TEXT "${listing}" EXECUTABLES ${executables}
                            ERRORS errors OWNER_NAMES owners)
 expect_empty("${case}" "${errors}")
@@ -721,22 +741,22 @@ pass("${case}")
 set(case "modes: a 777 file, a 644 exe or a world-writable folder fails")
 string(REPLACE "-rw-r--r-- builder/staff  1083" "-rwxrwxrwx builder/staff  1083" bad "${listing}")
 string(REPLACE "-rwxr-xr-x builder/staff 9000000" "-rw-r--r-- builder/staff 9000000" bad "${bad}")
-string(REPLACE "drwxr-xr-x builder/staff     0 2026-10-27 10:00 rawreel-1.0.0/ffmpeg/"
-               "drwxrwxrwx builder/staff     0 2026-10-27 10:00 rawreel-1.0.0/ffmpeg/" bad "${bad}")
+string(REPLACE "drwxr-xr-x builder/staff     0 2026-10-27 10:00 rawreel-0.9.0/ffmpeg/"
+               "drwxrwxrwx builder/staff     0 2026-10-27 10:00 rawreel-0.9.0/ffmpeg/" bad "${bad}")
 rawreel_tar_listing_errors(TEXT "${bad}" EXECUTABLES ${executables} ERRORS errors OWNER_NAMES owners)
 expect_count("${case}" "${errors}" 3)
-expect_item("${case}" "${errors}" "rawreel-1.0.0/LICENSE: mode rwxrwxrwx, expected rw-r--r--")
-expect_item("${case}" "${errors}" "rawreel-1.0.0/rawreel-gui: mode rw-r--r--, expected rwxr-xr-x")
-expect_item("${case}" "${errors}" "rawreel-1.0.0/ffmpeg/: world-writable folder (rwxrwxrwx)")
+expect_item("${case}" "${errors}" "rawreel-0.9.0/LICENSE: mode rwxrwxrwx, expected rw-r--r--")
+expect_item("${case}" "${errors}" "rawreel-0.9.0/rawreel-gui: mode rw-r--r--, expected rwxr-xr-x")
+expect_item("${case}" "${errors}" "rawreel-0.9.0/ffmpeg/: world-writable folder (rwxrwxrwx)")
 pass("${case}")
 
 set(case "modes: links, unreadable lines and an empty listing fail")
-set(bad "${listing}lrwxrwxrwx builder/staff 0 2026-10-27 10:00 rawreel-1.0.0/ffmpeg/libx.so -> libavutil.so.60\n")
+set(bad "${listing}lrwxrwxrwx builder/staff 0 2026-10-27 10:00 rawreel-0.9.0/ffmpeg/libx.so -> libavutil.so.60\n")
 string(APPEND bad "garbage line\n")
 rawreel_tar_listing_errors(TEXT "${bad}" EXECUTABLES ${executables} ERRORS errors OWNER_NAMES owners)
 expect_count("${case}" "${errors}" 2)
 expect_item("${case}" "${errors}"
-            "rawreel-1.0.0/ffmpeg/libx.so -> libavutil.so.60: entry type l (only files and folders)")
+            "rawreel-0.9.0/ffmpeg/libx.so -> libavutil.so.60: entry type l (only files and folders)")
 expect_item("${case}" "${errors}" "cannot read the tar listing line: garbage line")
 rawreel_tar_listing_errors(TEXT "\n" ERRORS errors OWNER_NAMES owners)
 expect_equal("${case}" "${errors}" "the tar listing is empty")
@@ -755,6 +775,63 @@ rawreel_tar_listing_errors(TEXT "${good}" EXECUTABLES ${executables} OWNERS root
 expect_empty("${case}" "${errors}")
 expect_equal("${case}" "${owners}" "runner/docker;root/root")
 pass("${case}")
+
+# --- dry-run.cmake arguments (each run stops before any build) ---------------------------------
+# Every run gets a scratch DRYRUN_ROOT, so a broken check never touches the developer's dry-run
+# area.
+
+function(run_dry_run case script expected)
+    execute_process(COMMAND "${CMAKE_COMMAND}" "-DDRYRUN_ROOT=${WORK_DIR}/dryrun" ${ARGN}
+                            -P "${script}"
+                    RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE err)
+    if(result EQUAL 0)
+        message(FATAL_ERROR "FAIL ${case}: the dry run started")
+    endif()
+    # CMake wraps the message text: compare with the white space collapsed.
+    string(REGEX REPLACE "[ \t\r\n]+" " " err "${err}")
+    string(FIND "${err}" "${expected}" at)
+    if(at EQUAL -1)
+        message(FATAL_ERROR "FAIL ${case}: expected '${expected}', got: ${err}")
+    endif()
+endfunction()
+
+set(dry_run "${CMAKE_CURRENT_LIST_DIR}/../../packaging/dry-run.cmake")
+cmake_path(GET CMAKE_CURRENT_LIST_DIR PARENT_PATH tests_dir)
+cmake_path(GET tests_dir PARENT_PATH clone_dir)
+cmake_path(GET clone_dir FILENAME clone_name)
+
+set(case "dry-run: a WORKSPACE_ROOT that does not hold this clone is refused")
+# A folder of the clone's own name, so the real-path comparison is what refuses the root.
+file(MAKE_DIRECTORY "${WORK_DIR}/other-root/${clone_name}")
+run_dry_run("${case}" "${dry_run}" "is not the folder holding this clone"
+            "-DWORKSPACE_ROOT=${WORK_DIR}/other-root" -DBUNDLE=OFF)
+pass("${case}")
+
+# A clone of another name without libs/: an accepted root stops at the submodule check.
+set(fake "${WORK_DIR}/ws/any-name")
+file(COPY "${dry_run}" DESTINATION "${fake}/packaging")
+set(fake_dry_run "${fake}/packaging/dry-run.cmake")
+set(missing "any-name/libs/dvv-build is missing")
+
+set(case "dry-run: the default root (the clone's parent) is accepted for any clone name")
+run_dry_run("${case}" "${fake_dry_run}" "${missing}" -DBUNDLE=OFF)
+pass("${case}")
+
+set(case "dry-run: the clone's parent as WORKSPACE_ROOT is accepted, with or without a slash")
+run_dry_run("${case}" "${fake_dry_run}" "${missing}" "-DWORKSPACE_ROOT=${WORK_DIR}/ws"
+            -DBUNDLE=OFF)
+run_dry_run("${case}" "${fake_dry_run}" "${missing}" "-DWORKSPACE_ROOT=${WORK_DIR}/ws/"
+            -DBUNDLE=OFF)
+pass("${case}")
+
+if(CMAKE_HOST_LINUX)
+    set(case "dry-run: BUNDLE=ON on Linux stops before the build without the Windows prefix")
+    file(MAKE_DIRECTORY "${fake}/libs/dvv-build/deps")
+    run_dry_run("${case}" "${fake_dry_run}" "is not a bootstrapped prefix" -DBUNDLE=ON)
+    run_dry_run("${case}" "${fake_dry_run}" "${WORK_DIR}/no-msvc is not a bootstrapped prefix"
+                -DBUNDLE=ON "-DWINDOWS_PREFIX=${WORK_DIR}/no-msvc")
+    pass("${case}")
+endif()
 
 get_property(passed GLOBAL PROPERTY test_packaging_passed)
 list(LENGTH passed passed_count)

@@ -237,7 +237,7 @@ public:
         co_await dvv::resumeOn(context.io);  // never block the caller's thread
         if (request.uri.scheme == "file") {
             co_return dvv::makeError(Errc::Unsupported,
-                                     "codec test is not supported in v1.0 (lossless codecs only)");
+                                     "codec test is not supported (lossless codecs only)");
         }
         const dvv::Uri uri = co_try(dvv::parseUri("synthetic:" + request.uri.body));
         Behaviour behaviour;

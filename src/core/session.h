@@ -92,7 +92,7 @@ public:
 
     // Commands: thread-safe, non-blocking, executed in call order on the Session executor;
     // refused once shutdown() has started.
-    // Slot 0 only (D2, D21; slot >= 1 -> error Unsupported "one stream in v1.0"); replaces the
+    // Slot 0 only (D2, D21; slot >= 1 -> error Unsupported "one stream at a time"); replaces the
     // stream. Enqueues an open job; with no stack installed the job first builds one (§5.3).
     // `start`: the index to show after the attach (clamped into [0, length − 1]); none -> frame 0
     // (design v2 §4.3 "Start position").

@@ -1,5 +1,5 @@
-# Release symbols for crash analysis (design M4 v2 D16, D22). Included by CMakeLists.txt before
-# FetchContent_MakeAvailable, so every target of this build (the dvv libraries included) gets
+# Release symbols for crash analysis. Included by CMakeLists.txt before
+# dvv_dependencies(), so every target of this build (the dvv libraries included) gets
 # debug information in Release too. Nothing changes under DVV_SANITIZE.
 #
 # Windows: a program database per target. The exes embed only the PDB file name (/PDBALTPATH with

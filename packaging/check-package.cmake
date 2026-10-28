@@ -1,4 +1,4 @@
-# Package checks (design M4 v2 §8.6, D16, D20), used by package-smoke.cmake and
+# Package checks, used by package-smoke.cmake and
 # verify-ffmpeg-archive.cmake; unit-tested by tests/packaging/test_packaging_scripts.cmake.
 #
 #   rawreel_check_manifest(ROOT <dir> MANIFEST <file> VERSION <v> BUNDLED <bool>
@@ -110,7 +110,7 @@ function(_rawreel_line_decode line out)
     set(${out} "${line}" PARENT_SCOPE)
 endfunction()
 
-# Parses a notices file in the format of rawreel-workspace/deps/write-notices.cmake. A separator is
+# Parses a notices file in the format of libs/dvv-build/deps/write-notices.cmake. A separator is
 # a line of at least 20 '='. An entry is a separator whose next line is "<name> <version>" and whose
 # line after that starts with "Licence:"; the Visual C++ runtime paragraph is a separator followed
 # by exactly "Microsoft Visual C++ runtime". Any other separator (a long '=' underline inside a
@@ -262,7 +262,7 @@ endfunction()
 function(rawreel_strip_msvc_notice)
     cmake_parse_arguments(PARSE_ARGV 0 arg "" "IN;OUT" "")
     file(READ "${arg_IN}" content)
-    # rawreel-workspace's write-notices.cmake appends the paragraph last, so it runs to the end.
+    # dvv-build's write-notices.cmake appends the paragraph last, so it runs to the end.
     string(REGEX MATCH "\n=+\nMicrosoft Visual C\\+\\+ runtime\n" head "${content}")
     if(NOT head STREQUAL "")
         string(FIND "${content}" "${head}" position)
@@ -492,6 +492,24 @@ function(rawreel_package_files)
     set(${arg_EXTENSION} "${extension}" PARENT_SCOPE)
     set(${arg_GENERATOR} "${generator}" PARENT_SCOPE)
     set(${arg_ERRORS} "${errors}" PARENT_SCOPE)
+endfunction()
+
+# The files one make-packages.cmake run wrote, read from its package-info-<platform>.cmake: the
+# package, the symbols archive and, when built, the sources archive. Files of older runs (another
+# version or another variant) that are still in the output folder are not listed.
+function(rawreel_package_outputs)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "INFO;FILES" "")
+    set(RAWREEL_PACKAGE "")
+    set(RAWREEL_SYMBOLS "")
+    set(RAWREEL_SOURCES "")
+    include("${arg_INFO}")
+    set(files "")
+    foreach(name IN ITEMS "${RAWREEL_PACKAGE}" "${RAWREEL_SYMBOLS}" "${RAWREEL_SOURCES}")
+        if(NOT name STREQUAL "")
+            list(APPEND files "${name}")
+        endif()
+    endforeach()
+    set(${arg_FILES} "${files}" PARENT_SCOPE)
 endfunction()
 
 function(rawreel_ffmpeg_library_pattern)

@@ -314,12 +314,13 @@ struct SmokeState {
     std::uint64_t startSwapchains = 0;
     dvv::platform::PixelSize previousSize{};
     int ticks = 0;
-    std::optional<std::uint64_t> framesWhenShown;  // open stream: when the frame was first seen
-    std::size_t logLength = 0;                     // menus: the Log pane's text at the step start
-    std::size_t streamsBefore = 0;                 // D3: streams shown when the open started
-    bool aboutHookRan = false;                     // about: the About hook ran
-    bool aboutButtonsOk = false;                   // about: notices and copy buttons found
-    bool aboutParentOk = false;                    // about: the dialog's parent is the frame
+    std::optional<std::uint64_t> framesWhenShown;   // open stream: when the frame was first seen
+    std::optional<std::uint64_t> framesWhenHidden;  // hide: when the presenter was first hidden
+    std::size_t logLength = 0;                      // menus: the Log pane's text at the step start
+    std::size_t streamsBefore = 0;                  // D3: streams shown when the open started
+    bool aboutHookRan = false;                      // about: the About hook ran
+    bool aboutButtonsOk = false;                    // about: notices and copy buttons found
+    bool aboutParentOk = false;                     // about: the dialog's parent is the frame
     int aboutWidth = 0;             // about: the dialog's width before the Components pane opens
     int aboutWidthExpanded = 0;     // about: its width (or wanted width) with the pane open
     int aboutHeightOpen = 0;        // about: its client height with the pane open the first time
@@ -392,6 +393,7 @@ void markStart(const Viewport& viewport, SmokeState& state) {
     }
     state.previousSize = viewport.physicalClientSize();
     state.ticks = 0;
+    state.framesWhenHidden.reset();
 }
 
 using SharedState = std::shared_ptr<SmokeState>;
@@ -515,7 +517,9 @@ SelfTestStep movedPaneStep(SelfTest* test, const SharedState& state, bool back) 
             .passed = std::move(passed)};
 }
 
-// 4. Hidden: no frames (one in flight when the window was hidden is tolerated).
+// 4. Hidden: no frames. The count starts when the presenter first reports hidden, because frames
+// already requested or in flight when the window is hidden may still be presented; one more frame
+// after that is tolerated.
 SelfTestStep hideStep(SelfTest* test, const SharedState& state) {
     auto start = [test, state] {
         markStart(test->frame().viewport(), *state);
@@ -529,8 +533,15 @@ SelfTestStep hideStep(SelfTest* test, const SharedState& state) {
         const Viewport& viewport = test->frame().viewport();
         seen = describe(viewport, *state);
         const std::optional<dvv::gpu::PresenterStats> stats = statsOf(viewport);
-        return ++state->ticks >= HIDE_TICKS && stats &&
-               stats->framesPresented <= state->startFrames + 1 && stats->hidden && !stats->failed;
+        if (!stats || !stats->hidden) {
+            return false;
+        }
+        if (!state->framesWhenHidden) {
+            state->framesWhenHidden = stats->framesPresented;
+            state->ticks = 0;
+        }
+        return ++state->ticks >= HIDE_TICKS &&
+               stats->framesPresented <= *state->framesWhenHidden + 1 && !stats->failed;
     };
     return {.name = "hide", .start = std::move(start), .passed = std::move(passed)};
 }
@@ -754,7 +765,7 @@ SelfTestStep menusStep(SelfTest* test, const SharedState& state) {
     return step("menus", std::move(start), std::move(passed));
 }
 
-// Design §7: a Session error reaches the infobar; slot 1 is refused in v1.0.
+// Design §7: a Session error reaches the infobar; slot 1 is refused.
 SelfTestStep infobarStep(SelfTest* test) {
     auto start = [test] {
         dvv::Result<dvv::Uri> uri = dvv::parseUri(REFUSED_STREAM);
@@ -768,7 +779,7 @@ SelfTestStep infobarStep(SelfTest* test) {
     auto passed = [test](std::string& seen) {
         MainFrame& frame = test->frame();
         const bool shown = frame.playerPanel().infoBar().IsShown();
-        const bool refused = frame.lastMessage().Contains("one stream in v1.0");
+        const bool refused = frame.lastMessage().Contains("one stream at a time");
         seen =
             std::format("infobar shown {}, message '{}'", shown, frame.lastMessage().utf8_string());
         if (!shown || !refused) {
@@ -1020,7 +1031,7 @@ void addOpenUriSteps(std::vector<SelfTestStep>& steps, SelfTest* test,
             seen = std::format("{} streams, infobar shown {}, message '{}'", frame.streams().size(),
                                shown, frame.lastMessage().utf8_string());
             return frame.streams().size() == 1 && shown &&
-                   frame.lastMessage().Contains("one stream in v1.0");
+                   frame.lastMessage().Contains("one stream at a time");
         }));
     steps.push_back(step(
         "Close stream clears the message", [test] { test->frame().execute(Command::CloseStreams); },
@@ -1598,15 +1609,21 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
         [&frame, st](std::string& seen) {
             const dvv::platform::PixelSize extent = frame.viewport().physicalClientSize();
             const std::optional<RecordedInfo> recorded = frame.viewport().lastRecorded();
-            const double fit = ViewTransform::fit(extent, {64, 48}).zoom();
-            seen = std::format("extent {}x{} (was {}x{}), recorded {}x{} zoom {} (fit {})",
-                               extent.width, extent.height, st->extent0.width, st->extent0.height,
-                               recorded ? recorded->extent.width : 0,
-                               recorded ? recorded->extent.height : 0,
-                               recorded ? recorded->zoom : 0.0, fit);
-            return !(extent == st->extent0) && extent.width > 0 && extent.height > 0 && recorded &&
-                   recorded->extent == extent && recorded->zoom == fit &&
-                   presented(frame.viewport()) > st->presented0;
+            // The fit of the opened stream's size, so the scenario works with any source.
+            dvv::platform::PixelSize image{};
+            if (!frame.streams().empty()) {
+                const dvv::media::FrameDesc& desc = frame.streams()[0].info.desc;
+                image = {desc.width, desc.height};
+            }
+            const double fit = ViewTransform::fit(extent, image).zoom();
+            seen = std::format(
+                "extent {}x{} (was {}x{}), image {}x{}, recorded {}x{} zoom {} (fit {})",
+                extent.width, extent.height, st->extent0.width, st->extent0.height, image.width,
+                image.height, recorded ? recorded->extent.width : 0,
+                recorded ? recorded->extent.height : 0, recorded ? recorded->zoom : 0.0, fit);
+            return !(extent == st->extent0) && extent.width > 0 && extent.height > 0 &&
+                   image.width > 0 && image.height > 0 && recorded && recorded->extent == extent &&
+                   recorded->zoom == fit && presented(frame.viewport()) > st->presented0;
         }));
     steps.push_back(step(
         "Shift+Right steps 10 (CHAR_HOOK)",
@@ -2272,7 +2289,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
         },
         [&frame, stream_is](std::string& seen) {
             const bool logged =
-                frame.logPanel().text().Contains("1 files ignored: one stream in v1.0");
+                frame.logPanel().text().Contains("1 files ignored: one stream at a time");
             seen = std::format("gray 32x16 {}, log line {}", stream_is(32, 16, "gray"), logged);
             return stream_is(32, 16, "gray") && logged;
         }));
