@@ -72,7 +72,8 @@ if(DVV_VK_VALIDATION_LAYER_MANIFEST)
     cmake_path(GET DVV_VK_VALIDATION_LAYER_MANIFEST PARENT_PATH layer_dir)
     list(APPEND gpu_test_environment "VK_ADD_LAYER_PATH=${layer_dir}")
 endif()
-# The software driver is not instrumented; see tsan.supp.
+# The software driver and FFmpeg are not instrumented; see tsan.supp. Every test that loads FFmpeg
+# uses this list (ffmpeg_environment below extends it).
 if(DVV_SANITIZE STREQUAL "thread")
     list(APPEND gpu_test_environment
          "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan.supp")
