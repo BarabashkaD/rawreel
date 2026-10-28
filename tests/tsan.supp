@@ -1,6 +1,6 @@
 # ThreadSanitizer suppressions for the GPU tests and the FFmpeg tests (used by the thread-sanitizer
-# preset only). A report is suppressed when the stack of either racing access (or of the allocation
-# of the memory) has a frame inside one of these libraries, so a race between dvv code and the
+# preset only). A race: entry suppresses a report when the stack of either racing access (or of the
+# allocation of the memory) has a frame inside the library, so a race between dvv code and the
 # library is hidden as well; races between two accesses in dvv code are still reported.
 #
 # Vulkan drivers (here Mesa lavapipe) are not instrumented: they synchronize their own objects with
@@ -10,8 +10,16 @@
 race:libvulkan_lvp.so
 # FFmpeg's shared libraries are not instrumented: libavcodec's slice and frame threads synchronize
 # their own buffers with primitives ThreadSanitizer cannot see (atomics and progress flags in the
-# uninstrumented code), so valid decoding is reported as races between FFmpeg's threads (memset,
-# free and av_buffer writes inside libavcodec and libavutil), and as races with the dvv code that
-# reads a decoded frame after FFmpeg has handed it over. Same list as dvv-components/tests/tsan.supp.
-race:libavcodec.so
-race:libavutil.so
+# uninstrumented code), so the only accesses it sees from them are the intercepted calls (memset,
+# memcpy, malloc and free inside libavcodec and libavutil), and valid decoding is reported as races
+# between FFmpeg's threads and with the dvv code that reads a decoded frame after FFmpeg has handed
+# it over. called_from_lib: ignores the memory accesses of every intercepted call made from code
+# inside the named library (matched against the path of the loaded file, e.g. libavcodec.so.62);
+# unlike race:, it keeps the instrumented code that FFmpeg's threads run checked (today the dvv log
+# callback). Same list as dvv-components/tests/tsan.supp.
+called_from_lib:libavutil.so
+called_from_lib:libavcodec.so
+called_from_lib:libavformat.so
+called_from_lib:libswscale.so
+called_from_lib:libswresample.so
+called_from_lib:libavfilter.so
