@@ -32,6 +32,7 @@
 #include <wx/generic/aboutdlgg.h>
 // clang-format on
 #include <wx/collpane.h>
+#include <wx/hyperlink.h>
 #include <wx/settings.h>
 #include <wx/slider.h>
 #include <wx/textdlg.h>
@@ -335,9 +336,10 @@ struct SmokeState {
     bool aboutClosedEarly = false;  // about: it was hidden before the hook's clicks
     wxSize aboutAtShow;             // about: its size when it was first shown
     wxSize aboutAtHook;             // about: its size 1 s later
-    std::uint64_t presented0 = 0;   // lavfi: frames presented at the step start
-    std::string streamUri;          // Format... on lavfi: the stream's URI
-    std::uint64_t dialogs0 = 0;     // Format... on lavfi: format dialogs shown
+    std::vector<std::string> aboutLinks;  // about: the URLs of its links
+    std::uint64_t presented0 = 0;         // lavfi: frames presented at the step start
+    std::string streamUri;                // Format... on lavfi: the stream's URI
+    std::uint64_t dialogs0 = 0;           // Format... on lavfi: format dialogs shown
 };
 
 std::optional<dvv::gpu::PresenterStats> statsOf(const Viewport& viewport) {
@@ -807,6 +809,16 @@ wxCollapsiblePane* findCollapsiblePane(wxWindow& window) {
     return nullptr;
 }
 
+// The URLs of the wxHyperlinkCtrls under `window` (depth first).
+void collectLinks(wxWindow& window, std::vector<std::string>& urls) {
+    for (wxWindow* child : window.GetChildren()) {
+        if (const auto* link = dynamic_cast<wxHyperlinkCtrl*>(child)) {
+            urls.push_back(link->GetURL().utf8_string());
+        }
+        collectLinks(*child, urls);
+    }
+}
+
 // D29: Help -> About through its hook (the hook closes the dialog).
 SelfTestStep aboutStep(SelfTest* test, const std::shared_ptr<SmokeState>& state) {
     auto start = [test, state] {
@@ -821,6 +833,8 @@ SelfTestStep aboutStep(SelfTest* test, const std::shared_ptr<SmokeState>& state)
                 wxWindow::FindWindowByLabel(
                     wxString::FromUTF8(ABOUT_COPY_LABEL.data(), ABOUT_COPY_LABEL.size()),
                     &dialog) != nullptr;
+            state->aboutLinks.clear();
+            collectLinks(dialog, state->aboutLinks);
             // Opening the Components pane must not widen the dialog. Open, closed and open again,
             // the list must show at its full height (a window manager resizes asynchronously, so
             // each state gets 0.3 s to settle, as a user's clicks would).
@@ -876,27 +890,44 @@ SelfTestStep aboutStep(SelfTest* test, const std::shared_ptr<SmokeState>& state)
         // The status only: no FFmpeg directory in About (users share its text).
         const bool no_path =
             !ffmpeg.core || !text.contains(dvv::media::utf8FromPath(ffmpeg.directory));
-        // About: the name and version once, the licence, the device, the FFmpeg version, the
-        // components; the copied text is the full aboutText().
+        // About: the name and version once, the licence, the FFmpeg version, the components, no
+        // GPU (Help -> GPU info); the copied text is the full aboutText().
         const std::string heading = std::format("rawreel {}", packageVersions().front().second);
         const bool lines =
             text.find(heading) != std::string::npos && text.find(heading) == text.rfind(heading) &&
-            text.contains("MIT licence") && vulkan.available && text.contains(vulkan.device) &&
-            (!ffmpeg.core || text.contains(ffmpeg.version)) && text.contains("dvv-base ") &&
-            no_path;
+            text.contains("MIT licence") && vulkan.available && !text.contains(vulkan.device) &&
+            !text.contains("Vulkan") && (!ffmpeg.core || text.contains(ffmpeg.version)) &&
+            text.contains("dvv-base ") && no_path;
+        // Every link of the About content is a link in the dialog.
+        bool links = true;
+        const AboutContent content =
+            aboutContent({.packages = packageVersions(),
+                          .vulkan = {},
+                          .ffmpeg = ffmpegStatusLine(ffmpeg, StatusPaths::Hidden)});
+        std::vector<TextLine> all = content.system;
+        all.push_back(content.copyright);
+        all.push_back({{"", content.website}});
+        for (const TextLine& line : all) {
+            for (const TextPart& part : line) {
+                links = links &&
+                        (part.url.empty() ||
+                         std::ranges::find(state->aboutLinks, part.url) != state->aboutLinks.end());
+            }
+        }
         // Only the checked facts, not the text (it names the FFmpeg version and the device).
         seen = std::format(
             "hook ran {}, parent the frame {}, buttons {}, About shown {} ({} at the step start), "
-            "lines {}, no FFmpeg path {}, width {} -> {} with Components open, height {} -> {} "
+            "lines {}, links {} ({} found), no FFmpeg path {}, width {} -> {} with Components "
+            "open, height {} -> {} "
             "closed -> {} open again, list {}x{} (min height {}) shown {}; at open: shown {} "
             "time(s), "
             "hidden early {}, {}x{} when shown -> {}x{} after about 1 s, {} size change(s)",
             state->aboutHookRan, state->aboutParentOk, state->aboutButtonsOk, frame.aboutShown(),
-            state->about0, lines, no_path, state->aboutWidth, state->aboutWidthExpanded,
-            state->aboutHeightOpen, state->aboutHeightClosed, state->aboutHeightReopen,
-            state->aboutListReopen.x, state->aboutListReopen.y, state->aboutListMin,
-            state->aboutListShown, state->aboutShows, state->aboutClosedEarly, state->aboutAtShow.x,
-            state->aboutAtShow.y, state->aboutAtHook.x, state->aboutAtHook.y,
+            state->about0, lines, links, state->aboutLinks.size(), no_path, state->aboutWidth,
+            state->aboutWidthExpanded, state->aboutHeightOpen, state->aboutHeightClosed,
+            state->aboutHeightReopen, state->aboutListReopen.x, state->aboutListReopen.y,
+            state->aboutListMin, state->aboutListShown, state->aboutShows, state->aboutClosedEarly,
+            state->aboutAtShow.x, state->aboutAtShow.y, state->aboutAtHook.x, state->aboutAtHook.y,
             state->aboutSizeChanges);
         // No flash at open: shown once, at its final size, and not resized or hidden after.
         const bool steady_open = state->aboutShows == 1 && !state->aboutClosedEarly &&
@@ -909,7 +940,7 @@ SelfTestStep aboutStep(SelfTest* test, const std::shared_ptr<SmokeState>& state)
             state->aboutListReopen.x > 0 && state->aboutListMin > 0 &&
             state->aboutListReopen.y >= state->aboutListMin && state->aboutListShown;
         return state->aboutHookRan && state->aboutParentOk && state->aboutButtonsOk &&
-               frame.aboutShown() > state->about0 && lines && width_kept && list_again &&
+               frame.aboutShown() > state->about0 && lines && links && width_kept && list_again &&
                steady_open;
     };
     return step("about", std::move(start), std::move(passed));

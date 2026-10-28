@@ -72,9 +72,6 @@ public:
     [[nodiscard]] std::optional<AppearanceResult> appearanceResult() const noexcept {
         return appearance_result_;
     }
-    // "<requested> -> <result>" as the startup log line has it (e.g. "dark -> Ok"); empty before
-    // OnInit(). For About.
-    [[nodiscard]] std::string appearanceText() const;
     // The objects given to the Session.
     [[nodiscard]] const std::shared_ptr<dvv::ComponentRegistry>& components() const noexcept {
         return startup_.components;

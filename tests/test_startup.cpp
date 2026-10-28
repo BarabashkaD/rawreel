@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "core/startup.h"
 #include "core/version_text.h"
@@ -242,43 +243,82 @@ TEST_SUITE("core") {
                                                          {"dvv-gpu", "0.4.2"},
                                                          {"wxWidgets", "3.3.1"}},
                                             .vulkan = "Vulkan: x, API 1.3.0",
-                                            .ffmpeg = "FFmpeg n8.1.3 (LGPL version 2.1 or later)"};
-        const rawreel::AboutContent content = rawreel::aboutContent(report, "dark -> Ok");
+                                            .ffmpeg =
+                                                "FFmpeg n8.1.3 (LGPL version 2.1 or later) from "
+                                                "https://github.com/BarabashkaD/custom_ffmpeg"};
+        const rawreel::AboutContent content = rawreel::aboutContent(report);
         CHECK(content.heading == "rawreel 0.4.0");
-        CHECK(content.description == "Raw video player (Vulkan)");
-        CHECK(content.copyright == "Copyright (c) 2026 BarabashkaD \xC2\xB7 MIT licence");
+        CHECK(content.description ==
+              "Play and inspect raw and Y4M video frame by frame: pixel formats and colour "
+              "mapping.");
+        using Line = rawreel::TextLine;
+        CHECK(content.copyright ==
+              Line{{"Copyright (c) 2026 BarabashkaD \xC2\xB7 ", ""},
+                   {"MIT licence", "https://github.com/BarabashkaD/rawreel/blob/main/LICENSE"}});
         CHECK(content.website == "https://github.com/BarabashkaD/rawreel");
+        // No GPU line: Help -> GPU information shows it.
+        CHECK(content.system ==
+              std::vector<Line>{
+                  {{"FFmpeg n8.1.3", "https://github.com/BarabashkaD/custom_ffmpeg"},
+                   {" (", ""},
+                   {"LGPL 2.1 or later", "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html"},
+                   {")", ""}},
+                  {{"wxWidgets 3.3.1", "https://www.wxwidgets.org"},
+                   {" (", ""},
+                   {"wxWindows Licence", "https://www.wxwidgets.org/about/licence/"},
+                   {")", ""}}});
         using Lines = std::vector<std::pair<std::string, std::string>>;
-        CHECK(content.system == Lines{{"GPU:", "x, API 1.3.0"},
-                                      {"FFmpeg:", "n8.1.3 (LGPL version 2.1 or later)"},
-                                      {"wxWidgets:", "3.3.1 \xC2\xB7 appearance: dark -> Ok"}});
         CHECK(content.components == Lines{{"dvv-base", "0.4.1"}, {"dvv-gpu", "0.4.2"}});
         const std::string text = rawreel::aboutText(content);
         CHECK(text ==
               "rawreel 0.4.0\n"
-              "Raw video player (Vulkan)\n"
-              "Copyright (c) 2026 BarabashkaD \xC2\xB7 MIT licence\n"
+              "Play and inspect raw and Y4M video frame by frame: pixel formats and colour "
+              "mapping.\n"
+              "Copyright (c) 2026 BarabashkaD \xC2\xB7 MIT licence "
+              "(https://github.com/BarabashkaD/rawreel/blob/main/LICENSE)\n"
               "https://github.com/BarabashkaD/rawreel\n"
-              "GPU:       x, API 1.3.0\n"
-              "FFmpeg:    n8.1.3 (LGPL version 2.1 or later)\n"
-              "wxWidgets: 3.3.1 \xC2\xB7 appearance: dark -> Ok\n"
+              "FFmpeg n8.1.3 (https://github.com/BarabashkaD/custom_ffmpeg) (LGPL 2.1 or later "
+              "(https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html))\n"
+              "wxWidgets 3.3.1 (https://www.wxwidgets.org) (wxWindows Licence "
+              "(https://www.wxwidgets.org/about/licence/))\n"
               "Components:\n"
               "  dvv-base 0.4.1\n"
               "  dvv-gpu 0.4.2\n");
-        // The name and version once.
+        // The name and version once; no GPU and no appearance.
         CHECK(text.find("rawreel 0.4.0") == text.rfind("rawreel 0.4.0"));
+        CHECK_FALSE(text.contains("Vulkan"));
+        CHECK_FALSE(text.contains("appearance"));
     }
 
-    TEST_CASE("version: About content when Vulkan and FFmpeg are not available") {
+    TEST_CASE("version: About FFmpeg line of other builds") {
+        const auto ffmpeg_line = [](std::string line) {
+            const rawreel::VersionReport report{
+                .packages = {{"rawreel", "0.4.0"}}, .vulkan = {}, .ffmpeg = std::move(line)};
+            return rawreel::plainText(rawreel::aboutContent(report).system.front());
+        };
+        CHECK(ffmpeg_line("FFmpeg n8.1.3 (LGPL version 3 or later) from DVV_FFMPEG_DIR, lavfi not "
+                          "available") ==
+              "FFmpeg n8.1.3 (https://github.com/BarabashkaD/custom_ffmpeg) (LGPL 3 or later "
+              "(https://www.gnu.org/licenses/lgpl-3.0.html)) from DVV_FFMPEG_DIR, lavfi not "
+              "available");
+        // An unknown licence stays plain text.
+        CHECK(ffmpeg_line("FFmpeg 7.1 (nonfree and unredistributable)") ==
+              "FFmpeg 7.1 (https://github.com/BarabashkaD/custom_ffmpeg) (nonfree and "
+              "unredistributable)");
+    }
+
+    TEST_CASE("version: About content when FFmpeg is not available") {
         const rawreel::VersionReport report{.packages = {{"rawreel", "0.4.0"}},
                                             .vulkan = "Vulkan: not available (no device)",
                                             .ffmpeg = "FFmpeg: not available (details in the log)"};
-        const rawreel::AboutContent content = rawreel::aboutContent(report, "");
-        using Lines = std::vector<std::pair<std::string, std::string>>;
+        const rawreel::AboutContent content = rawreel::aboutContent(report);
+        using Line = rawreel::TextLine;
         CHECK(content.system ==
-              Lines{{"GPU:", "not available (no device)"},
-                    {"FFmpeg:", "not available (details in the log)"},
-                    {"wxWidgets:", "not part of this build \xC2\xB7 appearance: unknown"}});
+              std::vector<Line>{{{"FFmpeg not available (details in the log)", ""}},
+                                {{"wxWidgets not part of this build", "https://www.wxwidgets.org"},
+                                 {" (", ""},
+                                 {"wxWindows Licence", "https://www.wxwidgets.org/about/licence/"},
+                                 {")", ""}}});
         CHECK(content.components.empty());
         CHECK(rawreel::aboutText(content).ends_with("Components:\n  none\n"));
     }
