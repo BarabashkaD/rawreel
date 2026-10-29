@@ -666,7 +666,9 @@ The tests (`ctest --preset ninja-clang`, or `ninja-clang-release`) are those of
 tests (label `display`) need an X display: a desktop session, WSLg, or Xvfb
 (`xvfb-run -a -s "-screen 0 1920x1080x24" ctest --preset ninja-clang`). Without a GPU, Mesa's
 software driver lavapipe works: `export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`.
-`libs/dvv-build/tools/sanity.sh` runs the quick sanity cycle (see `libs/dvv-build/README.md`).
+`libs/dvv-build/tools/sanity.ps1` (`sanity.sh` on Linux) runs T0, the quick sanity cycle;
+`-Small -Downstream` (`--small --downstream` for `sanity.sh`) runs the tests of T1 (T1 also runs
+clang-format and the privacy lint; see the test tiers in `libs/dvv-build/README.md`).
 Under `ninja-clang-asan` and `ninja-clang-tsan`, `rawreel-gui` and its selftests are not built.
 The Linux packages are built and checked by the same `dry-run.cmake` command as on Windows; on
 Linux it works in `/tmp/rawreel-dryrun`. With `-DBUNDLE=ON` it also verifies the FFmpeg archive
