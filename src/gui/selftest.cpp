@@ -313,6 +313,7 @@ constexpr std::string_view REFUSED_STREAM = "synthetic:gradient?w=64&h=48&fmt=yu
 struct SmokeState {
     std::uint64_t startFrames = 0;
     std::uint64_t startSwapchains = 0;
+    std::uint64_t startShows = 0;  // Viewport::presenterShows() at the step start
     dvv::platform::PixelSize previousSize{};
     int ticks = 0;
     std::optional<std::uint64_t> framesWhenShown;   // open stream: when the frame was first seen
@@ -381,11 +382,14 @@ std::string describe(const Viewport& viewport, const SmokeState& state) {
     const dvv::platform::PixelSize size = viewport.physicalClientSize();
     return std::format(
         "{} frames presented ({} at the step start), presented extent {}x{}, viewport {}x{} "
-        "(previously {}x{}), {} swapchains created ({} at the step start), hidden {}, failed {}",
+        "(previously {}x{}), {} swapchains created ({} at the step start), hidden {}, failed {}, "
+        "frames when hidden {}, presenter shown {} times since the step start",
         stats->framesPresented, state.startFrames, stats->presentedExtent.width,
         stats->presentedExtent.height, size.width, size.height, state.previousSize.width,
         state.previousSize.height, stats->swapchainsCreated, state.startSwapchains, stats->hidden,
-        stats->failed);
+        stats->failed,
+        state.framesWhenHidden ? std::to_string(*state.framesWhenHidden) : std::string("-"),
+        viewport.presenterShows() - state.startShows);
 }
 
 void markStart(const Viewport& viewport, SmokeState& state) {
@@ -393,6 +397,7 @@ void markStart(const Viewport& viewport, SmokeState& state) {
         state.startFrames = stats->framesPresented;
         state.startSwapchains = stats->swapchainsCreated;
     }
+    state.startShows = viewport.presenterShows();
     state.previousSize = viewport.physicalClientSize();
     state.ticks = 0;
     state.framesWhenHidden.reset();
@@ -519,9 +524,11 @@ SelfTestStep movedPaneStep(SelfTest* test, const SharedState& state, bool back) 
             .passed = std::move(passed)};
 }
 
-// 4. Hidden: no frames. The count starts when the presenter first reports hidden, because frames
-// already requested or in flight when the window is hidden may still be presented; one more frame
-// after that is tolerated.
+// 4. Hidden: no frames. start() hides the frame; its show or iconize event calls
+// Presenter::setVisible(false) at once, so from the first hidden report on PresenterLogic::next()
+// starts no frame and presents only the one already in flight: one more frame is tolerated. The
+// presenter must not be made visible again before the restore step (a stray show or iconize event
+// would; the likely cause of an earlier rare WSLg failure under load, NOT VERIFIED).
 SelfTestStep hideStep(SelfTest* test, const SharedState& state) {
     auto start = [test, state] {
         markStart(test->frame().viewport(), *state);
@@ -534,6 +541,10 @@ SelfTestStep hideStep(SelfTest* test, const SharedState& state) {
     auto passed = [test, state](std::string& seen) {
         const Viewport& viewport = test->frame().viewport();
         seen = describe(viewport, *state);
+        if (viewport.presenterShows() != state->startShows) {
+            seen += "; the presenter was made visible again while the frame was hidden";
+            return false;
+        }
         const std::optional<dvv::gpu::PresenterStats> stats = statsOf(viewport);
         if (!stats || !stats->hidden) {
             return false;
