@@ -94,10 +94,11 @@ void Viewport::startPresenting() {
     }
     renderer_ = std::move(*renderer);
     const std::uint64_t serial = ++serial_;
+    const bool visible = IsShownOnScreen() && !iconized_;
     auto presenter = context_->createPresenter(
         {.window = window->window,
          .extent = physicalClientSize(),
-         .visible = IsShownOnScreen() && !iconized_,
+         .visible = visible,
          .frames =
              [display = display_, renderer = renderer_.get(),
               fail = fail_presenters_](const dvv::gpu::PresentFrameInfo& info) {
@@ -129,6 +130,7 @@ void Viewport::startPresenting() {
         return;
     }
     presenter_ = std::move(*presenter);
+    presenter_visible_ = visible;
     connection_ = std::move(window->connection);
     last_failure_.reset();
     // Safe with a raw pointer: stopPresenting() clears the callback before the presenter dies,
@@ -209,15 +211,34 @@ void Viewport::onPresenterError(std::uint64_t serial, const dvv::Error& error) {
 
 void Viewport::topLevelIconized(bool iconized) {
     iconized_ = iconized;
-    if (presenter_) {
-        presenter_->setVisible(!iconized);
-    }
+    const wxWindow* top = wxGetTopLevelParent(this);
+    // Before the one target, a restore made the presenter visible even while the frame was hidden.
+    updateVisible(top != nullptr && top->IsShown(), !iconized, "restore");
 }
 
 void Viewport::topLevelShown(bool shown) {
-    if (presenter_) {
-        presenter_->setVisible(shown);
+    // Before the one target, a show made the presenter visible even while the frame was iconized.
+    updateVisible(shown, shown, "show");
+}
+
+void Viewport::updateVisible(bool shown, bool old_visible, const char* event) {
+    if (!presenter_) {
+        return;  // a new presenter starts from IsShownOnScreen() && !iconized_
     }
+    const bool visible = shown && !iconized_;
+    if (old_visible && !visible && !presenter_visible_) {
+        // wxGTK sends asynchronous iconize toggles and a show event on map (selftest step 4).
+        DVV_LOG_INFO("viewport: {} ignored: the frame is {}", event,
+                     iconized_ ? "iconized" : "hidden");
+    }
+    if (visible == presenter_visible_) {
+        return;
+    }
+    presenter_visible_ = visible;
+    if (visible) {
+        ++presenter_shows_;
+    }
+    presenter_->setVisible(visible);
 }
 
 std::optional<RecordedInfo> Viewport::lastRecorded() const {

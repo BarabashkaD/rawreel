@@ -52,9 +52,12 @@ public:
     // Test only (the lost selftest): the next startPresenting() reports an Errc::Internal
     // creation error at once, on the GUI thread (the synchronous D25 path of setStack).
     void failNextStartForTest() noexcept { fail_next_start_ = true; }
-    // Forwarded by the frame (wxEVT_ICONIZE and wxEVT_SHOW of the top-level window).
+    // Forwarded by the frame (wxEVT_ICONIZE and wxEVT_SHOW of the top-level window). Both set
+    // one target, visible = shown && !iconized; the presenter hears only its changes.
     void topLevelIconized(bool iconized);
     void topLevelShown(bool shown);
+    // Test hook (selftest): how often the presenter was made visible again (false -> true).
+    [[nodiscard]] std::uint64_t presenterShows() const noexcept { return presenter_shows_; }
 
     // Null without a presenter (no stack, a lost device, a failed presenter, before markReady).
     [[nodiscard]] dvv::gpu::Presenter* presenter() const noexcept { return presenter_.get(); }
@@ -79,6 +82,8 @@ private:
     void reportFailure(const dvv::Error& error);
     // A presenter's onError, forwarded to the GUI thread; `serial` names the presenter.
     void onPresenterError(std::uint64_t serial, const dvv::Error& error);
+    // Sends visible = shown && !iconized_ to the presenter if it changed; `event` names the event.
+    void updateVisible(bool shown, bool old_visible, const char* event);
     void onPaint(wxPaintEvent& event);
     void onSize(wxSizeEvent& event);
     void onMouseDown(wxMouseEvent& event);  // SetFocus() on every button press (R5)
@@ -87,8 +92,10 @@ private:
     bool dark_ = false;  // the background of the paint handler without a presenter
     bool ready_ = false;
     bool iconized_ = false;  // the top-level frame is minimised: a new presenter starts hidden
-    bool fail_presenters_ = false;  // failPresentersForTest()
-    bool fail_next_start_ = false;  // failNextStartForTest()
+    bool presenter_visible_ = false;     // the last value sent to the presenter (or its creation)
+    std::uint64_t presenter_shows_ = 0;  // presenterShows()
+    bool fail_presenters_ = false;       // failPresentersForTest()
+    bool fail_next_start_ = false;       // failNextStartForTest()
     // The current stack's context, GUI-held while its epoch is current; released here at the next
     // stackChanged or at close (release rule of §5.3).
     std::shared_ptr<dvv::gpu::ExecutionContext> context_;
