@@ -1,7 +1,8 @@
 # ThreadSanitizer suppressions for the GPU tests and the FFmpeg tests (used by the thread-sanitizer
-# preset only). A report is suppressed when the stack of either racing access (or of the allocation
-# of the memory) has a frame inside one of these libraries, so a race between dvv code and the
-# library is hidden as well; races between two accesses in dvv code are still reported.
+# preset only). A race: entry suppresses a report when any of its stacks (a racing access, the
+# allocation of the memory or the creation of a thread) has a frame inside the library: a race
+# between dvv code and the library is hidden, and so is a race between two dvv accesses on memory
+# the library allocated or on a thread it created.
 #
 # Vulkan drivers (here Mesa lavapipe) are not instrumented: they synchronize their own objects with
 # primitives ThreadSanitizer cannot see (futex-based locks), so concurrent, valid calls such as
@@ -10,8 +11,15 @@
 race:libvulkan_lvp.so
 # FFmpeg's shared libraries are not instrumented: libavcodec's slice and frame threads synchronize
 # their own buffers with primitives ThreadSanitizer cannot see (atomics and progress flags in the
-# uninstrumented code), so valid decoding is reported as races between FFmpeg's threads (memset,
-# free and av_buffer writes inside libavcodec and libavutil), and as races with the dvv code that
-# reads a decoded frame after FFmpeg has handed it over. Same list as dvv-components/tests/tsan.supp.
-race:libavcodec.so
-race:libavutil.so
+# uninstrumented code), so the only accesses it sees from them are the intercepted calls (memset,
+# memcpy, malloc and free inside libavcodec and libavutil), and valid decoding is reported as races
+# between FFmpeg's threads and with the dvv code that reads a decoded frame after FFmpeg has handed
+# it over. called_from_lib: skips every intercepted call made from the named library, its
+# synchronization included, and aborts the process if a matched library is unloaded; see
+# libs/dvv-components/tests/tsan.supp for what stays checked and what stays hidden. Same list.
+called_from_lib:libavutil.so
+called_from_lib:libavcodec.so
+called_from_lib:libavformat.so
+called_from_lib:libswscale.so
+called_from_lib:libswresample.so
+called_from_lib:libavfilter.so
