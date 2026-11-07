@@ -237,7 +237,7 @@ std::string usageText() {
             throughput; --read-only stops after produce (host memory), so the wall time is the
             file read stage's wall clock
   --json    print the result, and errors, as JSON on stdout
-  --config  read this config file instead of rawreel.json next to rawreel-cli (io.fileReads:
+  --config  read this config file instead of the default rawreel.json (io.fileReads:
             auto, unbuffered or buffered file reads)
 
 A <uri> is a file path (clip_1920x1080_v210.yuv, clip.y4m), file:<path>?fmt=..&size=WxH, or

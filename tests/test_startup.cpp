@@ -73,6 +73,33 @@ TEST_SUITE("core") {
               "FFmpeg: not available (details in the log)");
     }
 
+    TEST_CASE("startup: the macOS bundle's Frameworks/ffmpeg folder") {
+        using rawreel::StatusPaths;
+        const fs::path home = fs::path("/") / "Users" / "someone";
+        const fs::path app = home / "Applications" / "rawreel.app" / "Contents" / "MacOS";
+        const rawreel::FfmpegOrigin origin{
+            .appFolder = app, .ffmpegDirVariable = {}, .homeFolder = home};
+        const std::string frameworks =
+            utf8((app / ".." / "Frameworks" / "ffmpeg").lexically_normal());
+
+        // Masked like <app>/../lib/ffmpeg.
+        CHECK(rawreel::maskFolders("not found in " + frameworks + "/libavutil.dylib", origin) ==
+              "not found in " + utf8(fs::path("<app>") / ".." / "Frameworks" / "ffmpeg") +
+                  "/libavutil.dylib");
+
+        // And recognised as a bundled folder by the status line.
+        const FfmpegStatus status{
+            .core = true,
+            .lavfi = true,
+            .reason = {},
+            .version = "n8.1.3",
+            .licence = "LGPL",
+            .directory = (app / ".." / "Frameworks" / "ffmpeg").lexically_normal(),
+            .libraryVersions = {}};
+        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Shown, origin) ==
+              "FFmpeg n8.1.3 (LGPL) from https://github.com/BarabashkaD/custom_ffmpeg");
+    }
+
     TEST_CASE("startup: FFmpeg line names the origin only when it is known") {
         using rawreel::StatusPaths;
         const fs::path app = fs::path("/") / "opt" / "rawreel" / "bin";
@@ -200,9 +227,17 @@ TEST_SUITE("core") {
     }
 
     TEST_CASE("version: Vulkan line") {
-        CHECK(rawreel::vulkanStatusLine(
-                  {.available = true, .device = "llvmpipe", .api = "1.4.318", .reason = {}}) ==
-              "Vulkan: llvmpipe, API 1.4.318");
+        CHECK(rawreel::vulkanStatusLine({.available = true,
+                                         .device = "llvmpipe",
+                                         .api = "1.4.318",
+                                         .driver = {},
+                                         .reason = {}}) == "Vulkan: llvmpipe, API 1.4.318");
+        CHECK(rawreel::vulkanStatusLine({.available = true,
+                                         .device = "Apple M4",
+                                         .api = "1.4.363",
+                                         .driver = "KosmicKrisp 26.1.0",
+                                         .reason = {}}) ==
+              "Vulkan: Apple M4, API 1.4.363, driver KosmicKrisp 26.1.0");
         rawreel::VulkanStatus none;
         none.reason = "no Vulkan loader";
         CHECK(rawreel::vulkanStatusLine(none) == "Vulkan: not available (no Vulkan loader)");

@@ -20,6 +20,7 @@
 #endif
 
 #include "dvv/base/log.h"
+#include "dvv/base/move_only_function.h"
 
 namespace rawreel {
 namespace {
@@ -32,8 +33,8 @@ public:
 // What both platform variants share: the pending deadline and callback, guarded by mutex_.
 class ThreadTimerBase : public ITimer {
 public:
-    void schedule(Clock::time_point when, std::move_only_function<void()> callback) override {
-        std::move_only_function<void()> replaced;
+    void schedule(Clock::time_point when, dvv::MoveOnlyFunction<void()> callback) override {
+        dvv::MoveOnlyFunction<void()> replaced;
         {
             std::lock_guard lock(mutex_);
             replaced = std::exchange(callback_, std::move(callback));
@@ -47,7 +48,7 @@ public:
         if (std::this_thread::get_id() == threadId()) {
             throw std::logic_error("ITimer::cancel() called from inside a timer callback");
         }
-        std::move_only_function<void()> dropped;
+        dvv::MoveOnlyFunction<void()> dropped;
         {
             std::unique_lock lock(mutex_);
             dropped = std::exchange(callback_, {});
@@ -69,7 +70,7 @@ protected:
         if (!deadline_ || Clock::now() < *deadline_) {
             return false;
         }
-        std::move_only_function<void()> callback = std::exchange(callback_, {});
+        dvv::MoveOnlyFunction<void()> callback = std::exchange(callback_, {});
         deadline_.reset();
         running_ = true;
         lock.unlock();
@@ -86,7 +87,7 @@ protected:
     std::mutex mutex_;
     std::condition_variable idle_;
     std::optional<Clock::time_point> deadline_;
-    std::move_only_function<void()> callback_;
+    dvv::MoveOnlyFunction<void()> callback_;
     std::uint64_t generation_ = 0;
     bool running_ = false;
     bool stop_ = false;  // Windows only

@@ -18,13 +18,14 @@
 
 #include "core/commands.h"
 #include "core/player.h"
+#include "dvv/base/move_only_function.h"
 
 namespace rawreel {
 
 class TransportBar final : public wxPanel {
 public:
-    TransportBar(wxWindow* parent, std::move_only_function<void(Command)> execute,
-                 std::move_only_function<void(std::int64_t)> seek);
+    TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)> execute,
+                 dvv::MoveOnlyFunction<void(std::int64_t)> seek);
 
     // Called by the 50 ms status timer; a default PlayerStatus means "no stream". The slider's
     // value is left alone for 250 ms after a scroll event (the user is dragging it).
@@ -35,8 +36,8 @@ private:
     void addButton(wxSizer& sizer, const wxString& label, Command command);
     void onScroll(wxScrollEvent& event);
 
-    std::move_only_function<void(Command)> execute_;
-    std::move_only_function<void(std::int64_t)> seek_;
+    dvv::MoveOnlyFunction<void(Command)> execute_;
+    dvv::MoveOnlyFunction<void(std::int64_t)> seek_;
     // Child windows: wx owns them.
     wxButton* play_ = nullptr;
     wxToggleButton* loop_ = nullptr;

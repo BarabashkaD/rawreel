@@ -28,8 +28,8 @@ std::string labelText(const PlayerStatus& status) {
 
 }  // namespace
 
-TransportBar::TransportBar(wxWindow* parent, std::move_only_function<void(Command)> execute,
-                           std::move_only_function<void(std::int64_t)> seek)
+TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)> execute,
+                           dvv::MoveOnlyFunction<void(std::int64_t)> seek)
     : wxPanel(parent), execute_(std::move(execute)), seek_(std::move(seek)) {
     auto* sizer = new wxBoxSizer(wxHORIZONTAL);
     addButton(*sizer, "|<", Command::First);

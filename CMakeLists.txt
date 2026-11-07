@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.2)
-project(rawreel VERSION 0.9.0 DESCRIPTION "rawreel raw video player" LANGUAGES CXX)
+project(rawreel VERSION 0.10.0 DESCRIPTION "rawreel raw video player" LANGUAGES CXX)
 # Version string; a pre-release build adds its release-stage label.
 set(rawreel_VERSION_STRING "${PROJECT_VERSION}")
 
@@ -95,7 +95,7 @@ endforeach()
 target_compile_definitions(rawreel_core PRIVATE ${rawreel_versions})
 # The startup shared by both executables (design M4 v2 §4.6), the version lines and the crash
 # handler (wx-free, so rawreel-cli uses it too).
-target_sources(rawreel_core PRIVATE src/core/startup.cpp src/core/version_text.cpp
+target_sources(rawreel_core PRIVATE src/core/startup.cpp src/core/version_text.cpp src/core/vulkan_driver.cpp
                                     src/gui/crash_handler.cpp)
 # dvv::components: dvv/components/ffmpeg.h and loadFfmpeg (dvv::ffmpeg); no FFmpeg is linked.
 target_link_libraries(rawreel_core PUBLIC dvv::components PRIVATE dvv::platform)
@@ -111,7 +111,7 @@ dvv_set_compiler_options(rawreel_cli)
 
 # rawreel-gui (spec §10.2). Not built for sanitizer builds on any platform (design M1b F13): wx and
 # GTK are not instrumented, and MSVC ASan cannot link the non-ASan static wx. rawreel_render and its
-# tests still build and run there. Windows and Linux (X11, also through XWayland).
+# tests still build and run there. Windows, Linux (X11, also through XWayland) and macOS (Cocoa).
 if(NOT DVV_SANITIZE)
     find_package(wxWidgets CONFIG REQUIRED COMPONENTS core base aui)
     add_executable(rawreel_gui WIN32
@@ -147,6 +147,19 @@ if(NOT DVV_SANITIZE)
         find_package(X11 REQUIRED)
         target_sources(rawreel_gui PRIVATE src/gui/gui_platform_gtk.cpp src/gui/viewport_gtk.cpp)
         target_link_libraries(rawreel_gui PRIVATE PkgConfig::GTK3 X11::X11)
+    elseif(APPLE)
+        # macOS (wxOSX, Cocoa): the viewport's child NSView with its CAMetalLayer
+        # (viewport_cocoa.mm, ARC as in dvv-platform). rawreel-gui is an app bundle,
+        # rawreel-gui.app in the build tree, which finds the prefix's libraries through
+        # CMAKE_BUILD_RPATH (ninja-macos preset); the packaged app uses its own Frameworks folder.
+        enable_language(OBJCXX)
+        target_sources(rawreel_gui PRIVATE src/gui/viewport_cocoa.mm)
+        set_source_files_properties(src/gui/viewport_cocoa.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+        target_link_libraries(rawreel_gui PRIVATE "-framework AppKit" "-framework QuartzCore")
+        set_target_properties(rawreel_gui PROPERTIES
+            MACOSX_BUNDLE ON
+            MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/packaging/Info.plist.in"
+            INSTALL_RPATH "@executable_path/../Frameworks")
     else()
         # Other toolkits: no native viewport yet (the viewport reports a failure).
         target_sources(rawreel_gui PRIVATE src/gui/viewport_stub.cpp)

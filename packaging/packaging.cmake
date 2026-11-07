@@ -4,6 +4,7 @@
 # (rawreel-gui is not built there).
 include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/check-package.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/source-txt.cmake")
 
 # The zip ships no VC++ runtime; users install the Microsoft Visual C++ Redistributable
 # (x64), at least as recent as the build tools (Microsoft's rule). This is the one place of that
@@ -44,13 +45,19 @@ endif()
 include("${RAWREEL_THIRD_PARTY_STATE}")
 cmake_path(GET RAWREEL_THIRD_PARTY_STATE PARENT_PATH rawreel_prefix)
 
-# v1.0 ships a Windows zip and a Linux tar.xz. Other platforms configure without package rules.
+# A Windows zip, a Linux tar.xz and a macOS .dmg (Apple Silicon). Other platforms configure
+# without package rules.
 if(WIN32)
     set(rawreel_platform windows)
+    set(rawreel_arch x64)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(rawreel_platform linux)
+    set(rawreel_arch x64)
+elseif(APPLE)
+    set(rawreel_platform macos)
+    set(rawreel_arch arm64)
 else()
-    message(STATUS "rawreel: packages are built on Windows and Linux only")
+    message(STATUS "rawreel: packages are built on Windows, Linux and macOS only")
     return()
 endif()
 
@@ -105,11 +112,68 @@ rawreel_package_files(VERSION "${PROJECT_VERSION}" PLATFORM "${rawreel_platform}
                       PACKAGE rawreel_package_file SYMBOLS rawreel_symbols_file
                       CPACK rawreel_cpack_file EXTENSION rawreel_extension
                       GENERATOR rawreel_generator ERRORS rawreel_errors)
-set(rawreel_package_name "rawreel-${PROJECT_VERSION}-${rawreel_platform}-x64")
+set(rawreel_package_name "rawreel-${PROJECT_VERSION}-${rawreel_platform}-${rawreel_arch}")
+# The FFmpeg libraries go to rawreel_ffmpeg_dir, their licences and build-info.txt to
+# rawreel_ffmpeg_texts_dir, SOURCE.txt to rawreel_source_dir.
 set(rawreel_ffmpeg_dir "ffmpeg")
+set(rawreel_ffmpeg_texts_dir "ffmpeg")
+set(rawreel_source_dir "ffmpeg")
+set(rawreel_exe_rpath "")
 
-install(TARGETS rawreel_gui rawreel_cli
-        RUNTIME DESTINATION . COMPONENT rawreel CONFIGURATIONS Release)
+if(rawreel_platform STREQUAL "macos")
+    # The .dmg root holds rawreel.app and the documents. The app (plan Global Constraints):
+    # Contents/MacOS/{rawreel-gui, rawreel-cli}, Contents/Frameworks/{the Vulkan loader, the
+    # KosmicKrisp driver, ffmpeg/<the six libraries>}, Contents/Resources/vulkan/icd.d/<the driver
+    # manifest> and Resources/ffmpeg/{licenses, build-info.txt} (Frameworks holds code only:
+    # codesign refuses a data file there). The exes are installed as files, not as targets: the
+    # build tree's bundle is rawreel-gui.app. make-packages.cmake replaces their build rpaths with
+    # rawreel_exe_rpath and signs the app.
+    set(rawreel_contents "rawreel.app/Contents")
+    set(rawreel_ffmpeg_dir "${rawreel_contents}/Frameworks/ffmpeg")
+    set(rawreel_ffmpeg_texts_dir "${rawreel_contents}/Resources/ffmpeg")
+    set(rawreel_source_dir ".")
+    get_target_property(rawreel_exe_rpath rawreel_gui INSTALL_RPATH)
+    if(NOT rawreel_exe_rpath STREQUAL "@executable_path/../Frameworks")
+        message(FATAL_ERROR "rawreel packaging: rawreel_gui's INSTALL_RPATH is "
+                            "'${rawreel_exe_rpath}', not @executable_path/../Frameworks")
+    endif()
+    install(PROGRAMS "$<TARGET_FILE:rawreel_gui>" "$<TARGET_FILE:rawreel_cli>"
+            DESTINATION "${rawreel_contents}/MacOS" COMPONENT rawreel CONFIGURATIONS Release)
+    install(FILES "$<TARGET_BUNDLE_CONTENT_DIR:rawreel_gui>/Info.plist"
+            DESTINATION "${rawreel_contents}" COMPONENT rawreel CONFIGURATIONS Release)
+
+    # The Vulkan loader (built by the superbuild) under the name dvv-gpu opens
+    # (@rpath/libvulkan.1.dylib), one real file.
+    file(REAL_PATH "${rawreel_prefix}/lib/libvulkan.1.dylib" rawreel_loader)
+    install(PROGRAMS "${rawreel_loader}" DESTINATION "${rawreel_contents}/Frameworks"
+            RENAME libvulkan.1.dylib COMPONENT rawreel CONFIGURATIONS Release)
+    # KosmicKrisp and its manifest (the name of src/core/vulkan_driver.h's KOSMICKRISP_MANIFEST).
+    # The prefix's manifest names the driver as ../../../lib/<dylib> (from share/vulkan/icd.d); the
+    # app's names it as ../../../Frameworks/<dylib> (from Contents/Resources/vulkan/icd.d).
+    set(rawreel_icd "${rawreel_prefix}/share/vulkan/icd.d/libkosmickrisp_icd.json")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rawreel_icd}")
+    file(READ "${rawreel_icd}" rawreel_icd_json)
+    string(JSON rawreel_driver_path ERROR_VARIABLE rawreel_json_error
+           GET "${rawreel_icd_json}" ICD library_path)
+    set(rawreel_up "\\.\\./\\.\\./\\.\\.")
+    if(rawreel_json_error OR NOT rawreel_driver_path MATCHES "^${rawreel_up}/lib/([^/]+\\.dylib)$")
+        message(FATAL_ERROR "rawreel packaging: ${rawreel_icd} names no driver "
+                            "../../../lib/<name>.dylib (${rawreel_driver_path}${rawreel_json_error})")
+    endif()
+    set(rawreel_driver "${CMAKE_MATCH_1}")
+    string(JSON rawreel_icd_json SET "${rawreel_icd_json}" ICD library_path
+           "\"../../../Frameworks/${rawreel_driver}\"")
+    set(rawreel_app_icd "${CMAKE_CURRENT_BINARY_DIR}/packaging/libkosmickrisp_icd.json")
+    file(WRITE "${rawreel_app_icd}" "${rawreel_icd_json}\n")
+    file(REAL_PATH "${rawreel_prefix}/lib/${rawreel_driver}" rawreel_driver_file)
+    install(PROGRAMS "${rawreel_driver_file}" DESTINATION "${rawreel_contents}/Frameworks"
+            RENAME "${rawreel_driver}" COMPONENT rawreel CONFIGURATIONS Release)
+    install(FILES "${rawreel_app_icd}" DESTINATION "${rawreel_contents}/Resources/vulkan/icd.d"
+            COMPONENT rawreel CONFIGURATIONS Release)
+else()
+    install(TARGETS rawreel_gui rawreel_cli
+            RUNTIME DESTINATION . COMPONENT rawreel CONFIGURATIONS Release)
+endif()
 # No VC++ runtime DLL in the zip, so its notice paragraph goes too (the prefix's notices
 # may still carry it; the Linux prefix's notices have no such paragraph, so nothing changes).
 set(rawreel_notices "${CMAKE_CURRENT_BINARY_DIR}/packaging/THIRD_PARTY_NOTICES.txt")
@@ -147,9 +211,11 @@ if(DVV_BUNDLE_FFMPEG)
         endif()
         string(REGEX MATCH "${rawreel_regex}" ignored "${found}")
         set(file_major "${CMAKE_MATCH_1}")
-        if(rawreel_platform STREQUAL "linux")
+        if(rawreel_platform MATCHES "^(linux|macos)$")
             # One real file named by its SONAME (the name the loader opens and the siblings'
             # NEEDED entries use), no symbolic links; the libraries keep their RUNPATH $ORIGIN.
+            # macOS: lib<name>.<major>.dylib, the name of the siblings' @rpath/ references, which
+            # their LC_RPATH @loader_path finds (custom_ffmpeg 1.0.1); the files are not changed.
             cmake_path(GET found FILENAME soname)
             file(REAL_PATH "${found}" real)
             install(PROGRAMS "${real}" DESTINATION "${rawreel_ffmpeg_dir}" RENAME "${soname}"
@@ -187,15 +253,17 @@ if(DVV_BUNDLE_FFMPEG)
     endforeach()
     list(JOIN rawreel_library_versions ", " FFMPEG_LIBRARY_VERSIONS)
     install(DIRECTORY "${rawreel_ffmpeg_root}/share/licenses/"
-            DESTINATION "${rawreel_ffmpeg_dir}/licenses" COMPONENT rawreel CONFIGURATIONS Release)
+            DESTINATION "${rawreel_ffmpeg_texts_dir}/licenses" COMPONENT rawreel
+            CONFIGURATIONS Release)
     # build-info.txt is share/custom_ffmpeg/build-info.txt below the FFmpeg root.
     install(FILES "${rawreel_ffmpeg_root}/share/custom_ffmpeg/build-info.txt"
-            DESTINATION "${rawreel_ffmpeg_dir}" COMPONENT rawreel CONFIGURATIONS Release)
+            DESTINATION "${rawreel_ffmpeg_texts_dir}" COMPONENT rawreel CONFIGURATIONS Release)
 
     # The licence supplements of custom_ffmpeg (texts its archive lacks):
     # the superbuild copies the SHA256-pinned files into the prefix unchanged and records
     # "<path>|<sha256>" for each. They ship as they are, as
-    # ffmpeg/licenses/<path>; each one must still match its pin.
+    # ffmpeg/licenses/<path> (macOS: rawreel.app/Contents/Resources/ffmpeg/licenses/<path>); each
+    # one must still match its pin.
     if(NOT DEFINED DVV_CUSTOM_FFMPEG_LICENCE_SUPPLEMENTS)
         message(FATAL_ERROR "rawreel packaging: dvv-third-party-state.cmake has no "
                             "DVV_CUSTOM_FFMPEG_LICENCE_SUPPLEMENTS; configure the superbuild again")
@@ -211,54 +279,63 @@ if(DVV_BUNDLE_FFMPEG)
     foreach(path IN LISTS rawreel_supplements)
         cmake_path(GET path PARENT_PATH folder)
         install(FILES "${DVV_CUSTOM_FFMPEG_LICENCE_SUPPLEMENTS_DIR}/${path}"
-                DESTINATION "${rawreel_ffmpeg_dir}/licenses/${folder}"
+                DESTINATION "${rawreel_ffmpeg_texts_dir}/licenses/${folder}"
                 COMPONENT rawreel CONFIGURATIONS Release)
     endforeach()
 
     file(STRINGS "${rawreel_ffmpeg_root}/include/libavutil/ffversion.h" line
          REGEX "#define FFMPEG_VERSION \"")
     string(REGEX REPLACE ".*FFMPEG_VERSION \"([^\"]+)\".*" "\\1" rawreel_ffmpeg_version "${line}")
-    set(CUSTOM_FFMPEG_VERSION "${DVV_CUSTOM_FFMPEG_VERSION}")
-    set(FFMPEG_VERSION "${rawreel_ffmpeg_version}")
-    set(RAWREEL_VERSION "${PROJECT_VERSION}")
-    set(RAWREEL_SOURCES_ARCHIVE "rawreel-${PROJECT_VERSION}-third-party-sources.tar.xz")
-    # The LAME sentence from the pin (empty when the prefix records no LAME source release) and the
-    # LGPL components, as in the sources archive's README (make-third-party-sources.cmake).
-    set(RAWREEL_LAME_SENTENCE "")
-    set(RAWREEL_LGPL_COMPONENTS "FFmpeg")
+    # The corresponding source of FFmpeg is the tag of the custom_ffmpeg release the prefix pins;
+    # LAME's is its own source release (packaging/source-txt.cmake).
+    set(rawreel_lame_args "")
     if(NOT "${DVV_LAME_SOURCE_URL}" STREQUAL "")
-        set(RAWREEL_LGPL_COMPONENTS "FFmpeg and LAME")
-        cmake_path(GET DVV_LAME_SOURCE_URL FILENAME rawreel_lame_file)
-        if(NOT rawreel_lame_file MATCHES "^lame-([0-9][0-9.]*[0-9])\\.tar\\.gz$")
-            message(FATAL_ERROR "rawreel packaging: DVV_LAME_SOURCE_URL names no "
-                                "lame-<version>.tar.gz")
-        endif()
-        string(CONCAT RAWREEL_LAME_SENTENCE " and the LAME ${CMAKE_MATCH_1} source release "
-                      "(${rawreel_lame_file})")
+        set(rawreel_lame_args LAME_URL "${DVV_LAME_SOURCE_URL}"
+                              LAME_SHA256 "${DVV_LAME_SOURCE_SHA256}")
     endif()
-    configure_file(packaging/SOURCE.txt.in "${CMAKE_CURRENT_BINARY_DIR}/packaging/SOURCE.txt"
-                   @ONLY NEWLINE_STYLE LF)
+    rawreel_render_source_txt(
+        OUT "${CMAKE_CURRENT_BINARY_DIR}/packaging/SOURCE.txt" PLATFORM "${rawreel_platform}"
+        CUSTOM_FFMPEG_VERSION "${DVV_CUSTOM_FFMPEG_VERSION}"
+        CUSTOM_FFMPEG_URL "${DVV_CUSTOM_FFMPEG_URL}"
+        FFMPEG_VERSION "${rawreel_ffmpeg_version}" LIBRARY_VERSIONS "${FFMPEG_LIBRARY_VERSIONS}"
+        FFMPEG_DIR "${rawreel_ffmpeg_dir}" TEXTS_DIR "${rawreel_ffmpeg_texts_dir}"
+        ${rawreel_lame_args})
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/packaging/SOURCE.txt"
-            DESTINATION "${rawreel_ffmpeg_dir}" COMPONENT rawreel CONFIGURATIONS Release)
+            DESTINATION "${rawreel_source_dir}" COMPONENT rawreel CONFIGURATIONS Release)
 endif()
 
-set(CPACK_PACKAGE_NAME rawreel)
-set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
-set(CPACK_PACKAGE_FILE_NAME "rawreel-${PROJECT_VERSION}")  # also the top folder; renamed later
-set(CPACK_GENERATOR ${rawreel_generator})
-set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
-set(CPACK_INSTALL_CMAKE_PROJECTS "${CMAKE_BINARY_DIR};rawreel;rawreel;/")
-set(CPACK_ARCHIVE_THREADS 0)
-set(CPACK_OUTPUT_CONFIG_FILE "${CMAKE_BINARY_DIR}/rawreel-CPackConfig.cmake")
-set(CPACK_SOURCE_OUTPUT_CONFIG_FILE "${CMAKE_BINARY_DIR}/rawreel-CPackSourceConfig.cmake")
-include(CPack)
+# CPack builds the zip and the tar.xz; make-packages.cmake builds the .dmg from an install of the
+# component (it signs the app between the two), so macOS has no CPack configuration.
+set(rawreel_cpack_config "")
+if(NOT rawreel_generator STREQUAL "")
+    set(rawreel_cpack_config "${CMAKE_BINARY_DIR}/rawreel-CPackConfig.cmake")
+    set(CPACK_PACKAGE_NAME rawreel)
+    set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+    set(CPACK_PACKAGE_FILE_NAME "rawreel-${PROJECT_VERSION}")  # also the top folder; renamed later
+    set(CPACK_GENERATOR ${rawreel_generator})
+    set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
+    set(CPACK_INSTALL_CMAKE_PROJECTS "${CMAKE_BINARY_DIR};rawreel;rawreel;/")
+    set(CPACK_ARCHIVE_THREADS 0)
+    set(CPACK_OUTPUT_CONFIG_FILE "${rawreel_cpack_config}")
+    set(CPACK_SOURCE_OUTPUT_CONFIG_FILE "${CMAKE_BINARY_DIR}/rawreel-CPackSourceConfig.cmake")
+    include(CPack)
+endif()
 
-# The symbol files of the exes: the PDBs on Windows, the split .debug files on Linux
-# (packaging/symbols.cmake).
+# The symbol files of the exes: the PDBs on Windows, the split .debug files on Linux, the .dSYM
+# bundles on macOS (packaging/symbols.cmake).
 if(WIN32)
     set(rawreel_symbol_files "$<TARGET_PDB_FILE:rawreel_gui>;$<TARGET_PDB_FILE:rawreel_cli>")
+elseif(rawreel_platform STREQUAL "macos")
+    rawreel_dsym_path(rawreel_gui rawreel_gui_dsym)
+    rawreel_dsym_path(rawreel_cli rawreel_cli_dsym)
+    set(rawreel_symbol_files "${rawreel_gui_dsym};${rawreel_cli_dsym}")
 else()
     set(rawreel_symbol_files "$<TARGET_FILE:rawreel_gui>.debug;$<TARGET_FILE:rawreel_cli>.debug")
+endif()
+# macOS only: the one LC_RPATH of the app's exes (make-packages.cmake).
+set(rawreel_info_macos "")
+if(rawreel_platform STREQUAL "macos")
+    set(rawreel_info_macos "set(RAWREEL_MACOS_EXE_RPATH \"${rawreel_exe_rpath}\")\n")
 endif()
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/packaging-info-$<CONFIG>.cmake" CONTENT
 "set(RAWREEL_VERSION \"${PROJECT_VERSION}\")
@@ -269,7 +346,7 @@ set(RAWREEL_BUNDLED ${DVV_BUNDLE_FFMPEG})
 set(RAWREEL_SHIPPED \"${DVV_SHIPPED_THIRD_PARTY}\")
 set(RAWREEL_FFMPEG_VERSION \"${rawreel_ffmpeg_version}\")
 set(RAWREEL_CUSTOM_FFMPEG_VERSION \"${DVV_CUSTOM_FFMPEG_VERSION}\")
-set(RAWREEL_CPACK_CONFIG \"${CMAKE_BINARY_DIR}/rawreel-CPackConfig.cmake\")
+set(RAWREEL_CPACK_CONFIG \"${rawreel_cpack_config}\")
 set(RAWREEL_THIRD_PARTY_STATE \"${RAWREEL_THIRD_PARTY_STATE}\")
 set(RAWREEL_SYMBOL_FILES \"${rawreel_symbol_files}\")
 set(RAWREEL_GUI_EXE \"$<TARGET_FILE:rawreel_gui>\")
@@ -278,4 +355,4 @@ set(RAWREEL_LINUX_SYSTEM_SONAMES \"${RAWREEL_LINUX_SYSTEM_SONAMES}\")
 set(RAWREEL_LINUX_APT_PACKAGES \"${RAWREEL_LINUX_APT_PACKAGES}\")
 set(RAWREEL_LINUX_GLIBC_MAX \"${RAWREEL_LINUX_GLIBC_MAX}\")
 set(RAWREEL_LINUX_GLIBCXX_MAX \"${RAWREEL_LINUX_GLIBCXX_MAX}\")
-")
+${rawreel_info_macos}")

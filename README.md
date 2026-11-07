@@ -16,7 +16,7 @@ are built on the dvv libraries, which this repository pins as git submodules in 
 
 ## Packages
 
-A release has these files (`<v>` is the version, e.g. `0.9.0`):
+A release has these files (`<v>` is the version, e.g. `0.10.0`):
 
 - `rawreel-<v>-windows-x64.zip`: the application. Unzip it anywhere and start `rawreel-gui.exe`;
   nothing is installed. The zip is not code-signed, so Windows SmartScreen may warn at the first
@@ -28,8 +28,11 @@ A release has these files (`<v>` is the version, e.g. `0.9.0`):
   nothing is installed.
 - `rawreel-<v>-linux-x64-symbols.tar.xz`: the debug symbols (`rawreel-gui.debug`,
   `rawreel-cli.debug`) for core dumps (see [Bug reports](#bug-reports)); not needed to run rawreel.
-- `rawreel-<v>-third-party-sources.tar.xz`: the complete source of the bundled FFmpeg of both
-  packages (see [FFmpeg in the package](#ffmpeg-in-the-package)).
+- `rawreel-<v>-macos-arm64.dmg`: the application for Macs with Apple Silicon, `rawreel.app`
+  (see [macOS](#macos) below).
+- `rawreel-<v>-macos-arm64-symbols.zip`: the debug symbols (`rawreel-gui.dSYM`,
+  `rawreel-cli.dSYM`) for crash reports (see [Bug reports](#bug-reports)); not needed to run
+  rawreel.
 - `SHA256SUMS`: the checksums of the files above (see [Verifying downloads](#verifying-downloads)).
 
 The zip holds one folder, `rawreel-<v>/`, with `rawreel-gui.exe`, `rawreel-cli.exe`, `README.md`,
@@ -58,31 +61,78 @@ X11: on a Wayland desktop it runs through XWayland, so `DISPLAY` must be set (as
 desktop session, and in WSL on Windows 11 with WSLg). Without a display it exits with 1 and "no
 X11 display (DISPLAY is not set); rawreel-gui needs X11 or XWayland".
 
+### macOS
+
+**Requirements (macOS):** a Mac with Apple Silicon and macOS 27 or newer. Nothing else is needed:
+the app brings its own Vulkan loader, its Vulkan driver (KosmicKrisp, Mesa's Vulkan driver on
+Metal, as the LunarG Vulkan SDK ships it) and FFmpeg. Intel Macs are not supported.
+
+The `.dmg` holds `rawreel.app`, `README.md`, `LICENSE`, `THIRD_PARTY_NOTICES.txt` and
+`SOURCE.txt` (about the bundled FFmpeg). In the app, `Contents/MacOS/` has `rawreel-gui` (the
+application) and `rawreel-cli`; `Contents/Frameworks/` has the Vulkan loader
+(`libvulkan.1.dylib`), the KosmicKrisp driver and `ffmpeg/` (the six FFmpeg libraries);
+`Contents/Resources/` has the driver's manifest and FFmpeg's `licenses/` and `build-info.txt`.
+Open the `.dmg` and drag `rawreel.app` to `Applications` (or any folder); it also runs from the
+opened `.dmg`. Nothing else is installed. The app has no `rawreel.json`; it keeps its
+configuration and log in `~/Library/Application Support/rawreel/` (see
+[Configuration](#configuration)).
+
+The app is signed ad hoc only: it has no Apple Developer ID signature and is not notarized.
+
+**rawreel-cli** is inside the app, `rawreel.app/Contents/MacOS/rawreel-cli`. A symbolic link to it
+works: it resolves its own path, so it uses the app's FFmpeg, Vulkan loader and driver. A copy
+outside the app does not find them.
+
 ## FFmpeg in the package
 
 The Windows zip and the Linux tar.xz include the FFmpeg libraries avutil, avcodec, avformat,
 avfilter, swscale and swresample of custom_ffmpeg 1.0.0 (FFmpeg n8.1.3, LGPL 2.1 or later) in
-`ffmpeg/` (on Linux named `libavutil.so.60`, `libavcodec.so.62`, …). rawreel loads them at run
+`ffmpeg/` (on Linux named `libavutil.so.60`, `libavcodec.so.62`, …). The macOS app includes the
+same six libraries of custom_ffmpeg 1.0.1 (also FFmpeg n8.1.3; 1.0.1 lets the macOS libraries
+find each other in any folder) in `rawreel.app/Contents/Frameworks/ffmpeg/`
+(`libavutil.60.dylib`, `libavcodec.62.dylib`, …), with their `licenses/` and `build-info.txt` in
+`rawreel.app/Contents/Resources/ffmpeg/`. rawreel loads them at run
 time and is not linked with them; you may replace them with your own LGPL shared build of FFmpeg
 8.1 or a newer 8.x with the same file names, or delete the folder. Each library must have
 the major version rawreel was built with and at least its minor version (avutil 60.26, avcodec
 62.28, avformat 62.12, avfilter 11.14, swscale 9.5, swresample 6.3); an older one, a GPL build or
-a non-free build is refused. Their complete source is the release asset
-`rawreel-<v>-third-party-sources.tar.xz` (custom_ffmpeg with its submodules and build scripts, and
-LAME 3.100); one archive covers both packages, and `ffmpeg/SOURCE.txt` says the same. These
+a non-free build is refused. The complete source of FFmpeg is the tag of that custom_ffmpeg
+release in its repository, with its submodules and build scripts:
+https://github.com/BarabashkaD/custom_ffmpeg/tree/v1.0.0 for the Windows and Linux packages,
+https://github.com/BarabashkaD/custom_ffmpeg/tree/v1.0.1 for the macOS app. The tag does not
+hold the source of LAME 3.100, which is built into avcodec: that is LAME's own source release,
+`lame-3.100.tar.gz`, whose URL (and SHA256, pinned in the tag's `versions.cmake`) the package's
+`SOURCE.txt` prints. `SOURCE.txt` (in `ffmpeg/`, on macOS at the top of the `.dmg`) also names the
+tag of its package. These
 libraries contain decoders for codecs such as H.264, HEVC and AAC, which may be covered by
 patents in some countries; licensing
 them is a matter for the user and the distributor. rawreel itself opens only lossless video
 codecs. This is not legal advice.
 
+**Replacing FFmpeg on macOS.** The app's signature covers its libraries, and an unsigned library
+does not load on Apple Silicon. After replacing libraries in
+`rawreel.app/Contents/Frameworks/ffmpeg/`, sign each new library first and then the app (ad hoc,
+as the release does), in the folder that holds `rawreel.app`:
+
+```sh
+codesign --force --sign - rawreel.app/Contents/Frameworks/ffmpeg/libavcodec.62.dylib  # each one
+codesign --force --sign - rawreel.app
+```
+
+`codesign` refuses to sign the app while one of its libraries is unsigned. After deleting the
+`ffmpeg/` folder, sign only the app.
+
 **A package without FFmpeg.** A package built on a third-party prefix configured with
 `-DDVV_BUNDLE_FFMPEG=OFF` (bootstrap `-BundleFfmpeg OFF`, or `--bundle-ffmpeg OFF` on Linux; the
-default is `ON`) has no `ffmpeg/` folder and no sources archive. To open container files and
+default is `ON`) has no `ffmpeg/` folder and no `SOURCE.txt`. To open container files and
 `lavfi:` graphs with it, put an LGPL shared build of FFmpeg 8.1 or a newer 8.x (`avutil-60.dll`,
 `avcodec-62.dll`, `avformat-62.dll`, `avfilter-11.dll`, `swscale-9.dll`, `swresample-6.dll`; on
 Linux `libavutil.so.60`, `libavcodec.so.62`, `libavformat.so.62`, `libavfilter.so.11`,
 `libswscale.so.9`, `libswresample.so.6`; same version rule) into `ffmpeg/` next to `rawreel-gui`,
-or set `DVV_FFMPEG_DIR` to its absolute path.
+or set `DVV_FFMPEG_DIR` to its absolute path. On macOS the libraries are `libavutil.60.dylib`,
+`libavcodec.62.dylib`, `libavformat.62.dylib`, `libavfilter.11.dylib`, `libswscale.9.dylib` and
+`libswresample.6.dylib`, and the folder is `rawreel.app/Contents/Frameworks/ffmpeg/` (signed as
+above).
 
 ## FFmpeg sources
 
@@ -132,8 +182,9 @@ is not supported"; for a filter that reads files or URLs (`movie`, `amovie`, `su
    empty value counts as unset.
 2. `ffmpeg/` next to the executable.
 3. `../lib/ffmpeg/` from the executable's folder.
+4. macOS only: `../Frameworks/ffmpeg/` from the executable's folder (inside `rawreel.app`).
 
-The first folder of 2 and 3 that holds the avutil library is final too, so a broken bundled
+The first folder of 2 to 4 that holds the avutil library is final too, so a broken bundled
 FFmpeg is reported, not skipped. A GPL or non-free build, a different major version, or an older
 minor one than rawreel was built with, is refused. Without FFmpeg the raw, Y4M and synthetic
 sources still work. The last line of `rawreel-cli --version` shows the FFmpeg status (the About
@@ -150,7 +201,7 @@ an Info pane, a Log pane, a status bar (frame and length, target / actual fps, t
 bottleneck, and the colour mapping, e.g. "SDR, no tone mapping" or "PQ → SDR tone mapping (1000 →
 100 nits)") and an infobar for warnings and errors. The log also goes to `rawreel.log` in the
 user's data folder (`%APPDATA%\rawreel\` on Windows, `~/.local/share/rawreel/` on Linux, or
-`$XDG_DATA_HOME/rawreel/` when that is set).
+`$XDG_DATA_HOME/rawreel/` when that is set, `~/Library/Application Support/rawreel/` on macOS).
 
 The Info pane shows the stream: URI, format, size, frame rate, frame count, colour and, for files,
 the read mode (e.g. "reads: unbuffered"). The colour names the standard ("no standard" when the
@@ -169,7 +220,7 @@ Usage: rawreel-gui [--appearance system|light|dark] [--gpu N] [--selftest SCENAR
   --gpu N       use GPU N (the index dvv-gpu-info lists) instead of the best one
   --selftest S  run a scripted check and exit: smoke, player, lost or perf
   --inflight K  frames in flight for --selftest perf (default 4)
-  --config F    read config file F instead of rawreel.json next to rawreel-gui
+  --config F    read config file F instead of the default rawreel.json
   --help        print this text
   URI           a source to open (a path, file:..., synthetic:...)
 ```
@@ -291,10 +342,11 @@ rawreel-cli --help
   throughput. `--read-only` stops after reading each frame into host memory (only Produce runs),
   so frames/s and GB/s are the file read's wall-clock throughput (`read wall clock:` in the text
   output). A file source keeps one read in flight whatever K is.
-- `--config <file>` reads that config file instead of `rawreel.json` next to `rawreel-cli` (see
+- `--config <file>` reads that config file instead of the default `rawreel.json` (see
   [Configuration](#configuration)).
 - `--version` prints the version of rawreel, of each dvv library and of wxWidgets, the Vulkan
-  device and the FFmpeg status line ([FFmpeg sources](#ffmpeg-sources)); `--help` prints the usage.
+  device with its API version and driver, and the FFmpeg status line
+  ([FFmpeg sources](#ffmpeg-sources)); `--help` prints the usage.
 
 Each option is valid only for the commands above and may be given once. `--frame` is at least 0;
 `--count`, `--frames` and `--inflight` are at least 1.
@@ -469,7 +521,11 @@ goes to stderr.
 the executable (never from the working directory). `--config <file>` on either executable reads
 another file instead. No `rawreel.json` is shipped, so the built-in defaults apply until you
 create one; to keep one next to the executables, unzip or extract rawreel to a folder you can
-write to (not under Program Files).
+write to (not under Program Files). On macOS, an executable inside an app bundle (the shipped
+`rawreel.app`, and the build tree's `rawreel-gui.app`) reads
+`~/Library/Application Support/rawreel/rawreel.json` instead, never a file inside the signed
+bundle; only an executable outside a bundle, such as the build tree's `rawreel-cli`, keeps the
+next-to-the-executable rule.
 
 ```json
 { "io": { "fileReads": "auto" } }
@@ -492,7 +548,7 @@ key does not apply to them.
 
 The mode in use shows as `reads:` in `rawreel-cli info` and in the GUI Info pane.
 
-A missing `rawreel.json` next to the executable means the defaults, silently. A missing
+A missing default `rawreel.json` means the defaults, silently. A missing
 `--config` file, or a file that cannot be read, is not valid JSON or has a bad value, gives one
 warning in the log ("config '<path>' ignored: <reason>; using the defaults") and the defaults.
 Unknown keys are ignored. To try another file:
@@ -517,6 +573,12 @@ Unknown keys are ignored. To try another file:
 - The Windows zip is not code-signed.
 - On Linux, `rawreel-gui` uses X11; on a Wayland desktop it runs through XWayland.
 - On Linux, a crash writes no crash report; use a core dump (see [Bug reports](#bug-reports)).
+- macOS: Apple Silicon and macOS 27 or newer only. The app is not signed with a Developer ID or
+  notarized. rawreel pins only the Vulkan driver (the bundled KosmicKrisp); Vulkan implicit
+  layers installed system-wide (for example by a Vulkan SDK) can still load into it. The macOS CI
+  has no usable Metal device, so the GPU and display tests skip there; run them on a Mac (see
+  [Building and testing (macOS)](#building-and-testing-macos)). A crash writes no rawreel crash
+  report; use the system's (see [Bug reports](#bug-reports)).
 
 ## Bug reports
 
@@ -538,25 +600,35 @@ including frames of the open video. The maintainer reads it with the symbols of 
 (`tar xf rawreel-<v>-linux-x64-symbols.tar.xz -C rawreel-<v>`), so that gdb finds
 `rawreel-gui.debug` next to `rawreel-gui`.
 
+On macOS, rawreel has no crash handler; the system writes a crash report for `rawreel-gui` or
+`rawreel-cli` to `~/Library/Logs/DiagnosticReports/`. Attach it, the log
+(`~/Library/Application Support/rawreel/rawreel.log` for `rawreel-gui`, the console output for
+`rawreel-cli`; the log names the Vulkan driver) and the output of `rawreel-cli --version`, whose
+version line includes `driver KosmicKrisp ...`. The maintainer reads the report with the symbols
+of the same release, `rawreel-<v>-macos-arm64-symbols.zip` (each `.dSYM` matches its executable
+by UUID).
+
 ## Verifying downloads
 
 `SHA256SUMS` lists the SHA256 of every release file. In PowerShell, in the download folder:
 
 ```powershell
-$f = 'rawreel-0.9.0-windows-x64.zip'
+$f = 'rawreel-0.10.0-windows-x64.zip'
 $want = (Select-String -Path SHA256SUMS -SimpleMatch $f).Line.Split(' ')[0]
 (Get-FileHash $f -Algorithm SHA256).Hash -eq $want    # True
 ```
 
-On Linux (or wherever coreutils exist): `sha256sum -c --ignore-missing SHA256SUMS`. Every release
-file also has a build attestation from the release workflow; with the GitHub CLI:
+On Linux (or wherever coreutils exist), and on macOS: `sha256sum -c --ignore-missing SHA256SUMS`
+(or `shasum -a 256 -c --ignore-missing SHA256SUMS`). Every release file also has a build
+attestation from the release workflow; with the GitHub CLI:
 
 ```powershell
-gh attestation verify rawreel-0.9.0-windows-x64.zip --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.10.0-windows-x64.zip --repo BarabashkaD/rawreel
 ```
 
 ```sh
-gh attestation verify rawreel-0.9.0-linux-x64.tar.xz --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.10.0-linux-x64.tar.xz --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.10.0-macos-arm64.dmg --repo BarabashkaD/rawreel
 ```
 
 ## Getting the source
@@ -669,10 +741,52 @@ software driver lavapipe works: `export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/
 `libs/dvv-build/tools/sanity.sh` runs the quick sanity cycle (see `libs/dvv-build/README.md`).
 Under `ninja-clang-asan` and `ninja-clang-tsan`, `rawreel-gui` and its selftests are not built.
 The Linux packages are built and checked by the same `dry-run.cmake` command as on Windows; on
-Linux it works in `/tmp/rawreel-dryrun`. With `-DBUNDLE=ON` it also verifies the FFmpeg archive
-of the Windows prefix (`libs/_third_party/msvc` of the same clone, or `-DWINDOWS_PREFIX=<dir>`)
-and stops before the build when that prefix is not bootstrapped; `-DBUNDLE=OFF` needs only the
-Linux prefix.
+Linux it works in `/tmp/rawreel-dryrun`.
+
+## Building and testing (macOS)
+
+An Apple Silicon Mac with macOS 27 or newer, Xcode 27 or the Command Line Tools with the macOS 27
+SDK (AppleClang 21 or newer), CMake 4.2 or newer and Ninja (`brew install cmake ninja`); the
+rest is in `libs/dvv-build/README.md`. From the `rawreel` folder, in a shell, after
+`libs/dvv-build/bootstrap.sh` (the toolchain `appleclang` is the default on macOS; it downloads
+the pinned LunarG Vulkan SDK, takes the KosmicKrisp driver out of it, and builds the Vulkan
+loader, the validation layer and wxWidgets for Cocoa; it downloads about 400 MB, the LunarG SDK,
+and takes a few minutes on an Apple Silicon Mac), configure, build Debug and Release and run
+all tests:
+
+```sh
+cmake --workflow --preset ninja-macos
+```
+
+The executables are `libs/_build/rawreel/ninja-macos/<Debug|Release>/rawreel-cli` and
+`rawreel-gui.app/Contents/MacOS/rawreel-gui`. As on Linux, point rawreel at the FFmpeg of the
+third-party prefix and, optionally, turn on Vulkan synchronization validation. A Mac has no system
+Vulkan driver, so a build-tree executable also needs `VK_DRIVER_FILES` (the packaged app sets it
+itself):
+
+```sh
+export DVV_FFMPEG_DIR="$PWD/libs/_third_party/appleclang/custom_ffmpeg/macos-arm64/shared/lgpl/lib"
+export VK_DRIVER_FILES="$PWD/libs/_third_party/appleclang/share/vulkan/icd.d/libkosmickrisp_icd.json"
+export VK_ADD_LAYER_PATH="$PWD/libs/_third_party/appleclang/share/vulkan/explicit_layer.d"
+export DVV_VK_VALIDATION=sync
+bin="$PWD/libs/_build/rawreel/ninja-macos/Release"
+"$bin/rawreel-cli" --version
+"$bin/rawreel-gui.app/Contents/MacOS/rawreel-gui" 'lavfi:testsrc2=s=1280x720:r=25,format=yuv420p'
+```
+
+In the build tree, `rawreel-gui.app` reads `rawreel.json` from Application Support like the
+shipped app, and only `rawreel-cli` reads it from its own folder (see
+[Configuration](#configuration)). The tests (`ctest --preset ninja-macos`, or
+`ninja-macos-release`) are those of [Building and testing (Windows)](#building-and-testing-windows)
+and [Linux](#building-and-testing-linux). The GPU tests run on the Mac's GPU through KosmicKrisp
+(Vulkan 1.4); the GUI tests (label `display`) need a logged-in desktop session.
+`DVV_REQUIRE_GPU=1` makes a missing device fail instead of skip: run
+`DVV_REQUIRE_GPU=1 ctest --preset ninja-macos` (or `ninja-macos-release`) for that; the workflow
+above runs the tests without it. Under `ninja-macos-asan`,
+`rawreel-gui` and its selftests are not built. The macOS package, `rawreel-<v>-macos-arm64.dmg`
+with `rawreel-<v>-macos-arm64-symbols.zip`, is built and checked (package checks and a smoke
+test) by `cmake -DBUNDLE=ON -P packaging/dry-run.cmake`, run in the `rawreel` folder; on macOS it
+works in `/tmp/rawreel-dryrun`.
 
 ## Licence
 

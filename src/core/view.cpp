@@ -1,6 +1,31 @@
 #include "core/view.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+
 namespace rawreel {
+
+namespace {
+
+// points x scale rounded to nearest, in [1, 2^32 - 1]; points and scale are > 0.
+std::uint32_t toPixels(double points, double scale) noexcept {
+    const double pixels = std::round(points * scale);
+    constexpr double MAX = std::numeric_limits<std::uint32_t>::max();
+    return static_cast<std::uint32_t>(std::clamp(pixels, 1.0, MAX));
+}
+
+}  // namespace
+
+dvv::platform::PixelSize physicalPixelSize(double width_points, double height_points,
+                                           double scale) noexcept {
+    // Written so that NaN gives an empty size too.
+    if (!(width_points > 0 && height_points > 0 && scale > 0)) {
+        return {};
+    }
+    return {.width = toPixels(width_points, scale), .height = toPixels(height_points, scale)};
+}
 
 ViewTransform ViewTransform::fit(dvv::platform::PixelSize viewport,
                                  dvv::platform::PixelSize image) {

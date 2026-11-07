@@ -20,6 +20,7 @@
 #include "core/session_types.h"
 #include "dvv/base/error.h"
 #include "dvv/base/executors.h"
+#include "dvv/base/move_only_function.h"
 #include "dvv/gpu/device_id.h"
 #include "dvv/media/types.h"
 #include "dvv/platform/file_reader.h"
@@ -47,7 +48,7 @@ private:
 class FakeTimer final : public ITimer {
 public:
     explicit FakeTimer(std::shared_ptr<FakeClock> clock) : clock_(std::move(clock)) {}
-    void schedule(Clock::time_point when, std::move_only_function<void()> callback) override;
+    void schedule(Clock::time_point when, dvv::MoveOnlyFunction<void()> callback) override;
     void cancel() override;
     void advance(Clock::duration d);
     [[nodiscard]] std::optional<Clock::time_point> pending() const;
@@ -56,7 +57,7 @@ private:
     std::shared_ptr<FakeClock> clock_;
     mutable std::mutex mutex_;
     std::optional<Clock::time_point> when_;
-    std::move_only_function<void()> callback_;
+    dvv::MoveOnlyFunction<void()> callback_;
 };
 
 using Sequence = std::shared_ptr<std::atomic<std::uint64_t>>;

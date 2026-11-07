@@ -233,7 +233,53 @@ TEST_SUITE("core") {
         CHECK(contains(lines[0], "none.json' ignored: not found; using the defaults"));
     }
 
-    // The default location is the running executable's directory, never the working directory.
+    // macOS: an app bundle is read-only and signed, so its executables' config is in the user data
+    // folder; Windows, Linux and an executable outside a bundle keep the file next to it.
+    TEST_CASE("config: the default file of an executable in an app bundle") {
+        const fs::path bundled = fs::path("/Applications/rawreel 2.app/Contents/MacOS/rawreel-gui");
+        const fs::path build_tree = fs::path("/work/build/Debug/rawreel-cli");
+        const fs::path user_data = fs::path("/user data/rawreel");
+        CHECK(rawreel::inAppBundle(bundled));
+        CHECK(rawreel::inAppBundle(fs::path("/x/rawreel.app/Contents/MacOS/rawreel-cli")));
+        CHECK_FALSE(rawreel::inAppBundle(build_tree));
+        CHECK_FALSE(
+            rawreel::inAppBundle(fs::path("/x/rawreel.app/Contents/Resources/rawreel-cli")));
+        CHECK_FALSE(rawreel::inAppBundle(fs::path("/x/rawreel/Contents/MacOS/rawreel-cli")));
+        CHECK_FALSE(rawreel::inAppBundle(fs::path("/x/rawreel.app/MacOS/rawreel-cli")));
+
+        int asked = 0;
+        const auto user_data_dir = [&]() -> dvv::Result<fs::path> {
+            ++asked;
+            return user_data;
+        };
+        const dvv::Result<fs::path> mac_bundled =
+            rawreel::defaultConfigPath(bundled, true, user_data_dir);
+        REQUIRE(mac_bundled.has_value());
+        CHECK(*mac_bundled == user_data / "rawreel.json");
+        CHECK(asked == 1);
+
+        // Not in a bundle, or not macOS: next to the executable, the user data folder unasked.
+        const dvv::Result<fs::path> mac_build =
+            rawreel::defaultConfigPath(build_tree, true, user_data_dir);
+        REQUIRE(mac_build.has_value());
+        CHECK(*mac_build == build_tree.parent_path() / "rawreel.json");
+        const dvv::Result<fs::path> other =
+            rawreel::defaultConfigPath(bundled, false, user_data_dir);
+        REQUIRE(other.has_value());
+        CHECK(*other == bundled.parent_path() / "rawreel.json");
+        CHECK(asked == 1);
+
+        // No user data folder: its error (loadConfig warns and uses the defaults).
+        const dvv::Result<fs::path> failed =
+            rawreel::defaultConfigPath(bundled, true, []() -> dvv::Result<fs::path> {
+                return dvv::makeError(dvv::Errc::Io, "HOME is not set");
+            });
+        REQUIRE_FALSE(failed.has_value());
+        CHECK(failed.error().code == dvv::Errc::Io);
+    }
+
+    // The default location is the running executable's directory, never the working directory
+    // (the test executable is in no app bundle).
     TEST_CASE("config: the default file is rawreel.json next to the executable") {
         const dvv::Result<fs::path> executable = dvv::paths::executablePath();
         REQUIRE_MESSAGE(executable.has_value(), executable.error().describe());

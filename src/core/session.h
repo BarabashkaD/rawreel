@@ -18,6 +18,7 @@
 #include "core/session_types.h"
 #include "dvv/base/error.h"
 #include "dvv/base/executor.h"
+#include "dvv/base/move_only_function.h"
 #include "dvv/base/task.h"
 #include "dvv/gpu/device_id.h"
 #include "dvv/media/frame_store.h"
@@ -44,7 +45,7 @@ struct MediaStack {                                       // what device loss re
     std::function<dvv::media::ViewSpec(const dvv::media::FrameDesc&)> viewFor;
 };
 using StackFactory =
-    std::move_only_function<dvv::Result<MediaStack>(std::optional<dvv::gpu::DeviceId>)>;
+    dvv::MoveOnlyFunction<dvv::Result<MediaStack>(std::optional<dvv::gpu::DeviceId>)>;
 
 struct SessionOptions {
     std::shared_ptr<dvv::ComponentRegistry> components;  // source providers

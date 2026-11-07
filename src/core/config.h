@@ -1,17 +1,19 @@
 #pragma once
 
 // The application config file (M3.1): an optional rawreel.json in the directory of the
-// running executable (rawreel-gui, rawreel-cli), or the file that --config names. A typed loader,
-// wx-free, so a GUI editor can use it later. The keys:
+// running executable (rawreel-gui, rawreel-cli), or the file that --config names; on macOS, for an
+// executable inside an app bundle, in ~/Library/Application Support/rawreel instead. A typed
+// loader, wx-free, so a GUI editor can use it later. The keys:
 //
 //   { "io": { "fileReads": "auto" } }   // "auto" (default), "unbuffered" or "buffered"
 //
-// A missing file next to the executable means the defaults; a missing --config file, an
+// A missing default file means the defaults; a missing --config file, an
 // unreadable or invalid file, or a bad value, means one warning in the log and the defaults.
 // Unknown keys are ignored, so a future save must merge into the original JSON (keep unknown
 // keys) and report a folder it cannot write.
 
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -42,8 +44,18 @@ struct Config {
 // "io.fileReads: expected \"auto\", \"unbuffered\" or \"buffered\", not \"fast\"".
 [[nodiscard]] dvv::Result<Config> parseConfig(std::string_view text);
 
-// <directory of the running executable>/rawreel.json (dvv::paths::executablePath, never the
-// working directory).
+// True for an executable inside a macOS app bundle: <name>.app/Contents/MacOS/<executable>.
+[[nodiscard]] bool inAppBundle(const std::filesystem::path& executable);
+
+// The default config file of `executable` (never the working directory):
+// <directory of the executable>/rawreel.json, except when `macos` and the executable is inside an
+// app bundle (inAppBundle), which is read-only and signed: then <user_data_dir()>/rawreel.json.
+// `user_data_dir` (dvv::paths::userDataDir("rawreel"), ~/Library/Application Support/rawreel) is
+// called only then, and its error is the result.
+[[nodiscard]] dvv::Result<std::filesystem::path> defaultConfigPath(
+    const std::filesystem::path& executable, bool macos,
+    const std::function<dvv::Result<std::filesystem::path>()>& user_data_dir);
+// defaultConfigPath() of the running executable (dvv::paths::executablePath) on this platform.
 [[nodiscard]] dvv::Result<std::filesystem::path> defaultConfigPath();
 
 struct LoadedConfig {
@@ -59,7 +71,7 @@ struct LoadedConfig {
 [[nodiscard]] LoadedConfig loadConfig(const std::filesystem::path& path);
 // The file --config names (UTF-8) when given, else defaultConfigPath(). A missing --config file
 // gives the defaults and one warning "config '<path>' ignored: not found; using the defaults"; an
-// unknown executable path gives the defaults with a warning.
+// unknown executable path (or user data folder) gives the defaults with a warning.
 [[nodiscard]] LoadedConfig loadConfig(const std::optional<std::string>& config_utf8);
 
 }  // namespace rawreel

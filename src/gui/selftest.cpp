@@ -65,6 +65,7 @@
 #include "gui/info_panel.h"
 #include "gui/log_panel.h"
 #include "gui/main_frame.h"
+#include "gui/native_window.h"
 #include "gui/player_panel.h"
 #include "gui/transport_bar.h"
 #include "gui/viewport.h"
@@ -90,8 +91,8 @@ private:
     bool* flag_;
 };
 
-SelfTestStep step(std::string name, std::move_only_function<void()> start,
-                  std::move_only_function<bool(std::string&)> passed,
+SelfTestStep step(std::string name, dvv::MoveOnlyFunction<void()> start,
+                  dvv::MoveOnlyFunction<bool(std::string&)> passed,
                   std::chrono::milliseconds deadline = std::chrono::seconds(5)) {
     return {.name = std::move(name),
             .start = std::move(start),
@@ -525,8 +526,8 @@ SelfTestStep movedPaneStep(SelfTest* test, const SharedState& state, bool back) 
 SelfTestStep hideStep(SelfTest* test, const SharedState& state) {
     auto start = [test, state] {
         markStart(test->frame().viewport(), *state);
-#if defined(_WIN32)
-        test->frame().Iconize(true);
+#if defined(_WIN32) || defined(__WXOSX__)
+        test->frame().Iconize(true);  // Windows and Cocoa minimise a window themselves
 #else
         test->frame().Hide();  // X11: no WM-independent iconify (Xvfb has no WM); Hide/Show
 #endif
@@ -552,7 +553,7 @@ SelfTestStep hideStep(SelfTest* test, const SharedState& state) {
 SelfTestStep restoreStep(SelfTest* test, const SharedState& state) {
     auto start = [test, state] {
         markStart(test->frame().viewport(), *state);
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__WXOSX__)
         test->frame().Iconize(false);
 #else
         test->frame().Show();  // X11: no WM-independent iconify; Hide/Show
@@ -629,7 +630,8 @@ SelfTestStep appearanceStep(SelfTest* test) {
         const bool dark = wxSystemSettings::GetAppearance().IsDark();
         seen = std::format("requested dark {}, SetAppearance Ok {}, dark now {}",
                            requested == Appearance::Dark, ok, dark);
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__WXOSX__)
+        // wxOSX sets the application's NSAppearance, which wxSystemSettings reads back.
         if (ok) {
             return dark == (requested == Appearance::Dark);
         }
@@ -766,6 +768,98 @@ SelfTestStep menusStep(SelfTest* test, const SharedState& state) {
     };
     return step("menus", std::move(start), std::move(passed));
 }
+
+#if defined(__WXOSX__)
+// Design C5: About and Quit carry the standard ids, so wxOSX shows them in the application menu
+// as "About rawreel" and "Quit rawreel" (and hides them in Help and File); the application menu's
+// About opens Help -> About.
+SelfTestStep appMenuStep(SelfTest* test) {
+    struct Seen {
+        std::uint64_t about0 = 0;
+        bool hookRan = false;
+    };
+    auto seen_state = std::make_shared<Seen>();
+    auto start = [test, seen_state] {
+        MainFrame& frame = test->frame();
+        seen_state->about0 = frame.aboutShown();
+        dialogHooks().about = [seen_state](wxGenericAboutDialog& /*dialog*/) {
+            seen_state->hookRan = true;
+        };
+        wxCommandEvent about(wxEVT_MENU, wxID_ABOUT);  // what the application menu's item sends
+        about.SetEventObject(&frame);
+        injectInput(*frame.GetEventHandler(), about);
+    };
+    auto passed = [test, seen_state](std::string& seen) {
+        const MainFrame& frame = test->frame();
+        const wxMenuBar* bar = frame.GetMenuBar();
+        const wxMenu* apple = bar != nullptr ? bar->OSXGetAppleMenu() : nullptr;
+        if (apple == nullptr) {
+            seen = "no application menu";
+            return false;
+        }
+        const auto label = [](const wxMenuItem* item) {
+            return item != nullptr ? item->GetItemLabelText().utf8_string() : std::string("-");
+        };
+        const std::string about = label(apple->FindItem(wxID_ABOUT));
+        const std::string quit = label(apple->FindItem(wxID_EXIT));
+        // The frame's own items carry the standard ids; none is left on the old ones.
+        const bool ids =
+            bar->FindItem(wxID_ABOUT) != nullptr && bar->FindItem(wxID_EXIT) != nullptr &&
+            bar->FindItem(COMMAND_ID_BASE + static_cast<int>(Command::About)) == nullptr &&
+            bar->FindItem(COMMAND_ID_BASE + static_cast<int>(Command::Quit)) == nullptr;
+        const bool shown = frame.aboutShown() > seen_state->about0 && seen_state->hookRan;
+        seen = std::format("application menu '{}' '{}', standard ids {}, About shown {}", about,
+                           quit, ids, shown);
+        return about == "About rawreel" && quit == "Quit rawreel" && ids && shown;
+    };
+    return step("application menu", std::move(start), std::move(passed));
+}
+
+// Review Focus 1 and 5: a window moved to a display of another backing scale keeps its size in
+// points, so wx sends no size event. The test hook gives the viewport's child view another scale
+// (Retina 2 <-> 1) and runs its viewDidChangeBackingProperties, Cocoa's own entry: the same
+// presenter (the hook's scale lives on its child view) gets a swapchain of physicalPixelSize() of
+// the unchanged point size. `restore`: the hook gives the window's own scale back.
+SelfTestStep backingScaleStep(SelfTest* test, const SharedState& state, bool restore) {
+    struct Probe {
+        const dvv::gpu::Presenter* presenter = nullptr;
+        wxSize points;
+        double scale = 0;
+        bool hooked = false;
+    };
+    auto probe = std::make_shared<Probe>();
+    auto start = [test, state, probe, restore] {
+        Viewport& viewport = test->frame().viewport();
+        markStart(viewport, *state);
+        probe->presenter = viewport.presenter();   // the hook needs it: it sets the child's scale
+        probe->points = viewport.GetClientSize();  // points on wxOSX
+        const double window_scale = viewport.GetContentScaleFactor();
+        probe->scale = restore ? window_scale : (window_scale >= 2 ? 1.0 : 2.0);
+        probe->hooked = setBackingScaleForTest(viewport, restore ? 0.0 : probe->scale);
+    };
+    auto passed = [test, state, probe](std::string& seen) {
+        const Viewport& viewport = test->frame().viewport();
+        const std::optional<dvv::gpu::PresenterStats> stats = statsOf(viewport);
+        const dvv::platform::PixelSize expected =
+            physicalPixelSize(probe->points.x, probe->points.y, probe->scale);
+        const wxSize points = viewport.GetClientSize();
+        const bool same_presenter =
+            probe->presenter != nullptr && viewport.presenter() == probe->presenter;
+        seen = std::format(
+            "{}; hook {}, scale {}, points {}x{} (at the start {}x{}), expected extent {}x{}, "
+            "same presenter {}",
+            describe(viewport, *state), probe->hooked, probe->scale, points.x, points.y,
+            probe->points.x, probe->points.y, expected.width, expected.height, same_presenter);
+        return probe->hooked && stats && same_presenter && points == probe->points &&
+               viewport.physicalClientSize() == expected && stats->presentedExtent == expected &&
+               stats->swapchainsCreated > state->startSwapchains &&
+               stats->framesPresented > state->startFrames;
+    };
+    return {.name = restore ? "backing scale restored" : "backing scale change",
+            .start = std::move(start),
+            .passed = std::move(passed)};
+}
+#endif
 
 // Design §7: a Session error reaches the infobar; slot 1 is refused.
 SelfTestStep infobarStep(SelfTest* test) {
@@ -1094,6 +1188,10 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
     steps.push_back(restoreStep(t, state));
     steps.push_back(openStreamStep(t, state));
     steps.push_back(resizeStep(t, state, "resize with a stream", wxSize(1024, 640)));
+#if defined(__WXOSX__)
+    steps.push_back(backingScaleStep(t, state, false));
+    steps.push_back(backingScaleStep(t, state, true));
+#endif
     steps.push_back(panesStep(t));
     steps.push_back(menuTransportStep(t));
     steps.push_back(pauseStep(t));
@@ -1102,6 +1200,9 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
     steps.push_back(menusStep(t, state));
     steps.push_back(infobarStep(t));
     steps.push_back(aboutStep(t, state));
+#if defined(__WXOSX__)
+    steps.push_back(appMenuStep(t));
+#endif
     if (test.app().startup().ffmpeg.lavfi) {
         steps.push_back(lavfiUriStep(t, state));
         steps.push_back(lavfiFormatStep(t, state));
@@ -1299,11 +1400,11 @@ namespace {
 
 // One body for the three dialogs (format, Open URI, About).
 template <class Dialog>
-int showModalWith(Dialog& dialog, std::move_only_function<void(Dialog&)>& slot,
+int showModalWith(Dialog& dialog, dvv::MoveOnlyFunction<void(Dialog&)>& slot,
                   std::string_view kind) {
     if (slot) {
         // One shot; CallAfter needs a copyable functor, so the hook is shared.
-        auto hook = std::make_shared<std::move_only_function<void(Dialog&)>>(std::move(slot));
+        auto hook = std::make_shared<dvv::MoveOnlyFunction<void(Dialog&)>>(std::move(slot));
         slot = nullptr;
         dialog.CallAfter([&dialog, hook] {
             (*hook)(dialog);
@@ -1783,7 +1884,8 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                                                      : std::format("client {}x{} (fixed {}x{})",
                                                                    now.x, now.y, fixed.x, fixed.y));
 #else
-                st->textsRead.push_back("fixed size");  // a dialog without a resize border
+                // MSW and macOS: a dialog without a resize border.
+                st->textsRead.push_back("fixed size");
 #endif
             };
             frame.execute(Command::Format);
@@ -2258,6 +2360,35 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             return st->lockedRead && st->flagRead && st->textsRead == expected && colour_only &&
                    uri.contains("colour=bt2020") && stream_is(16, 16, "yuv420p");
         }));
+#if defined(__WXOSX__)
+    // Design C5: a file opened from Finder or the Dock (wxApp::MacOpenFiles) takes the route of a
+    // drop and gives the drop step's state: a new Y4M file opens without a format dialog.
+    steps.push_back(step(
+        "open a Y4M file from Finder (MacOpenFiles)",
+        [&frame, st] {
+            const auto file = st->dir / "finder_clip.y4m";
+            std::string y4m = "YUV4MPEG2 W32 H16 F25:1 Ip A1:1 C420jpeg\n";
+            for (int i = 0; i < 2; ++i) {
+                y4m += "FRAME\n" + std::string(768, '\x50');
+            }
+            std::ofstream(file, std::ios::binary)
+                .write(y4m.data(), static_cast<std::streamsize>(y4m.size()));
+            st->dialogs0 = frame.formatDialogsShown();
+            wxArrayString names;
+            names.Add(wxString::FromUTF8(dvv::media::utf8FromPath(file)));
+            wxGetApp().MacOpenFiles(names);
+        },
+        [&frame, st, stream_is, stream_uri](std::string& seen) {
+            const auto& streams = frame.streams();
+            const bool y4m = streams.size() == 1 && streams[0].info.provider == "y4m";
+            const std::string uri = stream_uri();
+            seen = std::format("yuv420p 32x16 {}, y4m {}, dialogs {}, URI '{}'",
+                               stream_is(32, 16, "yuv420p"), y4m,
+                               frame.formatDialogsShown() - st->dialogs0, uri);
+            return stream_is(32, 16, "yuv420p") && y4m && uri.contains("finder_clip.y4m") &&
+                   frame.formatDialogsShown() == st->dialogs0;
+        }));
+#endif
     // A gray Y4M with XCOLORRANGE=LIMITED keeps its range under BT.709 (the default
     // range of gray is full).
     steps.push_back(step(

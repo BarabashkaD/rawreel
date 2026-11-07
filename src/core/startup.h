@@ -44,8 +44,8 @@ struct FfmpegOrigin {
 //   otherwise:      "FFmpeg: not available (<reason>)"
 // <from> names where the build comes from, never the folder it was loaded from:
 //   " from DVV_FFMPEG_DIR" when the variable is set (the loader then looks nowhere else),
-//   " from <CUSTOM_FFMPEG_URL>" when the folder is a bundled one (<app>/ffmpeg or
-//   <app>/../lib/ffmpeg), and nothing otherwise.
+//   " from <CUSTOM_FFMPEG_URL>" when the folder is a bundled one (<app>/ffmpeg, <app>/../lib/ffmpeg
+//   or, in a macOS bundle, <app>/../Frameworks/ffmpeg) and nothing otherwise.
 // The reason is masked with maskFolders(), the log included: <app>, $DVV_FFMPEG_DIR and ~ stay
 // readable for the user who reads them. StatusPaths::Hidden (About, the GUI infobar) leaves out the
 // reason: "FFmpeg: not available (details in the log)".
@@ -58,8 +58,9 @@ enum class StatusPaths : std::uint8_t { Shown, Hidden };
                                            StatusPaths paths, const FfmpegOrigin& origin);
 
 // `text` with the folders of `origin` replaced: the DVV_FFMPEG_DIR value by "$DVV_FFMPEG_DIR",
-// <app>/../lib/ffmpeg (normalized) by "<app>/../lib/ffmpeg", the executable's folder by "<app>" and
-// the home folder by "~" (the longest match first; root folders are never replaced).
+// <app>/../lib/ffmpeg and <app>/../Frameworks/ffmpeg (normalized) by their "<app>/..." names, the
+// executable's folder by "<app>" and the home folder by "~" (the longest match first; root
+// folders are never replaced).
 [[nodiscard]] std::string maskFolders(std::string text, const FfmpegOrigin& origin);
 
 // The open-error text of the CLI and the GUI (design v2 §4.6): error.describe(), plus "; " +

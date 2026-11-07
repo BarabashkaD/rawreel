@@ -30,6 +30,7 @@
 #include "core/session.h"
 #include "core/startup.h"
 #include "core/status_text.h"
+#include "core/version_text.h"
 #include "dvv/base/json.h"
 #include "dvv/base/log.h"
 #include "dvv/base/uri.h"
@@ -137,6 +138,34 @@ wxString mappingField(const std::vector<StreamInfo>& streams) {
 }
 
 }  // namespace
+
+int menuId(Command command) noexcept {
+#if defined(__WXOSX__)
+    if (command == Command::About) {
+        return wxID_ABOUT;
+    }
+    if (command == Command::Quit) {
+        return wxID_EXIT;
+    }
+#endif
+    return COMMAND_ID_BASE + static_cast<int>(command);
+}
+
+std::optional<Command> commandOfMenuId(int id) noexcept {
+#if defined(__WXOSX__)
+    if (id == wxID_ABOUT) {
+        return Command::About;
+    }
+    if (id == wxID_EXIT) {
+        return Command::Quit;
+    }
+#endif
+    if (id < COMMAND_ID_BASE || id > LAST_COMMAND_ID) {
+        return std::nullopt;
+    }
+    const auto command = static_cast<Command>(id - COMMAND_ID_BASE);
+    return menuId(command) == id ? std::optional(command) : std::nullopt;
+}
 
 MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     : wxFrame(nullptr, wxID_ANY, "rawreel"),
@@ -257,12 +286,21 @@ void MainFrame::buildMenus() {
         }
         // An Accelerator command's "\t<key>" makes wx register the accelerator; CharHook commands
         // show their key without "\t" (Task 10 dispatches them).
-        menu->Append(COMMAND_ID_BASE + static_cast<int>(info.command),
-                     wxString::FromUTF8(menuLabel(info)), wxString::FromUTF8(info.help));
+        menu->Append(menuId(info.command), wxString::FromUTF8(menuLabel(info)),
+                     wxString::FromUTF8(info.help));
     }
     SetMenuBar(bar);
     Bind(wxEVT_MENU, &MainFrame::onMenu, this, COMMAND_ID_BASE, LAST_COMMAND_ID);
     Bind(wxEVT_UPDATE_UI, &MainFrame::onUpdateUi, this, COMMAND_ID_BASE, LAST_COMMAND_ID);
+#if defined(__WXOSX__)
+    // The application menu's About and Quit (wxOSX hides the items in Help and File). Quit closes
+    // the frame through onClose; unhandled, wxOSX would end the main loop without the frame's close
+    // sequence.
+    for (const int id : {wxID_ABOUT, wxID_EXIT}) {
+        Bind(wxEVT_MENU, &MainFrame::onMenu, this, id);
+        Bind(wxEVT_UPDATE_UI, &MainFrame::onUpdateUi, this, id);
+    }
+#endif
 }
 
 void MainFrame::buildStatusBar() {
@@ -434,9 +472,14 @@ VulkanStatus MainFrame::vulkanStatus() const {
         return {.available = true,
                 .device = device.name,
                 .api = dvv::gpu::formatVulkanVersion(device.apiVersion),
+                .driver = vulkanDriverText(device.driverName, device.driverInfo),
                 .reason = {}};
     }
-    return {.available = false, .device = {}, .api = {}, .reason = "no GPU device is in use"};
+    return {.available = false,
+            .device = {},
+            .api = {},
+            .driver = {},
+            .reason = "no GPU device is in use"};
 }
 
 void MainFrame::noteAbout(std::string text) {
@@ -683,6 +726,12 @@ void MainFrame::onStackChanged(const std::weak_ptr<dvv::gpu::ExecutionContext>& 
     }
     context_ = context;
     stack_lost_ = context.expired();
+    if (const std::shared_ptr<dvv::gpu::ExecutionContext> live = context.lock()) {
+        // The device actually in use, once per stack (the log of a report names it).
+        const dvv::gpu::GpuInfo& device = live->deviceInfo();
+        DVV_LOG_INFO("Vulkan device: {}, driver {}", device.name,
+                     vulkanDriverText(device.driverName, device.driverInfo));
+    }
     if (!stack_lost_ && reopen_offered_) {
         dismissMessage();  // e.g. a File -> Open after a loss built a new stack
     }
@@ -794,11 +843,14 @@ void MainFrame::onPresenterFailed(const dvv::Error& error) {
 }
 
 void MainFrame::onMenu(wxCommandEvent& event) {
-    execute(static_cast<Command>(event.GetId() - COMMAND_ID_BASE), CommandSource::Menu);
+    if (const std::optional<Command> command = commandOfMenuId(event.GetId())) {
+        execute(*command, CommandSource::Menu);
+    }
 }
 
 void MainFrame::onUpdateUi(wxUpdateUIEvent& event) {
-    event.Enable(!closing_ && isAvailable(static_cast<Command>(event.GetId() - COMMAND_ID_BASE)));
+    const std::optional<Command> command = commandOfMenuId(event.GetId());
+    event.Enable(!closing_ && command && isAvailable(*command));
 }
 
 void MainFrame::onStatusTimer(wxTimerEvent& /*event*/) {
@@ -861,6 +913,8 @@ void MainFrame::checkLayoutLimits() {
         // wxGTK keeps a minimum as a window size, converted with the decoration size it knew at
         // SetMinClientSize(); the menu bar, status bar and window decorations are known only after
         // the map, so the minimum client size can end up below the one applied: apply it again.
+        // MSW and wxOSX know the decorations when the window is created (wxOSX's menu bar is not
+        // in the window), so their minimum client size stays as applied.
         const wxSize wanted =
             applied_minimum_ + FromDIP(wxSize(LAYOUT_MARGIN_DIP, LAYOUT_MARGIN_DIP));
         const wxSize effective = GetMinClientSize();
@@ -871,6 +925,20 @@ void MainFrame::checkLayoutLimits() {
         }
     });
 }
+
+#if defined(__WXOSX__)
+void MainFrame::DoSetSize(int x, int y, int width, int height, int flags) {
+    // The minimum is a window size (SetMinClientSize converted it); -1 keeps a dimension.
+    const wxSize minimum = GetMinSize();
+    if (width != wxDefaultCoord && minimum.x != wxDefaultCoord) {
+        width = std::max(width, minimum.x);
+    }
+    if (height != wxDefaultCoord && minimum.y != wxDefaultCoord) {
+        height = std::max(height, minimum.y);
+    }
+    wxFrame::DoSetSize(x, y, width, height, flags);
+}
+#endif
 
 void MainFrame::onShow(wxShowEvent& event) {
     if (viewport_ != nullptr) {

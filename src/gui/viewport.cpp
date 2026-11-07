@@ -41,6 +41,8 @@ Viewport::Viewport(wxWindow* parent, std::shared_ptr<DisplayState> display)
     // Create(): before it the widget does not exist and wx asserts.
     SetDoubleBuffered(false);
 #endif
+    // wxOSX needs nothing here: the presenter draws to a child NSView above this window's view
+    // (viewport_cocoa.mm), which wx's drawing does not reach.
     Bind(wxEVT_PAINT, &Viewport::onPaint, this);
     Bind(wxEVT_SIZE, &Viewport::onSize, this);
     // R5: a click gives the viewport the keyboard focus (no other mouse handling in v1.0).
@@ -226,9 +228,14 @@ std::optional<RecordedInfo> Viewport::lastRecorded() const {
 }
 
 dvv::platform::PixelSize Viewport::physicalClientSize() const {
+#if defined(__WXOSX__)
+    // The layer's own scale (it follows the backing scale and the backing_scale test hook).
+    return nativePixelSize(*this);
+#else
     const wxSize size = ToPhys(GetClientSize());
     return {.width = static_cast<std::uint32_t>(std::max(size.x, 0)),
             .height = static_cast<std::uint32_t>(std::max(size.y, 0))};
+#endif
 }
 
 void Viewport::onPaint(wxPaintEvent& /*event*/) {
@@ -247,12 +254,16 @@ void Viewport::onMouseDown(wxMouseEvent& event) {
     event.Skip();
 }
 
-void Viewport::onSize(wxSizeEvent& event) {
+void Viewport::resizePresenter() {
     // Only the presenter is resized: the renderer fits from the presenter's extent (D23).
     if (presenter_) {
         syncNativeWindow(*this);
         presenter_->resize(physicalClientSize());
     }
+}
+
+void Viewport::onSize(wxSizeEvent& event) {
+    resizePresenter();
     event.Skip();
 }
 
