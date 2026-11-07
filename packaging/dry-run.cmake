@@ -1,7 +1,7 @@
-# Local dry run of the release build, on Windows or on Linux:
-#   cmake [-DWORKSPACE_ROOT=<root>] -DBUNDLE=ON|OFF [-DOWN_PREFIX=ON|OFF] [-DSOURCES=ON]
-#         [-DGUI_SMOKE=off|windows|linux] [-DEXTRA_TERMS=<term>;...] [-DDRIVE=<letter>:]
-#         [-DDRYRUN_ROOT=<dir>] [-DWINDOWS_PREFIX=<dir>] -P <clone>/packaging/dry-run.cmake
+# Local dry run of the release build, on Windows, on Linux or on macOS:
+#   cmake [-DWORKSPACE_ROOT=<root>] -DBUNDLE=ON|OFF [-DOWN_PREFIX=ON|OFF]
+#         [-DGUI_SMOKE=off|windows|linux|macos] [-DEXTRA_TERMS=<term>;...] [-DDRIVE=<letter>:]
+#         [-DDRYRUN_ROOT=<dir>] -P <clone>/packaging/dry-run.cmake
 # <clone> is the rawreel clone (any folder name) with its submodules in libs/; WORKSPACE_ROOT is
 # the folder that holds it (default: its parent). The developer prefix is
 # <clone>/libs/_third_party/<toolchain>, the superbuild source <clone>/libs/dvv-build/deps.
@@ -12,14 +12,15 @@
 # /tmp/rawreel-dryrun), a neutral folder on a Linux file system, so the file modes are real (a
 # Windows drive mounted in WSL reports every file as 777) and no home folder path enters the build.
 # Both build rawreel Release in a separate tree, run the unit and CLI tests of release.yml, build
-# the packages and run package-smoke.cmake on them. On Linux with BUNDLE=ON the FFmpeg archive of
-# the clang prefix and the one of the Windows prefix (WINDOWS_PREFIX, default
-# <clone>/libs/_third_party/msvc) are verified, and both must name the same custom_ffmpeg commit.
+# the packages and run package-smoke.cmake on them.
+# macOS (Apple Silicon): as Linux (DRYRUN_ROOT, default /tmp/rawreel-dryrun), with the appleclang
+# prefix and the ninja-macos preset. The GUI smoke runs by default (GUI_SMOKE=macos): the
+# loaded-image audit of the app (U-MAC8) is meant for the development Mac, which has a GPU.
 # The packages are local test artifacts; only the release workflow builds published ones.
 cmake_minimum_required(VERSION 3.25)
 
-if(NOT CMAKE_HOST_WIN32 AND NOT CMAKE_HOST_LINUX)
-    message(FATAL_ERROR "dry-run: Windows or Linux only")
+if(NOT CMAKE_HOST_WIN32 AND NOT CMAKE_HOST_LINUX AND NOT CMAKE_HOST_APPLE)
+    message(FATAL_ERROR "dry-run: Windows, Linux or macOS only")
 endif()
 # The clone is the folder above packaging/; its name is not fixed.
 cmake_path(GET CMAKE_CURRENT_LIST_DIR PARENT_PATH clone_dir)
@@ -61,7 +62,7 @@ if(CMAKE_HOST_WIN32 AND NOT INNER)
         message(FATAL_ERROR "dry-run: subst ${DRIVE} failed")
     endif()
     set(forward "")
-    foreach(name IN ITEMS BUNDLE OWN_PREFIX SOURCES GUI_SMOKE)
+    foreach(name IN ITEMS BUNDLE OWN_PREFIX GUI_SMOKE)
         if(DEFINED ${name})
             list(APPEND forward "-D${name}=${${name}}")
         endif()
@@ -97,9 +98,15 @@ if(CMAKE_HOST_WIN32)
     set(area "${N}/_dryrun")
     set(area_name "_dryrun")
 else()
-    set(platform linux)
-    set(toolchain clang)
-    set(preset ninja-clang)
+    if(CMAKE_HOST_APPLE)
+        set(platform macos)
+        set(toolchain appleclang)
+        set(preset ninja-macos)
+    else()
+        set(platform linux)
+        set(toolchain clang)
+        set(preset ninja-clang)
+    endif()
     set(REAL_ROOT "${N}")
     if(NOT DRYRUN_ROOT)
         set(DRYRUN_ROOT "/tmp/rawreel-dryrun")
@@ -107,10 +114,6 @@ else()
     cmake_path(ABSOLUTE_PATH DRYRUN_ROOT NORMALIZE)
     string(REGEX REPLACE "/+$" "" area "${DRYRUN_ROOT}")
     set(area_name "${area}")
-    if(SOURCES)
-        message(FATAL_ERROR "dry-run: SOURCES=ON is for the Windows dry run (its sources archive "
-                            "covers the Linux package too)")
-    endif()
 endif()
 if(BUNDLE)
     set(BUNDLE ON)
@@ -118,19 +121,6 @@ if(BUNDLE)
 else()
     set(BUNDLE OFF)
     set(variant ${toolchain}-off)
-endif()
-if(platform STREQUAL "linux" AND BUNDLE)
-    # The FFmpeg archive of the Windows prefix is verified too (below): stop before the build when
-    # that prefix is not there, as in a Linux-only clone.
-    if(NOT WINDOWS_PREFIX)
-        set(WINDOWS_PREFIX "${N}/${clone}/libs/_third_party/msvc")
-    endif()
-    if(NOT EXISTS "${WINDOWS_PREFIX}/dvv-third-party-state.cmake")
-        message(FATAL_ERROR "dry-run: with BUNDLE=ON on Linux the FFmpeg archive of the Windows "
-                            "prefix is verified too, but ${WINDOWS_PREFIX} is not a bootstrapped "
-                            "prefix: pass -DWINDOWS_PREFIX=<a bootstrapped msvc prefix> or use "
-                            "BUNDLE=OFF")
-    endif()
 endif()
 if(CMAKE_HOST_WIN32)
     # The linker writes temporary objects (lnk{GUID}.tmp, the embedded manifest) to TMP and the PDB
@@ -148,6 +138,12 @@ if(NOT DEFINED OWN_PREFIX)
 endif()
 if(NOT GUI_SMOKE)
     set(GUI_SMOKE off)
+    if(platform STREQUAL "macos")
+        set(GUI_SMOKE macos)
+    endif()
+endif()
+if(NOT GUI_SMOKE STREQUAL "off" AND NOT GUI_SMOKE STREQUAL platform)
+    message(FATAL_ERROR "dry-run: GUI_SMOKE must be off or ${platform}")
 endif()
 
 # Prefix.
@@ -175,6 +171,11 @@ else()
     endif()
     if(CMAKE_HOST_WIN32)
         set(generator -G "Visual Studio 18 2026" -A x64)
+    elseif(CMAKE_HOST_APPLE)
+        # The compilers and targets of bootstrap.sh --toolchain appleclang.
+        set(generator -G Ninja -DCMAKE_C_COMPILER=/usr/bin/clang
+                      -DCMAKE_CXX_COMPILER=/usr/bin/clang++ -DCMAKE_OSX_DEPLOYMENT_TARGET=27.0
+                      -DCMAKE_OSX_ARCHITECTURES=arm64)
     else()
         # The compilers of bootstrap.sh --toolchain clang.
         set(generator -G Ninja -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19)
@@ -194,9 +195,14 @@ endif()
 # the tree is shared by both prefixes and by every drive letter, and a cached find_package result
 # of an earlier run must not mix two prefixes.
 set(build "${area}/build/rawreel-${variant}")
+set(build_rpath "")
+if(platform STREQUAL "macos")
+    # The preset's build rpath names the developer prefix; the tree's exes run from this prefix.
+    set(build_rpath "-DCMAKE_BUILD_RPATH=${prefix}/lib")
+endif()
 message(STATUS "dry-run: rawreel configure")
 execute_process(COMMAND "${CMAKE_COMMAND}" --preset ${preset} --fresh -B "${build}"
-                        "-DCMAKE_PREFIX_PATH=${prefix}"
+                        "-DCMAKE_PREFIX_PATH=${prefix}" ${build_rpath}
                 WORKING_DIRECTORY "${N}/${clone}" RESULT_VARIABLE result)
 if(NOT result EQUAL 0)
     message(FATAL_ERROR "dry-run: rawreel configure failed (${result})")
@@ -208,42 +214,13 @@ step("rawreel tests" "${CMAKE_COMMAND}" -E env DVV_LEAK_CHECK=fail DVV_REQUIRE_F
 # Packages.
 set(out "${area}/out/${variant}")
 set(packaging "${N}/${clone}/packaging")
-if(SOURCES)
-    set(check "${area}/ffmpeg-check")
-    step("verify-ffmpeg-archive" "${CMAKE_COMMAND}" "-DPREFIX=${prefix}" "-DWORK_DIR=${check}"
-         -P "${packaging}/verify-ffmpeg-archive.cmake")
-    step("make-packages" "${CMAKE_COMMAND}" "-DBUILD_DIR=${build}" -DCONFIG=Release
-         "-DOUT_DIR=${out}" -DSOURCES=ON "-DFFMPEG_COMMIT_FILE=${check}/custom_ffmpeg-commit.txt"
-         -P "${packaging}/make-packages.cmake")
-    set(require_sources ON)
-else()
-    if(platform STREQUAL "linux" AND BUNDLE)
-        # One custom_ffmpeg commit for both packages: the Windows job's sources archive covers the
-        # Linux package too. WINDOWS_PREFIX is set and checked above.
-        set(check "${area}/ffmpeg-check")
-        step("verify-ffmpeg-archive (linux)" "${CMAKE_COMMAND}" "-DPREFIX=${prefix}"
-             "-DWORK_DIR=${check}/linux" -P "${packaging}/verify-ffmpeg-archive.cmake")
-        step("verify-ffmpeg-archive (windows)" "${CMAKE_COMMAND}" "-DPREFIX=${WINDOWS_PREFIX}"
-             "-DWORK_DIR=${check}/windows" -P "${packaging}/verify-ffmpeg-archive.cmake")
-        file(READ "${check}/linux/custom_ffmpeg-commit.txt" linux_commit)
-        file(READ "${check}/windows/custom_ffmpeg-commit.txt" windows_commit)
-        string(STRIP "${linux_commit}" linux_commit)
-        string(STRIP "${windows_commit}" windows_commit)
-        if(NOT linux_commit STREQUAL windows_commit)
-            message(FATAL_ERROR "dry-run: the Linux FFmpeg archive is built from ${linux_commit}, "
-                                "the Windows one from ${windows_commit}")
-        endif()
-        message(STATUS "dry-run: custom_ffmpeg commit ${linux_commit} in both prefixes")
-    endif()
-    step("make-packages" "${CMAKE_COMMAND}" "-DBUILD_DIR=${build}" -DCONFIG=Release
-         "-DOUT_DIR=${out}" -P "${packaging}/make-packages.cmake")
-    set(require_sources OFF)
-endif()
+step("make-packages" "${CMAKE_COMMAND}" "-DBUILD_DIR=${build}" -DCONFIG=Release
+     "-DOUT_DIR=${out}" -P "${packaging}/make-packages.cmake")
 # Called directly, not through step(): EXTRA_TERMS holds ';' and must stay one argument.
 message(STATUS "dry-run: package-smoke")
 execute_process(COMMAND "${CMAKE_COMMAND}" "-DOUT_DIR=${out}" -DPLATFORM=${platform}
                         "-DWORK_DIR=${area}/smoke/${variant}" "-DGUI_SMOKE=${GUI_SMOKE}"
-                        "-DEXTRA_TERMS=${EXTRA_TERMS}" "-DREQUIRE_SOURCES=${require_sources}"
+                        "-DEXTRA_TERMS=${EXTRA_TERMS}"
                         -P "${packaging}/package-smoke.cmake"
                 RESULT_VARIABLE result)
 if(NOT result EQUAL 0)

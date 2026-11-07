@@ -7,6 +7,7 @@
 
 using dvv::platform::PixelSize;
 using rawreel::MAX_STREAMS;
+using rawreel::physicalPixelSize;
 using rawreel::PointD;
 using rawreel::ViewTransform;
 
@@ -124,5 +125,17 @@ TEST_SUITE("core") {
         CHECK(t.origin() == PointD{0, 0});
         CHECK(t.viewport() == PixelSize{211, 97});
         CHECK(t.image() == PixelSize{0, 23});
+    }
+
+    // macOS: a view's size in points times its layer's scale, rounded to nearest.
+    TEST_CASE("view: physicalPixelSize") {
+        CHECK(physicalPixelSize(400, 300, 2.0) == PixelSize{800, 600});
+        CHECK(physicalPixelSize(400.5, 300, 2.0) == PixelSize{801, 600});
+        CHECK(physicalPixelSize(1, 1, 1.5) == PixelSize{2, 2});
+        CHECK(physicalPixelSize(0, 300, 2.0).empty());
+        // At least one pixel on each axis of a non-empty view.
+        CHECK(physicalPixelSize(0.2, 0.2, 1.0) == PixelSize{1, 1});
+        CHECK(physicalPixelSize(-4, 300, 2.0).empty());
+        CHECK(physicalPixelSize(400, 300, 0.0).empty());
     }
 }

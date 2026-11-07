@@ -48,6 +48,13 @@ public:
     // Shuts a remaining Session down, checks the validation messages of a --selftest run, then
     // releases the registry and the pools.
     int OnExit() override;
+#if defined(__WXOSX__)
+    // Files opened from Finder or the Dock (design C5), also the ones of the launch, which wxOSX
+    // passes after OnInit(): the route of a drop on the window (MainFrame::openFiles), so the
+    // first file replaces the stream and the others are logged as ignored. Nothing without a main
+    // frame (a failed start) or once it is closing.
+    void MacOpenFiles(const wxArrayString& names) override;
+#endif
 
     // Called by MainFrame::onClose: detaches the bridge, then syncWait(session->shutdown()) and
     // releases the Session. Nothing it waits for needs the GUI thread. A second call does nothing.

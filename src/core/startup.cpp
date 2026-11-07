@@ -67,6 +67,11 @@ std::string maskFolders(std::string text, const FfmpegOrigin& origin) {
         const std::filesystem::path lib = std::filesystem::path("..") / "lib" / "ffmpeg";
         add((origin.appFolder / lib).lexically_normal(),
             dvv::media::utf8FromPath(std::filesystem::path("<app>") / lib));
+        // macOS bundle: Contents/MacOS/../Frameworks/ffmpeg.
+        const std::filesystem::path frameworks =
+            std::filesystem::path("..") / "Frameworks" / "ffmpeg";
+        add((origin.appFolder / frameworks).lexically_normal(),
+            dvv::media::utf8FromPath(std::filesystem::path("<app>") / frameworks));
         add(origin.appFolder, "<app>");
     }
     add(origin.homeFolder, "~");
@@ -113,7 +118,8 @@ std::string ffmpegStatusLine(const dvv::components::FfmpegStatus& status, Status
     } else if (!origin.appFolder.empty()) {
         const std::filesystem::path directory = status.directory.lexically_normal();
         if (directory == (origin.appFolder / "ffmpeg").lexically_normal() ||
-            directory == (origin.appFolder / ".." / "lib" / "ffmpeg").lexically_normal()) {
+            directory == (origin.appFolder / ".." / "lib" / "ffmpeg").lexically_normal() ||
+            directory == (origin.appFolder / ".." / "Frameworks" / "ffmpeg").lexically_normal()) {
             from = std::format(" from {}", CUSTOM_FFMPEG_URL);
         }
     }

@@ -1,0 +1,37 @@
+dyld[7085]: <B50703BD-4A2C-33A5-9B4B-5278B9C72B02> /private/tmp/smoke/rawreel 2/Загрузки/rawreel.app/Contents/MacOS/rawreel-gui
+dyld[7085]: <E5F218A4-4EC6-3334-9EE3-F63E737AB26C> /usr/lib/libAudioStatistics.dylib
+dyld[7085]: <EA99C094-01F2-3A79-8AFE-368392B35226> /usr/lib/libMobileGestalt.dylib
+dyld[7085]: <E1D17FEE-E5F2-307D-A0A4-A7DA07424E2E> /usr/lib/libbsm.0.dylib
+dyld[7085]: <C0680DF6-9900-3C29-A071-95A031686EF8> /usr/lib/libobjc.A.dylib
+dyld[7085]: <1E9BA4AA-B5DA-3CF3-80AC-4B880049573F> /usr/lib/libc++.1.dylib
+dyld[7085]: <4FDC9AA6-B344-37FE-B8C6-A4C94A038F57> /usr/lib/libSystem.B.dylib
+dyld[7085]: <C5FDDD2A-A45C-39E0-AF9C-64755A6BD394> /System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox
+dyld[7085]: <49229A03-C7B7-38DE-99D1-C8A923169FAB> /System/Library/PrivateFrameworks/AudioToolboxCore.framework/Versions/A/AudioToolboxCore
+dyld[7085]: <0E4CF3E4-B0C2-312A-B147-0BD4978EF0B7> /System/Library/Frameworks/IOKit.framework/Versions/A/IOKit
+dyld[7085]: <A697E7B9-8FF4-356C-A507-64B38AF1CCAA> /System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate
+dyld[7085]: <7B094BB2-DD4D-3A81-8C29-5879451255F5> /System/Library/Frameworks/Security.framework/Versions/A/Security
+dyld[7085]: <51EBB45A-C823-3BCA-8A5B-5321EA1D636A> /System/Library/PrivateFrameworks/AudioSession.framework/Versions/A/AudioSession
+dyld[7085]: <B7D8C7BA-8C30-3362-B3C7-D0998077DC1D> /System/Volumes/Preboot/Cryptexes/OS/usr/lib/libMetalMetricsInterpose.dylib
+dyld[7085]: move loaded to delayed: libcmark-gfm.dylib
+dyld[7085]: move loaded to delayed: libCGInterfaces.dylib
+dyld[7085]: move loaded to delayed: AccelerateGPU
+dyld[7085]: <FDDC479E-CA02-3003-ACED-1B6319B8C62B> /private/tmp/smoke/rawreel 2/Загрузки/rawreel.app/Contents/Frameworks/ffmpeg/libavutil.60.dylib
+dyld[7085]: <A1CB0E22-E816-30FB-A45D-621A23BE8A94> /private/tmp/smoke/rawreel 2/Загрузки/rawreel.app/Contents/Frameworks/ffmpeg/libswresample.6.dylib
+dyld[7085]: <E7A86726-9CAE-3DF8-9FA1-935500C90C7D> /private/tmp/smoke/rawreel 2/Загрузки/rawreel.app/Contents/Frameworks/ffmpeg/libswscale.9.dylib
+dyld[7085]: <9ED31DF8-F216-34D3-805A-FEFF2D908F24> /private/tmp/smoke/rawreel 2/Загрузки/rawreel.app/Contents/Frameworks/ffmpeg/libavcodec.62.dylib
+dyld[7085]: <D1294C96-5835-3525-9FD8-551D1FD36602> /private/tmp/smoke/rawreel 2/Загрузки/rawreel.app/Contents/Frameworks/ffmpeg/libavformat.62.dylib
+dyld[7085]: <5EA464B6-9B87-3824-B5F3-311778FCBE8C> /private/tmp/smoke/rawreel 2/Загрузки/rawreel.app/Contents/Frameworks/ffmpeg/libavfilter.11.dylib
+dyld[7085]: move delayed to loaded: TextRecognition
+dyld[7085]: move delayed to loaded: CVNLP
+dyld[7085]: move delayed to loaded: LanguageModeling
+dyld[7085]: <FC5381C8-C64D-3CC4-9AE8-5BD53A2CCF11> /private/tmp/smoke/rawreel 2/Загрузки/rawreel.app/Contents/Frameworks/libvulkan.1.dylib
+[Vulkan Loader] DRIVER:         Searching for driver manifest files
+[Vulkan Loader] DRIVER:            In following locations:
+[Vulkan Loader] DRIVER:               /private/tmp/smoke/rawreel 2/Загрузки/rawreel.app/Contents/Resources/vulkan/icd.d/libkosmickrisp_icd.json
+[Vulkan Loader] DRIVER:            Found the following files:
+[Vulkan Loader] DRIVER:               /private/tmp/smoke/rawreel 2/Загрузки/rawreel.app/Contents/Resources/vulkan/icd.d/libkosmickrisp_icd.json
+[Vulkan Loader] DRIVER:         Found ICD manifest file /private/tmp/smoke/rawreel 2/Загрузки/rawreel.app/Contents/Resources/vulkan/icd.d/libkosmickrisp_icd.json, version 1.0.0
+[Vulkan Loader] DEBUG | DRIVER: Searching for ICD drivers named ../../../Frameworks/libvulkan_kosmickrisp.dylib
+dyld[7085]: <CCF7DE1B-1D36-37C5-A6A2-57256A11747D> /private/tmp/smoke/rawreel 2/Загрузки/rawreel.app/Contents/Frameworks/libvulkan_kosmickrisp.dylib
+2026-11-07T17:32:38.655Z INFO  Vulkan device: Apple M4, driver KosmicKrisp vulkan-sdk-1.4.363 (git-269a955c89) [main_frame.cpp:733]
+2026-11-07T17:32:45.101Z INFO  rawreel-gui --selftest: passed [app.cpp:106]

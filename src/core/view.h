@@ -17,6 +17,14 @@ struct PointD {
     bool operator==(const PointD&) const = default;
 };
 
+// The physical pixel size of a view `width_points` x `height_points` in size (fractional points
+// allowed) whose layer has `scale` pixels per point (macOS: the CAMetalLayer's contentsScale, the
+// window's backing scale factor): points x scale rounded to nearest, at least 1 on each axis of a
+// non-empty view (both points and scale > 0); empty otherwise. The macOS viewport passes it as
+// the presenter's extent.
+[[nodiscard]] dvv::platform::PixelSize physicalPixelSize(double width_points, double height_points,
+                                                         double scale) noexcept;
+
 class ViewTransform {  // value type
 public:
     ViewTransform() = default;  // viewport 0x0, image 0x0, zoom 0, origin (0, 0)

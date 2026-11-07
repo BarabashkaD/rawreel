@@ -258,7 +258,8 @@ void CrashHandler::crashIfRequested() {
 
 }  // namespace rawreel
 #else
-// No crash handler outside Windows in v1.0: Linux relies on core dumps.
+// No crash handler outside Windows: Linux relies on core dumps (v1.0), and macOS writes its own
+// crash report of every crashing process to ~/Library/Logs/DiagnosticReports (design C7).
 namespace rawreel {
 std::string CrashHandler::install(std::string_view /*exe*/) {
     return {};

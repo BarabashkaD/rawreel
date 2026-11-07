@@ -32,7 +32,7 @@ struct GuiArguments {
     Scenario selftest = Scenario::None;
     std::uint32_t inflight = 4;         // --inflight K, 1..64, only with --selftest perf
     std::optional<std::string> uri;     // positional, at most one (opened as the stream, frame 0)
-    std::optional<std::string> config;  // --config <file> (UTF-8): replaces rawreel.json by the exe
+    std::optional<std::string> config;  // --config <file> (UTF-8): replaces the default file
     bool help = false;
 };
 // Options take their value in the next argument. Every error is Errc::Format with one of:
@@ -59,7 +59,7 @@ inline constexpr char USAGE[] =
   --gpu N       use GPU N (the index dvv-gpu-info lists) instead of the best one
   --selftest S  run a scripted check and exit: smoke, player, lost or perf
   --inflight K  frames in flight for --selftest perf (default 4)
-  --config F    read config file F instead of rawreel.json next to rawreel-gui
+  --config F    read config file F instead of the default rawreel.json
   --help        print this text
   URI           a source to open (a path, file:..., synthetic:...)
 

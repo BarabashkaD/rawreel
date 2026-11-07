@@ -17,6 +17,7 @@
 // clang-format on
 
 #include "core/commands.h"
+#include "dvv/base/move_only_function.h"
 #include "render/display_state.h"
 
 namespace rawreel {
@@ -28,8 +29,8 @@ class PlayerPanel final : public wxPanel {
 public:
     // `execute` and `seek` are the transport bar's (MainFrame::execute, Session::seek).
     PlayerPanel(wxWindow* parent, std::shared_ptr<DisplayState> display,
-                std::move_only_function<void(Command)> execute,
-                std::move_only_function<void(std::int64_t)> seek);
+                dvv::MoveOnlyFunction<void(Command)> execute,
+                dvv::MoveOnlyFunction<void(std::int64_t)> seek);
 
     [[nodiscard]] wxInfoBarGeneric& infoBar() noexcept { return *info_bar_; }
     [[nodiscard]] const wxInfoBarGeneric& infoBar() const noexcept { return *info_bar_; }

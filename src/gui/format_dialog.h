@@ -120,7 +120,9 @@ public:
     // The size-mismatch hint under the values line; empty when hidden.
     [[nodiscard]] wxString colourHintText() const;
     // True when the first child that can take the focus is the Colour list (what wx focuses when
-    // the dialog opens): on a locked stream Enter then presses OK, not Load JSON.
+    // the dialog opens): on a locked stream Enter then presses OK, not Load JSON. macOS: also when
+    // no child can take the focus (no Full Keyboard Access) and OK is the default button, which
+    // Return presses.
     [[nodiscard]] bool colourTakesInitialFocus() const;
 
 private:

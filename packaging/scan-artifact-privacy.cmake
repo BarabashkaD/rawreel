@@ -6,7 +6,8 @@
 #   rawreel_scan_privacy(FILE <file> MODE full|paths|notices [BINARY] [EXTRA_TERMS <term>...]
 #                        FINDINGS <var>)
 #
-# MODE full: user-profile paths, /home/<name> other than runner, non-noreply e-mail addresses,
+# MODE full: user-profile paths, /home/<name> and /Users/<name> (macOS) other than runner (the CI
+# runners' home folder on Linux and on macOS), non-noreply e-mail addresses,
 # IPv4 addresses and EXTRA_TERMS (3 or more characters, case-insensitive substrings). MODE paths:
 # the two path rules and EXTRA_TERMS. MODE notices: the full rules on the lines outside licence blocks, the
 # path rules on every line. BINARY: the ASCII strings and the UTF-16LE strings of the file.
@@ -36,6 +37,8 @@ set(RAWREEL_PRIVACY_EMAIL_ALLOW
 # string right after the separator there).
 set(_rawreel_profile_regex "[A-Za-z]:[\\/]+[Uu][Ss][Ee][Rr][Ss][\\/]+([^\\/ \t\"]|$)")
 set(_rawreel_home_regex "/home/[A-Za-z0-9._-]+")
+# macOS: any name after /Users/ (also one that starts with a non-ASCII character, as above).
+set(_rawreel_macos_home_regex "/Users/[^/ \t\"]*")
 set(_rawreel_email_regex "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z][A-Za-z]+")
 set(_rawreel_ipv4_regex "[0-9]\\.[0-9]+\\.[0-9]+\\.[0-9]")
 
@@ -78,8 +81,11 @@ function(_rawreel_privacy_line text full terms out)
         list(APPEND kinds "Windows user profile path")
     endif()
     string(REGEX MATCHALL "${_rawreel_home_regex}" homes "${text}")
-    foreach(home IN LISTS homes)
-        if(NOT home STREQUAL "/home/runner") # privacy-lint: allow
+    # A Windows profile path written with forward slashes is the rule above.
+    string(REGEX REPLACE "[A-Za-z]:/+Users/" ":" macos_text "${text}")
+    string(REGEX MATCHALL "${_rawreel_macos_home_regex}" macos_homes "${macos_text}")
+    foreach(home IN LISTS homes macos_homes)
+        if(NOT home MATCHES "^/(home|Users)/runner$") # privacy-lint: allow
             list(APPEND kinds "home directory path")
             break()
         endif()
@@ -135,7 +141,7 @@ endfunction()
 
 # The prefilter regex (one alternation of the rules) for file(STRINGS ... REGEX).
 function(_rawreel_privacy_prefilter full terms out)
-    set(parts "[A-Za-z]:[\\/]+[Uu][Ss][Ee][Rr][Ss][\\/]" "/home/")
+    set(parts "[A-Za-z]:[\\/]+[Uu][Ss][Ee][Rr][Ss][\\/]" "/home/" "/Users/")
     if(full)
         list(APPEND parts "@" "${_rawreel_ipv4_regex}")
     endif()

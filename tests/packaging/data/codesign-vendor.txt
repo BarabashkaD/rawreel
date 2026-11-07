@@ -1,0 +1,16 @@
+Executable=/private/tmp/smoke/rawreel 2/Загрузки/rawreel.app/Contents/Frameworks/libvulkan_kosmickrisp.dylib
+Identifier=libvulkan_kosmickrisp
+Format=Mach-O thin (arm64)
+CodeDirectory v=20500 size=30305 flags=0x12000(library-validation,runtime) hashes=941+2 location=embedded
+Signature size=8975
+Authority=Developer ID Application: LunarG, Inc. (4777T3625D)
+Authority=Developer ID Certification Authority
+Authority=Apple Root CA
+Timestamp=2 Nov 2026 at 20:43:48
+Info.plist=not bound
+TeamIdentifier=4777T3625D
+Runtime Version=27.0.0
+Sealed Resources=none
+Internal requirements count=1 size=184
+Total signatures=1
+Chosen signature=1

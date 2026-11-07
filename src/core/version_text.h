@@ -15,8 +15,12 @@ struct VulkanStatus {
     bool available = false;
     std::string device;  // e.g. "NVIDIA GeForce ..." or "llvmpipe (...)"
     std::string api;     // "1.4.318"
+    std::string driver;  // "<driverName> <driverInfo>"; empty when unknown
     std::string reason;  // when not available
 };
+// "<driverName> <driverInfo>" (either may be empty), as the Vulkan line and the GUI log name it.
+[[nodiscard]] std::string vulkanDriverText(std::string_view name, std::string_view info);
+
 struct VersionReport {
     std::vector<std::pair<std::string, std::string>> packages;  // packageVersions()
     std::string vulkan;                                         // vulkanStatusLine(...)

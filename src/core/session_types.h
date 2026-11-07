@@ -16,6 +16,7 @@
 #include "core/player.h"
 #include "core/view.h"  // MAX_STREAMS (= 1, the view section)
 #include "dvv/base/error.h"
+#include "dvv/base/move_only_function.h"
 #include "dvv/media/display.h"
 #include "dvv/media/frame_store.h"
 #include "dvv/media/source.h"
@@ -77,7 +78,7 @@ public:
 class ITimer {  // one pending deadline; schedule() replaces it
 public:
     virtual ~ITimer() = default;
-    virtual void schedule(Clock::time_point when, std::move_only_function<void()> callback) = 0;
+    virtual void schedule(Clock::time_point when, dvv::MoveOnlyFunction<void()> callback) = 0;
     // Binding: blocks until a running callback has returned; must not be called from inside a
     // callback. ThreadTimer's destructor implies cancel().
     virtual void cancel() = 0;

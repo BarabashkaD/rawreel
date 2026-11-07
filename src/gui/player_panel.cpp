@@ -25,8 +25,8 @@ constexpr int INFO_BAR_BORDERS_DIP = 12;  // around the infobar's buttons (wxInf
 }  // namespace
 
 PlayerPanel::PlayerPanel(wxWindow* parent, std::shared_ptr<DisplayState> display,
-                         std::move_only_function<void(Command)> execute,
-                         std::move_only_function<void(std::int64_t)> seek)
+                         dvv::MoveOnlyFunction<void(Command)> execute,
+                         dvv::MoveOnlyFunction<void(std::int64_t)> seek)
     : wxPanel(parent), info_bar_(new wxInfoBarGeneric(this)) {
     // No slide animation: each animation step would resize the viewport's swapchain.
     info_bar_->SetShowHideEffects(wxSHOW_EFFECT_NONE, wxSHOW_EFFECT_NONE);

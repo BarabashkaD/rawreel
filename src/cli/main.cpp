@@ -15,6 +15,7 @@
 #include "cli/commands.h"
 #include "cli/output.h"
 #include "cli/utf8_arguments.h"
+#include "core/vulkan_driver.h"
 #include "dvv/base/json.h"
 #include "dvv/base/leak_check.h"
 #include "dvv/base/lifetime.h"
@@ -95,6 +96,7 @@ int wmain(int argc, wchar_t** argv) {
 }
 #else
 int main(int argc, char** argv) {
+    rawreel::applyBundledDriver();  // first: before anything can open the Vulkan loader
     try {
         // The crash handler first (design M4 v2 D22), then the logger, then the test hook.
         const std::string crash_warning = rawreel::CrashHandler::install("rawreel-cli");

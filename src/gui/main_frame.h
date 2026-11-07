@@ -54,6 +54,12 @@ inline constexpr int INFOBAR_REOPEN_ID = wxID_HIGHEST + 60;  // below COMMAND_ID
 inline constexpr int INFOBAR_FORMAT_ID = wxID_HIGHEST + 61;  // "Format..." (§7 trailing bytes)
 inline constexpr int COMMAND_ID_BASE = wxID_HIGHEST + 100;   // menu id = base + int(command)
 
+// The menu item id of `command`: COMMAND_ID_BASE + int(command), except on macOS, where About is
+// wxID_ABOUT and Quit is wxID_EXIT, so wxOSX shows them in the application menu (design C5).
+[[nodiscard]] int menuId(Command command) noexcept;
+// The command of a menu item id; nullopt for an id of no command.
+[[nodiscard]] std::optional<Command> commandOfMenuId(int id) noexcept;
+
 // Where an execute() call came from (the Loop log line names it).
 enum class CommandSource : std::uint8_t {
     Script,  // the selftest script or other program code
@@ -170,6 +176,13 @@ private:
     void onStatusTimer(wxTimerEvent& event);
     void onIconize(wxIconizeEvent& event);
     void onShow(wxShowEvent& event);
+#if defined(__WXOSX__)
+    // wxGTK and wxMSW keep a top-level window at its minimum size on every resize, wxOSX only on
+    // the user's (windowWillResize:toSize:): a SetSize() or SetClientSize() below the minimum
+    // shrinks the window, and the viewport below 320x240 DIP (D8). The frame applies its minimum
+    // to those as well.
+    void DoSetSize(int x, int y, int width, int height, int flags) override;
+#endif
     // The minimum client size from the real controls (D8), the client grown to it and the
     // docks fitted to it; again after a DPI change and after a dock change.
     void applyLayoutLimits();

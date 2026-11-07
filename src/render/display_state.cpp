@@ -59,8 +59,8 @@ void DisplayState::notify() {
     }
 }
 
-void DisplayState::setOnChanged(std::move_only_function<void()> callback) {
-    std::move_only_function<void()> previous;
+void DisplayState::setOnChanged(dvv::MoveOnlyFunction<void()> callback) {
+    dvv::MoveOnlyFunction<void()> previous;
     {
         std::lock_guard lock(callback_mutex_);  // waits for a running callback
         previous = std::exchange(on_changed_, std::move(callback));

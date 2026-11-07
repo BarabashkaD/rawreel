@@ -38,7 +38,7 @@ add_executable(rawreel_core_tests
     test_format_choice.cpp test_format_presets.cpp
     test_gui_arguments.cpp test_info_text.cpp test_layout.cpp test_perf_stats.cpp test_player.cpp test_session.cpp
     test_session_storm.cpp test_session_types.cpp
-    test_open_text.cpp test_source_provider.cpp test_startup.cpp
+    test_open_text.cpp test_source_provider.cpp test_startup.cpp test_vulkan_driver.cpp
     test_status_text.cpp test_timer.cpp test_view.cpp)
 target_link_libraries(rawreel_core_tests PRIVATE rawreel_core doctest::doctest)
 dvv_link_components(rawreel_core_tests dvv::media_sources)
@@ -169,8 +169,9 @@ if(TARGET rawreel_gui)
     endforeach()
 endif()
 # Linux start-up without a usable X11 display: DISPLAY and WAYLAND_DISPLAY are unset by
-# the script, so no window opens (label gui, not display).
-if(TARGET rawreel_gui AND NOT WIN32)
+# the script, so no window opens (label gui, not display). Not on macOS: Cocoa needs no display
+# variable, and rawreel-gui does no X11 start-up there (main.cpp).
+if(TARGET rawreel_gui AND NOT WIN32 AND NOT APPLE)
     add_test(NAME rawreel.gui_start.no_display
              COMMAND ${CMAKE_COMMAND} -DGUI=$<TARGET_FILE:rawreel_gui>
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/gui/run-gui-no-display.cmake)

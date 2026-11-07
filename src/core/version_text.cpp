@@ -25,9 +25,20 @@ std::vector<std::pair<std::string, std::string>> packageVersions() {
     };
 }
 
+std::string vulkanDriverText(std::string_view name, std::string_view info) {
+    if (info.empty()) {
+        return std::string(name);
+    }
+    return name.empty() ? std::string(info) : std::format("{} {}", name, info);
+}
+
 std::string vulkanStatusLine(const VulkanStatus& status) {
     if (status.available) {
-        return std::format("Vulkan: {}, API {}", status.device, status.api);
+        if (status.driver.empty()) {
+            return std::format("Vulkan: {}, API {}", status.device, status.api);
+        }
+        return std::format("Vulkan: {}, API {}, driver {}", status.device, status.api,
+                           status.driver);
     }
     return std::format("Vulkan: not available ({})", status.reason);
 }
