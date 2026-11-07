@@ -46,6 +46,11 @@ public:
     // recreated; MainFrame::onPresenterFailed logs it (Task 9: infobar with Reopen).
     void setFailureHandler(std::function<void(const dvv::Error&)> handler);
     void requestFrame();  // presenter->requestFrame() when there is one
+    // The resize entry: with a presenter, syncNativeWindow() and then
+    // presenter->resize(physicalClientSize()). onSize calls it, and on macOS so does the child
+    // view's viewDidChangeBackingProperties (a display-scale change sends no wxEVT_SIZE). GUI
+    // thread.
+    void resizePresenter();
     // Test only (--selftest with RAWREEL_GUI_FAULT=presenter): the record function of every
     // presenter frame throws, so each presenter fails with Errc::Internal (the D25 path).
     void failPresentersForTest() noexcept { fail_presenters_ = true; }
@@ -66,7 +71,8 @@ public:
     }
     // The epoch of the current stack (ISessionEvents::stackChanged); 0 before the first.
     [[nodiscard]] std::uint64_t epoch() const noexcept { return epoch_; }
-    // The client area in physical pixels (wx 3.3 ToPhys).
+    // The client area in physical pixels (wx 3.3 ToPhys); on macOS nativePixelSize(): the child
+    // view's points times its layer's contentsScale.
     [[nodiscard]] dvv::platform::PixelSize physicalClientSize() const;
     [[nodiscard]] const std::shared_ptr<DisplayState>& display() const noexcept { return display_; }
     // The renderer's last recorded composite; nullopt without a renderer (no stack). GUI thread.

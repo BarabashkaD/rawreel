@@ -193,6 +193,22 @@ TEST_CASE("gui arguments: the URI") {
         CHECK(arguments->uri == std::optional<std::string>("synthetic:gradient?w=64&h=48"));
         CHECK(arguments->appearance == Appearance::Light);
     }
+#ifdef __APPLE__
+    SUBCASE("a LaunchServices process serial number is not a URI") {
+        const auto arguments = parse({"-psn_0_123456", "clip.yuv"});
+        REQUIRE(arguments.has_value());
+        CHECK(arguments->uri == std::optional<std::string>("clip.yuv"));
+        const auto alone = parse({"-psn_0_123456"});
+        REQUIRE(alone.has_value());
+        CHECK_FALSE(alone->uri.has_value());
+    }
+#else
+    SUBCASE("-psn_ is an ordinary URI here") {
+        const auto arguments = parse({"-psn_0_123456"});
+        REQUIRE(arguments.has_value());
+        CHECK(arguments->uri == std::optional<std::string>("-psn_0_123456"));
+    }
+#endif
     SUBCASE("two URIs") {
         checkFormatError({"a.yuv", "b.yuv"}, "at most one URI");
     }

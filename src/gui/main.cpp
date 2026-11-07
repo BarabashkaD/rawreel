@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "core/gui_arguments.h"
+#include "core/vulkan_driver.h"
 #include "dvv/base/leak_check.h"
 #include "dvv/base/log.h"
 #include "gui/app.h"
@@ -30,6 +31,7 @@ namespace {
 // Parses, then runs wx through `start_wx`; returns the process exit code.
 template <class StartWx>
 int run(std::span<const std::string_view> args, StartWx start_wx) {
+    rawreel::applyBundledDriver();  // first: before anything can open the Vulkan loader
     dvv::Result<rawreel::GuiArguments> arguments = rawreel::parseGuiArguments(args);
     if (!arguments) {
         std::fprintf(stderr, "rawreel-gui: %s\n\n%s", arguments.error().message.c_str(),
@@ -80,8 +82,10 @@ int wmain(int argc, wchar_t** argv) {
     }
 }
 #else
-// Linux: the arguments are UTF-8 already. run() parses them, then does the X11 start-up
-// (XInitThreads, GDK limited to X11, the DISPLAY check) after --help and before wxEntry().
+// Linux and macOS: the arguments are UTF-8 already. run() parses them; on Linux it then does the
+// X11 start-up (XInitThreads, GDK limited to X11, the DISPLAY check) after --help and before
+// wxEntry(). macOS has no such step: Cocoa needs no display variable, and the files Finder or the
+// Dock opens come through App::MacOpenFiles(), not argv.
 int main(int argc, char** argv) {
     try {
         const std::vector<std::string_view> args(argv + 1, argv + argc);

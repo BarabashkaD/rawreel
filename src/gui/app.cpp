@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "core/config.h"
 #include "core/timer.h"
@@ -23,6 +24,7 @@
 #include "dvv/base/task.h"
 #include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/gpu_info.h"
+#include "dvv/media/types.h"
 #include "dvv/platform/native_window.h"
 #include "gui/crash_handler.h"
 #include "gui/log_panel.h"
@@ -121,6 +123,11 @@ void App::finish(int code, const std::string& message) {
 
 bool App::OnInit() {
     const std::string crash_warning = CrashHandler::install("rawreel-gui");  // first (D22)
+#if defined(__WXOSX__)
+    // The application menu says "About rawreel", "Hide rawreel" and "Quit rawreel", not the
+    // executable's capitalised name.
+    SetAppDisplayName("rawreel");
+#endif
     if (selftest()) {
         // wx's default GUI log target shows modal dialogs; the selftest runs unattended.
         delete wxLog::SetActiveTarget(new wxLogStderr());
@@ -219,6 +226,24 @@ bool App::OnInit() {
     }
     return true;
 }
+
+#if defined(__WXOSX__)
+void App::MacOpenFiles(const wxArrayString& names) {
+    std::vector<std::filesystem::path> files;
+    files.reserve(names.size());
+    for (const wxString& name : names) {
+        files.push_back(dvv::media::pathFromUtf8(name.utf8_string()));
+    }
+    DVV_LOG_INFO("{} files opened from Finder or the Dock", files.size());
+    for (wxWindow* window : wxTopLevelWindows) {
+        if (auto* frame = dynamic_cast<MainFrame*>(window);
+            frame != nullptr && !frame->IsBeingDeleted()) {
+            frame->openFiles(std::move(files));  // returns at once while the frame closes
+            return;
+        }
+    }
+}
+#endif
 
 void App::setAppearance() {
     const AppearanceResult result = SetAppearance(wxAppearance(the_arguments.appearance));

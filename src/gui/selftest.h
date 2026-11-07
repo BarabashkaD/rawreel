@@ -26,6 +26,7 @@
 #include "core/gui_arguments.h"
 #include "core/player.h"
 #include "core/session_types.h"
+#include "dvv/base/move_only_function.h"
 
 class wxGenericAboutDialog;  // NOLINT(readability-identifier-naming): wxWidgets' name
 class wxTextEntryDialog;
@@ -53,9 +54,9 @@ bool injectInput(wxEvtHandler& target, wxEvent& event);
 
 struct SelfTestStep {
     std::string name;
-    std::move_only_function<void()> start;  // once, when the step begins (may be empty)
+    dvv::MoveOnlyFunction<void()> start;  // once, when the step begins (may be empty)
     // Polled every tick; `seen` explains a miss.
-    std::move_only_function<bool(std::string& seen)> passed;
+    dvv::MoveOnlyFunction<bool(std::string& seen)> passed;
     std::chrono::milliseconds deadline{5000};
 };
 struct SelfTestScript {
@@ -158,9 +159,9 @@ private:
 // Dialog hooks of the selftest (design v2 §8.4). GUI thread only; empty outside --selftest; a hook
 // fires once.
 struct DialogHooks {
-    std::move_only_function<void(FormatDialog&)> format;
-    std::move_only_function<void(wxTextEntryDialog&)> uri;       // Open URI... (D29)
-    std::move_only_function<void(wxGenericAboutDialog&)> about;  // Help -> About (D29)
+    dvv::MoveOnlyFunction<void(FormatDialog&)> format;
+    dvv::MoveOnlyFunction<void(wxTextEntryDialog&)> uri;       // Open URI... (D29)
+    dvv::MoveOnlyFunction<void(wxGenericAboutDialog&)> about;  // Help -> About (D29)
 };
 [[nodiscard]] DialogHooks& dialogHooks();
 // Every ShowModal of these dialogs goes here. With a hook set, a CallAfter queued before ShowModal

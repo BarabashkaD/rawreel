@@ -8,6 +8,7 @@
 #include <mutex>
 
 #include "core/session_types.h"
+#include "dvv/base/move_only_function.h"
 
 namespace rawreel {
 
@@ -35,7 +36,7 @@ public:
     // callback_mutex_ (never mutex_). Binding: once setOnChanged({}) returns, no callback is
     // running and none will run. The callback must not block (the viewport calls
     // Presenter::requestFrame).
-    void setOnChanged(std::move_only_function<void()> callback);
+    void setOnChanged(dvv::MoveOnlyFunction<void()> callback);
     [[nodiscard]] DisplaySnapshot snapshot() const;
     [[nodiscard]] DisplayStats stats() const;
 
@@ -49,7 +50,7 @@ private:
     mutable bool read_ = true;  // the current FrameSet was returned by snapshot()
     DisplayStats stats_;
     std::mutex callback_mutex_;
-    std::move_only_function<void()> on_changed_;
+    dvv::MoveOnlyFunction<void()> on_changed_;
 };
 
 }  // namespace rawreel

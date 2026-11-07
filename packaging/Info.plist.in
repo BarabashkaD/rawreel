@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- rawreel-gui.app's Info.plist (MACOSX_BUNDLE_INFO_PLIST of rawreel_gui, configured by CMake).
+     The document types are the files rawreel opens (main_frame.cpp's Open filter and
+     open_text.cpp's container extensions), as a Viewer of rank Alternate: rawreel is offered in
+     "Open With" but never becomes a type's default app (design C5). -->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>@MACOSX_BUNDLE_EXECUTABLE_NAME@</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.barabashkad.rawreel</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>rawreel</string>
+    <key>CFBundleDisplayName</key>
+    <string>rawreel</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@rawreel_VERSION_STRING@</string>
+    <!-- Numbers and dots only, so the version without a release-stage label. -->
+    <key>CFBundleVersion</key>
+    <string>@PROJECT_VERSION@</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>27.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Raw video</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>yuv</string>
+                <string>raw</string>
+                <string>rgb</string>
+                <string>bin</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>YUV4MPEG2 video</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>y4m</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Video file</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>avi</string>
+                <string>mkv</string>
+                <string>mka</string>
+                <string>mov</string>
+                <string>mp4</string>
+                <string>m4v</string>
+                <string>nut</string>
+                <string>webm</string>
+                <string>mxf</string>
+                <string>ts</string>
+                <string>m2ts</string>
+                <string>mts</string>
+                <string>flv</string>
+                <string>asf</string>
+                <string>wmv</string>
+                <string>mpg</string>
+                <string>mpeg</string>
+                <string>vob</string>
+                <string>3gp</string>
+                <string>3g2</string>
+                <string>ogv</string>
+                <string>ogg</string>
+                <string>ivf</string>
+                <string>dv</string>
+                <string>f4v</string>
+                <string>wtv</string>
+                <string>h264</string>
+                <string>264</string>
+                <string>hevc</string>
+                <string>265</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

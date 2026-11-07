@@ -145,17 +145,25 @@ int fail(const Arguments& arguments, const dvv::Result<void>& failed, int code) 
     options.applicationName = "rawreel-cli";
     const auto registry = dvv::gpu::GpuRegistry::create(options);
     if (!registry) {
-        return {.available = false, .device = {}, .api = {}, .reason = registry.error().describe()};
+        return {.available = false,
+                .device = {},
+                .api = {},
+                .driver = {},
+                .reason = registry.error().describe()};
     }
     const std::optional<dvv::gpu::DeviceId> best = (*registry)->bestDevice();
     if (!best) {
-        return {
-            .available = false, .device = {}, .api = {}, .reason = "no usable Vulkan 1.3 device"};
+        return {.available = false,
+                .device = {},
+                .api = {},
+                .driver = {},
+                .reason = "no usable Vulkan 1.3 device"};
     }
     const dvv::gpu::GpuInfo& device = (*registry)->devices()[best->index()];
     return {.available = true,
             .device = device.name,
             .api = dvv::gpu::formatVulkanVersion(device.apiVersion),
+            .driver = vulkanDriverText(device.driverName, device.driverInfo),
             .reason = {}};
 }
 

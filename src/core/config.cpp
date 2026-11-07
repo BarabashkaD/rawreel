@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <optional>
 #include <string>
@@ -90,9 +91,32 @@ dvv::Result<Config> parseConfig(std::string_view text) {
     return config;
 }
 
+bool inAppBundle(const std::filesystem::path& executable) {
+    const std::filesystem::path macos = executable.parent_path();
+    const std::filesystem::path contents = macos.parent_path();
+    const std::filesystem::path bundle = contents.parent_path();
+    return macos.filename() == "MacOS" && contents.filename() == "Contents" &&
+           bundle.extension() == ".app";
+}
+
+dvv::Result<std::filesystem::path> defaultConfigPath(
+    const std::filesystem::path& executable, bool macos,
+    const std::function<dvv::Result<std::filesystem::path>()>& user_data_dir) {
+    if (macos && inAppBundle(executable)) {
+        DVV_TRY(const std::filesystem::path directory, user_data_dir());
+        return directory / CONFIG_FILE_NAME;
+    }
+    return executable.parent_path() / CONFIG_FILE_NAME;
+}
+
 dvv::Result<std::filesystem::path> defaultConfigPath() {
     DVV_TRY(const std::filesystem::path executable, dvv::paths::executablePath());
-    return executable.parent_path() / CONFIG_FILE_NAME;
+#if defined(__APPLE__)
+    constexpr bool MACOS = true;
+#else
+    constexpr bool MACOS = false;
+#endif
+    return defaultConfigPath(executable, MACOS, [] { return dvv::paths::userDataDir("rawreel"); });
 }
 
 namespace {

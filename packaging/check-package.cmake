@@ -6,7 +6,8 @@
 #     Every file under ROOT matches exactly one applicable manifest line and every applicable line
 #     exactly one file. ERRORS receives one message per problem (empty list = pass); CLASSES
 #     receives "<kind>|<relative path>" for every file ("unexpected|<path>" for a file no line
-#     names).
+#     names). A line "link <path> <target>" (the .dmg's Applications link) names a symbolic link
+#     and where it points; a link is no file of any class, so no other check reads it.
 #   rawreel_check_notices(FILE <notices file> SHIPPED <name>... ERRORS <var>)
 #     The notice entries (names) equal SHIPPED exactly; the Visual C++ runtime paragraph is absent
 #     (the zip ships no VC++ runtime).
@@ -37,16 +38,27 @@
 #   rawreel_work_dir_errors(DIR <dir> PROTECT <path>... ERRORS <var>)
 #     A folder a script may delete as a whole: not a filesystem root and not equal to or an
 #     ancestor of any PROTECT path (compared case-insensitively on Windows).
-#   rawreel_package_files(VERSION <v> PLATFORM <windows|linux> PACKAGE <var> SYMBOLS <var>
+#   rawreel_package_files(VERSION <v> PLATFORM <windows|linux|macos> PACKAGE <var> SYMBOLS <var>
 #                         CPACK <var> EXTENSION <var> GENERATOR <var> ERRORS <var>)
-#     The file names of a platform's package (rawreel-<v>-<platform>-x64.<ext>), its symbols
-#     archive (-symbols.zip on Windows, -symbols.tar.xz on Linux) and CPack's output before the
-#     rename (rawreel-<v>.<ext>); the extension (zip, tar.xz) and the CPack generator (ZIP, TXZ).
-#     Any other platform is an error and every name is empty.
-#   rawreel_ffmpeg_library_pattern(PLATFORM <windows|linux> LIBRARY <name> GLOB <var> REGEX <var>)
+#     The file names of a platform's package (rawreel-<v>-<platform>-<arch>.<ext>, arch x64, or
+#     arm64 on macOS), its symbols archive (-symbols.zip on Windows and macOS, -symbols.tar.xz on
+#     Linux) and CPack's output before the rename (rawreel-<v>.<ext>); the extension (zip, tar.xz,
+#     dmg) and the CPack generator (ZIP, TXZ). The macOS .dmg is built by make-packages.cmake with
+#     hdiutil, not by CPack: its CPACK and GENERATOR are empty. Any other platform is an error and
+#     every name is empty.
+#   rawreel_source_txt_versions(TEXT <SOURCE.txt> VERSIONS <var>)
+#     The custom_ffmpeg versions whose tag SOURCE.txt names as the corresponding source (each
+#     https://github.com/<owner>/custom_ffmpeg/tree/v<version> URL, in order).
+#   rawreel_ffmpeg_source_errors(NAME <package> CUSTOM_FFMPEG_VERSION <cf> [NAMED <v>...]
+#                                ERRORS <var>)
+#     A bundled FFmpeg's SOURCE.txt names exactly one custom_ffmpeg tag, v<cf>: the release that
+#     the package's third-party prefix pins (an empty CUSTOM_FFMPEG_VERSION is an error too).
+#   rawreel_ffmpeg_library_pattern(PLATFORM <windows|linux|macos> LIBRARY <name> GLOB <var>
+#                                  REGEX <var>)
 #     The FFmpeg library file the loader opens (dvv-components checks.cpp): <name>-<major>.dll on
-#     Windows, lib<name>.so.<major> (the SONAME) on Linux. GLOB finds the candidates in a folder;
-#     REGEX matches only that file in a path and captures <major> as CMAKE_MATCH_1.
+#     Windows, lib<name>.so.<major> (the SONAME) on Linux, lib<name>.<major>.dylib (the install name
+#     its siblings use) on macOS. GLOB finds the candidates in a folder; REGEX matches only that file
+#     in a path and captures <major> as CMAKE_MATCH_1.
 #
 # Linux ELF checks (pure: they read the text that readelf and ldd print, so they run on Windows):
 #   rawreel_is_elf(FILE <file> RESULT <var>)
@@ -70,10 +82,43 @@
 #     The sections whose flags hold C (compressed); the .debug files must have none, so the
 #     privacy scan can read them.
 #
+# macOS Mach-O checks (pure: they read the text that otool, codesign, dyld and the Vulkan loader
+# print):
+#   rawreel_is_macho(FILE <file> RESULT <var>)
+#     ON when the file starts with a 64-bit Mach-O or a universal (fat) magic.
+#   rawreel_otool_dependencies(TEXT <otool -L> DEPS <var>)
+#     The install names otool -L lists; for a library the first one is its own (LC_ID_DYLIB).
+#   rawreel_otool_load_commands(TEXT <otool -l> RPATHS <var> MINOS <var> [UUID <var>])
+#     The LC_RPATH paths, the minimum macOS version (LC_BUILD_VERSION minos, or
+#     LC_VERSION_MIN_MACOSX version; empty when neither) and the LC_UUID.
+#   rawreel_macho_errors(NAME <file name> KIND exe|library DEPS <name>... RPATHS <path>...
+#                        MINOS <v> [PREBUILT] ERRORS <var>)
+#     Both: MINOS is not above 27.0 (the app's minimum) and, unless PREBUILT (a third-party file
+#     shipped as released, such as the SDK's KosmicKrisp or custom_ffmpeg), exactly 27.0. exe:
+#     the rpaths are exactly @executable_path/../Frameworks and no dependency is an FFmpeg
+#     library (FFmpeg is loaded at run time), and exactly one LC_RPATH. Both: every dependency
+#     starts with @rpath/, @loader_path/, /usr/lib/ or /System/ (an exe's also with
+#     @executable_path/); a library's rpaths start with @loader_path.
+#   rawreel_codesign_errors(NAME <file name> TEXT <codesign -dv --verbose=2> KIND adhoc|vendor
+#                           [IDENTIFIER <id>] ERRORS <var>)
+#     adhoc: an ad-hoc signature made after the file's last change (not the linker's own) and, when
+#     given, that identifier. vendor: a Developer ID signature (an Authority chain), kept as the
+#     vendor made it.
+#   rawreel_loaded_image_errors(NAME <run> TEXT <DYLD_PRINT_LIBRARIES=1 output> BUNDLE <app>
+#                               ERRORS <var> [IMAGES <var>])
+#     Every image dyld loaded (a dyld line anywhere in a line of TEXT) has an absolute path inside
+#     BUNDLE, /usr/lib/ or /System/ (U-MAC8); at least one is named. IMAGES receives their paths.
+#     Other output (the Vulkan loader, the program's log) is ignored.
+#   rawreel_vulkan_driver_errors(NAME <run> TEXT <VK_LOADER_DEBUG=driver output> MANIFEST <json>
+#                                ERRORS <var>)
+#     The Vulkan loader names at least one driver manifest it found, and each one is MANIFEST.
+#
 # Manifest format: "<kind> <path> [<sha256>]" per line, "#" comments, path relative to the archive
 # root, "@V@" = the version. Kinds: ours (built here), ours-bundled (only when bundled), notices,
-# ffmpeg (a bundled third-party file with its SHA256; only when bundled). Lines that do not apply
-# to the variant are ignored, so their files count as unexpected.
+# ffmpeg (a bundled third-party file with its SHA256; only when bundled), vulkan (a third-party
+# file with its SHA256 that applies to both variants, bundled or not; the macOS app's Vulkan loader
+# and driver). Lines that do not apply to the variant are ignored, so their files count as
+# unexpected.
 include_guard(GLOBAL)
 
 # Lines of a text file as a list whose items cannot break CMake's list handling: '\', ';', '[' and
@@ -176,7 +221,19 @@ function(rawreel_check_manifest)
         if(line STREQUAL "" OR line MATCHES "^#")
             continue()
         endif()
-        if(NOT line MATCHES "^(ours|ours-bundled|notices|ffmpeg) +([^ ]+)( +([0-9a-fA-F]+))?$")
+        if(line MATCHES "^link +([^ ]+) +(/[^ ]+)$")
+            # A symbolic link and its target (the .dmg's Applications link); no file to hash.
+            set(path "${CMAKE_MATCH_1}")
+            if(path IN_LIST paths)
+                list(APPEND errors "bad manifest line (duplicate path): ${line}")
+                continue()
+            endif()
+            list(APPEND paths "${path}")
+            list(APPEND kinds link)
+            list(APPEND hashes "${CMAKE_MATCH_2}")
+            continue()
+        endif()
+        if(NOT line MATCHES "^(ours|ours-bundled|notices|ffmpeg|vulkan) +([^ ]+)( +([0-9a-fA-F]+))?$")
             list(APPEND errors "bad manifest line: ${line}")
             continue()
         endif()
@@ -184,8 +241,8 @@ function(rawreel_check_manifest)
         set(path "${CMAKE_MATCH_2}")
         string(TOLOWER "${CMAKE_MATCH_4}" hash)
         string(LENGTH "${hash}" hash_length)
-        if(kind STREQUAL "ffmpeg" AND NOT hash_length EQUAL 64)
-            list(APPEND errors "bad manifest line (ffmpeg needs a SHA256): ${line}")
+        if(kind MATCHES "^(ffmpeg|vulkan)$" AND NOT hash_length EQUAL 64)
+            list(APPEND errors "bad manifest line (${kind} needs a SHA256): ${line}")
             continue()
         endif()
         if(kind MATCHES "^(ours-bundled|ffmpeg)$" AND NOT arg_BUNDLED)
@@ -216,6 +273,21 @@ function(rawreel_check_manifest)
         endif()
         list(GET kinds ${index} kind)
         list(GET hashes ${index} hash)
+        if(IS_SYMLINK "${arg_ROOT}/${file}")
+            # Only the listed links may be links; a link is no file of any class.
+            if(NOT kind STREQUAL "link")
+                list(APPEND errors "unexpected symbolic link ${file}")
+                continue()
+            endif()
+            file(READ_SYMLINK "${arg_ROOT}/${file}" target)
+            if(NOT target STREQUAL hash)
+                list(APPEND errors "symbolic link ${file} points to ${target}, not ${hash}")
+            endif()
+            continue()
+        elseif(kind STREQUAL "link")
+            list(APPEND errors "${file} is no symbolic link")
+            continue()
+        endif()
         list(APPEND classes "${kind}|${file}")
         if(NOT hash STREQUAL "-")
             file(SHA256 "${arg_ROOT}/${file}" actual)
@@ -468,23 +540,35 @@ function(rawreel_package_files)
                           "VERSION;PLATFORM;PACKAGE;SYMBOLS;CPACK;EXTENSION;GENERATOR;ERRORS" "")
     set(errors "")
     set(extension "")
+    set(symbols_extension "")
     set(generator "")
+    set(arch x64)
     if(arg_PLATFORM STREQUAL "windows")
         set(extension zip)
         set(generator ZIP)
     elseif(arg_PLATFORM STREQUAL "linux")
         set(extension tar.xz)
         set(generator TXZ)
+    elseif(arg_PLATFORM STREQUAL "macos")
+        set(extension dmg)
+        set(symbols_extension zip)
+        set(arch arm64)
     else()
-        list(APPEND errors "no package for the platform '${arg_PLATFORM}' (windows, linux)")
+        list(APPEND errors
+             "no package for the platform '${arg_PLATFORM}' (windows, linux, macos)")
+    endif()
+    if(symbols_extension STREQUAL "")
+        set(symbols_extension "${extension}")
     endif()
     set(package "")
     set(symbols "")
     set(cpack "")
     if(NOT errors)
-        set(package "rawreel-${arg_VERSION}-${arg_PLATFORM}-x64.${extension}")
-        set(symbols "rawreel-${arg_VERSION}-${arg_PLATFORM}-x64-symbols.${extension}")
-        set(cpack "rawreel-${arg_VERSION}.${extension}")
+        set(package "rawreel-${arg_VERSION}-${arg_PLATFORM}-${arch}.${extension}")
+        set(symbols "rawreel-${arg_VERSION}-${arg_PLATFORM}-${arch}-symbols.${symbols_extension}")
+        if(NOT generator STREQUAL "")
+            set(cpack "rawreel-${arg_VERSION}.${extension}")
+        endif()
     endif()
     set(${arg_PACKAGE} "${package}" PARENT_SCOPE)
     set(${arg_SYMBOLS} "${symbols}" PARENT_SCOPE)
@@ -495,16 +579,15 @@ function(rawreel_package_files)
 endfunction()
 
 # The files one make-packages.cmake run wrote, read from its package-info-<platform>.cmake: the
-# package, the symbols archive and, when built, the sources archive. Files of older runs (another
-# version or another variant) that are still in the output folder are not listed.
+# package and the symbols archive. Files of older runs (another version or another variant) that
+# are still in the output folder are not listed.
 function(rawreel_package_outputs)
     cmake_parse_arguments(PARSE_ARGV 0 arg "" "INFO;FILES" "")
     set(RAWREEL_PACKAGE "")
     set(RAWREEL_SYMBOLS "")
-    set(RAWREEL_SOURCES "")
     include("${arg_INFO}")
     set(files "")
-    foreach(name IN ITEMS "${RAWREEL_PACKAGE}" "${RAWREEL_SYMBOLS}" "${RAWREEL_SOURCES}")
+    foreach(name IN ITEMS "${RAWREEL_PACKAGE}" "${RAWREEL_SYMBOLS}")
         if(NOT name STREQUAL "")
             list(APPEND files "${name}")
         endif()
@@ -512,11 +595,42 @@ function(rawreel_package_outputs)
     set(${arg_FILES} "${files}" PARENT_SCOPE)
 endfunction()
 
+function(rawreel_source_txt_versions)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "TEXT;VERSIONS" "")
+    string(REGEX MATCHALL "https://github\\.com/[^/ \t\r\n]+/custom_ffmpeg/tree/v[^ \t\r\n]+"
+           urls "${arg_TEXT}")
+    set(versions "")
+    foreach(url IN LISTS urls)
+        string(REGEX REPLACE "^.*/tree/v" "" version "${url}")
+        # A sentence may end right after the URL.
+        string(REGEX REPLACE "[.,;:)]+$" "" version "${version}")
+        list(APPEND versions "${version}")
+    endforeach()
+    set(${arg_VERSIONS} "${versions}" PARENT_SCOPE)
+endfunction()
+
+function(rawreel_ffmpeg_source_errors)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "NAME;CUSTOM_FFMPEG_VERSION;ERRORS" "NAMED")
+    set(errors "")
+    list(JOIN arg_NAMED ", " named)
+    if("${arg_CUSTOM_FFMPEG_VERSION}" STREQUAL "")
+        list(APPEND errors "${arg_NAME}: the third-party prefix names no custom_ffmpeg version")
+    elseif(NOT "${arg_NAMED}" STREQUAL "${arg_CUSTOM_FFMPEG_VERSION}")
+        string(CONCAT error "${arg_NAME}: SOURCE.txt names the custom_ffmpeg tags '${named}', "
+                      "expected exactly v${arg_CUSTOM_FFMPEG_VERSION} (the release its prefix pins)")
+        list(APPEND errors "${error}")
+    endif()
+    set(${arg_ERRORS} "${errors}" PARENT_SCOPE)
+endfunction()
+
 function(rawreel_ffmpeg_library_pattern)
     cmake_parse_arguments(PARSE_ARGV 0 arg "" "PLATFORM;LIBRARY;GLOB;REGEX" "")
     if(arg_PLATFORM STREQUAL "linux")
         set(glob "lib${arg_LIBRARY}.so.*")
         set(regex "/lib${arg_LIBRARY}\\.so\\.([0-9]+)$")
+    elseif(arg_PLATFORM STREQUAL "macos")
+        set(glob "lib${arg_LIBRARY}.*.dylib")
+        set(regex "/lib${arg_LIBRARY}\\.([0-9]+)\\.dylib$")
     else()
         set(glob "${arg_LIBRARY}-*.dll")
         set(regex "/${arg_LIBRARY}-([0-9]+)\\.dll$")
@@ -699,6 +813,249 @@ function(rawreel_readelf_compressed_sections)
         endif()
     endforeach()
     set(${arg_SECTIONS} "${sections}" PARENT_SCOPE)
+endfunction()
+
+# The app's minimum macOS version (LSMinimumSystemVersion; plan Global Constraints) and the one
+# rpath of its executables.
+set(RAWREEL_MACOS_MINIMUM "27.0")
+set(RAWREEL_MACOS_EXE_RPATH_EXPECTED "@executable_path/../Frameworks")
+
+function(rawreel_is_macho)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "FILE;RESULT" "")
+    file(READ "${arg_FILE}" magic LIMIT 4 HEX)
+    # MH_MAGIC_64 as stored on arm64 (cf fa ed fe) and FAT_MAGIC (ca fe ba be).
+    if(magic STREQUAL "cffaedfe" OR magic STREQUAL "cafebabe")
+        set(${arg_RESULT} ON PARENT_SCOPE)
+    else()
+        set(${arg_RESULT} OFF PARENT_SCOPE)
+    endif()
+endfunction()
+
+function(rawreel_otool_dependencies)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "TEXT;DEPS" "")
+    _rawreel_text_lines("${arg_TEXT}" lines)
+    set(deps "")
+    # "\t<install name> (compatibility version <v>, current version <v>[, weak])"; the header
+    # lines ("<file>:", "<file> (architecture arm64):") do not start with a tab.
+    foreach(line IN LISTS lines)
+        _rawreel_line_decode("${line}" line)
+        if(line MATCHES "^\t(.+) \\(compatibility version [^)]*\\)$")
+            list(APPEND deps "${CMAKE_MATCH_1}")
+        endif()
+    endforeach()
+    set(${arg_DEPS} "${deps}" PARENT_SCOPE)
+endfunction()
+
+function(rawreel_otool_load_commands)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "TEXT;RPATHS;MINOS;UUID" "")
+    _rawreel_text_lines("${arg_TEXT}" lines)
+    set(rpaths "")
+    set(minos "")
+    set(uuid "")
+    set(command "")
+    foreach(line IN LISTS lines)
+        _rawreel_line_decode("${line}" line)
+        if(line MATCHES "^ *cmd ([A-Z_0-9]+)$")
+            set(command "${CMAKE_MATCH_1}")
+        elseif(command STREQUAL "LC_RPATH" AND line MATCHES "^ *path (.+) \\(offset [0-9]+\\)$")
+            list(APPEND rpaths "${CMAKE_MATCH_1}")
+        elseif(command STREQUAL "LC_BUILD_VERSION" AND line MATCHES "^ *minos ([0-9.]+)$")
+            set(minos "${CMAKE_MATCH_1}")
+        elseif(command STREQUAL "LC_VERSION_MIN_MACOSX" AND line MATCHES "^ *version ([0-9.]+)$")
+            set(minos "${CMAKE_MATCH_1}")
+        elseif(command STREQUAL "LC_UUID" AND line MATCHES "^ *uuid ([0-9A-Fa-f-]+)$")
+            set(uuid "${CMAKE_MATCH_1}")
+        endif()
+    endforeach()
+    set(${arg_RPATHS} "${rpaths}" PARENT_SCOPE)
+    set(${arg_MINOS} "${minos}" PARENT_SCOPE)
+    if(DEFINED arg_UUID)
+        set(${arg_UUID} "${uuid}" PARENT_SCOPE)
+    endif()
+endfunction()
+
+function(rawreel_macho_errors)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "PREBUILT" "NAME;KIND;MINOS;ERRORS" "DEPS;RPATHS")
+    if(NOT arg_KIND MATCHES "^(exe|library)$")
+        message(FATAL_ERROR "rawreel_macho_errors: KIND must be exe or library")
+    endif()
+    set(errors "")
+    set(minimum "${RAWREEL_MACOS_MINIMUM}")
+    if("${arg_MINOS}" STREQUAL "")
+        list(APPEND errors "${arg_NAME} names no minimum macOS version")
+    elseif(arg_MINOS VERSION_GREATER minimum)
+        list(APPEND errors "${arg_NAME} needs macOS ${arg_MINOS}, above the minimum ${minimum}")
+    elseif(NOT arg_PREBUILT AND NOT arg_MINOS VERSION_EQUAL minimum)
+        list(APPEND errors
+             "${arg_NAME} has minos ${arg_MINOS}, expected ${minimum} (a file built from source)")
+    endif()
+    set(expected "${RAWREEL_MACOS_EXE_RPATH_EXPECTED}")
+    if(arg_KIND STREQUAL "exe")
+        set(foreign OFF)
+        foreach(rpath IN LISTS arg_RPATHS)
+            if(NOT rpath STREQUAL expected)
+                list(APPEND errors "${arg_NAME} has the rpath ${rpath} (expected only ${expected})")
+                set(foreign ON)
+            endif()
+        endforeach()
+        # Exactly one LC_RPATH: the app's one twice is an error too.
+        list(LENGTH arg_RPATHS rpath_count)
+        if(NOT expected IN_LIST arg_RPATHS)
+            list(APPEND errors "${arg_NAME} lacks the rpath ${expected}")
+        elseif(rpath_count GREATER 1 AND NOT foreign)
+            string(CONCAT error "${arg_NAME} has ${rpath_count} rpaths (expected exactly one, "
+                                "${expected})")
+            list(APPEND errors "${error}")
+        endif()
+    else()
+        foreach(rpath IN LISTS arg_RPATHS)
+            if(NOT rpath MATCHES "^@loader_path(/|$)")
+                string(CONCAT error "${arg_NAME} has the rpath ${rpath} (a library's rpaths start "
+                                    "with @loader_path)")
+                list(APPEND errors "${error}")
+            endif()
+        endforeach()
+    endif()
+    # @executable_path/ only for the exes: a library may be loaded by another program.
+    set(allowed "^(@rpath/|@loader_path/|/usr/lib/|/System/)")
+    if(arg_KIND STREQUAL "exe")
+        set(allowed "^(@rpath/|@loader_path/|@executable_path/|/usr/lib/|/System/)")
+    endif()
+    foreach(dep IN LISTS arg_DEPS)
+        cmake_path(GET dep FILENAME dep_name)
+        if(arg_KIND STREQUAL "exe" AND dep_name MATCHES
+           "^lib(avutil|avcodec|avformat|avfilter|avdevice|swscale|swresample|postproc)[.]")
+            string(CONCAT error "${arg_NAME} links the FFmpeg library ${dep} (FFmpeg is loaded at "
+                                "run time)")
+            list(APPEND errors "${error}")
+        elseif(NOT dep MATCHES "${allowed}")
+            string(CONCAT error "${arg_NAME} depends on ${dep} (outside the bundle and the "
+                                "system)")
+            list(APPEND errors "${error}")
+        endif()
+    endforeach()
+    set(${arg_ERRORS} "${errors}" PARENT_SCOPE)
+endfunction()
+
+function(rawreel_codesign_errors)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "NAME;TEXT;KIND;IDENTIFIER;ERRORS" "")
+    if(NOT arg_KIND MATCHES "^(adhoc|vendor)$")
+        message(FATAL_ERROR "rawreel_codesign_errors: KIND must be adhoc or vendor")
+    endif()
+    _rawreel_text_lines("${arg_TEXT}" lines)
+    set(identifier "")
+    set(flags "")
+    set(adhoc OFF)
+    set(authorities "")
+    foreach(line IN LISTS lines)
+        _rawreel_line_decode("${line}" line)
+        if(line MATCHES "^Identifier=(.*)$")
+            set(identifier "${CMAKE_MATCH_1}")
+        elseif(line MATCHES "^CodeDirectory .* flags=0x[0-9a-f]+\\(([^)]*)\\)")
+            set(flags "${CMAKE_MATCH_1}")
+        elseif(line STREQUAL "Signature=adhoc")
+            set(adhoc ON)
+        elseif(line MATCHES "^Authority=(.+)$")
+            list(APPEND authorities "${CMAKE_MATCH_1}")
+        endif()
+    endforeach()
+    set(errors "")
+    if(flags STREQUAL "" AND NOT adhoc AND NOT authorities)
+        list(APPEND errors "${arg_NAME} is not signed")
+    elseif(arg_KIND STREQUAL "adhoc")
+        if(authorities)
+            list(GET authorities 0 first)
+            list(APPEND errors "${arg_NAME} is not signed ad hoc (Authority=${first})")
+        elseif(NOT adhoc)
+            list(APPEND errors "${arg_NAME} is not signed ad hoc")
+        elseif(flags MATCHES "(^|,)linker-signed(,|$)")
+            string(CONCAT error "${arg_NAME} carries only the linker's signature (not signed after "
+                                "its last change)")
+            list(APPEND errors "${error}")
+        endif()
+    else()
+        set(first "")
+        if(authorities)
+            list(GET authorities 0 first)
+        endif()
+        if(adhoc OR NOT first MATCHES "^Developer ID Application: ")
+            list(APPEND errors
+                 "${arg_NAME} has no vendor signature (no Developer ID Authority chain)")
+        endif()
+    endif()
+    if(NOT errors AND DEFINED arg_IDENTIFIER AND NOT identifier STREQUAL arg_IDENTIFIER)
+        string(CONCAT error "${arg_NAME} has the identifier ${identifier}, expected "
+                            "${arg_IDENTIFIER}")
+        list(APPEND errors "${error}")
+    endif()
+    set(${arg_ERRORS} "${errors}" PARENT_SCOPE)
+endfunction()
+
+function(rawreel_loaded_image_errors)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "NAME;TEXT;BUNDLE;ERRORS;IMAGES" "")
+    _rawreel_text_lines("${arg_TEXT}" lines)
+    cmake_path(NORMAL_PATH arg_BUNDLE OUTPUT_VARIABLE bundle)
+    string(REGEX REPLACE "/+$" "" bundle "${bundle}")
+    set(images "")
+    set(errors "")
+    # "dyld[<pid>]: <<UUID>> <path>", anywhere in a line (another writer's text without a line
+    # end may come first); dyld's other lines ("move loaded to delayed: <name>") name images of
+    # the system's shared cache, never a path.
+    foreach(line IN LISTS lines)
+        _rawreel_line_decode("${line}" line)
+        if(NOT line MATCHES "dyld\\[[0-9]+\\]: <[^>]*> (.*)$")
+            continue()
+        endif()
+        set(image "${CMAKE_MATCH_1}")
+        list(APPEND images "${image}")
+        if(NOT image MATCHES "^/")
+            list(APPEND errors "${arg_NAME} loads ${image} (no absolute path)")
+            continue()
+        endif()
+        cmake_path(NORMAL_PATH image OUTPUT_VARIABLE normal)
+        string(FIND "${normal}" "${bundle}/" at)
+        if(NOT at EQUAL 0 AND NOT normal MATCHES "^/(usr/lib|System)/")
+            string(CONCAT error "${arg_NAME} loads ${image} (outside the bundle, /usr/lib and "
+                                "/System)")
+            list(APPEND errors "${error}")
+        endif()
+    endforeach()
+    if(NOT images)
+        string(CONCAT error "${arg_NAME}: no loaded image in the output (is "
+                            "DYLD_PRINT_LIBRARIES=1 honoured?)")
+        list(APPEND errors "${error}")
+    endif()
+    set(${arg_ERRORS} "${errors}" PARENT_SCOPE)
+    if(DEFINED arg_IMAGES)
+        set(${arg_IMAGES} "${images}" PARENT_SCOPE)
+    endif()
+endfunction()
+
+function(rawreel_vulkan_driver_errors)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "NAME;TEXT;MANIFEST;ERRORS" "")
+    _rawreel_text_lines("${arg_TEXT}" lines)
+    set(found "")
+    foreach(line IN LISTS lines)
+        _rawreel_line_decode("${line}" line)
+        if(line MATCHES "^\\[Vulkan Loader\\] .*DRIVER: +Found ICD manifest file (.+), version ")
+            list(APPEND found "${CMAKE_MATCH_1}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES found)
+    set(errors "")
+    if(NOT found)
+        string(CONCAT error "${arg_NAME}: the Vulkan loader names no driver manifest (is "
+                            "VK_LOADER_DEBUG=driver honoured?)")
+        list(APPEND errors "${error}")
+    endif()
+    foreach(manifest IN LISTS found)
+        if(NOT manifest STREQUAL arg_MANIFEST)
+            string(CONCAT error "${arg_NAME}: the Vulkan loader found the driver manifest "
+                                "${manifest} (not the bundled one)")
+            list(APPEND errors "${error}")
+        endif()
+    endforeach()
+    set(${arg_ERRORS} "${errors}" PARENT_SCOPE)
 endfunction()
 
 # Checks a GNU `tar tvf` listing (LC_ALL=C) of a Linux archive: only files and folders; the entries

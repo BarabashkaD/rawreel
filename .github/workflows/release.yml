@@ -1,8 +1,10 @@
 # Release of rawreel (spec §13.4). Started by hand only.
-# A dry run builds main, runs the unit and CLI tests, packages, runs the package smoke tests and
-# keeps the files as workflow artifacts. A real run does the same from the v<version> tag of
-# rawreel (the libraries at its pins), attests the files and creates a draft release (a
-# pre-release while the major version is 0); a maintainer reviews and publishes it.
+# A dry run builds the branch it is started from (main, or a branch under review), runs the unit
+# and CLI tests, packages, runs the package smoke tests and keeps the files as workflow artifacts.
+# A real run must be started from main; it does the same from the v<version> tag of rawreel (the
+# libraries at its pins), attests the files and creates a draft release (a pre-release while the
+# major version is 0); a maintainer reviews and publishes it. Packages: Windows x64, Linux x64 and
+# macOS arm64 (Apple Silicon).
 name: release
 
 on:
@@ -13,7 +15,7 @@ on:
         required: true
         type: string
       dry_run:
-        description: Build from main and keep the files as workflow artifacts only
+        description: Build the branch this run starts from and keep the files as workflow artifacts only
         required: true
         type: boolean
         default: true
@@ -26,9 +28,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # rawreel is checked out at this ref (main for a dry run, the release tag otherwise), the
-  # libraries at its pins.
-  RELEASE_REF: ${{ inputs.dry_run && 'main' || format('v{0}', inputs.version) }}
+  # rawreel is checked out at this ref (for a dry run the branch the run was started from, e.g.
+  # main; the release tag otherwise), the libraries at its pins.
+  RELEASE_REF: ${{ inputs.dry_run && github.ref_name || format('v{0}', inputs.version) }}
   DVV_REQUIRE_FFMPEG: "1"
 
 jobs:
@@ -93,11 +95,12 @@ jobs:
       - name: Bootstrap
         shell: pwsh
         run: ./rawreel/libs/dvv-build/bootstrap.ps1 -Toolchain msvc
-      # The commit file goes to out/ with the packages: publish compares it with the Linux job's.
+      # The archive the prefix bundles is the release of the custom_ffmpeg tag that SOURCE.txt names
+      # as the corresponding source (the attested ref is refs/tags/v<version>).
       - name: Verify the custom_ffmpeg archive (SHA256 and attestation)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: cmake -DPREFIX=rawreel/libs/_third_party/msvc "-DWORK_DIR=${{ runner.temp }}/ffmpeg-check" "-DOUT_FILE=${{ runner.temp }}/out/custom_ffmpeg-commit-windows.txt" -P rawreel/packaging/verify-ffmpeg-archive.cmake
+        run: cmake -DPREFIX=rawreel/libs/_third_party/msvc "-DWORK_DIR=${{ runner.temp }}/ffmpeg-check" -P rawreel/packaging/verify-ffmpeg-archive.cmake
       # The linker records its temporary object path (%TMP%\lnk{GUID}.tmp) in the PDBs; the runner's
       # default TEMP is a user-profile path, which the symbols privacy scan rejects.
       - name: Build (Release)
@@ -111,15 +114,13 @@ jobs:
       - name: Unit and CLI tests
         working-directory: rawreel
         run: ctest --preset vs2026-release -LE "gpu|display|gui|oracle"
-      # The sources archive is built in this job only, from a --recurse-submodules checkout of the
-      # custom_ffmpeg tag whose commit equals the attestation's sourceRepositoryDigest.
-      - name: Package (and the third-party sources when FFmpeg is bundled)
-        run: cmake -DBUILD_DIR=rawreel/libs/_build/rawreel/vs2026 -DCONFIG=Release "-DOUT_DIR=${{ runner.temp }}/out" -DSOURCES=ON "-DFFMPEG_COMMIT_FILE=${{ runner.temp }}/out/custom_ffmpeg-commit-windows.txt" -P rawreel/packaging/make-packages.cmake
+      - name: Package
+        run: cmake -DBUILD_DIR=rawreel/libs/_build/rawreel/vs2026 -DCONFIG=Release "-DOUT_DIR=${{ runner.temp }}/out" -P rawreel/packaging/make-packages.cmake
       # The runner has no GPU: the GUI smoke may exit 77 here; the local dry runs run it on a GPU.
       - name: Package smoke tests
         env:
           VERSION: ${{ inputs.version }}
-        run: cmake "-DOUT_DIR=${{ runner.temp }}/out" -DPLATFORM=windows "-DWORK_DIR=${{ runner.temp }}/smoke" "-DEXPECTED_VERSION=$env:VERSION" -DGUI_SMOKE=windows -DALLOW_GUI_SKIP=ON -DREQUIRE_SOURCES=ON -P rawreel/packaging/package-smoke.cmake
+        run: cmake "-DOUT_DIR=${{ runner.temp }}/out" -DPLATFORM=windows "-DWORK_DIR=${{ runner.temp }}/smoke" "-DEXPECTED_VERSION=$env:VERSION" -DGUI_SMOKE=windows -DALLOW_GUI_SKIP=ON -P rawreel/packaging/package-smoke.cmake
       # Only out/ paths, so the artifact root stays out/ and publish finds the files at its top.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -127,7 +128,6 @@ jobs:
           path: |
             ${{ runner.temp }}/out/rawreel-*
             ${{ runner.temp }}/out/package-info-windows.cmake
-            ${{ runner.temp }}/out/custom_ffmpeg-commit-windows.txt
           if-no-files-found: error
           overwrite: true
 
@@ -170,11 +170,12 @@ jobs:
       # (libs/dvv-build/deps/versions.cmake), so no CI cache entry reaches a release.
       - name: Bootstrap
         run: ./rawreel/libs/dvv-build/bootstrap.sh --toolchain clang
-      # The commit file goes to out/ with the packages: publish compares it with the Windows job's.
+      # The archive the prefix bundles is the release of the custom_ffmpeg tag that SOURCE.txt names
+      # as the corresponding source (the attested ref is refs/tags/v<version>).
       - name: Verify the custom_ffmpeg archive (SHA256 and attestation)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: cmake -DPREFIX=rawreel/libs/_third_party/clang "-DWORK_DIR=${{ runner.temp }}/ffmpeg-check" "-DOUT_FILE=${{ runner.temp }}/out/custom_ffmpeg-commit-linux.txt" -P rawreel/packaging/verify-ffmpeg-archive.cmake
+        run: cmake -DPREFIX=rawreel/libs/_third_party/clang "-DWORK_DIR=${{ runner.temp }}/ffmpeg-check" -P rawreel/packaging/verify-ffmpeg-archive.cmake
       - name: Build (Release)
         working-directory: rawreel
         run: |
@@ -183,9 +184,8 @@ jobs:
       - name: Unit and CLI tests
         working-directory: rawreel
         run: ctest --preset ninja-clang-release -LE "gpu|display|gui|oracle"
-      # No sources archive here: the Windows job's archive covers both packages (one commit).
       - name: Package
-        run: cmake -DBUILD_DIR=rawreel/libs/_build/rawreel/ninja-clang -DCONFIG=Release "-DOUT_DIR=${{ runner.temp }}/out" -DSOURCES=OFF -P rawreel/packaging/make-packages.cmake
+        run: cmake -DBUILD_DIR=rawreel/libs/_build/rawreel/ninja-clang -DCONFIG=Release "-DOUT_DIR=${{ runner.temp }}/out" -P rawreel/packaging/make-packages.cmake
       # Lavapipe is a Vulkan device, so the GUI smoke must run here (no skip allowed).
       - name: Package smoke tests
         env:
@@ -247,12 +247,100 @@ jobs:
           path: |
             ${{ runner.temp }}/out/rawreel-*
             ${{ runner.temp }}/out/package-info-linux.cmake
-            ${{ runner.temp }}/out/custom_ffmpeg-commit-linux.txt
+          if-no-files-found: error
+          overwrite: true
+
+  # Apple Silicon, macOS 27, Xcode 27. The runner has no Metal device that KosmicKrisp can use
+  # (spec C10): the package smoke accepts "Vulkan: not available" and a skipped GUI selftest
+  # (ALLOW_GUI_SKIP); its GPU, GUI and driver checks run in the local dry run on a Mac with a GPU
+  # (packaging/dry-run.cmake). The app is signed ad hoc only (U-MAC9).
+  macos:
+    needs: check
+    runs-on: xcode-27
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      # One checkout: the libraries come as submodules at the commits rawreel pins.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          submodules: recursive
+          persist-credentials: false
+          path: rawreel
+      # Tags can move: the log keeps the commit of rawreel and of every library this run built.
+      - name: Record the commits
+        run: |
+          git -C rawreel rev-parse HEAD
+          git -C rawreel submodule status
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+      - name: Install tools
+        run: python -m pip install -r rawreel/libs/dvv-build/tools/requirements.txt
+      # Every pin is the commit of its library's version tag, the submodule URLs are relative and
+      # the workflows use the pinned dvv-build version.
+      - name: Check the pins
+        run: cmake -DREPO=rawreel -DMODE=app -P rawreel/libs/dvv-build/tools/check-pins.cmake
+      - name: Check Apple Silicon, macOS 27 and Xcode 27
+        run: |
+          arch=$(uname -m)
+          macos=$(sw_vers -productVersion)
+          xcode=$(xcodebuild -version | head -n 1)
+          echo "$arch, macOS $macos, $xcode"
+          if [ "$arch" != arm64 ] || [ "${macos%%.*}" -lt 27 ] || [[ ! "$xcode" =~ ^Xcode\ 27(\.|$) ]]; then
+            echo "::error::an Apple Silicon runner with macOS 27 or newer and Xcode 27 is required"
+            exit 1
+          fi
+      # No cache restore: bootstrap builds the prefix from the pinned, SHA256-checked archives
+      # (libs/dvv-build/deps/versions.cmake), so no CI cache entry reaches a release.
+      - name: Bootstrap
+        run: |
+          brew install ninja
+          ./rawreel/libs/dvv-build/bootstrap.sh --toolchain appleclang
+      # The archive the prefix bundles is the release of the custom_ffmpeg tag that SOURCE.txt names
+      # as the corresponding source (the attested ref is refs/tags/v<version>).
+      - name: Verify the custom_ffmpeg archive (SHA256 and attestation)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: cmake -DPREFIX=rawreel/libs/_third_party/appleclang "-DWORK_DIR=${{ runner.temp }}/ffmpeg-check" -P rawreel/packaging/verify-ffmpeg-archive.cmake
+      - name: Build (Release)
+        working-directory: rawreel
+        run: |
+          cmake --preset ninja-macos
+          cmake --build --preset ninja-macos-release
+      - name: Unit and CLI tests
+        working-directory: rawreel
+        run: ctest --preset ninja-macos-release -LE "gpu|display|gui|oracle"
+      # The .dmg (rawreel.app, signed ad hoc from the inside out) and the -symbols.zip (the two
+      # .dSYM bundles).
+      - name: Package
+        run: cmake -DBUILD_DIR=rawreel/libs/_build/rawreel/ninja-macos -DCONFIG=Release "-DOUT_DIR=${{ runner.temp }}/out" -P rawreel/packaging/make-packages.cmake
+      # The .dmg is mounted read-only below a folder with a space and non-ASCII characters and
+      # runs from there. Without a device these still run: the manifest, Info.plist, Mach-O,
+      # signature, notices, privacy and symbols checks; rawreel-cli --version (the rawreel and
+      # bundled FFmpeg lines), info, dump and the config defaults; the loaded-image audit of
+      # rawreel-cli (only images of the app, /usr/lib and /System; only the bundled KosmicKrisp
+      # manifest; the bundled KosmicKrisp and FFmpeg libraries loaded). rawreel-gui starts and its
+      # selftest exits 77 (no device), so the driver name, the GUI audit and the run through `open`
+      # are left to the dry run on a Mac with a GPU.
+      - name: Package smoke tests
+        env:
+          VERSION: ${{ inputs.version }}
+        run: cmake "-DOUT_DIR=${{ runner.temp }}/out" -DPLATFORM=macos "-DWORK_DIR=${{ runner.temp }}/smoke" "-DEXPECTED_VERSION=$VERSION" -DGUI_SMOKE=macos -DALLOW_GUI_SKIP=ON -P rawreel/packaging/package-smoke.cmake
+      # Only out/ paths, so the artifact root stays out/ and publish finds the files at its top.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos
+          path: |
+            ${{ runner.temp }}/out/rawreel-*
+            ${{ runner.temp }}/out/package-info-macos.cmake
           if-no-files-found: error
           overwrite: true
 
   publish:
-    needs: [windows, linux]
+    needs: [windows, linux, macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -285,26 +373,26 @@ jobs:
         with:
           name: linux
           path: dist
-      # The sources archive is built by the Windows job only: it covers the Linux package only if
-      # both jobs bundled FFmpeg from the same custom_ffmpeg commit. Line ends are dropped before
-      # the compare (the Windows file may end in CRLF).
-      - name: Check the custom_ffmpeg commits
-        working-directory: dist
-        run: |
-          windows=$(tr -d '\r\n' < custom_ffmpeg-commit-windows.txt)
-          linux=$(tr -d '\r\n' < custom_ffmpeg-commit-linux.txt)
-          if [[ ! "$windows" =~ ^[0-9a-f]{40}$ ]] || [ "$windows" != "$linux" ]; then
-            echo "::error::the Windows and Linux packages bundle FFmpeg from different custom_ffmpeg commits ('$windows', '$linux')"
-            exit 1
-          fi
-          echo "custom_ffmpeg commit $windows"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: macos
+          path: dist
+      # Each package's SOURCE.txt names as the FFmpeg source the tag of the custom_ffmpeg release its
+      # own prefix pins (each platform may pin its own); make-packages recorded what the packaged
+      # SOURCE.txt names. A mismatch stops the run before anything is attested.
+      - name: Check the FFmpeg source of each package
+        run: cmake -DDIST=dist "-DPLATFORMS=windows;linux;macos" -P rawreel/packaging/check-release-ffmpeg.cmake
+      # Exactly the 6 release files: each platform's package and its symbols archive.
       - name: Checksums
         working-directory: dist
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          rm -f package-info-*.cmake custom_ffmpeg-commit-*.txt
-          set -- rawreel-*
-          if [ $# -ne 5 ]; then
-            echo "::error::expected 5 release files, found $#: $*"
+          rm -f package-info-*.cmake
+          expected="rawreel-$VERSION-linux-x64-symbols.tar.xz rawreel-$VERSION-linux-x64.tar.xz rawreel-$VERSION-macos-arm64-symbols.zip rawreel-$VERSION-macos-arm64.dmg rawreel-$VERSION-windows-x64-symbols.zip rawreel-$VERSION-windows-x64.zip"
+          found=$(printf '%s\n' * | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+          if [ "$found" != "$expected" ]; then
+            echo "::error::expected the release files $expected, found $found"
             exit 1
           fi
           sha256sum rawreel-* > SHA256SUMS

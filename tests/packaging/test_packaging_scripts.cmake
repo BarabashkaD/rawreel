@@ -14,6 +14,7 @@ file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
 
 include("${CMAKE_CURRENT_LIST_DIR}/../../packaging/check-package.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/../../packaging/source-txt.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../../packaging/scan-artifact-privacy.cmake")
 
 # --- helpers ---------------------------------------------------------------------------------
@@ -125,6 +126,33 @@ expect_item("${case}" "${errors}" "missing file rawreel-1.2.4/a.exe")
 expect_item("${case}" "${errors}" "unexpected file rawreel-1.2.3/a.exe")
 pass("${case}")
 
+set(case "manifest: a vulkan file has a SHA256 and ships in both variants")
+file(WRITE "${pkg}/lib/v.dylib" "driver")
+file(SHA256 "${pkg}/lib/v.dylib" v_sha)
+set(vulkan_manifest "${WORK_DIR}/manifest-vulkan.txt")
+file(READ "${manifest}" vulkan_text)
+file(WRITE "${vulkan_manifest}" "${vulkan_text}vulkan rawreel-@V@/lib/v.dylib ${v_sha}\n")
+rawreel_check_manifest(ROOT "${tree}" MANIFEST "${vulkan_manifest}" VERSION 1.2.3 BUNDLED ON
+                       ERRORS errors CLASSES classes)
+expect_empty("${case}" "${errors}")
+expect_item("${case}" "${classes}" "vulkan|rawreel-1.2.3/lib/v.dylib")
+file(RENAME "${pkg}/ffmpeg" "${WORK_DIR}/ffmpeg.saved")
+rawreel_check_manifest(ROOT "${tree}" MANIFEST "${vulkan_manifest}" VERSION 1.2.3 BUNDLED OFF
+                       ERRORS errors)
+expect_empty("${case}" "${errors}")
+file(RENAME "${WORK_DIR}/ffmpeg.saved" "${pkg}/ffmpeg")
+file(WRITE "${pkg}/lib/v.dylib" "drivez")
+rawreel_check_manifest(ROOT "${tree}" MANIFEST "${vulkan_manifest}" VERSION 1.2.3 BUNDLED ON
+                       ERRORS errors)
+expect_equal("${case}" "${errors}" "SHA256 mismatch rawreel-1.2.3/lib/v.dylib")
+file(WRITE "${vulkan_manifest}" "vulkan rawreel-@V@/lib/v.dylib\n")
+rawreel_check_manifest(ROOT "${tree}" MANIFEST "${vulkan_manifest}" VERSION 1.2.3 BUNDLED ON
+                       ERRORS errors)
+expect_item("${case}" "${errors}"
+            "bad manifest line (vulkan needs a SHA256): vulkan rawreel-@V@/lib/v.dylib")
+file(REMOVE_RECURSE "${pkg}/lib")
+pass("${case}")
+
 # --- notices (cases 7-9, 22, 23) -------------------------------------------------------------
 
 string(REPEAT "=" 62 sep)
@@ -176,6 +204,8 @@ set(I2 "300.1.2.3") # privacy-lint: allow
 set(I3 "1.2.3")
 set(I4 "1.2.3.4.5") # privacy-lint: allow
 set(I5 "127.0.0.1") # privacy-lint: allow
+set(U1 "/Users/alice/src/a.cpp") # privacy-lint: allow
+set(U2 "/Users/runner/work/rawreel") # privacy-lint: allow
 
 function(scan_text name text mode out)
     file(WRITE "${WORK_DIR}/${name}" "${text}\n")
@@ -184,7 +214,8 @@ function(scan_text name text mode out)
 endfunction()
 
 set(case "privacy: clean text")
-scan_text(clean.txt "built in ${R1} and ${D1}, version ${I4}, ${N1}, ${N2}, ${I5}" full findings)
+scan_text(clean.txt "built in ${R1}, ${U2} and ${D1}, version ${I4}, ${N1}, ${N2}, ${I5}" full
+          findings)
 expect_empty("${case}" "${findings}")
 pass("${case}")
 
@@ -240,6 +271,18 @@ scan_text(h1.txt "source ${H1}" full findings)
 list(APPEND all_findings ${findings})
 expect_item("${case}" "${findings}" "h1.txt: home directory path")
 expect_count("${case}" "${findings}" 1)
+pass("${case}")
+
+# macOS: /Users/<name> like /home/<name>; the runner's home folder is accepted there too, but not a
+# longer name that starts with "runner".
+set(case "privacy: macOS home path")
+scan_text(u1.txt "source ${U1}" full findings)
+list(APPEND all_findings ${findings})
+expect_equal("${case}" "${findings}" "u1.txt: home directory path")
+scan_text(u2.txt "source ${U2}" paths findings)
+expect_empty("${case}" "${findings}")
+scan_text(u3.txt "source /Users/runner2/a.cpp" paths findings) # privacy-lint: allow
+expect_equal("${case}" "${findings}" "u3.txt: home directory path")
 pass("${case}")
 
 set(case "privacy: e-mail")
@@ -314,7 +357,7 @@ expect_empty("${case}" "${findings}")
 pass("${case}")
 
 set(case "privacy: findings never repeat the text")
-expect_count("${case}" "${all_findings}" 10)
+expect_count("${case}" "${all_findings}" 11)
 foreach(secret IN ITEMS someone alice bob corp.io 10.1.2.3 machinex) # privacy-lint: allow
     string(TOLOWER "${all_findings}" lowered)
     string(FIND "${lowered}" "${secret}" position)
@@ -494,7 +537,7 @@ pass("${case}")
 
 # --- package file names and FFmpeg library names per platform ---------------------------------
 
-set(case "package names: Windows zip, Linux tar.xz, unknown platform refused")
+set(case "package names: Windows zip, Linux tar.xz, macOS dmg, unknown platform refused")
 rawreel_package_files(VERSION 1.2.3 PLATFORM windows PACKAGE package SYMBOLS symbols CPACK cpack
                       EXTENSION extension GENERATOR generator ERRORS errors)
 expect_empty("${case}" "${errors}")
@@ -511,9 +554,18 @@ expect_equal("${case}" "${symbols}" "rawreel-1.2.3-linux-x64-symbols.tar.xz")
 expect_equal("${case}" "${cpack}" "rawreel-1.2.3.tar.xz")
 expect_equal("${case}" "${extension}" "tar.xz")
 expect_equal("${case}" "${generator}" "TXZ")
+# The macOS package is no CPack output: make-packages.cmake builds it with hdiutil.
 rawreel_package_files(VERSION 1.2.3 PLATFORM macos PACKAGE package SYMBOLS symbols CPACK cpack
                       EXTENSION extension GENERATOR generator ERRORS errors)
-expect_item("${case}" "${errors}" "no package for the platform 'macos' (windows, linux)")
+expect_empty("${case}" "${errors}")
+expect_equal("${case}" "${package}" "rawreel-1.2.3-macos-arm64.dmg")
+expect_equal("${case}" "${symbols}" "rawreel-1.2.3-macos-arm64-symbols.zip")
+expect_equal("${case}" "${cpack}" "")
+expect_equal("${case}" "${extension}" "dmg")
+expect_equal("${case}" "${generator}" "")
+rawreel_package_files(VERSION 1.2.3 PLATFORM freebsd PACKAGE package SYMBOLS symbols CPACK cpack
+                      EXTENSION extension GENERATOR generator ERRORS errors)
+expect_item("${case}" "${errors}" "no package for the platform 'freebsd' (windows, linux, macos)")
 expect_equal("${case}" "${package}" "")
 pass("${case}")
 
@@ -522,23 +574,25 @@ set(outputs_dir "${WORK_DIR}/outputs")
 file(REMOVE_RECURSE "${outputs_dir}")
 file(MAKE_DIRECTORY "${outputs_dir}")
 file(WRITE "${outputs_dir}/rawreel-0.1.0-windows-x64.zip" "older run")
-file(WRITE "${outputs_dir}/rawreel-0.1.0-third-party-sources.tar.xz" "older run")
+file(WRITE "${outputs_dir}/rawreel-0.1.0-windows-x64-symbols.zip" "older run")
 file(WRITE "${outputs_dir}/package-info-windows.cmake"
      "set(RAWREEL_VERSION \"1.2.3\")\nset(RAWREEL_PACKAGE \"rawreel-1.2.3-windows-x64.zip\")\n"
-     "set(RAWREEL_SYMBOLS \"rawreel-1.2.3-windows-x64-symbols.zip\")\nset(RAWREEL_SOURCES \"\")\n")
+     "set(RAWREEL_SYMBOLS \"rawreel-1.2.3-windows-x64-symbols.zip\")\n")
 rawreel_package_outputs(INFO "${outputs_dir}/package-info-windows.cmake" FILES files)
 expect_equal("${case}" "${files}"
              "rawreel-1.2.3-windows-x64.zip;rawreel-1.2.3-windows-x64-symbols.zip")
+# The package info of an older rawreel still names its sources archive: it is not listed.
 file(APPEND "${outputs_dir}/package-info-windows.cmake"
-     "set(RAWREEL_SOURCES \"rawreel-1.2.3-third-party-sources.tar.xz\")\n")
+     "set(RAWREEL_SOURCES \"rawreel-1.2.3-sources.tar.xz\")\n")
 rawreel_package_outputs(INFO "${outputs_dir}/package-info-windows.cmake" FILES files)
-expect_count("${case}" "${files}" 3)
-expect_item("${case}" "${files}" "rawreel-1.2.3-third-party-sources.tar.xz")
+expect_equal("${case}" "${files}"
+             "rawreel-1.2.3-windows-x64.zip;rawreel-1.2.3-windows-x64-symbols.zip")
 pass("${case}")
 
 set(case "FFmpeg library names: the file the loader opens and its major")
 set(names "x/avutil-60.dll;x/avutil.dll;x/avutil-60.lib;x/avcodec-62.dll;x/libavutil.so.60"
-          "x/libavutil.so.60.26.103;x/libavutil.so;x/libswscale.so.9")
+          "x/libavutil.so.60.26.103;x/libavutil.so;x/libswscale.so.9;x/libavutil.60.dylib"
+          "x/libavutil.60.26.103.dylib;x/libavutil.dylib;x/libswscale.9.dylib")
 rawreel_ffmpeg_library_pattern(PLATFORM windows LIBRARY avutil GLOB glob REGEX regex)
 expect_equal("${case}" "${glob}" "avutil-*.dll")
 set(matched "${names}")
@@ -553,6 +607,203 @@ list(FILTER matched INCLUDE REGEX "${regex}")
 expect_equal("${case}" "${matched}" "x/libavutil.so.60")
 string(REGEX MATCH "${regex}" ignored "x/libavutil.so.60")
 expect_equal("${case}" "${CMAKE_MATCH_1}" "60")
+rawreel_ffmpeg_library_pattern(PLATFORM macos LIBRARY avutil GLOB glob REGEX regex)
+expect_equal("${case}" "${glob}" "libavutil.*.dylib")
+set(matched "${names}")
+list(FILTER matched INCLUDE REGEX "${regex}")
+expect_equal("${case}" "${matched}" "x/libavutil.60.dylib")
+string(REGEX MATCH "${regex}" ignored "x/libavutil.60.dylib")
+expect_equal("${case}" "${CMAKE_MATCH_1}" "60")
+pass("${case}")
+
+# --- the macOS app package: its manifest and write-manifest.cmake ------------------------------
+# The app layout (plan Global Constraints): Contents/MacOS holds the two exes, Contents/Frameworks
+# the Vulkan loader, KosmicKrisp and ffmpeg/ with the six FFmpeg libraries (major names),
+# Contents/Resources the KosmicKrisp manifest and FFmpeg's texts; the .dmg root the documents.
+
+set(ffmpeg_libraries avutil avcodec avformat avfilter swscale swresample)
+set(app_fixed
+    "ours|LICENSE" "ours|README.md" "notices|THIRD_PARTY_NOTICES.txt" "ours-bundled|SOURCE.txt"
+    "link|Applications" "ours|rawreel.app/Contents/Info.plist" "ours|rawreel.app/Contents/MacOS/rawreel-cli"
+    "ours|rawreel.app/Contents/MacOS/rawreel-gui"
+    "ours|rawreel.app/Contents/_CodeSignature/CodeResources"
+    "ours|rawreel.app/Contents/Resources/vulkan/icd.d/libkosmickrisp_icd.json"
+    "vulkan|rawreel.app/Contents/Frameworks/libvulkan.1.dylib"
+    "vulkan|rawreel.app/Contents/Frameworks/libvulkan_kosmickrisp.dylib")
+
+# Checks "<kind>|<path>" items against the layout: the fixed files, the six FFmpeg libraries in
+# Frameworks/ffmpeg by their major names, FFmpeg's texts in Resources/ffmpeg, nothing else.
+function(expect_app_layout case items)
+    set(seen "")
+    set(contents "rawreel\\.app/Contents")
+    foreach(item IN LISTS items)
+        if(item IN_LIST app_fixed)
+            list(APPEND seen "${item}")
+            continue()
+        endif()
+        if(item MATCHES "^ffmpeg\\|${contents}/Frameworks/ffmpeg/lib([a-z]+)\\.[0-9]+\\.dylib$")
+            set(library "${CMAKE_MATCH_1}")
+            if(library IN_LIST ffmpeg_libraries AND NOT "ffmpeg:${library}" IN_LIST seen)
+                list(APPEND seen "ffmpeg:${library}")
+                continue()
+            endif()
+        endif()
+        if(item MATCHES "^ffmpeg\\|${contents}/Resources/ffmpeg/(build-info\\.txt|licenses/.+)$")
+            continue()
+        endif()
+        message(FATAL_ERROR "FAIL ${case}: '${item}' is outside the app layout")
+    endforeach()
+    foreach(item IN LISTS app_fixed)
+        if(NOT item IN_LIST seen)
+            message(FATAL_ERROR "FAIL ${case}: '${item}' is missing")
+        endif()
+    endforeach()
+    foreach(library IN LISTS ffmpeg_libraries)
+        if(NOT "ffmpeg:${library}" IN_LIST seen)
+            message(FATAL_ERROR "FAIL ${case}: lib${library}.<major>.dylib is missing")
+        endif()
+    endforeach()
+endfunction()
+
+set(case "macOS manifest: manifest-macos.txt matches the app layout")
+set(macos_manifest "${CMAKE_CURRENT_LIST_DIR}/../../packaging/manifest-macos.txt")
+if(NOT EXISTS "${macos_manifest}")
+    message(FATAL_ERROR "FAIL ${case}: packaging/manifest-macos.txt does not exist")
+endif()
+file(STRINGS "${macos_manifest}" lines)
+set(items "")
+foreach(line IN LISTS lines)
+    if(line MATCHES "^#" OR line STREQUAL "")
+        continue()
+    endif()
+    if(NOT line MATCHES "^([a-z-]+) ([^ ]+)( [0-9a-f]+| /[^ ]+)?$")
+        message(FATAL_ERROR "FAIL ${case}: bad line '${line}'")
+    endif()
+    list(APPEND items "${CMAKE_MATCH_1}|${CMAKE_MATCH_2}")
+endforeach()
+expect_app_layout("${case}" "${items}")
+pass("${case}")
+
+set(case "macOS manifest: write-manifest lists the app's libraries, driver and manifest")
+set(dmg "${WORK_DIR}/dmg-root")
+foreach(name IN ITEMS LICENSE README.md THIRD_PARTY_NOTICES.txt SOURCE.txt
+                      rawreel.app/Contents/Info.plist rawreel.app/Contents/MacOS/rawreel-cli
+                      rawreel.app/Contents/MacOS/rawreel-gui
+                      rawreel.app/Contents/_CodeSignature/CodeResources
+                      rawreel.app/Contents/Resources/vulkan/icd.d/libkosmickrisp_icd.json
+                      rawreel.app/Contents/Frameworks/libvulkan.1.dylib
+                      rawreel.app/Contents/Frameworks/libvulkan_kosmickrisp.dylib
+                      rawreel.app/Contents/Frameworks/ffmpeg/libavutil.60.dylib
+                      rawreel.app/Contents/Frameworks/ffmpeg/libavcodec.62.dylib
+                      rawreel.app/Contents/Frameworks/ffmpeg/libavformat.62.dylib
+                      rawreel.app/Contents/Frameworks/ffmpeg/libavfilter.11.dylib
+                      rawreel.app/Contents/Frameworks/ffmpeg/libswscale.9.dylib
+                      rawreel.app/Contents/Frameworks/ffmpeg/libswresample.6.dylib
+                      rawreel.app/Contents/Resources/ffmpeg/build-info.txt
+                      rawreel.app/Contents/Resources/ffmpeg/licenses/zlib/LICENSE)
+    file(WRITE "${dmg}/${name}" "${name}")
+endforeach()
+file(CREATE_LINK "/Applications" "${dmg}/Applications" SYMBOLIC)
+set(write_manifest "${CMAKE_CURRENT_LIST_DIR}/../../packaging/write-manifest.cmake")
+function(run_write_manifest root out result_var error_var)
+    execute_process(COMMAND "${CMAKE_COMMAND}" "-DROOT=${root}" -DVERSION=1.2.3 "-DOUT=${out}"
+                            -DPLATFORM=macos -P "${write_manifest}"
+                    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
+    string(REGEX REPLACE "[ \t\r\n]+" " " error "${error}")
+    set(${result_var} "${result}" PARENT_SCOPE)
+    set(${error_var} "${error}" PARENT_SCOPE)
+endfunction()
+set(written "${WORK_DIR}/manifest-macos-written.txt")
+run_write_manifest("${dmg}" "${written}" result error)
+expect_equal("${case}" "${result}" "0")
+file(STRINGS "${written}" lines)
+set(items "")
+foreach(line IN LISTS lines)
+    if(line MATCHES "^([a-z-]+) ([^ ]+)( ([0-9a-f]+|/[^ ]+))?$")
+        set(kind "${CMAKE_MATCH_1}")
+        set(path "${CMAKE_MATCH_2}")
+        set(listed "${CMAKE_MATCH_4}")
+        list(APPEND items "${kind}|${path}")
+        if(kind MATCHES "^(ffmpeg|vulkan)$")
+            file(SHA256 "${dmg}/${path}" hash)
+            expect_equal("${case}" "${listed}" "${hash}")
+        endif()
+    endif()
+endforeach()
+expect_app_layout("${case}" "${items}")
+foreach(item IN ITEMS "ffmpeg|rawreel.app/Contents/Frameworks/ffmpeg/libavutil.60.dylib"
+                      "ffmpeg|rawreel.app/Contents/Frameworks/ffmpeg/libswresample.6.dylib"
+                      "vulkan|rawreel.app/Contents/Frameworks/libvulkan.1.dylib"
+                      "vulkan|rawreel.app/Contents/Frameworks/libvulkan_kosmickrisp.dylib"
+                      "ours|rawreel.app/Contents/Resources/vulkan/icd.d/libkosmickrisp_icd.json")
+    expect_item("${case}" "${items}" "${item}")
+endforeach()
+# The written manifest checks its own tree, and the OFF variant still needs the Vulkan files.
+rawreel_check_manifest(ROOT "${dmg}" MANIFEST "${written}" VERSION 1.2.3 BUNDLED ON
+                       ERRORS errors)
+expect_empty("${case}" "${errors}")
+rawreel_check_manifest(ROOT "${dmg}" MANIFEST "${written}" VERSION 1.2.3 BUNDLED OFF
+                       ERRORS errors)
+expect_item("${case}" "${errors}"
+            "unexpected file rawreel.app/Contents/Frameworks/ffmpeg/libavutil.60.dylib")
+expect_item("${case}" "${errors}" "unexpected file SOURCE.txt")
+expect_count("${case}" "${errors}" 9)
+expect_item("${case}" "${lines}" "link Applications /Applications")
+pass("${case}")
+
+set(case "macOS manifest: the Applications link is a link to /Applications and nothing else is")
+rawreel_check_manifest(ROOT "${dmg}" MANIFEST "${written}" VERSION 1.2.3 BUNDLED ON
+                       ERRORS errors CLASSES classes)
+expect_empty("${case}" "${errors}")
+# The link is no file of any class: no check that reads files sees it.
+foreach(item IN LISTS classes)
+    if(item MATCHES "Applications")
+        message(FATAL_ERROR "FAIL ${case}: the link is in the classes: ${item}")
+    endif()
+endforeach()
+# Another target.
+file(REMOVE "${dmg}/Applications")
+file(CREATE_LINK "/Users" "${dmg}/Applications" SYMBOLIC)
+rawreel_check_manifest(ROOT "${dmg}" MANIFEST "${written}" VERSION 1.2.3 BUNDLED ON ERRORS errors)
+expect_equal("${case}" "${errors}" "symbolic link Applications points to /Users, not /Applications")
+# A regular file in its place, and no link at all.
+file(REMOVE "${dmg}/Applications")
+file(WRITE "${dmg}/Applications" "not a link")
+rawreel_check_manifest(ROOT "${dmg}" MANIFEST "${written}" VERSION 1.2.3 BUNDLED ON ERRORS errors)
+expect_equal("${case}" "${errors}" "Applications is no symbolic link")
+file(REMOVE "${dmg}/Applications")
+rawreel_check_manifest(ROOT "${dmg}" MANIFEST "${written}" VERSION 1.2.3 BUNDLED ON ERRORS errors)
+expect_equal("${case}" "${errors}" "missing file Applications")
+# Another link is unexpected.
+file(CREATE_LINK "/Applications" "${dmg}/Applications" SYMBOLIC)
+file(CREATE_LINK "/Applications" "${dmg}/Extra" SYMBOLIC)
+rawreel_check_manifest(ROOT "${dmg}" MANIFEST "${written}" VERSION 1.2.3 BUNDLED ON ERRORS errors)
+expect_equal("${case}" "${errors}" "unexpected file Extra")
+file(REMOVE "${dmg}/Extra")
+pass("${case}")
+
+set(case "macOS manifest: write-manifest refuses MoltenVK and libraries outside Frameworks")
+foreach(stray IN ITEMS rawreel.app/Contents/Frameworks/libMoltenVK.dylib
+                       rawreel.app/Contents/MacOS/libvulkan.1.dylib
+                       rawreel.app/Contents/Resources/vulkan/icd.d/libvulkan_kosmickrisp.dylib
+                       rawreel.app/Contents/Frameworks/ffmpeg/libavdevice.62.dylib)
+    file(WRITE "${dmg}/${stray}" "stray")
+    run_write_manifest("${dmg}" "${WORK_DIR}/manifest-stray.txt" result error)
+    file(REMOVE "${dmg}/${stray}")
+    if(result EQUAL 0)
+        message(FATAL_ERROR "FAIL ${case}: ${stray} was accepted")
+    endif()
+    string(FIND "${error}" "${stray}" at)
+    if(at EQUAL -1)
+        message(FATAL_ERROR "FAIL ${case}: the error does not name ${stray}: ${error}")
+    endif()
+endforeach()
+file(REMOVE "${dmg}/SOURCE.txt")
+run_write_manifest("${dmg}" "${WORK_DIR}/manifest-off.txt" result error)
+string(FIND "${error}" "no bundled (ON) package" at)
+if(result EQUAL 0 OR at EQUAL -1)
+    message(FATAL_ERROR "FAIL ${case}: a package without SOURCE.txt was accepted: ${error}")
+endif()
 pass("${case}")
 
 # --- Linux ELF checks (readelf and ldd text fixtures in data/) --------------------------------
@@ -776,6 +1027,231 @@ expect_empty("${case}" "${errors}")
 expect_equal("${case}" "${owners}" "runner/docker;root/root")
 pass("${case}")
 
+# --- macOS Mach-O checks (otool, codesign and dyld text fixtures in data/) ---------------------
+# The fixtures come from the app in a mounted .dmg; the bundle path is the smoke's mount point
+# below a neutral folder.
+
+file(READ "${data}/otool-L-exe.txt" otool_exe)
+file(READ "${data}/otool-L-library.txt" otool_library)
+file(READ "${data}/otool-l-load-commands.txt" load_commands)
+set(exe_rpath "@executable_path/../Frameworks")
+
+set(case "Mach-O: a Mach-O file is found by its magic, not by its name")
+string(ASCII 207 250 237 254 thin_magic)
+string(ASCII 202 254 186 190 fat_magic)
+file(WRITE "${WORK_DIR}/macho/rawreel-cli" "${thin_magic}rest")
+file(WRITE "${WORK_DIR}/macho/libx.dylib" "${fat_magic}rest")
+file(WRITE "${WORK_DIR}/macho/liby.dylib" "not a Mach-O file")
+file(WRITE "${WORK_DIR}/macho/short" "${del}E")
+rawreel_is_macho(FILE "${WORK_DIR}/macho/rawreel-cli" RESULT macho)
+expect_equal("${case}" "${macho}" "ON")
+rawreel_is_macho(FILE "${WORK_DIR}/macho/libx.dylib" RESULT macho)
+expect_equal("${case}" "${macho}" "ON")
+rawreel_is_macho(FILE "${WORK_DIR}/macho/liby.dylib" RESULT macho)
+expect_equal("${case}" "${macho}" "OFF")
+rawreel_is_macho(FILE "${WORK_DIR}/macho/short" RESULT macho)
+expect_equal("${case}" "${macho}" "OFF")
+pass("${case}")
+
+set(case "Mach-O: otool -L gives the dependencies (a library's own install name first)")
+rawreel_otool_dependencies(TEXT "${otool_exe}" DEPS deps)
+expect_count("${case}" "${deps}" 18)
+list(GET deps 0 first)
+expect_equal("${case}" "${first}"
+             "/System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox")
+expect_item("${case}" "${deps}" "/usr/lib/libc++.1.dylib")
+rawreel_otool_dependencies(TEXT "${otool_library}" DEPS deps)
+list(GET deps 0 first)
+expect_equal("${case}" "${first}" "@rpath/libavfilter.11.14.103.dylib")
+expect_item("${case}" "${deps}" "@rpath/libavutil.60.dylib")
+expect_item("${case}" "${deps}" "/usr/lib/libobjc.A.dylib")
+string(CONCAT weak "x (architecture arm64):\n"
+              "\t/a b/c.dylib (compatibility version 1.0.0, current version 1.0.0, weak)\n")
+rawreel_otool_dependencies(TEXT "${weak}" DEPS deps)
+expect_equal("${case}" "${deps}" "/a b/c.dylib")
+pass("${case}")
+
+set(case "Mach-O: otool -l gives the rpaths, the minimum macOS version and the UUID")
+rawreel_otool_load_commands(TEXT "${load_commands}" RPATHS rpaths MINOS minos UUID uuid)
+expect_equal("${case}" "${rpaths}" "${exe_rpath}")
+expect_equal("${case}" "${minos}" "27.0")
+expect_equal("${case}" "${uuid}" "DDDBC8EE-137C-3F33-933B-22C0E6FE591B")
+string(CONCAT old_style "Load command 8\n      cmd LC_VERSION_MIN_MACOSX\n  cmdsize 16\n"
+              "  version 10.13\n      sdk 10.14\n")
+rawreel_otool_load_commands(TEXT "${old_style}" RPATHS rpaths MINOS minos)
+expect_equal("${case}" "${rpaths}" "")
+expect_equal("${case}" "${minos}" "10.13")
+rawreel_otool_load_commands(TEXT "no load commands" RPATHS rpaths MINOS minos UUID uuid)
+expect_equal("${case}" "${minos}" "")
+expect_equal("${case}" "${uuid}" "")
+pass("${case}")
+
+# An exe's otool -l with one more LC_RPATH after the app's.
+string(CONCAT extra_rpath "${load_commands}" "Load command 21\n          cmd LC_RPATH\n"
+              "      cmdsize 32\n         path /opt/homebrew/lib (offset 12)\n")
+rawreel_otool_dependencies(TEXT "${otool_exe}" DEPS exe_deps)
+rawreel_otool_dependencies(TEXT "${otool_library}" DEPS library_deps)
+
+set(case "Mach-O: the clean exe and library pass")
+rawreel_macho_errors(NAME rawreel-gui KIND exe DEPS ${exe_deps} RPATHS "${exe_rpath}" MINOS 27.0
+                     ERRORS errors)
+expect_empty("${case}" "${errors}")
+rawreel_macho_errors(NAME libavfilter.11.dylib KIND library DEPS ${library_deps}
+                     RPATHS "@loader_path" MINOS 27.0 PREBUILT ERRORS errors)
+expect_empty("${case}" "${errors}")
+rawreel_macho_errors(NAME libvulkan.1.dylib KIND library DEPS "@rpath/libvulkan.1.dylib"
+                     "/usr/lib/libSystem.B.dylib" MINOS 27.0 ERRORS errors)
+expect_empty("${case}" "${errors}")
+# A prebuilt third-party file may target an older macOS (the SDK's KosmicKrisp: minos 11.0).
+rawreel_macho_errors(NAME libvulkan_kosmickrisp.dylib KIND library
+                     DEPS "@rpath/libvulkan_kosmickrisp.dylib" "/usr/lib/libz.1.dylib"
+                     MINOS 11.0 PREBUILT ERRORS errors)
+expect_empty("${case}" "${errors}")
+pass("${case}")
+
+set(case "Mach-O: an exe with /opt/homebrew/lib in its rpaths or without the app's rpath fails")
+rawreel_otool_load_commands(TEXT "${extra_rpath}" RPATHS rpaths MINOS minos)
+expect_equal("${case}" "${rpaths}" "${exe_rpath};/opt/homebrew/lib")
+rawreel_macho_errors(NAME rawreel-cli KIND exe DEPS ${exe_deps} RPATHS ${rpaths} MINOS ${minos}
+                     ERRORS errors)
+expect_equal("${case}" "${errors}"
+             "rawreel-cli has the rpath /opt/homebrew/lib (expected only ${exe_rpath})")
+rawreel_macho_errors(NAME rawreel-cli KIND exe DEPS ${exe_deps} MINOS 27.0 ERRORS errors)
+expect_equal("${case}" "${errors}" "rawreel-cli lacks the rpath ${exe_rpath}")
+# Exactly one LC_RPATH: the app's one twice fails too.
+rawreel_macho_errors(NAME rawreel-cli KIND exe DEPS ${exe_deps} RPATHS "${exe_rpath}"
+                     "${exe_rpath}" MINOS 27.0 ERRORS errors)
+expect_equal("${case}" "${errors}" "rawreel-cli has 2 rpaths (expected exactly one, ${exe_rpath})")
+pass("${case}")
+
+set(case "Mach-O: an exe that links FFmpeg or a library outside the system fails")
+rawreel_macho_errors(NAME rawreel-gui KIND exe DEPS ${exe_deps} "@rpath/libavutil.60.dylib"
+                     "/opt/homebrew/lib/libwx_baseu-3.3.dylib" RPATHS "${exe_rpath}" MINOS 27.0
+                     ERRORS errors)
+expect_item("${case}" "${errors}"
+            "rawreel-gui links the FFmpeg library @rpath/libavutil.60.dylib (FFmpeg is loaded at run time)")
+expect_item("${case}" "${errors}"
+            "rawreel-gui depends on /opt/homebrew/lib/libwx_baseu-3.3.dylib (outside the bundle and the system)")
+expect_count("${case}" "${errors}" 2)
+pass("${case}")
+
+set(case "Mach-O: a library that depends on /usr/local/lib/libvulkan.1.dylib fails")
+string(REPLACE "@rpath/libavutil.60.dylib" "/usr/local/lib/libvulkan.1.dylib" bad "${otool_library}")
+rawreel_otool_dependencies(TEXT "${bad}" DEPS deps)
+rawreel_macho_errors(NAME libavfilter.11.dylib KIND library DEPS ${deps} RPATHS "@loader_path"
+                     MINOS 27.0 PREBUILT ERRORS errors)
+expect_equal("${case}" "${errors}"
+             "libavfilter.11.dylib depends on /usr/local/lib/libvulkan.1.dylib (outside the bundle and the system)")
+rawreel_macho_errors(NAME libavfilter.11.dylib KIND library DEPS ${library_deps}
+                     RPATHS "@loader_path" "/opt/homebrew/lib" MINOS 27.0 PREBUILT ERRORS errors)
+expect_equal("${case}" "${errors}"
+             "libavfilter.11.dylib has the rpath /opt/homebrew/lib (a library's rpaths start with @loader_path)")
+# @executable_path/ is for the exes only: a library loaded by another program would miss it.
+rawreel_macho_errors(NAME libvulkan.1.dylib KIND library DEPS "@rpath/libvulkan.1.dylib"
+                     "@executable_path/../Frameworks/libx.dylib" MINOS 27.0 ERRORS errors)
+expect_equal("${case}" "${errors}"
+             "libvulkan.1.dylib depends on @executable_path/../Frameworks/libx.dylib (outside the bundle and the system)")
+pass("${case}")
+
+set(case "Mach-O: minos 28.0 fails; a file built from source has exactly 27.0")
+string(REPLACE "minos 27.0" "minos 28.0" bad "${load_commands}")
+rawreel_otool_load_commands(TEXT "${bad}" RPATHS rpaths MINOS minos)
+rawreel_macho_errors(NAME rawreel-cli KIND exe DEPS ${exe_deps} RPATHS ${rpaths} MINOS ${minos}
+                     ERRORS errors)
+expect_equal("${case}" "${errors}" "rawreel-cli needs macOS 28.0, above the minimum 27.0")
+rawreel_macho_errors(NAME libavutil.60.dylib KIND library DEPS "@rpath/libavutil.60.dylib"
+                     MINOS 28.0 PREBUILT ERRORS errors)
+expect_equal("${case}" "${errors}" "libavutil.60.dylib needs macOS 28.0, above the minimum 27.0")
+rawreel_macho_errors(NAME libvulkan.1.dylib KIND library DEPS "@rpath/libvulkan.1.dylib"
+                     MINOS 26.0 ERRORS errors)
+expect_equal("${case}" "${errors}"
+             "libvulkan.1.dylib has minos 26.0, expected 27.0 (a file built from source)")
+rawreel_macho_errors(NAME libvulkan.1.dylib KIND library DEPS "@rpath/libvulkan.1.dylib"
+                     ERRORS errors)
+expect_equal("${case}" "${errors}" "libvulkan.1.dylib names no minimum macOS version")
+pass("${case}")
+
+set(case "codesign: ad hoc, the vendor's signature, the linker's signature only")
+file(READ "${data}/codesign-adhoc.txt" adhoc)
+file(READ "${data}/codesign-vendor.txt" vendor)
+rawreel_codesign_errors(NAME rawreel-cli TEXT "${adhoc}" KIND adhoc
+                        IDENTIFIER io.github.barabashkad.rawreel.cli ERRORS errors)
+expect_empty("${case}" "${errors}")
+rawreel_codesign_errors(NAME rawreel-cli TEXT "${adhoc}" KIND adhoc IDENTIFIER rawreel-cli
+                        ERRORS errors)
+expect_equal("${case}" "${errors}"
+             "rawreel-cli has the identifier io.github.barabashkad.rawreel.cli, expected rawreel-cli")
+rawreel_codesign_errors(NAME libvulkan_kosmickrisp.dylib TEXT "${vendor}" KIND vendor ERRORS errors)
+expect_empty("${case}" "${errors}")
+rawreel_codesign_errors(NAME libvulkan_kosmickrisp.dylib TEXT "${vendor}" KIND adhoc ERRORS errors)
+expect_equal("${case}" "${errors}"
+             "libvulkan_kosmickrisp.dylib is not signed ad hoc (Authority=Developer ID Application: LunarG, Inc. (4777T3625D))")
+rawreel_codesign_errors(NAME rawreel-cli TEXT "${adhoc}" KIND vendor ERRORS errors)
+expect_equal("${case}" "${errors}"
+             "rawreel-cli has no vendor signature (no Developer ID Authority chain)")
+string(REPLACE "flags=0x2(adhoc)" "flags=0x20002(adhoc,linker-signed)" linker "${adhoc}")
+rawreel_codesign_errors(NAME rawreel-cli TEXT "${linker}" KIND adhoc ERRORS errors)
+expect_equal("${case}" "${errors}"
+             "rawreel-cli carries only the linker's signature (not signed after its last change)")
+rawreel_codesign_errors(NAME x.dylib TEXT "x.dylib: code object is not signed at all\n" KIND adhoc
+                        ERRORS errors)
+expect_equal("${case}" "${errors}" "x.dylib is not signed")
+pass("${case}")
+
+file(READ "${data}/dyld-print-libraries.txt" trace)
+set(bundle "/private/tmp/smoke/rawreel 2/Загрузки/rawreel.app")
+set(icd "${bundle}/Contents/Resources/vulkan/icd.d/libkosmickrisp_icd.json")
+
+set(case "loaded images: the bundle's and the system's pass")
+rawreel_loaded_image_errors(NAME rawreel-gui TEXT "${trace}" BUNDLE "${bundle}" ERRORS errors
+                            IMAGES images)
+expect_empty("${case}" "${errors}")
+expect_count("${case}" "${images}" 22)
+expect_item("${case}" "${images}" "${bundle}/Contents/Frameworks/libvulkan_kosmickrisp.dylib")
+expect_item("${case}" "${images}" "${bundle}/Contents/MacOS/rawreel-gui")
+pass("${case}")
+
+set(case "loaded images: /usr/local/lib/libMoltenVK.dylib and other outside images fail")
+set(line "dyld[7085]: <0E4CF3E4-B0C2-312A-B147-0BD4978EF0B7>")
+string(CONCAT bad "${trace}" "${line} /usr/local/lib/libMoltenVK.dylib\n"
+              "${line} ${bundle}/../libvulkan.1.dylib\n" "${line} ${bundle}.old/x.dylib\n")
+rawreel_loaded_image_errors(NAME rawreel-gui TEXT "${bad}" BUNDLE "${bundle}" ERRORS errors)
+expect_item("${case}" "${errors}"
+            "rawreel-gui loads /usr/local/lib/libMoltenVK.dylib (outside the bundle, /usr/lib and /System)")
+expect_item("${case}" "${errors}"
+            "rawreel-gui loads ${bundle}/../libvulkan.1.dylib (outside the bundle, /usr/lib and /System)")
+expect_item("${case}" "${errors}"
+            "rawreel-gui loads ${bundle}.old/x.dylib (outside the bundle, /usr/lib and /System)")
+expect_count("${case}" "${errors}" 3)
+# A dyld line glued to another writer's text is still audited; a path that is not absolute is
+# reported.
+string(CONCAT bad "${trace}" "INFO  selftest: passed [app.cpp:106]"
+              "${line} /usr/local/lib/libMoltenVK.dylib\n" "${line} libfoo.dylib\n")
+rawreel_loaded_image_errors(NAME rawreel-gui TEXT "${bad}" BUNDLE "${bundle}" ERRORS errors)
+expect_item("${case}" "${errors}"
+            "rawreel-gui loads /usr/local/lib/libMoltenVK.dylib (outside the bundle, /usr/lib and /System)")
+expect_item("${case}" "${errors}"
+            "rawreel-gui loads libfoo.dylib (no absolute path)")
+expect_count("${case}" "${errors}" 2)
+rawreel_loaded_image_errors(NAME rawreel-cli TEXT "no trace\n" BUNDLE "${bundle}" ERRORS errors)
+expect_equal("${case}" "${errors}"
+             "rawreel-cli: no loaded image in the output (is DYLD_PRINT_LIBRARIES=1 honoured?)")
+pass("${case}")
+
+set(case "Vulkan driver: the loader finds only the bundled manifest")
+rawreel_vulkan_driver_errors(NAME rawreel-gui TEXT "${trace}" MANIFEST "${icd}" ERRORS errors)
+expect_empty("${case}" "${errors}")
+string(CONCAT bad "${trace}" "[Vulkan Loader] DRIVER:         Found ICD manifest file "
+              "/opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json, version 1.0.0\n")
+rawreel_vulkan_driver_errors(NAME rawreel-gui TEXT "${bad}" MANIFEST "${icd}" ERRORS errors)
+expect_equal("${case}" "${errors}"
+             "rawreel-gui: the Vulkan loader found the driver manifest /opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json (not the bundled one)")
+rawreel_vulkan_driver_errors(NAME rawreel-cli TEXT "no loader output\n" MANIFEST "${icd}"
+                             ERRORS errors)
+expect_equal("${case}" "${errors}"
+             "rawreel-cli: the Vulkan loader names no driver manifest (is VK_LOADER_DEBUG=driver honoured?)")
+pass("${case}")
+
 # --- dry-run.cmake arguments (each run stops before any build) ---------------------------------
 # Every run gets a scratch DRYRUN_ROOT, so a broken check never touches the developer's dry-run
 # area.
@@ -824,14 +1300,175 @@ run_dry_run("${case}" "${fake_dry_run}" "${missing}" "-DWORKSPACE_ROOT=${WORK_DI
             -DBUNDLE=OFF)
 pass("${case}")
 
-if(CMAKE_HOST_LINUX)
-    set(case "dry-run: BUNDLE=ON on Linux stops before the build without the Windows prefix")
+if(CMAKE_HOST_APPLE)
+    set(case "dry-run: macOS refuses an unknown GUI_SMOKE before the build")
     file(MAKE_DIRECTORY "${fake}/libs/dvv-build/deps")
-    run_dry_run("${case}" "${fake_dry_run}" "is not a bootstrapped prefix" -DBUNDLE=ON)
-    run_dry_run("${case}" "${fake_dry_run}" "${WORK_DIR}/no-msvc is not a bootstrapped prefix"
-                -DBUNDLE=ON "-DWINDOWS_PREFIX=${WORK_DIR}/no-msvc")
+    run_dry_run("${case}" "${fake_dry_run}" "GUI_SMOKE must be off or macos" -DBUNDLE=OFF
+                -DGUI_SMOKE=linux)
     pass("${case}")
 endif()
+
+# --- SOURCE.txt: the custom_ffmpeg tag of each package -------------------------------------
+
+set(case "SOURCE.txt: the custom_ffmpeg tags it names")
+set(source_tail "The complete corresponding source of FFmpeg is the tag v1.0.1 of the
+custom_ffmpeg repository, with its submodules and build scripts (the configure line included):
+https://github.com/BarabashkaD/custom_ffmpeg/tree/v1.0.1
+
+LAME 3.100 (LGPL-2.0-or-later) is built into avcodec. That tag does not hold its source.
+")
+rawreel_source_txt_versions(TEXT "${source_tail}" VERSIONS named)
+expect_equal("${case}" "${named}" "1.0.1")
+rawreel_source_txt_versions(TEXT "see https://github.com/x/custom_ffmpeg/tree/v1.0.0. And\nhttps://github.com/x/custom_ffmpeg/tree/v1.0.1)" VERSIONS named)
+expect_equal("${case}" "${named}" "1.0.0;1.0.1")
+rawreel_source_txt_versions(TEXT "https://github.com/x/rawreel/releases/tag/v1.0.1" VERSIONS named)
+expect_empty("${case}" "${named}")
+pass("${case}")
+
+# The rendered SOURCE.txt of each platform (packaging/source-txt.cmake).
+function(render_source_txt platform custom_ffmpeg_version text_var)
+    set(url "https://github.com/BarabashkaD/custom_ffmpeg/releases/download/v${custom_ffmpeg_version}/x.tar.xz")
+    set(lame_url "https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz")
+    set(sha "ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e")
+    set(out "${WORK_DIR}/source-txt-${platform}/SOURCE.txt")
+    rawreel_render_source_txt(
+        OUT "${out}" PLATFORM "${platform}" CUSTOM_FFMPEG_VERSION "${custom_ffmpeg_version}"
+        CUSTOM_FFMPEG_URL "${url}" FFMPEG_VERSION "n8.1.3"
+        LIBRARY_VERSIONS "avutil 60.26, avcodec 62.28, avformat 62.12, avfilter 11.14, swscale 9.5, swresample 6.3"
+        LAME_URL "${lame_url}" LAME_SHA256 "${sha}"
+        FFMPEG_DIR "rawreel.app/Contents/Frameworks/ffmpeg"
+        TEXTS_DIR "rawreel.app/Contents/Resources/ffmpeg")
+    file(READ "${out}" text)
+    set(${text_var} "${text}" PARENT_SCOPE)
+endfunction()
+
+function(expect_text_has case text needle)
+    string(FIND "${text}" "${needle}" at)
+    if(at EQUAL -1)
+        message(FATAL_ERROR "FAIL ${case}: expected the text '${needle}' in:\n${text}")
+    endif()
+endfunction()
+
+function(expect_text_lacks case text needle)
+    string(FIND "${text}" "${needle}" at)
+    if(NOT at EQUAL -1)
+        message(FATAL_ERROR "FAIL ${case}: unexpected the text '${needle}' in:\n${text}")
+    endif()
+endfunction()
+
+foreach(spec IN ITEMS "windows|1.0.0" "linux|1.0.0" "macos|1.0.1")
+    string(REPLACE "|" ";" spec "${spec}")
+    list(GET spec 0 platform)
+    list(GET spec 1 version)
+    set(case "SOURCE.txt rendering: ${platform}")
+    render_source_txt("${platform}" "${version}" text)
+    rawreel_source_txt_versions(TEXT "${text}" VERSIONS named)
+    expect_equal("${case}" "${named}" "${version}")
+    expect_text_has("${case}" "${text}" "corresponding source of FFmpeg is the tag v${version} of the")
+    # LAME: its own source release (URL and SHA256 printed), never the tag.
+    expect_text_has("${case}" "${text}" "That tag does not hold its source")
+    expect_text_has("${case}" "${text}" "lame-3.100.tar.gz:\nhttps://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz\n")
+    expect_text_has("${case}" "${text}" "SHA256 ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e")
+    expect_text_lacks("${case}" "${text}" "LGPL components")
+    expect_text_lacks("${case}" "${text}" "FFmpeg and LAME")
+    expect_text_lacks("${case}" "${text}" "LAME 3.100 is built from")
+    # No line is over 100 columns.
+    file(STRINGS "${WORK_DIR}/source-txt-${platform}/SOURCE.txt" lines)
+    foreach(line IN LISTS lines)
+        string(LENGTH "${line}" length)
+        if(length GREATER 100)
+            message(FATAL_ERROR "FAIL ${case}: a line of ${length} columns: ${line}")
+        endif()
+    endforeach()
+    if(platform STREQUAL "macos")
+        expect_text_lacks("${case}" "${text}" "AMF")
+        expect_text_has("${case}" "${text}" "codesign --force --sign - <library>")
+        expect_text_has("${case}" "${text}" "licenses folder of rawreel.app/Contents/Resources/ffmpeg,")
+    else()
+        expect_text_has("${case}" "${text}" "Not included: the AMD AMF public headers")
+        expect_text_lacks("${case}" "${text}" "codesign")
+        expect_text_has("${case}" "${text}" "in this folder")
+    endif()
+    pass("${case}")
+endforeach()
+
+set(case "SOURCE.txt: exactly the tag of the prefix's custom_ffmpeg release")
+rawreel_ffmpeg_source_errors(NAME p.dmg CUSTOM_FFMPEG_VERSION 1.0.1 NAMED 1.0.1 ERRORS e)
+expect_empty("${case}" "${e}")
+rawreel_ffmpeg_source_errors(NAME p.dmg CUSTOM_FFMPEG_VERSION 1.0.1 NAMED 1.0.0 ERRORS e)
+expect_equal("${case}" "${e}" "p.dmg: SOURCE.txt names the custom_ffmpeg tags '1.0.0', expected exactly v1.0.1 (the release its prefix pins)")
+rawreel_ffmpeg_source_errors(NAME p.dmg CUSTOM_FFMPEG_VERSION 1.0.1 ERRORS e)
+expect_equal("${case}" "${e}" "p.dmg: SOURCE.txt names the custom_ffmpeg tags '', expected exactly v1.0.1 (the release its prefix pins)")
+rawreel_ffmpeg_source_errors(NAME p.dmg CUSTOM_FFMPEG_VERSION 1.0.1 NAMED 1.0.1 1.0.0 ERRORS e)
+expect_count("${case}" "${e}" 1)
+# No version (an empty value is the same as none).
+rawreel_ffmpeg_source_errors(NAME p.zip NAMED 1.0.0 ERRORS e)
+expect_equal("${case}" "${e}" "p.zip: the third-party prefix names no custom_ffmpeg version")
+pass("${case}")
+
+# check-release-ffmpeg.cmake over the package infos of a release; each platform its own release.
+set(release_check "${CMAKE_CURRENT_LIST_DIR}/../../packaging/check-release-ffmpeg.cmake")
+function(release_infos dist windows linux macos)
+    file(REMOVE_RECURSE "${dist}")
+    foreach(entry IN ITEMS "windows|zip|1.0.0|${windows}" "linux|tar.xz|1.0.0|${linux}"
+                           "macos|dmg|1.0.1|${macos}")
+        string(REPLACE "|" ";" entry "${entry}")
+        list(GET entry 0 platform)
+        list(GET entry 1 extension)
+        list(GET entry 2 cf)
+        list(GET entry 3 named)
+        string(REPLACE "," ";" named "${named}")
+        file(WRITE "${dist}/package-info-${platform}.cmake"
+             "set(RAWREEL_PACKAGE \"rawreel-1.2.3-${platform}.${extension}\")\n"
+             "set(RAWREEL_BUNDLED ON)\nset(RAWREEL_CUSTOM_FFMPEG_VERSION \"${cf}\")\n"
+             "set(RAWREEL_SOURCE_TXT_CUSTOM_FFMPEG \"${named}\")\n")
+    endforeach()
+endfunction()
+function(run_release_check case dist expected)
+    execute_process(COMMAND "${CMAKE_COMMAND}" "-DDIST=${dist}" "-DPLATFORMS=windows;linux;macos"
+                            -P "${release_check}"
+                    RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE err)
+    string(REGEX REPLACE "[ \t\r\n]+" " " err "${err}")
+    if(expected STREQUAL "")
+        if(NOT result EQUAL 0)
+            message(FATAL_ERROR "FAIL ${case}: the check failed: ${err}")
+        endif()
+        return()
+    endif()
+    if(result EQUAL 0)
+        message(FATAL_ERROR "FAIL ${case}: the check passed, expected '${expected}'")
+    endif()
+    string(FIND "${err}" "${expected}" at)
+    if(at EQUAL -1)
+        message(FATAL_ERROR "FAIL ${case}: expected '${expected}', got: ${err}")
+    endif()
+endfunction()
+
+set(dist "${WORK_DIR}/dist")
+set(case "release FFmpeg sources: each package names its own custom_ffmpeg release")
+release_infos("${dist}" 1.0.0 1.0.0 1.0.1)
+run_release_check("${case}" "${dist}" "")
+pass("${case}")
+
+set(case "release FFmpeg sources: a package naming another release fails")
+release_infos("${dist}" 1.0.0 1.0.0 1.0.0)
+run_release_check("${case}" "${dist}" "rawreel-1.2.3-macos.dmg: SOURCE.txt names the custom_ffmpeg tags '1.0.0', expected exactly v1.0.1")
+release_infos("${dist}" 1.0.0 1.0.1 1.0.1)
+run_release_check("${case}" "${dist}" "rawreel-1.2.3-linux.tar.xz: SOURCE.txt names the custom_ffmpeg tags '1.0.1', expected exactly v1.0.0")
+release_infos("${dist}" "" 1.0.0 1.0.1)
+run_release_check("${case}" "${dist}" "rawreel-1.2.3-windows.zip: SOURCE.txt names the custom_ffmpeg tags '', expected exactly v1.0.0")
+release_infos("${dist}" 1.0.0 1.0.0 "1.0.1,1.0.0")
+run_release_check("${case}" "${dist}" "rawreel-1.2.3-macos.dmg: SOURCE.txt names the custom_ffmpeg tags '1.0.1, 1.0.0'")
+pass("${case}")
+
+set(case "release FFmpeg sources: a missing package info fails, a package without FFmpeg passes")
+release_infos("${dist}" 1.0.0 1.0.0 1.0.1)
+file(REMOVE "${dist}/package-info-linux.cmake")
+run_release_check("${case}" "${dist}" "linux: no package-info-linux.cmake")
+release_infos("${dist}" 1.0.0 1.0.0 "")
+file(APPEND "${dist}/package-info-macos.cmake" "set(RAWREEL_BUNDLED OFF)\n")
+run_release_check("${case}" "${dist}" "")
+pass("${case}")
 
 get_property(passed GLOBAL PROPERTY test_packaging_passed)
 list(LENGTH passed passed_count)

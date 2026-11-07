@@ -29,15 +29,15 @@ void FakeClock::advance(Clock::duration d) {
     now_ += d;
 }
 
-void FakeTimer::schedule(Clock::time_point when, std::move_only_function<void()> callback) {
-    std::move_only_function<void()> replaced;
+void FakeTimer::schedule(Clock::time_point when, dvv::MoveOnlyFunction<void()> callback) {
+    dvv::MoveOnlyFunction<void()> replaced;
     std::lock_guard lock(mutex_);
     replaced = std::exchange(callback_, std::move(callback));
     when_ = when;
 }
 
 void FakeTimer::cancel() {
-    std::move_only_function<void()> dropped;
+    dvv::MoveOnlyFunction<void()> dropped;
     std::lock_guard lock(mutex_);
     dropped = std::exchange(callback_, {});
     when_.reset();
@@ -47,7 +47,7 @@ void FakeTimer::advance(Clock::duration d) {
     std::lock_guard lock(mutex_);
     clock_->advance(d);
     if (when_ && *when_ <= clock_->now()) {
-        std::move_only_function<void()> callback = std::exchange(callback_, {});
+        dvv::MoveOnlyFunction<void()> callback = std::exchange(callback_, {});
         when_.reset();
         if (callback) {
             callback();  // posts the tick

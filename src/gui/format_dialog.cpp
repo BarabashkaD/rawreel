@@ -1063,7 +1063,15 @@ bool FormatDialog::colourTakesInitialFocus() const {
             return child == colour_;
         }
     }
+#if defined(__WXOSX__)
+    // macOS without Full Keyboard Access (the system default): lists, check boxes and buttons
+    // never take the focus, and a locked stream shows no text field, so no child has it. Return
+    // then goes to the default button's key equivalent: OK, not Load JSON, as the rule above
+    // gives on MSW and GTK.
+    return GetDefaultItem() == ok_;
+#else
     return false;
+#endif
 }
 
 }  // namespace rawreel
