@@ -749,9 +749,10 @@ An Apple Silicon Mac with macOS 27 or newer, Xcode 27 or the Command Line Tools 
 SDK (AppleClang 21 or newer), CMake 4.2 or newer and Ninja (`brew install cmake ninja`); the
 rest is in `libs/dvv-build/README.md`. From the `rawreel` folder, in a shell, after
 `libs/dvv-build/bootstrap.sh` (the toolchain `appleclang` is the default on macOS; it downloads
-the pinned LunarG Vulkan SDK, takes the KosmicKrisp driver out of it, and builds the Vulkan
-loader, the validation layer and wxWidgets for Cocoa; it downloads about 400 MB, the LunarG SDK,
-and takes a few minutes on an Apple Silicon Mac), configure, build Debug and Release and run
+the pinned LunarG Vulkan SDK, takes the KosmicKrisp driver and the validation layer out
+of it, and builds the Vulkan loader and wxWidgets for Cocoa, wxWidgets into
+`libs/_third_party/appleclang-wx`; it downloads about 400 MB, the LunarG SDK, and takes a few
+minutes on an Apple Silicon Mac), configure, build Debug and Release and run
 all tests:
 
 ```sh
