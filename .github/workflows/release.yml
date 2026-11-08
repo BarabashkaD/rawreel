@@ -162,8 +162,8 @@ jobs:
         run: cmake -DREPO=rawreel -DMODE=app -P rawreel/libs/dvv-build/tools/check-pins.cmake
       - name: Install the compiler
         run: sudo apt-get update && sudo apt-get install -y clang-19 libclang-rt-19-dev libstdc++-14-dev
-      # bootstrap builds wxWidgets on GTK 3 and the validation layer with Xlib, XCB and Wayland
-      # support; xvfb and xauth give the GUI smoke a display, lavapipe is its Vulkan device.
+      # bootstrap builds wxWidgets on GTK 3 (its pkg-config check asks for these window-system
+      # packages); xvfb and xauth give the GUI smoke a display, lavapipe is its Vulkan device.
       - name: Install the window-system and Vulkan packages
         run: sudo apt-get install -y libgtk-3-dev pkgconf libx11-dev libxcb1-dev libxrandr-dev libwayland-dev zlib1g-dev libpng-dev xvfb xauth mesa-vulkan-drivers libvulkan1
       # No cache restore: bootstrap builds the prefix from the pinned, SHA256-checked archives
