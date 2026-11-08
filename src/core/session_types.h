@@ -5,10 +5,13 @@
 // references to managed objects (D10).
 
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -50,7 +53,15 @@ struct SessionStatus {
     std::string bottleneck;
     std::uint32_t inflight = 0;    // request tasks running
     std::uint32_t readyAhead = 0;  // ready-map entries after the position
+    std::uint64_t revision = 0;    // 1 after the first publish; +1 per changed snapshot
 };  // written at the end of each pump(); tests wait on inflight/readyAhead
+
+// Every field except `revision`: what decides whether a new snapshot is published.
+inline bool sameState(const SessionStatus& a, const SessionStatus& b) {
+    return a.player == b.player && a.streams == b.streams && a.epoch == b.epoch &&
+           a.gpuAvailable == b.gpuAvailable && a.bottleneck == b.bottleneck &&
+           a.inflight == b.inflight && a.readyAhead == b.readyAhead;
+}
 
 class IDisplaySink {  // thread-safe, non-blocking (the viewport's DisplayState)
 public:
@@ -82,6 +93,24 @@ public:
     // Binding: blocks until a running callback has returned; must not be called from inside a
     // callback. ThreadTimer's destructor implies cancel().
     virtual void cancel() = 0;
+};
+
+// The developer option --debug-seek-delay: an extra wait before every frame is produced.
+// Thread-safe; shared by the GUI and the delayed sources (delayed_source.h).
+class ProduceDelay {
+public:
+    void set(std::uint32_t ms) noexcept { ms_.store(ms); }
+    [[nodiscard]] std::uint32_t get() const noexcept { return ms_.load(); }
+    // Wakes every wait now and makes later waits return at once.
+    void stop() noexcept;
+    // Returns after `ms`, or at once / early after stop().
+    void waitFor(std::uint32_t ms);
+
+private:
+    std::atomic<std::uint32_t> ms_{0};
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    bool stopped_ = false;  // under mutex_
 };
 
 }  // namespace rawreel

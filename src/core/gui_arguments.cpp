@@ -24,6 +24,7 @@ constexpr std::array<std::pair<std::string_view, Scenario>, 4> SCENARIOS{{
 }};
 
 constexpr std::uint32_t MAX_INFLIGHT = 64;
+constexpr std::uint32_t MAX_DEBUG_SEEK_DELAY = 60000;
 
 // A decimal number without sign, spaces or trailing characters that fits in 32 bits.
 std::optional<std::uint32_t> parseNumber(std::string_view text) {
@@ -81,6 +82,8 @@ dvv::Result<GuiArguments> parseGuiArguments(std::span<const std::string_view> ar
     bool selftest_seen = false;
     bool inflight_seen = false;
     bool config_seen = false;
+    bool delay_seen = false;
+    bool transport_seen = false;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string_view arg = args[i];
 #ifdef __APPLE__
@@ -107,11 +110,20 @@ dvv::Result<GuiArguments> parseGuiArguments(std::span<const std::string_view> ar
             seen = &inflight_seen;
         } else if (arg == "--config") {
             seen = &config_seen;
+        } else if (arg == "--debug-seek-delay") {
+            seen = &delay_seen;
+        } else if (arg == "--debug-transport") {
+            seen = &transport_seen;
         } else {
             return dvv::makeError(dvv::Errc::Format, std::format("unknown argument '{}'", arg));
         }
         if (*seen) {
             return dvv::makeError(dvv::Errc::Format, std::format("option {} given twice", arg));
+        }
+        if (arg == "--debug-transport") {  // the only flag
+            *seen = true;
+            arguments.debugTransport = true;
+            continue;
         }
         if (i + 1 >= args.size()) {
             return dvv::makeError(dvv::Errc::Format, std::format("option {} needs a value", arg));
@@ -133,6 +145,15 @@ dvv::Result<GuiArguments> parseGuiArguments(std::span<const std::string_view> ar
                                       std::format("bad number '{}' for --gpu", value));
             }
             arguments.gpu = gpu;
+        } else if (arg == "--debug-seek-delay") {
+            const std::optional<std::uint32_t> delay = parseNumber(value);
+            if (!delay || *delay < 1 || *delay > MAX_DEBUG_SEEK_DELAY) {
+                return dvv::makeError(
+                    dvv::Errc::Format,
+                    std::format("bad number '{}' for --debug-seek-delay (1 to {})", value,
+                                MAX_DEBUG_SEEK_DELAY));
+            }
+            arguments.debugSeekDelay = *delay;
         } else if (arg == "--config") {
             arguments.config = std::string(value);
         } else if (arg == "--selftest") {

@@ -74,6 +74,9 @@ public:
     [[nodiscard]] const std::shared_ptr<ShowHistory>& showHistory() const noexcept {
         return show_history_;
     }
+    // The developer delay of every produced frame (--debug-seek-delay, set to its value); created
+    // for that option and for --selftest; null otherwise.
+    [[nodiscard]] ProduceDelay* produceDelay() const noexcept { return produce_delay_.get(); }
     // What SetAppearance() returned (nullopt before OnInit()); Failure and CannotChange are not
     // errors (design §7).
     [[nodiscard]] std::optional<AppearanceResult> appearanceResult() const noexcept {
@@ -106,6 +109,7 @@ private:
     Startup startup_;  // the FFmpeg status and the component registry
     std::shared_ptr<DisplayState> display_;
     std::shared_ptr<ShowHistory> show_history_;
+    std::shared_ptr<ProduceDelay> produce_delay_;
     std::shared_ptr<SessionBridge> bridge_;
     std::unique_ptr<Session> session_;
 };

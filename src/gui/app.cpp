@@ -174,6 +174,10 @@ bool App::OnInit() {
         show_history_ = std::make_shared<ShowHistory>(display_);
         sink = show_history_;
     }
+    if (the_arguments.debugSeekDelay > 0 || selftest()) {
+        produce_delay_ = std::make_shared<ProduceDelay>();
+        produce_delay_->set(the_arguments.debugSeekDelay);
+    }
     StackFactory make_stack{};
     if (fault == "stack") {
         make_stack = [](std::optional<dvv::gpu::DeviceId> /*device*/) -> dvv::Result<MediaStack> {
@@ -193,7 +197,8 @@ bool App::OnInit() {
                          .timer = std::move(*timer),
                          .sink = std::move(sink),
                          .events = bridge_,
-                         .makeStack = std::move(make_stack)});
+                         .makeStack = std::move(make_stack),
+                         .produceDelay = produce_delay_});
     if (!session) {
         finish(exit_code::GPU_ERROR, "Vulkan could not start: " + session.error().describe());
         bridge_->detach();
@@ -210,6 +215,8 @@ bool App::OnInit() {
     });
     frame->viewport().setFailureHandler(
         [frame](const dvv::Error& error) { frame->onPresenterFailed(error); });
+    frame->setDebugTransport(the_arguments.debugTransport);
+    frame->startStatusUpdates(*session_);
     frame->Show();
     // The native window exists and is shown once the queued call runs.
     frame->viewport().CallAfter([viewport = &frame->viewport()] { viewport->markReady(); });
@@ -330,6 +337,9 @@ bool App::startGpu() {
 }
 
 void App::shutdownSession() {
+    if (produce_delay_) {
+        produce_delay_->stop();  // first: the shutdown drain never waits out a delay
+    }
     // The FFmpeg and lavfi sources end their work at once, so the shutdown below, which waits for
     // in-flight acquisitions, is bounded (design M4 v2 D5).
     dvv::components::stopFfmpegSources();

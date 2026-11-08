@@ -10,6 +10,7 @@
 // clang-format on
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -20,11 +21,11 @@
 #include <vector>
 
 #include <wx/aui/framemanager.h>
-#include <wx/timer.h>
 
 #include "core/commands.h"
 #include "core/format_choice.h"
 #include "core/gui_arguments.h"
+#include "core/session.h"
 #include "core/session_types.h"
 #include "core/version_text.h"
 #include "dvv/base/error.h"
@@ -89,6 +90,17 @@ public:
     void dismissMessage();
     [[nodiscard]] const wxString& lastMessage() const noexcept { return last_message_; }
     [[nodiscard]] std::array<wxString, 4> statusTexts() const;
+    // Follows the Session by notification (no timer): subscribes, and shows the snapshot already
+    // published. stopStatusUpdates() drops the subscription; it runs before the Session goes.
+    void startStatusUpdates(Session& session);
+    void stopStatusUpdates();
+    // --debug-transport: the notification trace here and the scrub trace in the transport bar.
+    void setDebugTransport(bool on) noexcept;
+    // Handled, non-duplicate status notifications; the revision handled last.
+    [[nodiscard]] std::uint64_t statusNotificationsForTest() const noexcept {
+        return status_notifications_;
+    }
+    [[nodiscard]] std::uint64_t lastRevisionForTest() const noexcept { return last_revision_; }
     // Infobar with `text`, wxICON_ERROR and one button "Restart GPU" (INFOBAR_REOPEN_ID) (§5.3,
     // D25).
     void offerReopen(const wxString& text);
@@ -152,7 +164,7 @@ private:
     };
 
     void buildMenus();      // from commandTable() (D17)
-    void buildStatusBar();  // 3 fields (D20) + the 50 ms timer
+    void buildStatusBar();  // 3 fields (D20)
     void showGpuInfo();
     void showOpenDialog();          // Command::Open
     void showOpenUriDialog();       // Command::OpenUri
@@ -173,7 +185,7 @@ private:
     void onCharHook(wxKeyEvent& event);
     void onMenu(wxCommandEvent& event);
     void onUpdateUi(wxUpdateUIEvent& event);
-    void onStatusTimer(wxTimerEvent& event);
+    void onStatusChanged();
     void onIconize(wxIconizeEvent& event);
     void onShow(wxShowEvent& event);
 #if defined(__WXOSX__)
@@ -201,8 +213,14 @@ private:
     Viewport* viewport_ = nullptr;  // null once the frame has closed
     wxSize applied_minimum_;        // the last minimum client size applyLayoutLimits() set
     bool limits_check_pending_ = false;
-    wxTimer status_timer_;
     std::array<wxString, 4> status_texts_;
+    StatusSubscription status_subscription_;  // empty before startStatusUpdates / after stop
+    std::uint64_t last_revision_ = 0;
+    std::uint64_t status_notifications_ = 0;
+    bool debug_transport_ = false;
+    // Rate trace (--debug-transport): entries of onStatusChanged() per steady-clock second.
+    std::chrono::steady_clock::time_point rate_second_{};
+    std::uint64_t rate_count_ = 0;
     wxString last_message_;
     std::vector<int> message_buttons_;  // the custom buttons of the current infobar message
     std::weak_ptr<dvv::gpu::ExecutionContext> context_;  // of the last stackChanged

@@ -201,11 +201,12 @@ wx-free part of the application is the `rawreel_core` library (§3.1, §10.1).
   result of an older seek, stream or stack is dropped as stale instead of being cancelled
   (`stop_token` cancellation is v1.x, X4: the M3.1 4K60 run measured seeks of at most 122.5 ms, so
   Task C was not triggered; adaptive, direction-aware prefetch is v1.x). Frames reach the viewport
-  through `IDisplaySink`
-  (the GUI's `DisplayState`, read by the presenter thread); discrete events (`streamsChanged`,
-  `formatNeeded`, `stackChanged`, `error`) go through `ISessionEvents` and are posted to the GUI
-  thread; the GUI polls `status()` every 50 ms for the status bar: target vs actual fps and the
-  current bottleneck, derived from the store's converter stats (disk / upload / unpack / display).
+  through `IDisplaySink` (the GUI's `DisplayState`, read by the presenter thread); discrete events
+  (`streamsChanged`, `formatNeeded`, `stackChanged`, `error`) go through `ISessionEvents` and are
+  posted to the GUI thread; the GUI polls `status()` every 50 ms (superseded by
+  `2026-11-08-session-state-notifications-design.md`) for the status bar: target vs actual fps and
+  the current bottleneck, derived from the store's converter stats (disk / upload / unpack /
+  display).
 - **FFmpeg sources (M4).** Each `ffmpeg` or `lavfi` source owns one worker, a `ThreadPool(1)`, that
   runs every demux, decode and filter step and keeps a small ring of decoded frames; concurrent
   `produce` calls (prefetch) queue on it. Each source has an atomic `stopping` flag: its destructor
@@ -1239,8 +1240,8 @@ component parameters, with the migration of component parameters) are v1.x.
   Quit as menu accelerators; Space play/pause, Left/Right step, Shift+Left/Right 10 frames,
   Home/End first/last, L loop through `wxEVT_CHAR_HOOK` (ignored while a text field has the focus).
   Stop, Format…, Restart GPU and reopen, GPU info and Diagnostics are menu-only.
-- Status bar: position, target vs actual fps, bottleneck (polled every 50 ms), and the
-  tone-mapping status of the stream (§8; set on a stream change, fixed width).
+- Status bar: position, target vs actual fps, bottleneck (polled every 50 ms;
+  superseded by `2026-11-08-session-state-notifications-design.md`), and the tone-mapping status of the stream (§8; set on a stream change, fixed width).
 - Non-modal error reporting via a `wxInfoBar` (a Format… button for "N trailing bytes
   ignored" and a raw-like file's open error, see Opening; a Restart GPU button for GPU failures,
   §5.2), status bar and Log pane; modal dialogs only
@@ -2396,7 +2397,8 @@ code comments cite as "design M3" or "design v2 D<n>"):
   shipped binary's `--selftest lost` checks "error, no hang".
 - D9: the GPU menu and the "3 losses in a row" limit → v1.x; `--gpu N` at start stays.
 - D10: the Session is a wx-free actor in `rawreel_core`: frames go straight to `DisplayState`,
-  events through `ISessionEvents` posted to the GUI thread, status polled every 50 ms.
+  events through `ISessionEvents` posted to the GUI thread, status polled every 50 ms (superseded
+  by `2026-11-08-session-state-notifications-design.md`).
 - D11: the player: `PlayerLogic` + `ThreadTimer`, no drops, a fixed prefetch window, K = 4 in
   flight (§4).
 - D12: tools and exporters as application classes → v1.x (no tools or exporters in v1.0).

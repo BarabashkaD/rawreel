@@ -1484,6 +1484,21 @@ void sendSliderTrack(wxSlider& slider, int value) {
     slider.GetEventHandler()->ProcessEvent(event);
 }
 
+// A CHANGED without a drag (a Windows track click, the wheel or a key on Windows and GTK).
+void sendSliderChanged(wxSlider& slider, int value) {
+    slider.SetValue(value);
+    wxScrollEvent event(wxEVT_SCROLL_CHANGED, slider.GetId(), value, wxHORIZONTAL);
+    event.SetEventObject(&slider);
+    slider.GetEventHandler()->ProcessEvent(event);
+}
+
+// The end of a drag (or of a GTK track click), at the slider's current value.
+void sendSliderRelease(wxSlider& slider) {
+    wxScrollEvent event(wxEVT_SCROLL_THUMBRELEASE, slider.GetId(), slider.GetValue(), wxHORIZONTAL);
+    event.SetEventObject(&slider);
+    slider.GetEventHandler()->ProcessEvent(event);
+}
+
 // Drops `files` on the viewport's DropTarget (the wx callback a real drop calls).
 void dropFiles(Viewport& viewport, const std::vector<std::filesystem::path>& files) {
     auto* target = static_cast<DropTarget*>(viewport.GetDropTarget());
@@ -1586,6 +1601,9 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
         const auto& streams = frame.streams();
         return streams.size() == 1 ? streams[0].resolvedUri : std::string();
     };
+    // The clip's URI, stored when "open one stream" passes (later steps replace or close it).
+    auto clip_uri = std::make_shared<std::string>();
+    ProduceDelay* const delay = test.app().produceDelay();  // non-null in --selftest runs
     std::vector<SelfTestStep> steps;
 
     steps.push_back(step(
@@ -1595,11 +1613,15 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                       std::format("rawreel-selftest-{}", wxGetProcessId());
             std::filesystem::create_directories(st->dir);
         },
-        [&frame, status](std::string& seen) {
+        [&frame, status, stream_uri, clip_uri](std::string& seen) {
             seen = std::format("streams {}, presented {}, position {}", frame.streams().size(),
                                presented(frame.viewport()), status().position);
-            return frame.streams().size() == 1 && presented(frame.viewport()) >= 2 &&
-                   status().position == 0;
+            if (frame.streams().size() != 1 || presented(frame.viewport()) < 2 ||
+                status().position != 0) {
+                return false;
+            }
+            *clip_uri = stream_uri();
+            return true;
         }));
     steps.push_back(step(
         "play 30 frames",
@@ -1653,6 +1675,170 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             seen = std::format("position {}", status().position);
             return status().position == 5 && !shows.empty() && shows.back().index == 5;
         }));
+    {
+        struct Quiet {
+            std::uint64_t n0 = 0;
+            bool grew = false;
+            bool started = false;
+            std::chrono::steady_clock::time_point since;
+        };
+        auto quiet = std::make_shared<Quiet>();
+        steps.push_back(step(
+            "paused: no status work",
+            [&frame, status] {
+                if (status().playing) {
+                    frame.execute(Command::PlayPause);
+                }
+            },
+            [&frame, quiet](std::string& seen) {
+                const SessionStatus full = frame.session().status();
+                if (!quiet->started) {
+                    seen = std::format("inflight {} revision {} handled {}", full.inflight,
+                                       full.revision, frame.lastRevisionForTest());
+                    if (full.player.playing || full.inflight != 0 ||
+                        frame.lastRevisionForTest() != full.revision) {
+                        return false;
+                    }
+                    quiet->started = true;
+                    quiet->n0 = frame.statusNotificationsForTest();
+                    quiet->since = std::chrono::steady_clock::now();
+                }
+                if (frame.statusNotificationsForTest() != quiet->n0) {
+                    quiet->grew = true;
+                }
+                seen = quiet->grew ? "a notification was handled while paused" : "quiet";
+                return !quiet->grew &&
+                       std::chrono::steady_clock::now() - quiet->since >= std::chrono::seconds(1);
+            }));
+        struct Playing {
+            std::uint64_t n0 = 0;
+            wxString text0;
+        };
+        auto playing = std::make_shared<Playing>();
+        steps.push_back(step(
+            "play updates the bar",
+            [&frame, playing] {
+                playing->n0 = frame.statusNotificationsForTest();
+                playing->text0 = frame.statusTexts()[0];
+                frame.execute(Command::PlayPause);
+            },
+            [&frame, playing](std::string& seen) {
+                seen = std::format("notifications {} (from {})", frame.statusNotificationsForTest(),
+                                   playing->n0);
+                return frame.statusTexts()[0] != playing->text0 &&
+                       frame.statusNotificationsForTest() > playing->n0;
+            },
+            std::chrono::seconds(2)));
+        steps.push_back(step(
+            "pause after the bar update",
+            [&frame, status] {
+                if (status().playing) {
+                    frame.execute(Command::PlayPause);
+                }
+            },
+            [status](std::string& seen) {
+                seen = std::format("playing {}", status().playing);
+                return !status().playing;
+            }));
+    }
+    {
+        // Spec §6.6: while Scrubbing, update() leaves the slider alone; the release ends it.
+        struct Drag {
+            std::vector<int> values;  // the slider's value after each update() since the 55
+            bool broken = false;      // left Scrubbing or moved the slider during the hold
+            bool released = false;
+            std::chrono::steady_clock::time_point since;
+        };
+        auto drag = std::make_shared<Drag>();
+        steps.push_back(step(
+            "held drag on a slow source",
+            [&frame, delay, drag] {
+                delay->set(500);
+                TransportBar& bar = frame.transportBar();
+                bar.setLeftButtonProbeForTest([] { return true; });
+                for (const int value : {25, 40, 55}) {
+                    sendSliderTrack(bar.slider(), value);
+                }
+                // Installed after the 55 was sent: every value it records comes after it.
+                bar.setUpdateObserverForTest([drag](int value) { drag->values.push_back(value); });
+                drag->since = std::chrono::steady_clock::now();
+            },
+            [&frame, delay, drag, status](std::string& seen) {
+                TransportBar& bar = frame.transportBar();
+                const bool idle = bar.scrubState() == ScrubState::Idle;
+                const bool at55 =
+                    std::ranges::all_of(drag->values, [](int value) { return value == 55; });
+                if (!drag->released) {
+                    if (idle || !at55) {
+                        drag->broken = true;
+                    }
+                    seen = std::format("hold: idle {}, updates {}, all at 55 {}, broken {}", idle,
+                                       drag->values.size(), at55, drag->broken);
+                    if (drag->broken || drag->values.empty() ||
+                        std::chrono::steady_clock::now() - drag->since < std::chrono::seconds(2)) {
+                        return false;
+                    }
+                    // A status that names another frame must not move the thumb under the drag
+                    // (read-your-writes keeps `target` at 55 otherwise, which hides it).
+                    PlayerStatus elsewhere = status();
+                    elsewhere.target = 10;
+                    elsewhere.position = 10;
+                    bar.update(elsewhere);
+                    if (bar.slider().GetValue() != 55 ||
+                        bar.scrubState() != ScrubState::Scrubbing) {
+                        drag->broken = true;
+                        seen = std::format("update() during the drag: slider {}, scrubbing {}",
+                                           bar.slider().GetValue(),
+                                           bar.scrubState() == ScrubState::Scrubbing);
+                        return false;
+                    }
+                    bar.setLeftButtonProbeForTest([] { return false; });
+                    sendSliderRelease(bar.slider());
+                    drag->released = true;
+                }
+                const bool released_idle = bar.scrubState() == ScrubState::Idle;
+                seen = std::format("released: position {}, idle {}, updates {}, all at 55 {}",
+                                   status().position, released_idle, drag->values.size(), at55);
+                if (status().position != 55 || !released_idle || !at55) {
+                    return false;
+                }
+                delay->set(0);
+                bar.setLeftButtonProbeForTest(nullptr);
+                bar.setUpdateObserverForTest(nullptr);
+                return true;
+            },
+            std::chrono::seconds(15)));
+    }
+    steps.push_back(step(
+        "changed alone seeks and stays idle",
+        [&frame] { sendSliderChanged(frame.transportBar().slider(), 20); },
+        [&frame, status](std::string& seen) {
+            const bool idle = frame.transportBar().scrubState() == ScrubState::Idle;
+            seen = std::format("position {}, idle {}", status().position, idle);
+            return status().position == 20 && idle;
+        }));
+    {
+        struct Lone {
+            std::int64_t position = -1;
+            int ticks = 0;
+            bool moved = false;
+        };
+        auto lone = std::make_shared<Lone>();
+        steps.push_back(step(
+            "a lone release does nothing",
+            [&frame, lone, status] {
+                lone->position = status().position;
+                sendSliderRelease(frame.transportBar().slider());
+            },
+            [&frame, lone, status](std::string& seen) {
+                const bool idle = frame.transportBar().scrubState() == ScrubState::Idle;
+                lone->moved = lone->moved || status().position != lone->position;
+                ++lone->ticks;
+                seen = std::format("idle {}, position {} (was {}), ticks {}", idle,
+                                   status().position, lone->position, lone->ticks);
+                return idle && !lone->moved && lone->ticks >= 3;
+            }));
+    }
     steps.push_back(step(
         "Home (CHAR_HOOK)", [&frame] { sendKey(frame, WXK_HOME); },
         [status](std::string& seen) {
@@ -2548,6 +2734,56 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
     } else {
         DVV_LOG_INFO("selftest: FFmpeg or RAWREEL_TEST_MKV not available, MKV steps skipped");
     }
+    // Opens the clip again (frame 0) and waits until it is shown.
+    auto reopen_clip = [&frame, status, clip_uri](std::string name) {
+        return step(
+            std::move(name), [&frame, clip_uri] { frame.openUri(0, *clip_uri, {}); },
+            [&frame, status](std::string& seen) {
+                seen = std::format("streams {}, length {}, position {}", frame.streams().size(),
+                                   status().length.value_or(-1), status().position);
+                return frame.streams().size() == 1 && status().length == 60 &&
+                       status().position == 0;
+            });
+    };
+    steps.push_back(reopen_clip("reopen the clip"));
+    {
+        auto closed = std::make_shared<bool>(false);
+        steps.push_back(step(
+            "stream change resets the scrub",
+            [&frame] {
+                TransportBar& bar = frame.transportBar();
+                bar.setLeftButtonProbeForTest([] { return true; });
+                sendSliderTrack(bar.slider(), 30);
+            },
+            [&frame, closed](std::string& seen) {
+                TransportBar& bar = frame.transportBar();
+                if (!*closed) {
+                    const bool scrubbing = bar.scrubState() == ScrubState::Scrubbing;
+                    seen = std::format("before the close: scrubbing {}", scrubbing);
+                    if (!scrubbing) {
+                        return false;
+                    }
+                    frame.execute(Command::CloseStreams);
+                    *closed = true;
+                }
+                const bool idle = bar.scrubState() == ScrubState::Idle;
+                const bool enabled = bar.slider().IsEnabled();
+                seen = std::format("after the close: idle {}, slider enabled {}", idle, enabled);
+                if (!idle || enabled) {
+                    return false;
+                }
+                bar.setLeftButtonProbeForTest(nullptr);
+                return true;
+            }));
+    }
+    steps.push_back(step(
+        "no scrub on a disabled slider",
+        [&frame] { sendSliderTrack(frame.transportBar().slider(), 10); },
+        [&frame](std::string& seen) {
+            const bool idle = frame.transportBar().scrubState() == ScrubState::Idle;
+            seen = std::format("idle {}, streams {}", idle, frame.streams().size());
+            return idle && frame.streams().empty();
+        }));
     steps.push_back(step(
         "close stream and clean up", [&frame] { frame.execute(Command::CloseStreams); },
         [&frame, st](std::string& seen) {
@@ -2560,6 +2796,20 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             if (error) {
                 DVV_LOG_WARN("selftest: could not remove the scratch folder: {}", error.message());
             }
+            return true;
+        }));
+    // Last: the app closes with the seek still pending; App::shutdownSession() stops the delay.
+    steps.push_back(reopen_clip("reopen the clip for the close"));
+    steps.push_back(step(
+        "close during a slow seek",
+        [&frame, delay] {
+            // Above the parser's 60000: a close that did not wake it would outlast the CTest
+            // TIMEOUT.
+            delay->set(600000);
+            sendSliderTrack(frame.transportBar().slider(), 45);
+        },
+        [](std::string& seen) {
+            seen = "the seek is pending";
             return true;
         }));
     return steps;  // the runner appends the close step (validation 0, leak check)

@@ -26,10 +26,12 @@ struct PlayerConfig {
 
 struct PlayerStatus {
     std::int64_t position = -1;  // the last shown index (-1: none since the last reset)
+    std::int64_t target = -1;    // the pending seek or step target, else the position
     std::optional<std::int64_t> length;
     bool playing = false, loop = false, stalled = false;
     double targetFps = 0, actualFps = 0;
     std::uint64_t shown = 0, stalls = 0;
+    bool operator==(const PlayerStatus&) const = default;
 };
 
 class PlayerLogic {

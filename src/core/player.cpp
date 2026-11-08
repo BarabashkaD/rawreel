@@ -310,6 +310,7 @@ std::optional<Clock::time_point> PlayerLogic::nextDeadline() const {
 PlayerStatus PlayerLogic::status(Clock::time_point now) const {
     PlayerStatus status;
     status.position = position_;
+    status.target = target();
     status.length = config_.length;
     status.playing = playing_;
     status.loop = loop_ && config_.length.has_value();

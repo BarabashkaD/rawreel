@@ -828,6 +828,42 @@ TEST_SUITE("session") {
         CHECK(f.session->status().streams == 0);
     }
 
+    TEST_CASE("session: produce delay slows a seek") {
+        const auto delay = std::make_shared<rawreel::ProduceDelay>();
+        SessionFixture f{rawreel::testing::RealTime{},
+                         [&](rawreel::SessionOptions& o) { o.produceDelay = delay; }};
+        delay->set(300);
+        f.open(0, "synthetic:gradient?w=32&h=16&fmt=yuv420p&frames=400&fps=25");
+        REQUIRE(f.sink->waitShown(0));
+        REQUIRE(f.settle(1));
+        const auto t0 = std::chrono::steady_clock::now();
+        f.session->seek(200);
+        REQUIRE(f.waitPosition(200));
+        CHECK(std::chrono::steady_clock::now() - t0 >= 300ms);
+        delay->set(0);
+        REQUIRE(f.settle(0));  // inflight == 0: the delayed prefetches are done
+        const auto t1 = std::chrono::steady_clock::now();
+        f.session->seek(350);
+        REQUIRE(f.waitPosition(350));
+        CHECK(std::chrono::steady_clock::now() - t1 < 300ms);
+    }
+
+    TEST_CASE("session: the delay wakes at stop") {
+        const auto delay = std::make_shared<rawreel::ProduceDelay>();
+        SessionFixture f{rawreel::testing::RealTime{},
+                         [&](rawreel::SessionOptions& o) { o.produceDelay = delay; }};
+        f.open(0, "synthetic:gradient?w=32&h=16&fmt=yuv420p&frames=400&fps=25");
+        REQUIRE(f.sink->waitShown(0));
+        REQUIRE(f.settle(1));
+        delay->set(10000);
+        f.session->seek(300);
+        std::this_thread::sleep_for(100ms);
+        delay->stop();
+        const auto t0 = std::chrono::steady_clock::now();
+        f.shutdown();
+        CHECK(std::chrono::steady_clock::now() - t0 < 2s);
+    }
+
     TEST_CASE("session: plays and shuts down on the real timer") {
         SessionFixture f{rawreel::testing::RealTime{}};
         f.open(0, A);
@@ -1318,5 +1354,30 @@ TEST_SUITE("session") {
         CHECK(lines[1] == "tier Host: 1024 / 4096 bytes, 2 views");
         CHECK(lines[2] == "converter Produce: 3 runs, 2048 bytes, 1.3 ms");
         CHECK(lines[3].starts_with("lease 7:2 yuv420p Read at test_session.cpp:"));
+    }
+
+    TEST_CASE("session: target shows a seek before its frame") {
+        closeGate("t1");
+        SessionFixture f;
+        f.open(0, "slow:gradient?frames=40&index=30&gate=t1");
+        REQUIRE(f.settle(1));
+        f.session->seek(30);
+        REQUIRE(f.waitStatus([](const SessionStatus& s) { return s.player.target == 30; }));
+        CHECK(f.session->status().player.position != 30);
+        releaseGate("t1");
+        REQUIRE(f.waitPosition(30));
+        CHECK(f.session->status().player.target == 30);
+    }
+
+    TEST_CASE("session: revision changes only with the snapshot") {
+        SessionFixture f;
+        f.open(0, A);
+        REQUIRE(f.settle(1));
+        const std::uint64_t r = f.session->status().revision;
+        CHECK(r >= 1);
+        f.session->setLoop(false);  // already off: the snapshot is unchanged
+        f.session->setLoop(true);
+        REQUIRE(f.waitStatus([](const SessionStatus& s) { return s.player.loop; }));
+        CHECK(f.session->status().revision == r + 1);
     }
 }

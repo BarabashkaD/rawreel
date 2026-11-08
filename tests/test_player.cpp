@@ -488,4 +488,21 @@ TEST_SUITE("core") {
         CHECK(q.status(T0 + 2 * P).stalled);
         CHECK(contains(loop_feeder.take(q), 0));
     }
+
+    TEST_CASE("player: status target is the pending seek, else the position") {
+        PlayerLogic p(config(100));
+        Feeder feeder;
+        feeder.reset(p, config(100), 0);
+        feeder.take(p);
+        CHECK(feeder.ready(p, 0, T0));
+        CHECK(p.takeShow() == 0);
+        p.seek(50);
+        CHECK(p.status(T0).position == 0);
+        CHECK(p.status(T0).target == 50);
+        feeder.take(p);
+        CHECK(feeder.ready(p, 50, T0));
+        CHECK(p.takeShow() == 50);
+        CHECK(p.status(T0).position == 50);
+        CHECK(p.status(T0).target == 50);
+    }
 }

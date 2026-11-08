@@ -33,13 +33,16 @@ struct GuiArguments {
     std::uint32_t inflight = 4;         // --inflight K, 1..64, only with --selftest perf
     std::optional<std::string> uri;     // positional, at most one (opened as the stream, frame 0)
     std::optional<std::string> config;  // --config <file> (UTF-8): replaces the default file
+    std::uint32_t debugSeekDelay = 0;   // --debug-seek-delay MS, 1..60000 (0: off): developer
+    bool debugTransport = false;        // --debug-transport (a flag): developer
     bool help = false;
 };
-// Options take their value in the next argument. Every error is Errc::Format with one of:
-// "unknown argument '<a>'" (an unknown --option), "option --x needs a value", "option --x given
-// twice", "bad value '<v>' for --appearance (system, light, dark)", "bad value '<v>' for --selftest
-// (smoke, player, lost, perf)", "bad number '<v>' for --gpu", "bad number '<v>' for
-// --inflight (1 to 64)", "--inflight is valid only with --selftest perf", "at most one URI".
+// Options take their value in the next argument, except the flag --debug-transport. Every error is
+// Errc::Format with one of: "unknown argument '<a>'" (an unknown --option), "option --x needs a
+// value", "option --x given twice", "bad value '<v>' for --appearance (system, light, dark)", "bad
+// value '<v>' for --selftest (smoke, player, lost, perf)", "bad number '<v>' for --gpu", "bad
+// number '<v>' for --inflight (1 to 64)", "bad number '<v>' for --debug-seek-delay (1 to 60000)",
+// "--inflight is valid only with --selftest perf", "at most one URI".
 // "--help" anywhere sets help and stops checking.
 [[nodiscard]] dvv::Result<GuiArguments> parseGuiArguments(std::span<const std::string_view> args);
 // 77, or 4 when DVV_REQUIRE_GPU=1 turns a skip into a failure (M1b D12).
@@ -53,13 +56,16 @@ struct GuiArguments {
 
 inline constexpr char USAGE[] =
     R"(Usage: rawreel-gui [--appearance system|light|dark] [--gpu N] [--selftest SCENARIO]
-                   [--inflight K] [--config FILE] [URI]
+                   [--inflight K] [--config FILE] [--debug-seek-delay MS]
+                   [--debug-transport] [URI]
 
   --appearance  light or dark windows, or the system setting (default)
   --gpu N       use GPU N (the index dvv-gpu-info lists) instead of the best one
   --selftest S  run a scripted check and exit: smoke, player, lost or perf
   --inflight K  frames in flight for --selftest perf (default 4)
   --config F    read config file F instead of the default rawreel.json
+  --debug-seek-delay MS  developer: every frame takes MS ms longer to load
+  --debug-transport  developer: log the transport bar's notifications
   --help        print this text
   URI           a source to open (a path, file:..., synthetic:...)
 
