@@ -19,6 +19,7 @@
 #include <variant>
 #include <vector>
 
+#include "core/delayed_source.h"
 #include "core/player.h"
 #include "dvv/base/executors.h"
 #include "dvv/base/log.h"
@@ -90,6 +91,14 @@ using Leases = std::array<std::shared_ptr<const dvv::media::ReadLease>, MAX_STRE
 using OpenResult =
     dvv::Result<std::variant<std::unique_ptr<dvv::media::ISource>, dvv::media::Ambiguous>>;
 
+// One status subscription (spec §6.2), shared by its token and the Session's list.
+struct StatusSubscriber {
+    std::atomic<bool> pending{false};  // set by a fan-out, cleared by take()
+    std::mutex callbackMutex;          // held while `changed` runs and while the token unsubscribes
+    dvv::MoveOnlyFunction<void()> changed;  // under callbackMutex
+    bool removed = false;                   // under callbackMutex
+};
+
 class SessionCore;
 // The detached task bodies (defined after the class; they use only its public members).
 dvv::Task<void> openSource(std::shared_ptr<SessionCore> core, OpenJob job,
@@ -115,6 +124,38 @@ public:
         std::lock_guard lock(status_mutex_);
         return status_;
     }
+    [[nodiscard]] std::shared_ptr<StatusSubscriber> subscribe(
+        dvv::MoveOnlyFunction<void()> changed) {
+        auto subscriber = std::make_shared<StatusSubscriber>();
+        subscriber->changed = std::move(changed);
+        std::lock_guard lock(subscribers_mutex_);
+        subscribers_.push_back(subscriber);
+        return subscriber;
+    }
+    void unsubscribe(const StatusSubscriber* subscriber) {
+        std::lock_guard lock(subscribers_mutex_);
+        std::erase_if(subscribers_, [subscriber](const auto& s) { return s.get() == subscriber; });
+    }
+    // Spec §6.3, read-your-writes: all under status_mutex_, the seek is posted first (a throwing
+    // post leaves nothing behind; post never runs the task inline), then, with a stream of a
+    // bounded length above zero in the stored snapshot, it becomes the newest queued seek and the
+    // stored target. The patch calls no subscriber; the executor's next publish fans it out.
+    void acceptSeek(std::int64_t index) {
+        std::lock_guard lock(status_mutex_);
+        const std::int64_t length = status_.player.length.value_or(0);  // unbounded: 0
+        const bool counted = status_.streams > 0 && length > 0;
+        executor_->post(
+            [core = shared_from_this(), index, counted] { core->runSeek(index, counted); });
+        if (!counted) {
+            return;
+        }
+        queued_seek_ = std::clamp<std::int64_t>(index, 0, length - 1);
+        ++queued_seeks_;
+        if (status_.player.target != queued_seek_) {
+            status_.player.target = queued_seek_;
+            ++status_.revision;
+        }
+    }
 
     // --- Session executor only, from here on ---
     [[nodiscard]] bool stopping() const noexcept { return stopping_; }
@@ -123,6 +164,13 @@ public:
         return options_.fileReads;
     }
     [[nodiscard]] dvv::IExecutor& io() const noexcept { return *options_.io; }
+    // Null: sources are not wrapped (the developer option --debug-seek-delay).
+    [[nodiscard]] const std::shared_ptr<ProduceDelay>& produceDelay() const noexcept {
+        return options_.produceDelay;
+    }
+    [[nodiscard]] const std::shared_ptr<dvv::IExecutor>& ioShared() const noexcept {
+        return options_.io;
+    }
     // Only buildStack calls it, on `io`, while its job runs: never twice at once.
     [[nodiscard]] dvv::Result<MediaStack> makeStack() {
         return options_.makeStack(options_.device);
@@ -240,6 +288,19 @@ public:
             player_->seek(index);
         }
     }
+    // The command posted by acceptSeek(): it leaves the queued count before the stopping check,
+    // so a seek refused during shutdown leaves no queued target behind.
+    void runSeek(std::int64_t index, bool counted) {
+        if (counted) {
+            std::lock_guard lock(status_mutex_);
+            --queued_seeks_;
+        }
+        if (stopping_) {
+            return;  // refused once shutdown() has started
+        }
+        seek(index);
+        pump();
+    }
     void logDiagnostics() const {
         if (!stack_.store) {
             DVV_LOG_INFO("store: none");
@@ -280,7 +341,7 @@ public:
         } else {
             scheduleTimer(std::nullopt);
         }
-        publishStatus();
+        publish();
     }
 
     // A detached task (design §5.2 step 5): counted until it has finished on the executor.
@@ -364,7 +425,7 @@ public:
         ++stream_set_;  // running opens and requests become stale
         ready_.clear();
         options_.sink->clear();
-        publishStatus();
+        publish();
         if (tasks_ > 0) {
             co_await DrainAwaiter{this};
         }
@@ -378,7 +439,7 @@ public:
         player_.reset();
         stack = MediaStack{};  // the Session's context reference is released here, on the executor
         factory_.reset();
-        publishStatus();
+        publish();
         stopped_.store(true, std::memory_order_release);
     }
 
@@ -456,7 +517,7 @@ private:
         if (player_) {
             player_->pause();
         }
-        publishStatus();  // the snapshot read during the error event shows the kept position
+        publish();  // the snapshot read during the error event shows the kept position
         const std::size_t cancelled = opens_.size() + (open_running_ ? 1U : 0U);
         opens_.clear();
         rebuild_running_ = false;  // a running job is dropped by the stream_set_ bump below
@@ -694,7 +755,37 @@ private:
         stats_time_ = now;
     }
 
-    void publishStatus() {
+    // Stores the snapshot and, when publishStatus() says so, fans it out: the one place that calls
+    // the subscribers.
+    void publish() {
+        if (publishStatus()) {
+            notifySubscribers();
+        }
+    }
+
+    // Spec §6.2, lock order §12: the list is copied under its mutex and released before any
+    // callback; each callback runs under its subscription's callbackMutex only (never under
+    // status_mutex_), and only when the subscription's pending flag was clear.
+    void notifySubscribers() {
+        std::vector<std::shared_ptr<StatusSubscriber>> subscribers;
+        {
+            std::lock_guard lock(subscribers_mutex_);
+            subscribers = subscribers_;
+        }
+        for (const auto& subscriber : subscribers) {
+            if (subscriber->pending.exchange(true)) {
+                continue;  // the overwrite: already notified, not taken yet
+            }
+            std::lock_guard lock(subscriber->callbackMutex);
+            if (!subscriber->removed && subscriber->changed) {
+                subscriber->changed();
+            }
+        }
+    }
+
+    // True when subscribers are to be notified (spec §6.3): the stored snapshot changed (revision
+    // + 1), or a seek patched it since the last fan-out (a patch is always notified).
+    bool publishStatus() {
         SessionStatus status;
         if (player_) {
             status.player = player_->status(clock().now());
@@ -720,7 +811,19 @@ private:
         status.gpuAvailable = stack_.store != nullptr;
         status.inflight = request_tasks_;
         std::lock_guard lock(status_mutex_);
-        status_ = std::move(status);
+        // The target is chosen here, inside the lock, in one place: the newest queued seek while
+        // one is queued (spec §6.3), else the player's.
+        status.player.target = (queued_seeks_ > 0 && player_ && !stopping_)
+                                   ? queued_seek_
+                                   : (player_ ? player_->target() : -1);
+        if (!sameState(status, status_)) {
+            status.revision = status_.revision + 1;
+            status_ = std::move(status);
+        } else if (status_.revision == notified_revision_) {
+            return false;  // unchanged, and no seek patched it since the last fan-out
+        }
+        notified_revision_ = status_.revision;
+        return true;
     }
 
     void detachStreams() {
@@ -810,6 +913,14 @@ private:
 
     mutable std::mutex status_mutex_;
     SessionStatus status_;
+    // Under status_mutex_ (spec §6.3): the newest seek accepted by acceptSeek(), clamped with the
+    // stored length, and how many accepted seeks the executor has not run yet.
+    std::int64_t queued_seek_ = -1;
+    std::uint32_t queued_seeks_ = 0;
+    std::uint64_t notified_revision_ = 0;  // status_.revision at the last fan-out
+
+    std::mutex subscribers_mutex_;  // never held while a callback runs
+    std::vector<std::shared_ptr<StatusSubscriber>> subscribers_;
 };
 
 namespace {
@@ -858,6 +969,12 @@ dvv::Task<void> openSource(std::shared_ptr<SessionCore> core, OpenJob job,
         job.request->fileReads = core->fileReads();  // every open, reopens included
         try {
             opened = co_await core->factory().open(*job.request);
+            if (opened && core->produceDelay()) {
+                if (auto* source = std::get_if<std::unique_ptr<dvv::media::ISource>>(&*opened)) {
+                    *source =
+                        delayedSource(std::move(*source), core->produceDelay(), core->ioShared());
+                }
+            }
         } catch (const std::exception& error) {
             opened = dvv::makeError(dvv::Errc::Internal,
                                     std::format("opening '{}' failed: {}",
@@ -1129,7 +1246,7 @@ void Session::step(std::int64_t delta) {
     command([delta](detail::SessionCore& core) { core.step(delta); });
 }
 void Session::seek(std::int64_t index) {
-    command([index](detail::SessionCore& core) { core.seek(index); });
+    core_->acceptSeek(index);
 }
 void Session::logDiagnostics() {
     command([](detail::SessionCore& core) { core.logDiagnostics(); });
@@ -1205,6 +1322,59 @@ StackFactory gpuStackFactory(std::shared_ptr<dvv::gpu::GpuRegistry> gpus,
 
 SessionStatus Session::status() const {
     return core_->status();
+}
+
+StatusSubscription Session::subscribeStatus(dvv::MoveOnlyFunction<void()> changed) {
+    return StatusSubscription(core_, core_->subscribe(std::move(changed)));
+}
+
+StatusSubscription::StatusSubscription(std::weak_ptr<detail::SessionCore> core,
+                                       std::shared_ptr<detail::StatusSubscriber> state) noexcept
+    : core_(std::move(core)), state_(std::move(state)) {}
+
+StatusSubscription::StatusSubscription(StatusSubscription&& other) noexcept
+    : core_(std::move(other.core_)), state_(std::move(other.state_)) {}
+
+StatusSubscription& StatusSubscription::operator=(StatusSubscription&& other) noexcept {
+    if (this != &other) {
+        reset();
+        core_ = std::move(other.core_);
+        state_ = std::move(other.state_);
+    }
+    return *this;
+}
+
+StatusSubscription::~StatusSubscription() {
+    reset();
+}
+
+SessionStatus StatusSubscription::take() {
+    if (!state_) {
+        return {};
+    }
+    state_->pending.store(false);  // first: a publish after the read below calls again
+    const std::shared_ptr<detail::SessionCore> core = core_.lock();
+    return core ? core->status() : SessionStatus{};
+}
+
+// The binding of spec §6.2 (as DisplayState::setOnChanged({})): off the list first, so no new
+// fan-out sees it; then, under its callback mutex (which waits for a running callback), marked
+// removed for a fan-out that copied the list before. The callback is destroyed outside the lock.
+void StatusSubscription::reset() noexcept {
+    if (!state_) {
+        return;
+    }
+    if (const std::shared_ptr<detail::SessionCore> core = core_.lock()) {
+        core->unsubscribe(state_.get());
+    }
+    dvv::MoveOnlyFunction<void()> changed;
+    {
+        std::lock_guard lock(state_->callbackMutex);
+        state_->removed = true;
+        changed = std::move(state_->changed);
+    }
+    state_.reset();
+    core_.reset();
 }
 
 }  // namespace rawreel

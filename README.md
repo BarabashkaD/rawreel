@@ -214,13 +214,16 @@ tags were read) go to the Log pane when a stream opens.
 
 ```text
 Usage: rawreel-gui [--appearance system|light|dark] [--gpu N] [--selftest SCENARIO]
-                   [--inflight K] [--config FILE] [URI]
+                   [--inflight K] [--config FILE] [--debug-seek-delay MS]
+                   [--debug-transport] [URI]
 
   --appearance  light or dark windows, or the system setting (default)
   --gpu N       use GPU N (the index dvv-gpu-info lists) instead of the best one
   --selftest S  run a scripted check and exit: smoke, player, lost or perf
   --inflight K  frames in flight for --selftest perf (default 4)
   --config F    read config file F instead of the default rawreel.json
+  --debug-seek-delay MS  developer: every frame takes MS ms longer to load
+  --debug-transport  developer: log the transport bar's notifications
   --help        print this text
   URI           a source to open (a path, file:..., synthetic:...)
 ```

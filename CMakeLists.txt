@@ -55,6 +55,7 @@ add_library(rawreel_core STATIC
     src/core/perf_stats.cpp
     src/core/player.cpp
     src/core/session.cpp
+    src/core/delayed_source.cpp
     src/core/status_text.cpp
     src/core/timer.cpp
     src/core/view.cpp)

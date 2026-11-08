@@ -254,6 +254,53 @@ TEST_CASE("gui arguments: skipExitCode") {
     CHECK(rawreel::skipExitCode() == 77);
 }
 
+TEST_CASE("gui arguments: --debug-seek-delay") {
+    CHECK(parse({})->debugSeekDelay == 0u);
+    SUBCASE("a number") {
+        const auto arguments = parse({"--debug-seek-delay", "800"});
+        REQUIRE(arguments.has_value());
+        CHECK(arguments->debugSeekDelay == 800u);
+    }
+    SUBCASE("the bounds") {
+        CHECK(parse({"--debug-seek-delay", "1"})->debugSeekDelay == 1u);
+        CHECK(parse({"--debug-seek-delay", "60000"})->debugSeekDelay == 60000u);
+    }
+    SUBCASE("bad numbers") {
+        checkFormatError({"--debug-seek-delay", "0"},
+                         "bad number '0' for --debug-seek-delay (1 to 60000)");
+        checkFormatError({"--debug-seek-delay", "60001"},
+                         "bad number '60001' for --debug-seek-delay (1 to 60000)");
+        checkFormatError({"--debug-seek-delay", "x"},
+                         "bad number 'x' for --debug-seek-delay (1 to 60000)");
+    }
+    SUBCASE("twice") {
+        checkFormatError({"--debug-seek-delay", "5", "--debug-seek-delay", "6"},
+                         "option --debug-seek-delay given twice");
+    }
+    SUBCASE("without its value") {
+        checkFormatError({"--debug-seek-delay"}, "option --debug-seek-delay needs a value");
+    }
+}
+
+TEST_CASE("gui arguments: --debug-transport") {
+    CHECK_FALSE(parse({})->debugTransport);
+    SUBCASE("a flag, the next argument is not its value") {
+        const auto arguments = parse({"--debug-transport", "a.mp4"});
+        REQUIRE(arguments.has_value());
+        CHECK(arguments->debugTransport);
+        CHECK(arguments->uri == std::optional<std::string>("a.mp4"));
+    }
+    SUBCASE("last") {
+        const auto arguments = parse({"a.mp4", "--debug-transport"});
+        REQUIRE(arguments.has_value());
+        CHECK(arguments->debugTransport);
+    }
+    SUBCASE("twice") {
+        checkFormatError({"--debug-transport", "--debug-transport"},
+                         "option --debug-transport given twice");
+    }
+}
+
 TEST_CASE("gui arguments: the usage text") {
     const std::string_view usage = rawreel::USAGE;
     REQUIRE_FALSE(usage.empty());
@@ -264,6 +311,11 @@ TEST_CASE("gui arguments: the usage text") {
     CHECK(usage.find("4 GPU error") != std::string_view::npos);
     CHECK(usage.find("6 a --selftest check failed") != std::string_view::npos);
     CHECK(usage.find("77") != std::string_view::npos);
+    CHECK(usage.find(
+              "  --debug-seek-delay MS  developer: every frame takes MS ms longer to load\n") !=
+          std::string_view::npos);
+    CHECK(usage.find("  --debug-transport  developer: log the transport bar's notifications\n") !=
+          std::string_view::npos);
 }
 
 TEST_CASE("gui arguments: --config") {

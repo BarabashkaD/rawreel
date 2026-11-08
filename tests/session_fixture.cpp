@@ -3,8 +3,10 @@
 #include <doctest/doctest.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -238,6 +240,11 @@ SessionFixture::SessionFixture(RealTime) {
     start(true);
 }
 
+SessionFixture::SessionFixture(RealTime, std::function<void(SessionOptions&)> configure)
+    : configure_(std::move(configure)) {
+    start(true);
+}
+
 SessionFixture::SessionFixture(dvv::platform::FileReadMode file_reads) : fileReads(file_reads) {
     start(false);
 }
@@ -265,7 +272,11 @@ void SessionFixture::start(bool real_time) {
     sequence = std::make_shared<std::atomic<std::uint64_t>>(0);
     sink = std::make_shared<RecordingSink>(sequence);
     events = std::make_shared<RecordingEvents>(sequence);
-    auto made = Session::create(options());
+    SessionOptions session_options = options();
+    if (configure_) {
+        configure_(session_options);
+    }
+    auto made = Session::create(std::move(session_options));
     REQUIRE_MESSAGE(made, (made ? std::string() : made.error().describe()));
     session = std::move(*made);
     events->setStatusProbe([raw = session.get()] { return raw->status(); });
@@ -364,15 +375,31 @@ void SessionFixture::open(std::uint32_t slot, std::string_view uri,
 
 bool SessionFixture::waitStatus(const std::function<bool(const SessionStatus&)>& predicate,
                                 std::chrono::milliseconds timeout) {
+    struct Wake {
+        std::mutex m;
+        std::condition_variable cv;
+        bool woke = false;
+    };
     const auto deadline = std::chrono::steady_clock::now() + timeout;
+    const auto wake = std::make_shared<Wake>();
+    // Declared after `wake` and destroyed before return, never while wake->m is held.
+    auto sub = session->subscribeStatus([wake] {
+        {
+            std::lock_guard lock(wake->m);
+            wake->woke = true;
+        }
+        wake->cv.notify_one();
+    });
     for (;;) {
-        if (predicate(session->status())) {
+        if (predicate(sub.take())) {
             return true;
         }
-        if (std::chrono::steady_clock::now() >= deadline) {
-            return false;
+        std::unique_lock lock(wake->m);
+        if (!wake->cv.wait_until(lock, deadline, [&wake] { return wake->woke; })) {
+            lock.unlock();
+            return predicate(sub.take());
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        wake->woke = false;
     }
 }
 
@@ -393,6 +420,49 @@ void SessionFixture::tick() {
 void SessionFixture::shutdown() {
     dvv::syncWait(session->shutdown());
     shutDown = true;
+}
+
+ExecutorHold::ExecutorHold(SessionFixture& f) : fixture_(f) {
+    const SessionStatus status = fixture_.session->status();
+    REQUIRE(status.streams > 0);
+    REQUIRE(status.player.length.value_or(0) > 0);
+    REQUIRE_FALSE(status.player.loop);
+    subscription_ = fixture_.session->subscribeStatus([this] {
+        if (first_.exchange(false)) {
+            block();
+        }
+    });
+    fixture_.session->setLoop(true);
+    bool entered = false;
+    {
+        std::unique_lock lock(mutex_);
+        entered = changed_.wait_for(lock, WAIT_TIMEOUT, [this] { return entered_; });
+    }
+    if (!entered) {
+        release();  // a late callback must not block the members' destruction
+    }
+    REQUIRE(entered);
+}
+
+ExecutorHold::~ExecutorHold() {
+    release();
+    subscription_ = StatusSubscription{};  // takes the callback mutex the blocked callback held
+    fixture_.session->setLoop(false);
+}
+
+void ExecutorHold::release() {
+    {
+        std::lock_guard lock(mutex_);
+        open_ = true;
+    }
+    changed_.notify_all();
+}
+
+void ExecutorHold::block() {
+    std::unique_lock lock(mutex_);
+    entered_ = true;
+    changed_.notify_all();
+    changed_.wait(lock, [this] { return open_; });
 }
 
 int SessionFixture::stackCalls() const {
