@@ -1,6 +1,7 @@
 # dvv-build 0.3.0: CI speed-up: design
 
-Status: DRAFT, awaiting the user's approval. Date 2026-11-07. Inputs: dvv-build v0.2.0 (`bootstrap.sh`,
+Status: implemented on side branches 2026-11-08 (the user handed the CI optimisation to Claude
+to carry out; merge and release stay with the user). Date 2026-11-07. Inputs: dvv-build v0.2.0 (`bootstrap.sh`,
 `bootstrap.ps1`, `deps/versions.cmake`, `deps/CMakeLists.txt`, `cmake/DvvThirdParty.cmake`,
 `.github/workflows/dvv-ci.yml`), the measured dvv-build 0.2.0 / dvv-base 0.2.0 PR runs, the research
 notes `.superpowers/sdd/2026-11-07-macos-apple-silicon/research-wx-cache.md` and
@@ -303,22 +304,29 @@ WSI support; the SDK's Linux layer is LunarG's build (**[unverified]** WSI suppo
 dispatching layer and validates surfaces through the loader, so no loss is expected, but the Linux
 GPU/display tests are the proof).
 
-## 6. Expected timings
+## 6. Timings (measured)
 
 Measured today **[run]**: cold Windows about 23-24 min of bootstrap (4m52 + 3m42 + 14m05 plus about a minute
 of the rest), Linux about 16, macOS about 10. The estimates below **[est]** use the measured wx time
 (about 5 min; the Linux and macOS wx times are the research's rough 4.5-5 min, not measured) and
 the SDK download (350-400 MB) plus extraction; the Windows install time is unknown.
 
-| OS | cold (all caches miss), prime job | wx hit, rest misses (deps edit) | all hit |
-|---|---|---|---|
-| Windows | 7-10 min (wx 5 + SDK download and install 1-3 + rest 1) | 2-4 min | 1-2 min (restore) |
-| Linux | 6-8 min (wx 4.5 + SDK 1-2 + rest 1) | 2-3 min | 1 min |
-| macOS | 6-8 min (wx 5 + SDK, already downloaded today + rest 1) | 1-3 min | 1 min |
+Measured on the implementation (2026-11-08) **[run]**; this replaces the estimate table:
 
-Then every matrix job adds restore (about 1 min) plus the build and test of 1-2 min **[run]**. Whole-run cost
-on a cold Windows miss falls from about 3 x 24 = 72 runner-minutes to about 1 x 9 + 3 x 3 = 18. These
-are estimates; the plan's last task measures them and replaces this table.
+| OS | prime job, all caches cold (rawreel run 42428794283) | prime job, wx cold and prefix warm (dvv-build run 42427567465) | prime job, all warm |
+|---|---|---|---|
+| Windows | 7m25s | 6m36s | 27-49 s (lookup only) |
+| Linux | 3m36s | 2m09s | 28-32 s |
+| macOS | 3m49s | 6m41s | 11-20 s |
+
+- With the prebuilt layer alone (old job graph, all caches cold, dvv-build run 42424330070): Windows
+  jobs took 6-8.5 min instead of about 24, Linux 2.5 min instead of about 16, macOS 4-6 min instead of about 10.
+- Whole runs, warm: dvv-build's own CI 2m52s wall time (run 42428376909). rawreel took 14m34s
+  (run 42432299567) against 45m35s for PR #5's warm run 42418098829 on the old graph. Most of that
+  time was a serial clang-tidy: the separate `tidy` job now runs one clang-tidy per core and took
+  13.9 min, against 45.6 min for the old `lint` job.
+- The rawreel build jobs on a warm run are now pure build and test: Windows 8-12 min, Linux 4-9 min,
+  macOS 2-4.5 min.
 
 ## 7. Non-goals
 

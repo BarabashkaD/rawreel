@@ -4,7 +4,8 @@
 #         [-DDRYRUN_ROOT=<dir>] -P <clone>/packaging/dry-run.cmake
 # <clone> is the rawreel clone (any folder name) with its submodules in libs/; WORKSPACE_ROOT is
 # the folder that holds it (default: its parent). The developer prefix is
-# <clone>/libs/_third_party/<toolchain>, the superbuild source <clone>/libs/dvv-build/deps.
+# <clone>/libs/_third_party/<toolchain> with wxWidgets in <toolchain>-wx next to it, the superbuild
+# source <clone>/libs/dvv-build/deps.
 # Windows: maps WORKSPACE_ROOT to a free drive letter with subst (a neutral root, as a CI runner
 # has) and works below <drive>/_dryrun. The subst drive is removed even when the inner run fails;
 # after a Ctrl+C or a killed run, remove it with subst <drive> /D.
@@ -191,7 +192,8 @@ else()
          --parallel)
 endif()
 
-# rawreel Release in a tree of its own (the developer tree's cache names the real path). --fresh:
+# rawreel Release in a tree of its own (the developer tree's cache names the real path), with the
+# prefix and its wxWidgets sibling <prefix>-wx (dvv-build 0.3.0) as the presets name them. --fresh:
 # the tree is shared by both prefixes and by every drive letter, and a cached find_package result
 # of an earlier run must not mix two prefixes.
 set(build "${area}/build/rawreel-${variant}")
@@ -202,7 +204,7 @@ if(platform STREQUAL "macos")
 endif()
 message(STATUS "dry-run: rawreel configure")
 execute_process(COMMAND "${CMAKE_COMMAND}" --preset ${preset} --fresh -B "${build}"
-                        "-DCMAKE_PREFIX_PATH=${prefix}" ${build_rpath}
+                        "-DCMAKE_PREFIX_PATH=${prefix};${prefix}-wx" ${build_rpath}
                 WORKING_DIRECTORY "${N}/${clone}" RESULT_VARIABLE result)
 if(NOT result EQUAL 0)
     message(FATAL_ERROR "dry-run: rawreel configure failed (${result})")
