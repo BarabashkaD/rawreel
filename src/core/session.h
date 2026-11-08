@@ -4,7 +4,7 @@
 // the player and the jobs. Every command is thread-safe and non-blocking: it posts to the Session's
 // SerialExecutor and returns; commands run in call order. Frames go to an IDisplaySink, discrete
 // events to ISessionEvents (both called on the Session executor), continuous state is polled with
-// status().
+// status() or followed with subscribeStatus().
 
 #include <atomic>
 #include <cstdint>
@@ -35,7 +35,36 @@ namespace rawreel {
 
 namespace detail {
 class SessionCore;
+struct StatusSubscriber;
 }  // namespace detail
+
+// A status subscription (spec §6.2): a move-only RAII token; default-constructed or moved-from =
+// empty. It holds no strong reference to the Session's core.
+class StatusSubscription {
+public:
+    StatusSubscription() noexcept = default;
+    StatusSubscription(const StatusSubscription&) = delete;
+    StatusSubscription& operator=(const StatusSubscription&) = delete;
+    StatusSubscription(StatusSubscription&& other) noexcept;
+    StatusSubscription& operator=(StatusSubscription&& other) noexcept;  // unsubscribes the old one
+    // Unsubscribes. Once it returns, no callback of this subscription is running and none will
+    // run. Never call it from inside its own callback. A no-op when the Session is gone.
+    ~StatusSubscription();
+
+    // Clears the pending flag, then reads the newest snapshot (so a later change calls the
+    // callback again). A default SessionStatus when empty or when the Session is gone.
+    [[nodiscard]] SessionStatus take();
+    [[nodiscard]] explicit operator bool() const noexcept { return state_ != nullptr; }
+
+private:
+    friend class Session;
+    StatusSubscription(std::weak_ptr<detail::SessionCore> core,
+                       std::shared_ptr<detail::StatusSubscriber> state) noexcept;
+    void reset() noexcept;
+
+    std::weak_ptr<detail::SessionCore> core_;
+    std::shared_ptr<detail::StatusSubscriber> state_;
+};
 
 struct MediaStack {                                       // what device loss replaces (design D7)
     std::shared_ptr<dvv::gpu::ExecutionContext> context;  // null: host-only (tests)
@@ -65,6 +94,9 @@ struct SessionOptions {
     // failure fails create()); every later stack is made on `io` as a step of an open job in the
     // open FIFO (design v2 §5.3 step 3), one at a time.
     StackFactory makeStack{};
+    // The developer option --debug-seek-delay: every opened source is wrapped in a delayedSource
+    // (delayed_source.h). Null: no wrapping.
+    std::shared_ptr<ProduceDelay> produceDelay;
 };
 
 // The stage with the most converter nanoseconds between two snapshots (design D20): "Produce" ->
@@ -114,12 +146,23 @@ public:
     void stop();
     void setLoop(bool loop);
     void step(std::int64_t delta);
+    // Read-your-writes (spec §6.3): when the stored snapshot has a stream with a bounded length
+    // above zero, `index` clamped into [0, length − 1] is the snapshot's player.target from the
+    // moment seek() returns: no later snapshot shows a target older than this seek; a later
+    // command's effect shows after it, in order. The executor's next publish notifies it. Without a
+    // stream or with an unbounded length nothing is patched; the seek just runs in order.
     void seek(std::int64_t index);
     void logDiagnostics();  // Help -> Diagnostics: diagnosticsLines() to the log (Info)
 
     // Snapshot; any thread. `epoch` is the installed stack's epoch, 0 while no stack is installed
     // (after a device loss); `gpuAvailable` means a stack is installed.
     [[nodiscard]] SessionStatus status() const;
+    // Any thread. `changed` runs on the Session executor when a published snapshot differs from
+    // the previous one, or when a seek() patched the snapshot since the last notification (§6.3),
+    // and the subscription's pending flag was clear (it sets the flag; take() clears it). It
+    // carries nothing, must not block and only posts; it runs with no Session lock held other than
+    // its own subscription's, so it may call take().
+    [[nodiscard]] StatusSubscription subscribeStatus(dvv::MoveOnlyFunction<void()> changed);
     // Stops the timer, refuses new commands, waits for every running task (requests, opens and
     // stack builds), clears the sink, detaches the stream and releases the stack on the executor.
     // Await it once; a second call returns at once.

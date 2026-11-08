@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <optional>
@@ -53,7 +54,6 @@ namespace rawreel {
 
 namespace {
 
-constexpr int STATUS_TICK_MS = 50;  // D20
 // The docks' smallest panes (M4 GUI D8), DIP: Info's width, Log's height without its caption
 // (about three lines of the log).
 constexpr int INFO_MIN_WIDTH_DIP = 160;
@@ -168,14 +168,12 @@ std::optional<Command> commandOfMenuId(int id) noexcept {
 }
 
 MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
-    : wxFrame(nullptr, wxID_ANY, "rawreel"),
-      aui_([this] {
+    : wxFrame(nullptr, wxID_ANY, "rawreel"), aui_([this] {
           // A size event before the player panel exists: the viewport minimum.
           return player_ != nullptr
                      ? player_->minimumSize()
                      : FromDIP(wxSize(MIN_VIEWPORT_DIP.width, MIN_VIEWPORT_DIP.height));
-      }),
-      status_timer_(this) {
+      }) {
     aui_.manage(this);
     player_ = new PlayerPanel(
         this, std::move(display),
@@ -256,7 +254,7 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
 }
 
 MainFrame::~MainFrame() {
-    status_timer_.Stop();
+    stopStatusUpdates();
     if (selftest_) {
         selftest_->stop();
     }
@@ -318,8 +316,6 @@ void MainFrame::buildStatusBar() {
     mapping += FromDIP(24);
     const std::array<int, 4> widths{-3, -2, -2, mapping};
     SetStatusWidths(static_cast<int>(widths.size()), widths.data());
-    Bind(wxEVT_TIMER, &MainFrame::onStatusTimer, this, status_timer_.GetId());
-    status_timer_.Start(STATUS_TICK_MS);
 }
 
 Session& MainFrame::session() const noexcept {
@@ -679,6 +675,11 @@ TransportBar& MainFrame::transportBar() noexcept {
     return player_->transportBar();
 }
 
+void MainFrame::setDebugTransport(bool on) noexcept {
+    debug_transport_ = on;
+    player_->transportBar().setTrace(on);
+}
+
 void MainFrame::showMessage(const wxString& text, int icon, std::span<const InfoButton> buttons) {
     wxInfoBarGeneric& bar = player_->infoBar();
     for (const int id : message_buttons_) {
@@ -853,12 +854,43 @@ void MainFrame::onUpdateUi(wxUpdateUIEvent& event) {
     event.Enable(!closing_ && command && isAvailable(*command));
 }
 
-void MainFrame::onStatusTimer(wxTimerEvent& /*event*/) {
-    const Session* session = wxGetApp().session();
-    if (closing_ || session == nullptr) {
+void MainFrame::startStatusUpdates(Session& session) {
+    status_subscription_ =
+        session.subscribeStatus([this] { CallAfter([this] { onStatusChanged(); }); });
+    // The snapshot published before the subscription existed.
+    CallAfter([this] { onStatusChanged(); });
+}
+
+void MainFrame::stopStatusUpdates() {
+    status_subscription_ = StatusSubscription{};
+}
+
+void MainFrame::onStatusChanged() {
+    if (closing_ || !status_subscription_) {
         return;
     }
-    const SessionStatus status = session->status();
+    if (debug_transport_) {
+        const auto now = std::chrono::steady_clock::now();
+        if (rate_second_ == std::chrono::steady_clock::time_point{}) {
+            rate_second_ = now;
+        } else if (now - rate_second_ >= std::chrono::seconds(1)) {
+            DVV_LOG_INFO("transport: rate {} notifications/s", rate_count_);
+            rate_count_ = 0;
+            rate_second_ = now;
+        }
+        ++rate_count_;
+    }
+    const SessionStatus status = status_subscription_.take();
+    if (status.revision == last_revision_) {
+        return;
+    }
+    last_revision_ = status.revision;
+    ++status_notifications_;
+    if (debug_transport_) {
+        DVV_LOG_INFO("transport: notification revision {} position {} target {} playing {}",
+                     status.revision, status.player.position, status.player.target,
+                     status.player.playing ? 1 : 0);
+    }
     // Without a stream the transport bar shows nothing (a default PlayerStatus).
     player_->transportBar().update(status.streams > 0 ? status.player : PlayerStatus{});
     const StatusFields fields = statusFields(status);
@@ -953,7 +985,7 @@ void MainFrame::onClose(wxCloseEvent& event) {
         return;
     }
     closing_ = true;
-    status_timer_.Stop();
+    stopStatusUpdates();
     if (selftest_) {
         selftest_->stop();  // the runner lives until ~MainFrame
     }

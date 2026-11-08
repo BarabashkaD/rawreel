@@ -155,6 +155,8 @@ public:
     SessionFixture();  // creates the Session (REQUIREs success)
     // The production clock and timer: `clock` and `timer` stay null, tick() must not be used.
     explicit SessionFixture(RealTime);
+    // As RealTime, with `configure` applied to options() before Session::create.
+    SessionFixture(RealTime, std::function<void(SessionOptions&)> configure);
     // SessionOptions::fileReads = file_reads; fake clock and timer.
     explicit SessionFixture(dvv::platform::FileReadMode file_reads);
     SessionFixture(const SessionFixture&) = delete;
@@ -169,7 +171,7 @@ public:
     [[nodiscard]] SessionOptions options();
 
     void open(std::uint32_t slot, std::string_view uri, std::optional<std::int64_t> start = {});
-    // Polls status() every millisecond until `predicate` holds or the timeout passes.
+    // Waits on a status subscription (no polling) until `predicate` holds or the timeout passes.
     [[nodiscard]] bool waitStatus(const std::function<bool(const SessionStatus&)>& predicate,
                                   std::chrono::milliseconds timeout = WAIT_TIMEOUT);
     [[nodiscard]] bool waitPosition(std::int64_t position);
@@ -210,7 +212,36 @@ public:
 
 private:
     void start(bool real_time);
+    std::function<void(SessionOptions&)> configure_;
     void teardown();  // the destructor's body
+};
+
+// Test only: holds the Session executor busy so that later commands queue behind it. It breaks the
+// "a callback only posts" contract on purpose. Preconditions (REQUIREd): a bounded stream is open
+// and loop is off. The constructor subscribes with a callback that blocks on a latch the first time
+// it runs, forces one publish with setLoop(true) and waits (WAIT_TIMEOUT) until the callback runs.
+// release() opens the latch. The destructor releases (if not yet), destroys the token, then posts
+// setLoop(false).
+class ExecutorHold {
+public:
+    explicit ExecutorHold(SessionFixture& f);
+    ExecutorHold(const ExecutorHold&) = delete;
+    ExecutorHold& operator=(const ExecutorHold&) = delete;
+    ExecutorHold(ExecutorHold&&) = delete;
+    ExecutorHold& operator=(ExecutorHold&&) = delete;
+    ~ExecutorHold();
+    void release();
+
+private:
+    void block();  // the callback's first run
+
+    SessionFixture& fixture_;
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    bool entered_ = false;
+    bool open_ = false;
+    std::atomic<bool> first_{true};
+    StatusSubscription subscription_;  // last: destroyed first, before what its callback uses
 };
 
 }  // namespace rawreel::testing

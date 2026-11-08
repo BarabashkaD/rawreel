@@ -37,7 +37,7 @@ add_executable(rawreel_core_tests
     core_main.cpp session_fixture.cpp test_commands.cpp test_config.cpp test_drop.cpp
     test_format_choice.cpp test_format_presets.cpp
     test_gui_arguments.cpp test_info_text.cpp test_layout.cpp test_perf_stats.cpp test_player.cpp test_session.cpp
-    test_session_storm.cpp test_session_types.cpp
+    test_session_notify.cpp test_session_storm.cpp test_session_types.cpp
     test_open_text.cpp test_source_provider.cpp test_startup.cpp test_vulkan_driver.cpp
     test_status_text.cpp test_timer.cpp test_view.cpp)
 target_link_libraries(rawreel_core_tests PRIVATE rawreel_core doctest::doctest)
