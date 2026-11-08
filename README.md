@@ -576,7 +576,8 @@ Unknown keys are ignored. To try another file:
 - macOS: Apple Silicon and macOS 27 or newer only. The app is not signed with a Developer ID or
   notarized. rawreel pins only the Vulkan driver (the bundled KosmicKrisp); Vulkan implicit
   layers installed system-wide (for example by a Vulkan SDK) can still load into it. The macOS CI
-  has no usable Metal device, so the GPU and display tests skip there; run them on a Mac (see
+  has no usable Metal device, so it runs the GPU tests on lavapipe (Mesa's software driver, CI
+  only); the display tests and the real-GPU check run only on a Mac (see
   [Building and testing (macOS)](#building-and-testing-macos)). A crash writes no rawreel crash
   report; use the system's (see [Bug reports](#bug-reports)).
 
