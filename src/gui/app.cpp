@@ -104,9 +104,9 @@ void App::record(int code, const std::string& message) {
         decided_exit_code = code;
     }
     if (code == exit_code::SUCCESS) {
-        DVV_LOG_INFO("{}", message);
+        DVV_LOG_TEXT(dvv::LogLevel::Info, message);
     } else {
-        DVV_LOG_ERROR("{}", message);
+        DVV_LOG_TEXT(dvv::LogLevel::Error, message);
     }
 }
 
@@ -138,7 +138,7 @@ bool App::OnInit() {
     log_sink_ = std::make_shared<LogPanelSink>();
     dvv::Logger::instance().addSink(log_sink_);
     if (!crash_warning.empty()) {
-        DVV_LOG_WARN("{}", crash_warning);  // now that the sinks exist
+        DVV_LOG_TEXT(dvv::LogLevel::Warn, crash_warning);  // now that the sinks exist
     }
     // The config file, after the log sinks so a warning reaches the Log pane.
     const LoadedConfig config = loadConfig(the_arguments.config);
