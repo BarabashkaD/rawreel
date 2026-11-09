@@ -54,6 +54,15 @@ namespace rawreel {
 
 namespace {
 
+// What the transport bar shows for `status`: nothing without a stream (a default BarStatus).
+BarStatus barStatus(const SessionStatus& status) {
+    if (status.streams == 0) {
+        return {};
+    }
+    return {
+        .player = status.player, .hasStream = true, .streamGeneration = status.streamGeneration};
+}
+
 // The docks' smallest panes (M4 GUI D8), DIP: Info's width, Log's height without its caption
 // (about three lines of the log).
 constexpr int INFO_MIN_WIDTH_DIP = 160;
@@ -182,6 +191,11 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
             if (Session* session = wxGetApp().session(); session != nullptr && !closing_) {
                 session->seek(index);
             }
+        },
+        // The bar's state read (spec §3): the status onStatusChanged would take now.
+        [] {
+            const Session* session = wxGetApp().session();
+            return session != nullptr ? barStatus(session->status()) : BarStatus{};
         });
     viewport_ = &player_->viewport();
     // One target on the viewport and one on the player panel (GTK may deliver a drop on the
@@ -248,6 +262,7 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
         },
         INFOBAR_FORMAT_ID);
     Bind(wxEVT_CHAR_HOOK, &MainFrame::onCharHook, this);
+    Bind(wxEVT_ACTIVATE, &MainFrame::onActivate, this);
     Bind(wxEVT_ICONIZE, &MainFrame::onIconize, this);
     Bind(wxEVT_SHOW, &MainFrame::onShow, this);
     Bind(wxEVT_CLOSE_WINDOW, &MainFrame::onClose, this);
@@ -671,6 +686,20 @@ void MainFrame::onCharHook(wxKeyEvent& event) {
     event.Skip();
 }
 
+// The bar's activation: a skim starts only while active, and deactivation returns from it.
+void MainFrame::onActivate(wxActivateEvent& event) {
+    if (!closing_) {
+        transportBar().frameActivated(event.GetActive());
+    }
+    event.Skip();
+}
+
+void MainFrame::onSkimKeyUp() {
+    if (!closing_ && player_ != nullptr) {
+        transportBar().skimKeyReleased();
+    }
+}
+
 TransportBar& MainFrame::transportBar() noexcept {
     return player_->transportBar();
 }
@@ -891,8 +920,7 @@ void MainFrame::onStatusChanged() {
                      status.revision, status.player.position, status.player.target,
                      status.player.playing ? 1 : 0);
     }
-    // Without a stream the transport bar shows nothing (a default PlayerStatus).
-    player_->transportBar().update(status.streams > 0 ? status.player : PlayerStatus{});
+    player_->transportBar().update(barStatus(status));
     const StatusFields fields = statusFields(status);
     const std::array<wxString, 3> texts{wxString::FromUTF8(fields.position),
                                         wxString::FromUTF8(fields.fps),

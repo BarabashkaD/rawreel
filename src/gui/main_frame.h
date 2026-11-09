@@ -30,6 +30,7 @@
 #include "core/version_text.h"
 #include "dvv/base/error.h"
 #include "gui/dock_manager.h"
+#include "gui/skim_key.h"
 #include "render/display_state.h"
 
 namespace dvv::gpu {
@@ -183,6 +184,8 @@ private:
     void showWarning(const std::string& text);  // log + infobar (wxICON_WARNING)
     [[nodiscard]] bool hasStream() const;
     void onCharHook(wxKeyEvent& event);
+    void onActivate(wxActivateEvent& event);
+    void onSkimKeyUp();  // the skim key's release anywhere: the bar returns from a skim
     void onMenu(wxCommandEvent& event);
     void onUpdateUi(wxUpdateUIEvent& event);
     void onStatusChanged();
@@ -245,6 +248,8 @@ private:
     std::string last_about_text_;    // the text of the last About dialog
     std::unique_ptr<SelfTest> selftest_;
     bool closing_ = false;
+    // Removed before wx destroys the children (members go first).
+    SkimKeyRelease skim_key_release_{[this] { onSkimKeyUp(); }};
 };
 
 }  // namespace rawreel

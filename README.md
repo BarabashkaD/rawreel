@@ -196,12 +196,24 @@ program's folder as `<app>`, the variable's folder as `$DVV_FFMPEG_DIR` and the 
 
 ## rawreel-gui
 
-`rawreel-gui` plays one video stream. The window has the viewport with the transport bar under it,
+`rawreel-gui` plays one video stream. The window has the viewport with the control panel under it,
 an Info pane, a Log pane, a status bar (frame and length, target / actual fps, the pipeline's
 bottleneck, and the colour mapping, e.g. "SDR, no tone mapping" or "PQ → SDR tone mapping (1000 →
 100 nits)") and an infobar for warnings and errors. The log also goes to `rawreel.log` in the
 user's data folder (`%APPDATA%\rawreel\` on Windows, `~/.local/share/rawreel/` on Linux, or
 `$XDG_DATA_HOME/rawreel/` when that is set, `~/Library/Application Support/rawreel/` on macOS).
+
+The control panel has two rows. The upper row is a timeline strip over the slider: ticks, the first
+and last frame numbers, and above the thumb the number of the frame on screen. The lower row has
+Open on the left and, centred, First, Step back, Play/Pause, Stop, Step forward, Last and Loop,
+with icons and tooltips. While you drag the slider, a marker shows the frame where the drag
+started.
+
+While the video is paused, holding ⌥ Option (macOS) or Ctrl (Windows, Linux) and moving over the
+slider skims: the thumb, the frame number and the picture follow the pointer, and the marker shows
+the frame where skimming started. A click on the slider jumps to the clicked frame and keeps it.
+Without a click, releasing the key, moving off the slider or the window losing focus returns to
+the start frame.
 
 The Info pane shows the stream: URI, format, size, frame rate, frame count, colour and, for files,
 the read mode (e.g. "reads: unbuffered"). The colour names the standard ("no standard" when the

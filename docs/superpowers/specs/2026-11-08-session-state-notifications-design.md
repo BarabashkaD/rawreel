@@ -334,7 +334,7 @@ modal dialog and `error` shows the infobar: these need one owner. (Claude's call
     duplicate seeks); `update()` in `Idle` forgets that value, so a later drag back to the same
     frame after another command moved the player does seek. `CHANGED` without a drag (a Windows
     track click sends `PAGEUP/PAGEDOWN` then `CHANGED`; the wheel and keys send `CHANGED` on Windows
-    and GTK; a GTK track click sends `THUMBTRACK` then `THUMBRELEASE`) seeks and leaves the bar
+    and GTK; a GTK track click sends `THUMBTRACK`, `THUMBRELEASE`, `CHANGED`) seeks and leaves the bar
     `Idle`; the read-your-writes `target` keeps the thumb where it went. This keeps today's
     behaviour and the `rawreel.gui_selftest.player` step "slider to 5" (`selftest.cpp:1650`).
   - Scroll events while the slider is disabled (no stream, unbounded length) are ignored: no seek,

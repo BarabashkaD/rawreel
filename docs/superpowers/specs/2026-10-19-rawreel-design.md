@@ -1139,7 +1139,7 @@ component parameters, with the migration of component parameters) are v1.x.
 - wxAUI main frame (M3): a fixed centre pane with one viewport showing the one stream, fit to
   window (the compositor computes the fit from the presenter's extent and the image size, so a
   resize needs no GUI round trip), the transport bar (first, step back, play/pause, step forward,
-  last, loop, a slider, the frame label), and two dockable panes: Info (the stream: URI, format,
+  last, loop, a slider, the frame label; superseded by `2026-11-09-video-control-panel-design.md`), and two dockable panes: Info (the stream: URI, format,
   size, fps, frames, the colour standard with its origin, e.g. `colour: BT.2100 PQ (from file)`,
   `colour: BT.709 (default)` or `colour: no standard (from file)`, then the values line with the
   primaries "(not converted)" and the size-mismatch hint (§8), the clip description file when one

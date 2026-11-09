@@ -807,6 +807,7 @@ private:
             }
         }
         status.streams = static_cast<std::uint32_t>(streams_.size());
+        status.streamGeneration = stream_set_;
         status.epoch = stack_.store ? stack_epoch_ : 0;  // 0 like stackChanged({}, 0)
         status.gpuAvailable = stack_.store != nullptr;
         status.inflight = request_tasks_;

@@ -22,15 +22,18 @@
 
 namespace rawreel {
 
+struct BarStatus;
 class TransportBar;
 class Viewport;
 
 class PlayerPanel final : public wxPanel {
 public:
-    // `execute` and `seek` are the transport bar's (MainFrame::execute, Session::seek).
+    // `execute`, `seek` and `read_status` are the transport bar's (MainFrame::execute,
+    // Session::seek, the session's current status).
     PlayerPanel(wxWindow* parent, std::shared_ptr<DisplayState> display,
                 dvv::MoveOnlyFunction<void(Command)> execute,
-                dvv::MoveOnlyFunction<void(std::int64_t)> seek);
+                dvv::MoveOnlyFunction<void(std::int64_t)> seek,
+                dvv::MoveOnlyFunction<BarStatus()> read_status);
 
     [[nodiscard]] wxInfoBarGeneric& infoBar() noexcept { return *info_bar_; }
     [[nodiscard]] const wxInfoBarGeneric& infoBar() const noexcept { return *info_bar_; }

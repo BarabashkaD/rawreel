@@ -13,6 +13,9 @@
 #     (the zip ships no VC++ runtime).
 #   rawreel_strip_msvc_notice(IN <notices file> OUT <file>)
 #     Writes IN without its Visual C++ runtime paragraph (the last one when present).
+#   rawreel_append_notice(FILE <notices file> NAME <name> VERSION <v> SPDX <id> URL <url>
+#                         LICENCE <file>)
+#     Appends one entry in write-notices.cmake's format, the LICENCE file as its licence block.
 #   rawreel_vc_runtime_files(ROOT <dir> FILES <var>)
 #     The paths below ROOT of VC++ runtime DLLs ((vcruntime|msvcp|concrt|vccorlib)140*.dll, any
 #     case); the zip ships none.
@@ -348,6 +351,23 @@ function(rawreel_strip_msvc_notice)
         string(SUBSTRING "${content}" 0 ${position} content)
     endif()
     file(WRITE "${arg_OUT}" "${content}")
+endfunction()
+
+# One entry in write-notices.cmake's format, appended to FILE: the separator, "<NAME> <VERSION>",
+# "Licence: <SPDX>", "Source: <URL>", then the LICENCE file's text (trailing whitespace removed) as
+# a "--- LICENSE ---" block.
+function(rawreel_append_notice)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "FILE;NAME;VERSION;SPDX;URL;LICENCE" "")
+    foreach(argument IN ITEMS FILE NAME VERSION SPDX URL LICENCE)
+        if("${arg_${argument}}" STREQUAL "")
+            message(FATAL_ERROR "rawreel_append_notice: ${argument} is required")
+        endif()
+    endforeach()
+    file(READ "${arg_LICENCE}" licence)
+    string(REGEX REPLACE "[ \t\r\n]+$" "" licence "${licence}")
+    string(REPEAT "=" 62 separator)
+    file(APPEND "${arg_FILE}" "\n${separator}\n${arg_NAME} ${arg_VERSION}\nLicence: ${arg_SPDX}\n"
+                              "Source: ${arg_URL}\n\n--- LICENSE ---\n\n${licence}\n")
 endfunction()
 
 function(rawreel_vc_runtime_files)
