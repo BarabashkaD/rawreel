@@ -79,5 +79,9 @@ struct CommandInfo {
 [[nodiscard]] std::string keyText(const KeyChord& chord);
 // Accelerator with a key: "<label>\t<keyText>"; CharHook: "<label> (<keyText>)"; no key: "<label>".
 [[nodiscard]] std::string menuLabel(const CommandInfo& info);
+// A button's tooltip (video control panel spec §7): "<help> (<keyText>)", or the help alone for
+// a command without a key. With `cmd_for_ctrl` (macOS) an Accelerator chord's "Ctrl+" reads "Cmd+",
+// as the menus show it there.
+[[nodiscard]] std::string tooltipText(const CommandInfo& info, bool cmd_for_ctrl);
 
 }  // namespace rawreel

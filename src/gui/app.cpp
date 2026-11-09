@@ -31,6 +31,7 @@
 #include "gui/main_frame.h"
 #include "gui/selftest.h"
 #include "gui/session_bridge.h"
+#include "gui/transport_bar.h"
 #include "gui/viewport.h"
 
 namespace rawreel {
@@ -218,6 +219,8 @@ bool App::OnInit() {
     frame->setDebugTransport(the_arguments.debugTransport);
     frame->startStatusUpdates(*session_);
     frame->Show();
+    // The frame may never become active (launched from a terminal): no skim until it does.
+    frame->transportBar().frameActivated(frame->IsActive());
     // The native window exists and is shown once the queued call runs.
     frame->viewport().CallAfter([viewport = &frame->viewport()] { viewport->markReady(); });
 

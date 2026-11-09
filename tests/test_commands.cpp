@@ -141,4 +141,13 @@ TEST_SUITE("core") {
         CHECK(keyText(chord(Key::Minus, false, false)) == "-");
         CHECK(keyText(letter('1')) == "1");
     }
+
+    TEST_CASE("commands: tooltips read the help and the key, Cmd for an Accelerator on macOS") {
+        using rawreel::tooltipText;
+        CHECK(tooltipText(info(Command::PlayPause), false) == "Start or pause playback (Space)");
+        CHECK(tooltipText(info(Command::Stop), false) == "Stop playback and go to the first frame");
+        CHECK(tooltipText(info(Command::Open), false) == "Open a raw video file (Ctrl+O)");
+        CHECK(tooltipText(info(Command::Open), true) == "Open a raw video file (Cmd+O)");
+        CHECK(tooltipText(info(Command::StepBack), true) == "Show the previous frame (Left)");
+    }
 }

@@ -39,7 +39,7 @@ add_executable(rawreel_core_tests
     test_gui_arguments.cpp test_info_text.cpp test_layout.cpp test_perf_stats.cpp test_player.cpp test_session.cpp
     test_session_notify.cpp test_session_storm.cpp test_session_types.cpp
     test_open_text.cpp test_source_provider.cpp test_startup.cpp test_vulkan_driver.cpp
-    test_status_text.cpp test_timer.cpp test_view.cpp)
+    test_status_text.cpp test_svg_colour.cpp test_timeline.cpp test_timer.cpp test_view.cpp)
 target_link_libraries(rawreel_core_tests PRIVATE rawreel_core doctest::doctest)
 dvv_link_components(rawreel_core_tests dvv::media_sources)
 # RAWREEL_VERSION: the version packageVersions() must report for rawreel.
@@ -113,6 +113,15 @@ if(TARGET rawreel_gui)
         ENVIRONMENT "${gpu_test_environment};NO_AT_BRIDGE=1"
         ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT};DVV_FFMPEG_DIR=set:${DVV_FFMPEG_RUNTIME_DIR}")
     set_property(TEST rawreel.gui_selftest.smoke APPEND PROPERTY LABELS sanity)
+    # The panel lab's self-check (video control panel spec §10.1): the native slider's track and
+    # thumb queries against the travel formula, at two widths. No GPU; it needs a display.
+    add_test(NAME rawreel.panel_lab.report COMMAND rawreel_panel_lab --report)
+    set_tests_properties(rawreel.panel_lab.report PROPERTIES
+        FAIL_REGULAR_EXPRESSION "${gui_x_error}"
+        LABELS "display;gui"
+        SKIP_RETURN_CODE 77
+        TIMEOUT 60
+        ENVIRONMENT "NO_AT_BRIDGE=1")
     # Device loss (design v2 §8.4 lost, E3): injected loss -> infobar with Reopen -> the kept frame
     # presented again on the new stack.
     add_test(NAME rawreel.gui_selftest.lost
