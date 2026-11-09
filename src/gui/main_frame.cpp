@@ -538,7 +538,7 @@ void MainFrame::showStreamFormat() {
     const StreamInfo stream = streams_.front();
     // D28: a lavfi: stream sets its colour in the graph; nothing is reopened.
     if (const std::optional<std::string> refusal = formatRefusal(stream.resolvedUri)) {
-        DVV_LOG_INFO("{}", *refusal);
+        DVV_LOG_TEXT(dvv::LogLevel::Info, *refusal);
         if (!reopenShown()) {  // the Reopen offer of a loss stays (the log has the refusal)
             showMessage(wxString::FromUTF8(*refusal), wxICON_INFORMATION);
         }
@@ -665,7 +665,7 @@ void MainFrame::openWithChoice(std::uint32_t slot, const std::string& uri,
 }
 
 void MainFrame::showWarning(const std::string& text) {
-    DVV_LOG_WARN("{}", text);
+    DVV_LOG_TEXT(dvv::LogLevel::Warn, text);
     showMessage(wxString::FromUTF8(text), wxICON_WARNING);
 }
 
@@ -823,7 +823,7 @@ void MainFrame::onFormatNeeded(std::uint32_t slot, const dvv::media::SourceReque
     // Design v2 §4.6: a container file without FFmpeg is any unknown file (the M3 D21 dialog),
     // plus the FFmpeg status in the log.
     if (const Startup& startup = wxGetApp().startup(); !startup.ffmpeg.core) {
-        DVV_LOG_INFO("{}", ffmpegStatusLine(startup.ffmpeg));
+        DVV_LOG_TEXT(dvv::LogLevel::Info, ffmpegStatusLine(startup.ffmpeg));
     }
     // D21: one dialog at a time; the next one after the current one closes.
     format_queue_.push_back(
@@ -844,7 +844,8 @@ void MainFrame::onError(const dvv::Error& error) {
     // stream first (D3), so an error while a stream is shown is a playback error.
     const bool open_error = streams_.empty();
     const std::string_view typed = open_error ? std::string_view(last_open_uri_) : "";
-    DVV_LOG_WARN("{}", withSchemeHint(openErrorText(error, last_open_uri_, ffmpeg), typed, error));
+    DVV_LOG_TEXT(dvv::LogLevel::Warn,
+                 withSchemeHint(openErrorText(error, last_open_uri_, ffmpeg), typed, error));
     const std::string text = withSchemeHint(
         openErrorText(error, last_open_uri_, ffmpeg, StatusPaths::Hidden), typed, error);
     // A loss, or a failed makeStack while no stack is installed (§7 "infobar keeps Reopen").

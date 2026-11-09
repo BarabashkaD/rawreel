@@ -308,7 +308,7 @@ public:
         }
         const std::vector<dvv::media::LeaseInfo> leases = stack_.store->outstandingLeases();
         for (const std::string& line : diagnosticsLines(stack_.store->stats(), leases)) {
-            DVV_LOG_INFO("{}", line);
+            DVV_LOG_TEXT(dvv::LogLevel::Info, line);
         }
     }
 

@@ -81,7 +81,7 @@ int wmain(int argc, wchar_t** argv) {
         const std::string crash_warning = rawreel::CrashHandler::install("rawreel-cli");
         setUpLogging();
         if (!crash_warning.empty()) {
-            DVV_LOG_WARN("{}", crash_warning);  // now that the sinks exist
+            DVV_LOG_TEXT(dvv::LogLevel::Warn, crash_warning);  // now that the sinks exist
         }
         rawreel::CrashHandler::crashIfRequested();
         auto all = rawreel::cli::utf8Arguments(argc, argv);
@@ -102,7 +102,7 @@ int main(int argc, char** argv) {
         const std::string crash_warning = rawreel::CrashHandler::install("rawreel-cli");
         setUpLogging();
         if (!crash_warning.empty()) {
-            DVV_LOG_WARN("{}", crash_warning);  // now that the sinks exist
+            DVV_LOG_TEXT(dvv::LogLevel::Warn, crash_warning);  // now that the sinks exist
         }
         rawreel::CrashHandler::crashIfRequested();
         return guarded(std::vector<std::string>(argv, argv + argc));
