@@ -477,6 +477,31 @@ rawreel_check_notices(FILE "${WORK_DIR}/notices-long.txt" SHIPPED alpha beta ERR
 expect_empty("${case}" "${errors}")
 pass("${case}")
 
+set(case "notices: an appended entry is parsed with its licence block")
+file(WRITE "${WORK_DIR}/notices-append.txt" "${notices_text}")
+file(WRITE "${WORK_DIR}/lucide-licence.txt" "Lucide licence text\n---\nFeather licence text  \n\n")
+rawreel_append_notice(FILE "${WORK_DIR}/notices-append.txt" NAME lucide VERSION 9.8.7
+                      SPDX "ISC AND MIT" URL https://example.com/lucide
+                      LICENCE "${WORK_DIR}/lucide-licence.txt")
+file(READ "${WORK_DIR}/notices-append.txt" appended)
+string(CONCAT lucide_entry "\n${sep}\nlucide 9.8.7\nLicence: ISC AND MIT\n"
+              "Source: https://example.com/lucide\n\n--- LICENSE ---\n\n"
+              "Lucide licence text\n---\nFeather licence text\n")
+expect_equal("${case}" "${appended}" "${notices_text}${lucide_entry}")
+_rawreel_notices_parse("${WORK_DIR}/notices-append.txt" entries msvc outside)
+expect_equal("${case}" "${entries}" "alpha;beta;lucide")
+expect_equal("${case}" "${msvc}" "OFF")
+list(FIND outside "Lucide licence text" outside_index)
+expect_equal("${case}" "${outside_index}" "-1")
+list(FIND outside "lucide 9.8.7" head_index)
+if(head_index EQUAL -1)
+    message(FATAL_ERROR "FAIL ${case}: the entry's head is not outside a licence block")
+endif()
+rawreel_check_notices(FILE "${WORK_DIR}/notices-append.txt" SHIPPED alpha beta lucide
+                      ERRORS errors)
+expect_empty("${case}" "${errors}")
+pass("${case}")
+
 # --- no VC++ runtime in the zip (cases 24, 25) -----------------------------------------------
 
 set(case "no VC++ runtime: the runtime DLLs are found case-insensitively")

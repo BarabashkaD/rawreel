@@ -63,4 +63,12 @@ TEST_SUITE("core") {
         session_events.error(dvv::Error{});
         CHECK(events.count == 3);
     }
+
+    TEST_CASE("sameState sees streamGeneration") {
+        const rawreel::SessionStatus a{};
+        rawreel::SessionStatus b{};
+        CHECK(rawreel::sameState(a, b));
+        b.streamGeneration = 1;
+        CHECK_FALSE(rawreel::sameState(a, b));
+    }
 }

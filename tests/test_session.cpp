@@ -366,6 +366,36 @@ TEST_SUITE("session") {
         CHECK_FALSE(status.player.stalled);
     }
 
+    TEST_CASE("session: streamGeneration changes with the stream set only") {
+        SessionFixture f;
+        f.open(0, A);
+        static_cast<void>(waitStreamsChanged(f, 1));
+        REQUIRE(f.sink->waitShown(0));
+        REQUIRE(f.settle(W));
+        const std::uint64_t g1 = f.session->status().streamGeneration;
+        CHECK(g1 >= 1);
+
+        f.session->seek(5);
+        REQUIRE(f.waitPosition(5));
+        f.session->step(1);
+        REQUIRE(f.waitPosition(6));
+        f.session->play();
+        REQUIRE(f.waitStatus(playing));
+        f.session->pause();
+        REQUIRE(f.waitStatus([](const SessionStatus& s) { return !s.player.playing; }));
+        CHECK(f.session->status().streamGeneration == g1);
+
+        f.open(0, A);
+        static_cast<void>(waitStreamsChanged(f, 2));
+        REQUIRE(f.waitStatus([g1](const SessionStatus& s) { return s.streamGeneration > g1; }));
+        const std::uint64_t g2 = f.session->status().streamGeneration;
+        CHECK(g2 > g1);
+
+        f.session->closeStreams();
+        REQUIRE(f.waitStatus([](const SessionStatus& s) { return s.streams == 0; }));
+        CHECK(f.session->status().streamGeneration > g2);
+    }
+
     TEST_CASE("session: step, seek, home, end and loop") {
         SessionFixture f;
         f.open(0, A);

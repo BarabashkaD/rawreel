@@ -6,8 +6,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -22,6 +24,7 @@
 #include <utility>
 #include <vector>
 
+#include <wx/anybutton.h>
 #include <wx/aui/framemanager.h>
 // clang-format off
 #include <wx/infobar.h>  // wxInfoBarBase, before the generic class
@@ -43,6 +46,7 @@
 #include "core/perf_stats.h"
 #include "core/session.h"
 #include "core/startup.h"
+#include "core/timeline.h"
 #include "core/version_text.h"
 #include "core/view.h"
 #include "dvv/base/error.h"
@@ -62,11 +66,14 @@
 #include "gui/app.h"
 #include "gui/drop_target.h"
 #include "gui/format_dialog.h"
+#include "gui/icons.h"
 #include "gui/info_panel.h"
 #include "gui/log_panel.h"
 #include "gui/main_frame.h"
+#include "gui/native_controls.h"
 #include "gui/native_window.h"
 #include "gui/player_panel.h"
+#include "gui/timeline_strip.h"
 #include "gui/transport_bar.h"
 #include "gui/viewport.h"
 #include "render/display_state.h"
@@ -106,15 +113,23 @@ bool& injecting() {
     return flag;
 }
 
-// Keyboard, mouse-button, wheel and menu events: what a person at the machine sends.
+// Keyboard, mouse-button, pointer-motion, wheel, menu and activation events: what a person at the
+// machine sends.
 bool isRealInput(wxEventType type) {
-    static const std::array<wxEventType, 20> REAL_INPUT_TYPES{
+    static const std::array<wxEventType, 24> REAL_INPUT_TYPES{
         wxEVT_KEY_DOWN,      wxEVT_KEY_UP,       wxEVT_CHAR,         wxEVT_CHAR_HOOK,
         wxEVT_LEFT_DOWN,     wxEVT_LEFT_UP,      wxEVT_LEFT_DCLICK,  wxEVT_RIGHT_DOWN,
         wxEVT_RIGHT_UP,      wxEVT_RIGHT_DCLICK, wxEVT_MIDDLE_DOWN,  wxEVT_MIDDLE_UP,
         wxEVT_MIDDLE_DCLICK, wxEVT_AUX1_DOWN,    wxEVT_AUX1_UP,      wxEVT_AUX2_DOWN,
-        wxEVT_AUX2_UP,       wxEVT_MOUSEWHEEL,   wxEVT_CONTEXT_MENU, wxEVT_MENU};
+        wxEVT_AUX2_UP,       wxEVT_MOUSEWHEEL,   wxEVT_CONTEXT_MENU, wxEVT_MENU,
+        wxEVT_ACTIVATE,      wxEVT_MOTION,       wxEVT_ENTER_WINDOW, wxEVT_LEAVE_WINDOW};
     return std::ranges::find(REAL_INPUT_TYPES, type) != REAL_INPUT_TYPES.end();
+}
+
+// Pointer motion over the windows: real input that is counted but not logged (every move sends
+// some).
+bool isPointerMotion(wxEventType type) {
+    return type == wxEVT_MOTION || type == wxEVT_ENTER_WINDOW || type == wxEVT_LEAVE_WINDOW;
 }
 
 // The About dialog's size from its creation until the hook clicks: a dialog that is resized,
@@ -140,8 +155,10 @@ int SelfTestInput::FilterEvent(wxEvent& event) {
         return Event_Skip;
     }
     ++ignored_;
-    DVV_LOG_INFO("rawreel-gui --selftest: real input ignored (event type {})",
-                 event.GetEventType());
+    if (!isPointerMotion(event.GetEventType())) {
+        DVV_LOG_INFO("rawreel-gui --selftest: real input ignored (event type {})",
+                     event.GetEventType());
+    }
     return Event_Processed;  // handled: no handler and no native default processing sees it
 }
 
@@ -1466,7 +1483,8 @@ int showModal(wxGenericAboutDialog& dialog) {
 namespace {
 
 // Through the frame's wxEVT_CHAR_HOOK handler, as a real key press reaches it first.
-void sendKey(wxFrame& frame, int keycode, bool shift = false) {
+// Returns whether a handler took it (one that called Skip() did not).
+bool sendKey(wxFrame& frame, int keycode, bool shift = false) {
     wxKeyEvent event(wxEVT_CHAR_HOOK);
     event.SetEventObject(&frame);
     event.m_keyCode = keycode;
@@ -1474,7 +1492,7 @@ void sendKey(wxFrame& frame, int keycode, bool shift = false) {
         event.m_uniChar = static_cast<wxChar>(keycode);
     }
     event.SetShiftDown(shift);
-    injectInput(*frame.GetEventHandler(), event);
+    return injectInput(*frame.GetEventHandler(), event);
 }
 
 void sendSliderTrack(wxSlider& slider, int value) {
@@ -1497,6 +1515,81 @@ void sendSliderRelease(wxSlider& slider) {
     wxScrollEvent event(wxEVT_SCROLL_THUMBRELEASE, slider.GetId(), slider.GetValue(), wxHORIZONTAL);
     event.SetEventObject(&slider);
     slider.GetEventHandler()->ProcessEvent(event);
+}
+
+// The end of a GTK drag (spec §4): the value is read once, then THUMBRELEASE and CHANGED carry it.
+void sendSliderReleasePair(wxSlider& slider) {
+    const int value = slider.GetValue();
+    for (const wxEventType type : {wxEVT_SCROLL_THUMBRELEASE, wxEVT_SCROLL_CHANGED}) {
+        wxScrollEvent event(type, slider.GetId(), value, wxHORIZONTAL);
+        event.SetEventObject(&slider);
+        slider.GetEventHandler()->ProcessEvent(event);
+    }
+}
+
+// The platform's skim key (spec §3): ⌥ Option on macOS, Ctrl elsewhere.
+#if defined(__WXOSX__)
+constexpr int SKIM_KEY_CODE = WXK_ALT;
+#else
+constexpr int SKIM_KEY_CODE = WXK_CONTROL;
+#endif
+
+void setSkimModifier(wxKeyboardState& state, bool down) {
+#if defined(__WXOSX__)
+    state.SetAltDown(down);
+#else
+    state.SetControlDown(down);
+#endif
+}
+
+// The thumb centre of `frame` on the bar's slider, in its wx client px (spec §5.3).
+int xOfFrame(TransportBar& bar, std::int64_t frame) {
+    const wxSlider& slider = bar.slider();
+    const SliderTrack travel = sliderTravel(slider);
+    return static_cast<int>(std::lround(
+        thumbX(frame, slider.GetMin(), slider.GetMax(), travel.travelStart, travel.travelEnd)));
+}
+
+// A mouse event on the bar's slider at the wx client x `x`, half way down, with the skim key's
+// modifier as given. Its x is in the event's native shape: the inverse of sliderEventX. Returns
+// what ProcessEvent did: true when no handler skipped the event.
+bool sendSliderMouse(TransportBar& bar, wxEventType type, int x, bool skim_key,
+                     bool left_down = false) {
+    wxSlider& slider = bar.slider();
+    int native_x = x - sliderEventX(slider, 0);
+    if (const int back = sliderEventX(slider, native_x); back != x) {
+        native_x += back < x ? 1 : -1;  // a fractional offset rounded the other way
+    }
+    wxMouseEvent event(type);
+    event.SetEventObject(&slider);
+    event.SetId(slider.GetId());
+    event.m_x = native_x;
+    event.m_y = slider.GetClientSize().y / 2;
+    event.m_leftDown = left_down;
+    setSkimModifier(event, skim_key);
+    return injectInput(*slider.GetEventHandler(), event);
+}
+
+// The skim key's release, sent to `target` (the focused window gets it). Its modifier flag is set:
+// GTK reports the state from before the event (spec §6.4).
+void sendSkimKeyUp(wxWindow& target) {
+    wxKeyEvent event(wxEVT_KEY_UP);
+    event.SetEventObject(&target);
+    event.m_keyCode = SKIM_KEY_CODE;
+    setSkimModifier(event, true);
+    injectInput(*target.GetEventHandler(), event);
+}
+
+void sendActivate(wxFrame& frame, bool active) {
+    wxActivateEvent event(wxEVT_ACTIVATE, active, frame.GetId());
+    event.SetEventObject(&frame);
+    injectInput(*frame.GetEventHandler(), event);
+}
+
+// The first label of `model` with `role`; nullptr: none.
+const TimelineLabel* labelWithRole(const TimelineModel& model, std::string_view role) {
+    const auto found = std::ranges::find(model.labels, role, &TimelineLabel::role);
+    return found == model.labels.end() ? nullptr : &*found;
 }
 
 // Drops `files` on the viewport's DropTarget (the wx callback a real drop calls).
@@ -1783,7 +1876,9 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                     PlayerStatus elsewhere = status();
                     elsewhere.target = 10;
                     elsewhere.position = 10;
-                    bar.update(elsewhere);
+                    bar.update(BarStatus{.player = elsewhere,
+                                         .hasStream = true,
+                                         .streamGeneration = bar.streamGenerationForTest()});
                     if (bar.slider().GetValue() != 55 ||
                         bar.scrubState() != ScrubState::Scrubbing) {
                         drag->broken = true;
@@ -1797,9 +1892,11 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                     drag->released = true;
                 }
                 const bool released_idle = bar.scrubState() == ScrubState::Idle;
-                seen = std::format("released: position {}, idle {}, updates {}, all at 55 {}",
-                                   status().position, released_idle, drag->values.size(), at55);
-                if (status().position != 55 || !released_idle || !at55) {
+                const int slider = bar.slider().GetValue();
+                seen = std::format(
+                    "released: position {}, idle {}, slider {}, updates {}, all at 55 {}",
+                    status().position, released_idle, slider, drag->values.size(), at55);
+                if (status().position != 55 || !released_idle || slider != 55 || !at55) {
                     return false;
                 }
                 delay->set(0);
@@ -1839,6 +1936,827 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                 return idle && !lone->moved && lone->ticks >= 3;
             }));
     }
+    // Video control panel spec §6.2, §6.3: the scrub states, the Idle view and the release pair.
+    // Each check that must not yield is made in the action that sent the events.
+    auto idle_at = [&frame, status](std::string name, int value) {
+        return step(
+            std::move(name),
+            [&frame, value] { sendSliderChanged(frame.transportBar().slider(), value); },
+            [&frame, status, value](std::string& seen) {
+                const PlayerStatus now = status();
+                TransportBar& bar = frame.transportBar();
+                const bool idle = bar.scrubState() == ScrubState::Idle;
+                seen = std::format("position {}, target {}, playing {}, idle {}, slider {}",
+                                   now.position, now.target, now.playing, idle,
+                                   bar.slider().GetValue());
+                return idle && !now.playing && now.position == value && now.target == value &&
+                       bar.slider().GetValue() == value;
+            });
+    };
+    // The bar settled on the session's status: nothing in flight and the last revision handled.
+    auto settled = [&frame](std::int64_t position) {
+        const SessionStatus full = frame.session().status();
+        return full.inflight == 0 && frame.lastRevisionForTest() == full.revision &&
+               full.player.position == position && full.player.target == position;
+    };
+    struct Scrub {
+        std::vector<std::int64_t> seeks;  // every value the bar passed to seek
+        std::vector<int> updates;         // the slider's value after each update()
+        bool ok = false;                  // the checks made in the action
+        std::string check;                // what they saw
+        int ticks = 0;
+        bool released = false;             // the release-tail step sent its release pair
+        bool sent = false;                 // a waiting step sent its events
+        std::int64_t releasedTarget = -1;  // the session's target just after it
+    };
+    auto scrub = std::make_shared<Scrub>();
+    // Starts recording the bar's seeks into `scrub`.
+    auto record_seeks = [&frame, scrub] {
+        *scrub = Scrub{};
+        frame.transportBar().setSeekObserverForTest(
+            [scrub](std::int64_t value) { scrub->seeks.push_back(value); });
+    };
+    auto stop_recording = [&frame] {
+        TransportBar& bar = frame.transportBar();
+        bar.setSeekObserverForTest(nullptr);
+        bar.setUpdateObserverForTest(nullptr);
+        bar.setLeftButtonProbeForTest(nullptr);
+    };
+    auto seeks_text = [scrub] {
+        std::string text;
+        for (const std::int64_t value : scrub->seeks) {
+            text += std::format("{}{}", text.empty() ? "" : " ", value);
+        }
+        return text;
+    };
+    steps.push_back(idle_at("idle at 10 for the marker", 10));
+    steps.push_back(step(
+        "marker during a held drag",
+        [&frame, scrub] {
+            TransportBar& bar = frame.transportBar();
+            TimelineStrip& strip = bar.timelineStripForTest();
+            bar.setLeftButtonProbeForTest([] { return true; });
+            sendSliderTrack(bar.slider(), 20);
+            sendSliderTrack(bar.slider(), 35);
+            const TimelineModel held = strip.modelForTest();
+            const TimelineLabel* current = labelWithRole(held, "current");
+            const TimelineLabel* original = labelWithRole(held, "original");
+            const bool scrubbing = bar.scrubState() == ScrubState::Scrubbing;
+            bar.setLeftButtonProbeForTest([] { return false; });
+            sendSliderReleasePair(bar.slider());
+            const TimelineModel released = strip.modelForTest();
+            const bool idle = bar.scrubState() == ScrubState::Idle;
+            bar.setLeftButtonProbeForTest(nullptr);
+            scrub->check = std::format(
+                "held: scrubbing {}, marker {}, current \"{}\", original \"{}\"; released: idle "
+                "{}, marker {}, original label {}",
+                scrubbing, held.marker.value_or(-1), current != nullptr ? current->text : "-",
+                original != nullptr ? original->text : "-", idle, released.marker.value_or(-1),
+                labelWithRole(released, "original") != nullptr);
+            scrub->ok = scrubbing && held.marker == 10 && current != nullptr &&
+                        current->text == "35" && original != nullptr && original->text == "10" &&
+                        idle && !released.marker && labelWithRole(released, "original") == nullptr;
+        },
+        [scrub](std::string& seen) {
+            seen = scrub->check;
+            return scrub->ok;
+        }));
+    steps.push_back(idle_at("idle at 10 for a quick release", 10));
+    steps.push_back(step(
+        "a quick release",
+        [&frame, scrub, record_seeks] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            bar.setLeftButtonProbeForTest([] { return true; });
+            sendSliderTrack(bar.slider(), 20);
+            sendSliderTrack(bar.slider(), 35);
+            sendSliderReleasePair(bar.slider());
+            bar.setLeftButtonProbeForTest([] { return false; });
+            const bool idle = bar.scrubState() == ScrubState::Idle;
+            scrub->check =
+                std::format("at the release: idle {}, slider {}", idle, bar.slider().GetValue());
+            scrub->ok = idle && bar.slider().GetValue() == 35;
+            // Installed after the release: every value it records comes after it.
+            bar.setUpdateObserverForTest([scrub](int value) { scrub->updates.push_back(value); });
+        },
+        [scrub, settled, seeks_text, stop_recording](std::string& seen) {
+            const bool at35 =
+                std::ranges::all_of(scrub->updates, [](int value) { return value == 35; });
+            seen = std::format("{}; seeks [{}], updates {}, all at 35 {}", scrub->check,
+                               seeks_text(), scrub->updates.size(), at35);
+            if (!settled(35) || !scrub->ok || !at35 ||
+                scrub->seeks != std::vector<std::int64_t>{20, 35}) {
+                return false;
+            }
+            stop_recording();
+            return true;
+        }));
+    steps.push_back(step(
+        "a buttonless track stays idle",
+        [&frame, scrub, record_seeks] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            bar.setLeftButtonProbeForTest([] { return false; });
+            sendSliderTrack(bar.slider(), 12);
+            const bool idle = bar.scrubState() == ScrubState::Idle;
+            const std::optional<std::int64_t> marker =
+                bar.timelineStripForTest().modelForTest().marker;
+            scrub->check = std::format("idle {}, marker {}", idle, marker.value_or(-1));
+            scrub->ok = idle && !marker;
+        },
+        [scrub, settled, seeks_text, stop_recording](std::string& seen) {
+            seen = std::format("{}; seeks [{}]", scrub->check, seeks_text());
+            if (!settled(12) || !scrub->ok || scrub->seeks != std::vector<std::int64_t>{12}) {
+                return false;
+            }
+            stop_recording();
+            return true;
+        }));
+    steps.push_back(step(
+        "a new generation resets",
+        [&frame, scrub, record_seeks] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            bar.setLeftButtonProbeForTest([] { return true; });
+            sendSliderTrack(bar.slider(), 30);
+            const bool scrubbing = bar.scrubState() == ScrubState::Scrubbing;
+            const SessionStatus real = frame.session().status();
+            const std::uint64_t generation = bar.streamGenerationForTest();
+            BarStatus same{.player = real.player,
+                           .hasStream = real.streams > 0,
+                           .streamGeneration = generation};
+            bar.update(same);
+            const bool kept = bar.scrubState() == ScrubState::Scrubbing;
+            same.streamGeneration = generation + 1;
+            bar.update(same);
+            const bool idle = bar.scrubState() == ScrubState::Idle;
+            const std::optional<std::int64_t> marker =
+                bar.timelineStripForTest().modelForTest().marker;
+            bar.update(BarStatus{.player = real.player,
+                                 .hasStream = real.streams > 0,
+                                 .streamGeneration = real.streamGeneration});
+            scrub->check = std::format(
+                "scrubbing {}, generation {} (session {}), kept {}, idle {}, marker {}", scrubbing,
+                generation, real.streamGeneration, kept, idle, marker.value_or(-1));
+            scrub->ok = scrubbing && generation == real.streamGeneration && kept && idle && !marker;
+        },
+        [scrub, settled, seeks_text, stop_recording](std::string& seen) {
+            ++scrub->ticks;
+            seen =
+                std::format("{}; seeks [{}], ticks {}", scrub->check, seeks_text(), scrub->ticks);
+            if (!settled(30) || !scrub->ok || scrub->seeks != std::vector<std::int64_t>{30} ||
+                scrub->ticks < 3) {
+                return false;
+            }
+            stop_recording();
+            return true;
+        }));
+    steps.push_back(idle_at("idle at 10 for play during a drag", 10));
+    steps.push_back(step(
+        "play during a drag",
+        [&frame, scrub, record_seeks, status] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            bar.setLeftButtonProbeForTest([] { return true; });
+            sendSliderTrack(bar.slider(), 25);
+            sendKey(frame, WXK_SPACE);
+            // Playback moves `target` on: the bar's fresh read lies between these two.
+            const std::int64_t before = status().target;
+            sendSliderReleasePair(bar.slider());
+            const std::int64_t after = status().target;
+            bar.setLeftButtonProbeForTest([] { return false; });
+            const bool idle = bar.scrubState() == ScrubState::Idle;
+            const int slider = bar.slider().GetValue();
+            scrub->check = std::format("at the release: idle {}, slider {} (target {}..{})", idle,
+                                       slider, before, after);
+            scrub->ok = idle && before <= slider && slider <= after;
+        },
+        [scrub, seeks_text, stop_recording, status](std::string& seen) {
+            const PlayerStatus now = status();
+            seen = std::format("{}; seeks [{}], playing {}, position {}", scrub->check,
+                               seeks_text(), now.playing, now.position);
+            if (!scrub->ok || scrub->seeks != std::vector<std::int64_t>{25} || !now.playing ||
+                now.position < 30) {
+                return false;
+            }
+            stop_recording();
+            return true;
+        }));
+    steps.push_back(step(
+        "pause after play during a drag",
+        [&frame, status] {
+            if (status().playing) {
+                frame.execute(Command::PlayPause);
+            }
+        },
+        [status](std::string& seen) {
+            seen = std::format("playing {}", status().playing);
+            return !status().playing;
+        }));
+    // The GTK release tail after playback has moved `target` past the drag's value: only
+    // release_value_ keeps its CHANGED from seeking (and pausing). Waits for the condition.
+    steps.push_back(idle_at("idle at 10 for a release tail during playback", 10));
+    steps.push_back(step(
+        "a release tail during playback",
+        [&frame, record_seeks] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            bar.setLeftButtonProbeForTest([] { return true; });
+            sendSliderTrack(bar.slider(), 25);
+            sendKey(frame, WXK_SPACE);
+        },
+        [&frame, scrub, seeks_text, stop_recording, status](std::string& seen) {
+            TransportBar& bar = frame.transportBar();
+            if (!scrub->released) {
+                const PlayerStatus before = status();
+                const bool scrubbing = bar.scrubState() == ScrubState::Scrubbing;
+                seen =
+                    std::format("held: scrubbing {}, playing {}, target {}, slider {}", scrubbing,
+                                before.playing, before.target, bar.slider().GetValue());
+                if (!scrubbing || !before.playing || before.target < 28) {
+                    return false;
+                }
+                sendSliderReleasePair(bar.slider());  // at 25
+                const std::int64_t after = status().target;
+                bar.setLeftButtonProbeForTest([] { return false; });
+                const int slider = bar.slider().GetValue();
+                const bool idle = bar.scrubState() == ScrubState::Idle;
+                scrub->check = std::format("at the release: idle {}, slider {} (target {}..{})",
+                                           idle, slider, before.target, after);
+                scrub->ok = idle && before.target <= slider && slider <= after;
+                scrub->released = true;
+                scrub->releasedTarget = after;
+            }
+            const PlayerStatus now = status();
+            seen = std::format("{}; seeks [{}], playing {}, position {}", scrub->check,
+                               seeks_text(), now.playing, now.position);
+            if (!scrub->ok || scrub->seeks != std::vector<std::int64_t>{25} || !now.playing ||
+                now.position < scrub->releasedTarget + 2) {
+                return false;
+            }
+            stop_recording();
+            return true;
+        }));
+    steps.push_back(step(
+        "pause after the release tail",
+        [&frame, status] {
+            if (status().playing) {
+                frame.execute(Command::PlayPause);
+            }
+        },
+        [status](std::string& seen) {
+            seen = std::format("playing {}", status().playing);
+            return !status().playing;
+        }));
+    // The tail of a Windows release pair (spec §6.2 notes): Windows reads TBM_GETPOS again for
+    // the CHANGED, so it carries the value the Idle view has just set. Paused, that value is the
+    // release's; during playback only the idle_value_ rule keeps it from seeking (and pausing).
+    steps.push_back(idle_at("idle at 10 for a windows release tail", 10));
+    steps.push_back(step(
+        "a windows release tail",
+        [&frame, scrub, record_seeks] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            bar.setLeftButtonProbeForTest([] { return true; });
+            sendSliderTrack(bar.slider(), 20);
+            sendSliderTrack(bar.slider(), 35);
+            sendSliderRelease(bar.slider());
+            const int reread = bar.slider().GetValue();  // after the THUMBRELEASE handler ran
+            sendSliderChanged(bar.slider(), reread);
+            bar.setLeftButtonProbeForTest([] { return false; });
+            const bool idle = bar.scrubState() == ScrubState::Idle;
+            scrub->check = std::format("at the release: idle {}, re-read {}", idle, reread);
+            scrub->ok = idle && reread == 35;
+        },
+        [scrub, settled, seeks_text, stop_recording](std::string& seen) {
+            seen = std::format("{}; seeks [{}]", scrub->check, seeks_text());
+            if (!settled(35) || !scrub->ok || scrub->seeks != std::vector<std::int64_t>{20, 35}) {
+                return false;
+            }
+            stop_recording();
+            return true;
+        }));
+    steps.push_back(idle_at("idle at 10 for a windows release tail during playback", 10));
+    steps.push_back(step(
+        "a windows release tail during playback",
+        [&frame, record_seeks] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            bar.setLeftButtonProbeForTest([] { return true; });
+            sendSliderTrack(bar.slider(), 25);
+            sendKey(frame, WXK_SPACE);
+        },
+        [&frame, scrub, seeks_text, stop_recording, status](std::string& seen) {
+            TransportBar& bar = frame.transportBar();
+            if (!scrub->released) {
+                const PlayerStatus before = status();
+                const bool scrubbing = bar.scrubState() == ScrubState::Scrubbing;
+                seen = std::format("held: scrubbing {}, playing {}, target {}", scrubbing,
+                                   before.playing, before.target);
+                if (!scrubbing || !before.playing || before.target < 28) {
+                    return false;
+                }
+                sendSliderRelease(bar.slider());  // at 25
+                const int reread = bar.slider().GetValue();
+                sendSliderChanged(bar.slider(), reread);
+                bar.setLeftButtonProbeForTest([] { return false; });
+                const bool idle = bar.scrubState() == ScrubState::Idle;
+                scrub->check = std::format("at the release: idle {}, re-read {} (target {})", idle,
+                                           reread, before.target);
+                scrub->ok = idle && reread >= before.target;
+                scrub->released = true;
+                scrub->releasedTarget = reread;
+            }
+            const PlayerStatus now = status();
+            seen = std::format("{}; seeks [{}], playing {}, position {}", scrub->check,
+                               seeks_text(), now.playing, now.position);
+            if (!scrub->ok || scrub->seeks != std::vector<std::int64_t>{25} || !now.playing ||
+                now.position < scrub->releasedTarget + 2) {
+                return false;
+            }
+            stop_recording();
+            return true;
+        }));
+    steps.push_back(step(
+        "pause after the windows release tail",
+        [&frame, status] {
+            if (status().playing) {
+                frame.execute(Command::PlayPause);
+            }
+        },
+        [status](std::string& seen) {
+            seen = std::format("playing {}", status().playing);
+            return !status().playing;
+        }));
+    // Spec §6.2, §6.3: no drag cancel. Keys and the release pair go through injectInput.
+    auto current_label = [&frame]() -> std::optional<TimelineLabel> {
+        const TimelineModel model = frame.transportBar().timelineStripForTest().modelForTest();
+        const TimelineLabel* current = labelWithRole(model, "current");
+        if (current == nullptr) {
+            return std::nullopt;
+        }
+        return *current;
+    };
+    auto has_marker = [&frame] {
+        return frame.transportBar().timelineStripForTest().modelForTest().marker.has_value();
+    };
+    // The bar is Idle at `value`, settled there, paused, and seeked `seeks` only.
+    auto rests_at = [&frame, scrub, settled, seeks_text, stop_recording, status](
+                        std::string& seen, int value, const std::vector<std::int64_t>& seeks) {
+        TransportBar& bar = frame.transportBar();
+        const bool idle = bar.scrubState() == ScrubState::Idle;
+        const PlayerStatus now = status();
+        seen = std::format("{}; idle {}, slider {}, position {}, target {}, playing {}, seeks [{}]",
+                           scrub->check, idle, bar.slider().GetValue(), now.position, now.target,
+                           now.playing, seeks_text());
+        if (!scrub->ok || !idle || bar.slider().GetValue() != value || !settled(value) ||
+            now.playing || scrub->seeks != seeks) {
+            return false;
+        }
+        stop_recording();
+        return true;
+    };
+    auto back_at_10 = [rests_at](std::string& seen, const std::vector<std::int64_t>& seeks) {
+        return rests_at(seen, 10, seeks);
+    };
+    steps.push_back(idle_at("idle at 10 for escape", 10));
+    steps.push_back(step(
+        "escape does nothing",
+        [&frame, scrub, record_seeks] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            const bool idle_consumed = sendKey(frame, WXK_ESCAPE);
+            const bool idle = bar.scrubState() == ScrubState::Idle;
+            const std::size_t idle_seeks = scrub->seeks.size();
+            bar.setLeftButtonProbeForTest([] { return true; });
+            sendSliderTrack(bar.slider(), 30);
+            const bool drag_consumed = sendKey(frame, WXK_ESCAPE);
+            const bool scrubbing = bar.scrubState() == ScrubState::Scrubbing;
+            sendSliderReleasePair(bar.slider());
+            bar.setLeftButtonProbeForTest([] { return false; });
+            scrub->check = std::format(
+                "idle consumed {}, idle {}, seeks in idle {}, drag consumed {}, scrubbing {}",
+                idle_consumed, idle, idle_seeks, drag_consumed, scrubbing);
+            scrub->ok = !idle_consumed && idle && idle_seeks == 0 && !drag_consumed && scrubbing;
+        },
+        [&frame, scrub, settled, seeks_text, stop_recording, status](std::string& seen) {
+            TransportBar& bar = frame.transportBar();
+            const bool idle = bar.scrubState() == ScrubState::Idle;
+            const PlayerStatus now = status();
+            seen = std::format("{}; idle {}, slider {}, position {}, target {}, seeks [{}]",
+                               scrub->check, idle, bar.slider().GetValue(), now.position,
+                               now.target, seeks_text());
+            if (!scrub->ok || !idle || bar.slider().GetValue() != 30 || !settled(30) ||
+                now.playing || scrub->seeks != std::vector<std::int64_t>{30}) {
+                return false;
+            }
+            stop_recording();
+            return true;
+        }));
+    // Spec §6.2, §6.4: skimming on the slider with the platform's key, from synthetic slider
+    // motion, leave, left-down, key-up and activation events. Each sequence starts paused at 10
+    // and records the bar's seeks from its first step.
+    auto skimming = [&frame] { return frame.transportBar().scrubState() == ScrubState::Skimming; };
+    auto is_idle = [&frame] { return frame.transportBar().scrubState() == ScrubState::Idle; };
+    auto skim_motion = [&frame](std::int64_t at, bool skim_key, bool left_down = false) {
+        TransportBar& bar = frame.transportBar();
+        sendSliderMouse(bar, wxEVT_MOTION, xOfFrame(bar, at), skim_key, left_down);
+    };
+    steps.push_back(idle_at("idle at 10 for skimming", 10));
+    steps.push_back(step(
+        "skim enters and previews",
+        [&frame, record_seeks, skim_motion] {
+            sendActivate(frame, true);  // a known activation state: real ones are filtered out
+            record_seeks();
+            skim_motion(30, true);
+        },
+        [&frame, scrub, settled, seeks_text, skimming, current_label](std::string& seen) {
+            TransportBar& bar = frame.transportBar();
+            const std::optional<std::int64_t> marker =
+                bar.timelineStripForTest().modelForTest().marker;
+            const std::optional<TimelineLabel> current = current_label();
+            const std::optional<int> ghost = bar.ghostForTest();
+            seen = std::format(
+                "skimming {}, marker {}, slider {}, ghost x {} (frame 30 at x {}), current \"{}\", "
+                "seeks [{}]",
+                skimming(), marker.value_or(-1), bar.slider().GetValue(), ghost.value_or(-1),
+                xOfFrame(bar, 30), current ? current->text : "-", seeks_text());
+            // Settled first: the notifications of the skim's seek must not end it. The real thumb
+            // stays at the start frame; the ghost shows the skimmed one (spec §6.3).
+            return settled(30) && skimming() && marker == 10 &&
+                   scrub->seeks == std::vector<std::int64_t>{30} && bar.slider().GetValue() == 10 &&
+                   ghost == xOfFrame(bar, 30) && current && current->text == "30";
+        }));
+    steps.push_back(step(
+        "skim moves without duplicates",
+        [scrub, skim_motion] {
+            skim_motion(30, true);
+            const std::size_t again = scrub->seeks.size();
+            skim_motion(40, true);
+            scrub->check = std::format("seeks after frame 30 again {}", again);
+            scrub->ok = again == 1;
+        },
+        [&frame, scrub, settled, seeks_text, skimming](std::string& seen) {
+            TransportBar& bar = frame.transportBar();
+            const int slider = bar.slider().GetValue();
+            const std::optional<int> ghost = bar.ghostForTest();
+            seen =
+                std::format("{}; skimming {}, slider {}, ghost x {} (frame 40 at x {}), seeks [{}]",
+                            scrub->check, skimming(), slider, ghost.value_or(-1), xOfFrame(bar, 40),
+                            seeks_text());
+            return scrub->ok && settled(40) && skimming() && slider == 10 &&
+                   ghost == xOfFrame(bar, 40) && scrub->seeks == std::vector<std::int64_t>{30, 40};
+        }));
+    steps.push_back(step(
+        "the key's release returns",
+        [&frame, scrub, is_idle, has_marker] {
+            sendSkimKeyUp(frame.viewport());
+            const bool idle = is_idle();
+            const bool marker = has_marker();
+            const bool ghost = frame.transportBar().ghostForTest().has_value();
+            scrub->check =
+                std::format("idle after the release {}, marker {}, ghost {}", idle, marker, ghost);
+            scrub->ok = scrub->ok && idle && !marker && !ghost;
+        },
+        [back_at_10](std::string& seen) { return back_at_10(seen, {30, 40, 10}); }));
+    steps.push_back(idle_at("idle at 10 for a skim at the current frame", 10));
+    steps.push_back(step(
+        "a motion at the current frame seeks nothing",
+        [&frame, scrub, record_seeks, skim_motion, skimming, is_idle] {
+            record_seeks();
+            skim_motion(10, true);
+            const bool skimmed = skimming();
+            const std::size_t skim_seeks = scrub->seeks.size();
+            sendSkimKeyUp(frame.viewport());
+            const bool idle = is_idle();
+            scrub->check =
+                std::format("skimming {}, seeks while skimming {}, idle after the release {}",
+                            skimmed, skim_seeks, idle);
+            scrub->ok = skimmed && skim_seeks == 0 && idle;
+        },
+        [back_at_10](std::string& seen) { return back_at_10(seen, {}); }));
+    // Skims to 40, then `end` ends the skim: Idle right after it, then back at 10 after one seek.
+    auto return_step = [scrub, record_seeks, skim_motion, skimming, is_idle, back_at_10](
+                           std::string name, dvv::MoveOnlyFunction<void()> end) {
+        return step(
+            std::move(name),
+            [scrub, record_seeks, skim_motion, skimming, is_idle, end = std::move(end)]() mutable {
+                record_seeks();
+                skim_motion(40, true);
+                const bool skimmed = skimming();
+                end();
+                const bool idle = is_idle();
+                scrub->check = std::format("skimming {}, idle after the end {}", skimmed, idle);
+                scrub->ok = skimmed && idle;
+            },
+            [back_at_10](std::string& seen) { return back_at_10(seen, {40, 10}); });
+    };
+    steps.push_back(idle_at("idle at 10 for a motion without the key", 10));
+    steps.push_back(
+        return_step("a motion without the key returns", [skim_motion] { skim_motion(40, false); }));
+    steps.push_back(idle_at("idle at 10 for leaving the slider", 10));
+    steps.push_back(return_step("leaving the slider returns", [&frame] {
+        TransportBar& bar = frame.transportBar();
+        sendSliderMouse(bar, wxEVT_LEAVE_WINDOW, xOfFrame(bar, 40), true);
+    }));
+    steps.push_back(idle_at("idle at 10 for deactivation", 10));
+    steps.push_back(return_step("deactivation returns", [&frame] {
+        sendActivate(frame, false);
+        sendActivate(frame, true);  // restore
+    }));
+    steps.push_back(idle_at("idle at 10 for a click while skimming", 10));
+    steps.push_back(step(
+        "a click keeps the skimmed frame",
+        [&frame, scrub, record_seeks, skim_motion, skimming, is_idle, has_marker] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            skim_motion(40, true);
+            const bool skimmed = skimming();
+            sendSliderMouse(bar, wxEVT_LEFT_DOWN, xOfFrame(bar, 40), true, true);
+            const bool idle = is_idle();
+            const int slider = bar.slider().GetValue();
+            const bool marker = has_marker();
+            sendSkimKeyUp(frame.viewport());
+            const bool still_idle = is_idle();
+            scrub->check = std::format(
+                "skimming {}; after the click: idle {}, slider {}, marker {}; idle after the "
+                "release {}",
+                skimmed, idle, slider, marker, still_idle);
+            scrub->ok = skimmed && idle && slider == 40 && !marker && still_idle;
+        },
+        [rests_at](std::string& seen) { return rests_at(seen, 40, {40}); }));
+    // Spec §6.5: a press on the channel jumps where the native control pages (Windows). The seam
+    // makes the jump rule run on every platform.
+    steps.push_back(idle_at("idle at 10 for a channel click", 10));
+    steps.push_back(step(
+        "a channel click jumps",
+        [&frame, scrub, record_seeks] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            bar.setTrackClickPagesForTest(true);
+            const bool consumed = sendSliderMouse(bar, wxEVT_LEFT_DOWN, xOfFrame(bar, 50), false);
+            bar.setTrackClickPagesForTest(std::nullopt);
+            scrub->check = std::format("consumed {}, slider {}", consumed, bar.slider().GetValue());
+            scrub->ok = consumed && bar.slider().GetValue() == 50;
+        },
+        [rests_at](std::string& seen) { return rests_at(seen, 50, {50}); }));
+    steps.push_back(idle_at("idle at 10 for a thumb click", 10));
+    steps.push_back(step(
+        "a thumb click does not jump",
+        [&frame, scrub, record_seeks] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            bar.setTrackClickPagesForTest(true);
+            const bool consumed = sendSliderMouse(bar, wxEVT_LEFT_DOWN, xOfFrame(bar, 10), false);
+            bar.setTrackClickPagesForTest(std::nullopt);
+            scrub->check = std::format("consumed {}, slider {}", consumed, bar.slider().GetValue());
+            scrub->ok = !consumed && bar.slider().GetValue() == 10;
+        },
+        [back_at_10](std::string& seen) { return back_at_10(seen, {}); }));
+    steps.push_back(idle_at("idle at 10 for a click while skimming", 10));
+    steps.push_back(step(
+        "a click while skimming keeps and jumps",
+        [&frame, scrub, record_seeks, skim_motion, skimming, is_idle, has_marker] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            skim_motion(40, true);
+            const bool skimmed = skimming();
+            bar.setTrackClickPagesForTest(true);
+            const bool consumed =
+                sendSliderMouse(bar, wxEVT_LEFT_DOWN, xOfFrame(bar, 50), true, true);
+            bar.setTrackClickPagesForTest(std::nullopt);
+            const bool idle = is_idle();
+            const int slider = bar.slider().GetValue();
+            const bool marker = has_marker();
+            sendSkimKeyUp(frame.viewport());
+            scrub->check = std::format(
+                "skimming {}; after the click: consumed {}, idle {}, slider {}, marker {}", skimmed,
+                consumed, idle, slider, marker);
+            scrub->ok = skimmed && consumed && idle && slider == 50 && !marker && is_idle();
+        },
+        [rests_at](std::string& seen) { return rests_at(seen, 50, {40, 50}); }));
+    if constexpr (!SLIDER_PAGES_ON_TRACK_CLICK) {
+        steps.push_back(idle_at("idle at 10 for a native channel click", 10));
+        steps.push_back(step(
+            "a native channel click is left to the control",
+            [&frame, scrub, record_seeks] {
+                TransportBar& bar = frame.transportBar();
+                record_seeks();
+                const bool consumed =
+                    sendSliderMouse(bar, wxEVT_LEFT_DOWN, xOfFrame(bar, 50), false);
+                scrub->check =
+                    std::format("consumed {}, slider {}", consumed, bar.slider().GetValue());
+                scrub->ok = !consumed && bar.slider().GetValue() == 10;
+            },
+            [back_at_10](std::string& seen) { return back_at_10(seen, {}); }));
+    }
+    steps.push_back(idle_at("idle at 10 for a motion with the button down", 10));
+    steps.push_back(step(
+        "a motion with the button down does not enter",
+        [scrub, record_seeks, skim_motion, is_idle] {
+            record_seeks();
+            skim_motion(40, true, true);
+            const bool idle = is_idle();
+            scrub->check = std::format("idle after the motion {}", idle);
+            scrub->ok = idle;
+        },
+        [back_at_10](std::string& seen) { return back_at_10(seen, {}); }));
+    steps.push_back(idle_at("idle at 10 for a scroll event while skimming", 10));
+    steps.push_back(step(
+        "a scroll event while skimming keeps",
+        [&frame, scrub, record_seeks, skim_motion, skimming, is_idle, seeks_text] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            skim_motion(40, true);
+            const bool skimmed = skimming();
+            bar.setLeftButtonProbeForTest([] { return false; });
+            sendSliderTrack(bar.slider(), 45);
+            const bool idle = is_idle();
+            const std::string after_track = seeks_text();
+            sendSkimKeyUp(frame.viewport());
+            scrub->check = std::format("skimming {}, idle after the track {}, seeks then [{}]",
+                                       skimmed, idle, after_track);
+            scrub->ok = skimmed && idle && after_track == "40 45";
+        },
+        // The keep's Idle view shows 40 until the notification of the seek to 45.
+        [rests_at](std::string& seen) { return rests_at(seen, 45, {40, 45}); }));
+    steps.push_back(idle_at("idle at 10 while inactive", 10));
+    steps.push_back(step(
+        "no skim while inactive",
+        [&frame, scrub, record_seeks, skim_motion, is_idle] {
+            record_seeks();
+            sendActivate(frame, false);
+            skim_motion(40, true);
+            const bool idle = is_idle();
+            sendActivate(frame, true);  // restore
+            scrub->check = std::format("idle after the motion {}", idle);
+            scrub->ok = idle;
+        },
+        [back_at_10](std::string& seen) { return back_at_10(seen, {}); }));
+    steps.push_back(idle_at("idle at 10 for a skim while playing", 10));
+    steps.push_back(step(
+        "skim while playing does nothing",
+        [&frame, record_seeks] {
+            record_seeks();
+            sendKey(frame, WXK_SPACE);
+        },
+        [&frame, scrub, skim_motion, is_idle, seeks_text](std::string& seen) {
+            if (!scrub->sent) {
+                if (frame.transportBar().playIconForTest() != Icon::Pause) {
+                    seen = "waiting for the pause icon";
+                    return false;
+                }
+                skim_motion(40, true);
+                scrub->sent = true;
+                scrub->ok = is_idle() && scrub->seeks.empty();
+                scrub->check =
+                    std::format("idle after the motion {}, seeks [{}]", is_idle(), seeks_text());
+            }
+            seen = scrub->check;
+            return scrub->ok;
+        }));
+    steps.push_back(step(
+        "pause after the skim while playing",
+        [&frame, status] {
+            if (status().playing) {
+                frame.execute(Command::PlayPause);
+            }
+        },
+        [status, stop_recording](std::string& seen) {
+            seen = std::format("playing {}", status().playing);
+            if (status().playing) {
+                return false;
+            }
+            stop_recording();
+            return true;
+        }));
+    steps.push_back(idle_at("idle at 10 for the skim key during a drag", 10));
+    steps.push_back(step(
+        "the skim key during a drag",
+        [&frame, scrub, record_seeks, skim_motion, is_idle] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            bar.setLeftButtonProbeForTest([] { return true; });
+            sendSliderTrack(bar.slider(), 30);
+            skim_motion(40, true, true);
+            const bool scrubbing = bar.scrubState() == ScrubState::Scrubbing;
+            bar.setLeftButtonProbeForTest([] { return false; });
+            sendSliderReleasePair(bar.slider());
+            const bool idle = is_idle();
+            scrub->check = std::format("scrubbing after the motion {}, idle after the release {}",
+                                       scrubbing, idle);
+            scrub->ok = scrubbing && idle;
+        },
+        [rests_at](std::string& seen) { return rests_at(seen, 30, {30}); }));
+    steps.push_back(idle_at("idle at 10 for a stream change while skimming", 10));
+    steps.push_back(step(
+        "a stream change while skimming",
+        [&frame, scrub, record_seeks, skim_motion, skimming, is_idle, has_marker] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            skim_motion(40, true);
+            const bool skimmed = skimming();
+            const SessionStatus s = frame.session().status();
+            bar.update(BarStatus{.player = s.player,
+                                 .hasStream = s.streams > 0,
+                                 .streamGeneration = s.streamGeneration + 1});
+            const bool idle = is_idle();
+            const bool marker = has_marker();
+            bar.update(BarStatus{.player = s.player,
+                                 .hasStream = s.streams > 0,
+                                 .streamGeneration = s.streamGeneration});
+            scrub->check = std::format("skimming {}; after the change: idle {}, marker {}", skimmed,
+                                       idle, marker);
+            scrub->ok =
+                skimmed && idle && !marker && bar.streamGenerationForTest() == s.streamGeneration;
+        },
+        [rests_at](std::string& seen) { return rests_at(seen, 40, {40}); }));
+    steps.push_back(idle_at("idle at 10 for a range change while skimming", 10));
+    steps.push_back(step(
+        "a range change while skimming",
+        [&frame, scrub, record_seeks, skim_motion, skimming, is_idle, has_marker] {
+            TransportBar& bar = frame.transportBar();
+            record_seeks();
+            skim_motion(40, true);
+            const bool skimmed = skimming();
+            const SessionStatus s = frame.session().status();
+            PlayerStatus shorter = s.player;
+            shorter.length = *s.player.length - 1;
+            bar.update(BarStatus{.player = shorter,
+                                 .hasStream = s.streams > 0,
+                                 .streamGeneration = s.streamGeneration});
+            const bool idle = is_idle();
+            const bool marker = has_marker();
+            bar.update(BarStatus{.player = s.player,
+                                 .hasStream = s.streams > 0,
+                                 .streamGeneration = s.streamGeneration});
+            scrub->check = std::format("skimming {}; after the range change: idle {}, marker {}",
+                                       skimmed, idle, marker);
+            scrub->ok = skimmed && idle && !marker;
+        },
+        [rests_at](std::string& seen) { return rests_at(seen, 40, {40}); }));
+    // forgetRelease is the bar's own CallAfter, which its destructor drops; only a drag's release
+    // posts it. A live bar first shows that the counter moves, then a destroyed one does not.
+    struct Gone {
+        wxFrame* frame = nullptr;
+        int runs = 0;
+        int ticks = 0;
+        bool ok = false;
+        std::string check;
+    };
+    auto gone = std::make_shared<Gone>();
+    // A temporary bar in a temporary frame: a drag to 20 and its release pair.
+    auto drag_on_temporary_bar = [gone](bool destroy) {
+        *gone = Gone{};
+        gone->frame = new wxFrame(nullptr, wxID_ANY, "rawreel selftest bar");
+        PlayerStatus player;
+        player.length = 60;
+        player.position = 10;
+        player.target = 10;
+        const BarStatus shown{.player = player, .hasStream = true, .streamGeneration = 1};
+        auto* bar = new TransportBar(
+            gone->frame, [](Command /*command*/) {}, [](std::int64_t /*index*/) {},
+            [shown] { return shown; });
+        bar->update(shown);
+        bar->setLeftButtonProbeForTest([] { return true; });
+        sendSliderTrack(bar->slider(), 20);
+        const bool scrubbing = bar->scrubState() == ScrubState::Scrubbing;
+        gone->runs = TransportBar::forgetReleaseRunsForTest();
+        sendSliderReleasePair(bar->slider());  // posts forgetRelease
+        const bool idle = bar->scrubState() == ScrubState::Idle;
+        if (destroy) {
+            bar->Destroy();  // a child: deleted at once
+        }
+        gone->check = std::format("scrubbing {}, idle after the release {}", scrubbing, idle);
+        gone->ok = scrubbing && idle;
+    };
+    // After two yields: the frame is destroyed; returns how often forgetRelease ran meanwhile.
+    auto wait_two_yields = [gone](std::string& seen, int& grew) {
+        ++gone->ticks;
+        grew = TransportBar::forgetReleaseRunsForTest() - gone->runs;
+        seen = std::format("{}; forgetRelease runs {}, ticks {}", gone->check, grew, gone->ticks);
+        if (gone->ticks < 3) {
+            return false;
+        }
+        if (gone->frame != nullptr) {
+            gone->frame->Destroy();
+            gone->frame = nullptr;
+        }
+        return true;
+    };
+    steps.push_back(step(
+        "a pending call on a live bar", [drag_on_temporary_bar] { drag_on_temporary_bar(false); },
+        [gone, wait_two_yields](std::string& seen) {
+            int grew = 0;
+            return wait_two_yields(seen, grew) && gone->ok && grew == 1;
+        }));
+    steps.push_back(step(
+        "a pending call after the bar is gone",
+        [drag_on_temporary_bar] { drag_on_temporary_bar(true); },
+        [gone, wait_two_yields](std::string& seen) {
+            int grew = 0;
+            return wait_two_yields(seen, grew) && gone->ok && grew == 0;
+        }));
     steps.push_back(step(
         "Home (CHAR_HOOK)", [&frame] { sendKey(frame, WXK_HOME); },
         [status](std::string& seen) {
@@ -2746,6 +3664,78 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             });
     };
     steps.push_back(reopen_clip("reopen the clip"));
+    // Spec §6.2: a new stream generation during a drag resets the bar to Idle, with no seek back.
+    {
+        struct Reset {
+            std::vector<std::int64_t> seeks;
+            std::uint64_t generation = 0;  // before the stream change
+            bool scrubbing = false;        // after the track, before the change
+        };
+        auto reset = std::make_shared<Reset>();
+        // Probe down, a track to 30, then `change` (another stream set).
+        auto drag_then = [&frame, reset](dvv::MoveOnlyFunction<void()> change) {
+            return [&frame, reset, change = std::move(change)]() mutable {
+                TransportBar& bar = frame.transportBar();
+                *reset =
+                    Reset{.seeks = {}, .generation = frame.session().status().streamGeneration};
+                bar.setSeekObserverForTest(
+                    [reset](std::int64_t value) { reset->seeks.push_back(value); });
+                bar.setLeftButtonProbeForTest([] { return true; });
+                sendSliderTrack(bar.slider(), 30);
+                reset->scrubbing = bar.scrubState() == ScrubState::Scrubbing;
+                change();
+            };
+        };
+        // The bar is Idle in the new generation, without a marker, at the new stream's target,
+        // and it seeked only to the 30.
+        auto reset_done = [&frame, reset](std::string& seen, bool stream_ok) {
+            TransportBar& bar = frame.transportBar();
+            const SessionStatus full = frame.session().status();
+            const bool idle = bar.scrubState() == ScrubState::Idle;
+            const std::optional<std::int64_t> marker =
+                bar.timelineStripForTest().modelForTest().marker;
+            std::string seeks;
+            for (const std::int64_t value : reset->seeks) {
+                seeks += std::format("{}{}", seeks.empty() ? "" : " ", value);
+            }
+            seen = std::format(
+                "stream {}, scrubbing before {}, generation {} -> {} (bar {}), idle {}, marker {}, "
+                "slider {}, "
+                "target {}, inflight {}, seeks [{}]",
+                stream_ok, reset->scrubbing, reset->generation, full.streamGeneration,
+                bar.streamGenerationForTest(), idle, marker.value_or(-1), bar.slider().GetValue(),
+                full.player.target, full.inflight, seeks);
+            if (!stream_ok || !reset->scrubbing || full.streamGeneration == reset->generation ||
+                bar.streamGenerationForTest() != full.streamGeneration || !idle || marker ||
+                full.inflight != 0 || frame.lastRevisionForTest() != full.revision ||
+                bar.slider().GetValue() != full.player.target ||
+                reset->seeks != std::vector<std::int64_t>{30}) {
+                return false;
+            }
+            bar.setSeekObserverForTest(nullptr);
+            bar.setLeftButtonProbeForTest(nullptr);
+            return true;
+        };
+        steps.push_back(step("a reopen during a drag resets",
+                             drag_then([&frame, clip_uri] { frame.openUri(0, *clip_uri, {}); }),
+                             [&frame, reset_done, status](std::string& seen) {
+                                 return reset_done(seen, frame.streams().size() == 1 &&
+                                                             status().length == 60 &&
+                                                             status().position == 0);
+                             }));
+        if (test.app().startup().ffmpeg.core && mkv_exists) {
+            steps.push_back(step("another clip during a drag resets",
+                                 drag_then([&frame, mkv] { dropFiles(frame.viewport(), {mkv}); }),
+                                 [&frame, reset_done, status](std::string& seen) {
+                                     const auto& streams = frame.streams();
+                                     return reset_done(
+                                         seen, streams.size() == 1 &&
+                                                   streams[0].resolvedUri.contains("impl=ffmpeg") &&
+                                                   status().length != 60);
+                                 }));
+            steps.push_back(reopen_clip("reopen the clip after the MKV drag"));
+        }
+    }
     {
         auto closed = std::make_shared<bool>(false);
         steps.push_back(step(
@@ -2776,6 +3766,370 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                 return true;
             }));
     }
+    // The transport buttons (video control panel spec §5.1, §7), by their SetName names.
+    static constexpr std::array<std::string_view, 8> BUTTON_NAMES{
+        "Open...", "First frame",  "Step back",  "Play/Pause",
+        "Stop",    "Step forward", "Last frame", "Loop"};
+    auto bar_button = [&frame](std::string_view name) -> wxAnyButton* {
+        return dynamic_cast<wxAnyButton*>(
+            frame.transportBar().FindWindow(wxString::FromUTF8(name.data(), name.size())));
+    };
+    {
+        auto reopened = std::make_shared<bool>(false);
+        steps.push_back(step(
+            "buttons wait for a stream", [] {},
+            [&frame, status, clip_uri, bar_button, reopened](std::string& seen) {
+                std::string states;
+                bool all_found = true;
+                bool others_enabled = true;
+                bool others_disabled = true;
+                for (const std::string_view name : BUTTON_NAMES) {
+                    const wxAnyButton* const button = bar_button(name);
+                    all_found = all_found && button != nullptr;
+                    const bool enabled = button != nullptr && button->IsEnabled();
+                    states += std::format("{} {}; ", name, enabled);
+                    if (name != "Open...") {
+                        others_enabled = others_enabled && enabled;
+                        others_disabled = others_disabled && !enabled;
+                    }
+                }
+                const wxAnyButton* const open = bar_button("Open...");
+                const bool open_enabled = open != nullptr && open->IsEnabled();
+                if (!*reopened) {
+                    seen = "without a stream: " + states;
+                    if (!all_found || !open_enabled || !others_disabled) {
+                        return false;
+                    }
+                    frame.openUri(0, *clip_uri, {});
+                    *reopened = true;
+                }
+                seen = std::format("after the reopen: streams {}, length {}; {}",
+                                   frame.streams().size(), status().length.value_or(-1), states);
+                return frame.streams().size() == 1 && status().length == 60 && open_enabled &&
+                       others_enabled;
+            }));
+    }
+    steps.push_back(step(
+        "an unbounded stream keeps the buttons", [] {},
+        [&frame, bar_button](std::string& seen) {
+            TransportBar& bar = frame.transportBar();
+            PlayerStatus unbounded = frame.session().status().player;
+            unbounded.length = std::nullopt;
+            bar.update(BarStatus{.player = unbounded,
+                                 .hasStream = true,
+                                 .streamGeneration = frame.session().status().streamGeneration});
+            std::string states;
+            bool expected = true;
+            for (const std::string_view name : BUTTON_NAMES) {
+                const wxAnyButton* const button = bar_button(name);
+                const bool enabled = button != nullptr && button->IsEnabled();
+                states += std::format("{} {}; ", name, enabled);
+                expected = expected && enabled == (name != "Last frame");
+            }
+            const bool slider = bar.slider().IsEnabled();
+            const SessionStatus real = frame.session().status();
+            bar.update(BarStatus{.player = real.player,
+                                 .hasStream = real.streams > 0,
+                                 .streamGeneration = real.streamGeneration});
+            const wxAnyButton* const last = bar_button("Last frame");
+            const bool restored = last != nullptr && last->IsEnabled() && bar.slider().IsEnabled();
+            seen = std::format("unbounded: {}slider {}; restored {}", states, slider, restored);
+            return expected && !slider && restored;
+        }));
+    {
+        auto paused = std::make_shared<bool>(false);
+        steps.push_back(step(
+            "the icons follow playback", [&frame] { frame.execute(Command::PlayPause); },
+            [&frame, status, paused](std::string& seen) {
+                const TransportBar& bar = frame.transportBar();
+                const bool pause_icon = bar.playIconForTest() == Icon::Pause;
+                if (!*paused) {
+                    seen = std::format("playing {}, pause icon {}", status().playing, pause_icon);
+                    if (!status().playing || !pause_icon) {
+                        return false;
+                    }
+                    frame.execute(Command::PlayPause);
+                    *paused = true;
+                }
+                const bool play_icon = bar.playIconForTest() == Icon::Play;
+                seen = std::format("after the pause: playing {}, play icon {}", status().playing,
+                                   play_icon);
+                return !status().playing && play_icon;
+            }));
+    }
+    steps.push_back(step(
+        "the group is centred", [] {},
+        [&frame](std::string& seen) {
+            seen.clear();
+            TransportBar& bar = frame.transportBar();
+            bool centred = true;
+            for (const int width_dip : {400, 1000}) {
+                bar.SetSize(bar.FromDIP(width_dip), bar.GetSize().y);
+                bar.Layout();
+                const wxRect group = bar.groupRectForTest();
+                const int width = bar.GetClientSize().x;
+                const int centre = group.x + (group.width / 2);
+                // The buttons' sizer border is 2 DIP (transport_bar.cpp).
+                const int open_x = bar.openButtonForTest().GetPosition().x;
+                const bool ok = std::abs((2 * centre) - width) <= 2 && open_x == bar.FromDIP(2);
+                seen += std::format("{} DIP: width {}, group {}+{}, Open x {}, centred {}; ",
+                                    width_dip, width, group.x, group.width, open_x, ok);
+                centred = centred && ok;
+            }
+            frame.playerPanel().Layout();
+            return centred;
+        }));
+    steps.push_back(step(
+        "the icons follow a colour change", [] {},
+        [&frame, bar_button](std::string& seen) {
+            TransportBar& bar = frame.transportBar();
+            const wxColour magenta(0xff, 0x00, 0xff);
+            const int rebuilds0 = bar.iconRebuildsForTest();
+            bar.setSystemColourForTest([magenta](wxSystemColour index) {
+                return index == wxSYS_COLOUR_BTNTEXT ? magenta : wxSystemSettings::GetColour(index);
+            });
+            bar.SendSysColourChangedEvents();
+            const wxColour tint = bar.iconTintForTest();
+            const int rebuilds = bar.iconRebuildsForTest();
+            bool bitmaps = true;
+            for (const std::string_view name : BUTTON_NAMES) {
+                const wxAnyButton* const button = bar_button(name);
+                bitmaps = bitmaps && button != nullptr && button->GetBitmap().IsOk();
+            }
+            bar.setSystemColourForTest(nullptr);
+            bar.SendSysColourChangedEvents();
+            const wxColour system = wxSystemSettings::GetColour(wxSYS_COLOUR_BTNTEXT);
+            const bool restored = bar.iconTintForTest() == system;
+            seen = std::format("tint {}, rebuilds {} -> {}, bitmaps {}, restored {}",
+                               tint.GetAsString(wxC2S_HTML_SYNTAX).utf8_string(), rebuilds0,
+                               rebuilds, bitmaps, restored);
+            frame.playerPanel().Layout();
+            return tint == magenta && rebuilds > rebuilds0 && bitmaps && restored;
+        }));
+    {
+        // Spec §5.2, §6.3 Idle: the current label shows `position` over thumbX(target).
+        struct OnScreen {
+            int phase = 0;  // 0: seek to 10; 1: seek to 30 pending; 2: checked; 3: failed
+            std::string failure;
+        };
+        auto on_screen = std::make_shared<OnScreen>();
+        steps.push_back(step(
+            "the strip shows the frame on screen",
+            [&frame, on_screen] {
+                *on_screen = OnScreen{};
+                sendSliderChanged(frame.transportBar().slider(), 10);
+            },
+            [&frame, delay, status, on_screen](std::string& seen) {
+                TransportBar& bar = frame.transportBar();
+                const PlayerStatus now = status();
+                if (on_screen->phase == 0) {
+                    seen = std::format("waiting for 10: position {}, target {}", now.position,
+                                       now.target);
+                    if (now.position != 10 || now.target != 10) {
+                        return false;
+                    }
+                    delay->set(500);
+                    sendSliderChanged(bar.slider(), 30);
+                    on_screen->phase = 1;
+                    return false;
+                }
+                if (on_screen->phase == 1) {
+                    if (now.position != 10) {
+                        on_screen->phase = 3;
+                        delay->set(0);
+                    } else if (now.target == 30) {
+                        TimelineStrip& strip = bar.timelineStripForTest();
+                        const TimelineModel model = strip.modelForTest();
+                        const auto [start, end] = strip.travelForTest();
+                        const auto expected = std::lround(
+                            thumbX(30, bar.slider().GetMin(), bar.slider().GetMax(), start, end));
+                        const auto current = std::ranges::find(model.labels, std::string("current"),
+                                                               &TimelineLabel::role);
+                        on_screen->failure =
+                            current == model.labels.end()
+                                ? std::string("no current label")
+                                : std::format("current \"{}\" anchor {} (thumb {})", current->text,
+                                              current->anchor, expected);
+                        if (current != model.labels.end() && current->text == "10" &&
+                            std::abs(current->anchor - expected) <= 1) {
+                            on_screen->phase = 2;
+                            delay->set(0);
+                        }
+                    }
+                    seen = std::format("position {}, target {}: {}", now.position, now.target,
+                                       on_screen->failure);
+                    return false;
+                }
+                seen = std::format("{}; position {}", on_screen->failure, now.position);
+                return on_screen->phase == 2 && now.position == 30 && now.target == 30;
+            },
+            std::chrono::seconds(10)));
+    }
+    // The bar is resized to 400 and then 1000 DIP. GTK lays the native scale out asynchronously,
+    // so each size is measured on later polls, once the native track is the same on two polls in
+    // a row (and, for the second size, differs from the first).
+    struct ResizeCheck {
+        std::size_t size = 0;  // index into WIDTHS_DIP
+        bool resized = false;
+        std::optional<std::pair<int, int>> previous;  // the native track of the previous poll
+        std::optional<std::pair<int, int>> firstSize;
+        bool follow = true;
+        std::vector<std::pair<long, long>> anchors;  // first, last per size
+        std::string seen;
+    };
+    auto resize_check = std::make_shared<ResizeCheck>();
+    steps.push_back(step(
+        "labels follow a resize", [] {},
+        [&frame, resize_check](std::string& seen) {
+            static constexpr std::array<int, 2> WIDTHS_DIP{400, 1000};
+            ResizeCheck& check = *resize_check;
+            TransportBar& bar = frame.transportBar();
+            TimelineStrip& strip = bar.timelineStripForTest();
+            while (check.size < WIDTHS_DIP.size()) {
+                const int width_dip = WIDTHS_DIP.at(check.size);
+                if (!check.resized) {
+                    bar.SetSize(bar.FromDIP(width_dip), bar.GetSize().y);
+                    bar.Layout();
+                    check.resized = true;
+                    check.previous.reset();
+                    seen = check.seen + std::format("{} DIP: resized, waiting", width_dip);
+                    return false;
+                }
+                const std::optional<SliderTrack> now = sliderTrack(bar.slider());
+                const std::optional<std::pair<int, int>> native =
+                    now ? std::optional(std::pair(now->travelStart, now->travelEnd)) : std::nullopt;
+                const bool stable = !now || (check.previous && *check.previous == *native);
+                const bool moved = check.size == 0 || !now || native != check.firstSize;
+                check.previous = native;
+                if (!stable || !moved) {
+                    seen = check.seen +
+                           std::format("{} DIP: waiting for the native layout", width_dip);
+                    return false;
+                }
+                if (check.size == 0) {
+                    check.firstSize = native;
+                }
+                const TimelineModel model = strip.modelForTest();
+                const auto [start, end] = strip.travelForTest();
+                const auto first =
+                    std::ranges::find(model.labels, std::string("first"), &TimelineLabel::role);
+                const auto last =
+                    std::ranges::find(model.labels, std::string("last"), &TimelineLabel::role);
+                if (first == model.labels.end() || last == model.labels.end()) {
+                    check.seen +=
+                        std::format("{} DIP: first {}, last {}; ", width_dip,
+                                    first != model.labels.end(), last != model.labels.end());
+                    check.follow = false;
+                    ++check.size;
+                    check.resized = false;
+                    continue;
+                }
+                bool ok = std::abs(first->anchor - std::lround(start)) <= 1 &&
+                          std::abs(last->anchor - std::lround(end)) <= 1;
+                // The strip's shift, checked on its own: the native track start in strip px.
+                std::string native_text;
+                if (now) {
+                    const int start_x = strip
+                                            .ScreenToClient(bar.slider().ClientToScreen(
+                                                wxPoint(now->travelStart, 0)))
+                                            .x;
+                    ok = ok && std::abs(std::lround(start) - start_x) <= 1;
+                    native_text = std::format(", native start {}", start_x);
+                }
+                check.seen += std::format(
+                    "{} DIP: travel {:.1f}..{:.1f}{}, first {}, last {}, ok {}; ", width_dip, start,
+                    end, native_text, first->anchor, last->anchor, ok);
+                check.follow = check.follow && ok;
+                check.anchors.emplace_back(first->anchor, last->anchor);
+                ++check.size;
+                check.resized = false;
+            }
+            seen = check.seen;
+            frame.playerPanel().Layout();
+            // The bar grows to the right: the travel start (and "0") stays, the end moves by the
+            // width change.
+            const long grown = bar.FromDIP(1000) - bar.FromDIP(400);
+            return check.follow && check.anchors.size() == 2 &&
+                   check.anchors[0].first == check.anchors[1].first &&
+                   std::abs(check.anchors[1].second - check.anchors[0].second - grown) <= 2;
+        }));
+    steps.push_back(step(
+        "degenerate statuses", [] {},
+        [&frame](std::string& seen) {
+            TransportBar& bar = frame.transportBar();
+            TimelineStrip& strip = bar.timelineStripForTest();
+            auto roles = [&strip] {
+                std::string text;
+                for (const TimelineLabel& label : strip.modelForTest().labels) {
+                    text +=
+                        std::format("{}{}=\"{}\"", text.empty() ? "" : " ", label.role, label.text);
+                }
+                return text;
+            };
+            const PlayerStatus real = frame.session().status().player;
+            const std::uint64_t generation = frame.session().status().streamGeneration;
+            bar.update(BarStatus{});
+            const std::string none = roles();
+            PlayerStatus unbounded = real;
+            unbounded.length = std::nullopt;
+            unbounded.position = 5;
+            unbounded.target = 5;
+            bar.update(
+                BarStatus{.player = unbounded, .hasStream = true, .streamGeneration = generation});
+            const std::string open_ended = roles();
+            PlayerStatus single = real;
+            single.length = 1;
+            single.position = 0;
+            single.target = 0;
+            bar.update(
+                BarStatus{.player = single, .hasStream = true, .streamGeneration = generation});
+            const std::string one = roles();
+            PlayerStatus unshown_status = real;
+            unshown_status.position = -1;
+            bar.update(BarStatus{
+                .player = unshown_status, .hasStream = true, .streamGeneration = generation});
+            const std::string unshown = roles();
+            PlayerStatus huge = real;
+            huge.length = 3'000'000'000;
+            bar.update(
+                BarStatus{.player = huge, .hasStream = true, .streamGeneration = generation});
+            const std::string clamped = roles();
+            const SessionStatus restored = frame.session().status();
+            bar.update(BarStatus{.player = restored.player,
+                                 .hasStream = restored.streams > 0,
+                                 .streamGeneration = restored.streamGeneration});
+            seen = std::format(
+                "default [{}]; unbounded [{}]; length 1 [{}]; position -1 [{}]; length 3e9 [{}]",
+                none, open_ended, one, unshown, clamped);
+            return none.empty() && open_ended.empty() && one == "first=\"0\"" && !unshown.empty() &&
+                   !unshown.contains("current") && clamped.contains("last=\"2147483647\"");
+        }));
+    steps.push_back(step(
+        "the strip follows a colour change", [] {},
+        [&frame](std::string& seen) {
+            TransportBar& bar = frame.transportBar();
+            const TimelineStrip& strip = bar.timelineStripForTest();
+            const wxColour magenta(0xff, 0x00, 0xff);
+            bar.setSystemColourForTest([magenta](wxSystemColour index) {
+                return index == wxSYS_COLOUR_BTNTEXT ? magenta : wxSystemSettings::GetColour(index);
+            });
+            bar.SendSysColourChangedEvents();
+            const wxColour text = strip.textColourForTest();
+            bar.setSystemColourForTest(nullptr);
+            bar.SendSysColourChangedEvents();
+            const wxColour system = wxSystemSettings::GetColour(wxSYS_COLOUR_BTNTEXT);
+            const bool restored = strip.textColourForTest() == system;
+            seen = std::format("text {}, restored {}",
+                               text.GetAsString(wxC2S_HTML_SYNTAX).utf8_string(), restored);
+            frame.playerPanel().Layout();
+            return text == magenta && restored;
+        }));
+    steps.push_back(step(
+        "close the clip after the buttons", [&frame] { frame.execute(Command::CloseStreams); },
+        [&frame](std::string& seen) {
+            seen = std::format("streams {}", frame.streams().size());
+            return frame.streams().empty();
+        }));
     steps.push_back(step(
         "no scrub on a disabled slider",
         [&frame] { sendSliderTrack(frame.transportBar().slider(), 10); },

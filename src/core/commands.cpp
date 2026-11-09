@@ -176,4 +176,16 @@ std::string menuLabel(const CommandInfo& info) {
     return label + " (" + keyText(*info.key) + ")";
 }
 
+std::string tooltipText(const CommandInfo& info, bool cmd_for_ctrl) {
+    std::string text(info.help);
+    if (!info.key) {
+        return text;
+    }
+    std::string key = keyText(*info.key);
+    if (cmd_for_ctrl && info.route == KeyRoute::Accelerator && info.key->ctrl) {
+        key.replace(0, std::string_view("Ctrl").size(), "Cmd");
+    }
+    return text + " (" + key + ")";
+}
+
 }  // namespace rawreel

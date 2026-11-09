@@ -180,6 +180,21 @@ set(rawreel_notices "${CMAKE_CURRENT_BINARY_DIR}/packaging/THIRD_PARTY_NOTICES.t
 rawreel_strip_msvc_notice(IN "${rawreel_prefix}/THIRD_PARTY_NOTICES.txt" OUT "${rawreel_notices}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
              "${rawreel_prefix}/THIRD_PARTY_NOTICES.txt")
+# The Lucide icons are compiled into rawreel-gui (video control panel spec §7): their notice is
+# rawreel's own, after the prefix's entries.
+set(rawreel_lucide_header "${CMAKE_CURRENT_SOURCE_DIR}/src/gui/icons/lucide_icons.h")
+set(rawreel_lucide_licence "${CMAKE_CURRENT_SOURCE_DIR}/src/gui/icons/LICENSE")
+file(STRINGS "${rawreel_lucide_header}" rawreel_lucide_line LIMIT_COUNT 1
+     REGEX "^// lucide-static ")
+string(REGEX REPLACE "^// lucide-static " "" rawreel_lucide_version "${rawreel_lucide_line}")
+if(NOT rawreel_lucide_version MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "${rawreel_lucide_header}: no '// lucide-static <version>' line")
+endif()
+rawreel_append_notice(FILE "${rawreel_notices}" NAME lucide VERSION "${rawreel_lucide_version}"
+                      SPDX "ISC AND MIT" URL https://github.com/lucide-icons/lucide
+                      LICENCE "${rawreel_lucide_licence}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rawreel_lucide_header}"
+             "${rawreel_lucide_licence}")
 install(FILES README.md LICENSE "${rawreel_notices}"
         DESTINATION . COMPONENT rawreel CONFIGURATIONS Release)
 
@@ -343,7 +358,7 @@ set(RAWREEL_PLATFORM \"${rawreel_platform}\")
 set(RAWREEL_PACKAGE_NAME \"${rawreel_package_name}\")
 set(RAWREEL_EXTENSION \"${rawreel_extension}\")
 set(RAWREEL_BUNDLED ${DVV_BUNDLE_FFMPEG})
-set(RAWREEL_SHIPPED \"${DVV_SHIPPED_THIRD_PARTY}\")
+set(RAWREEL_SHIPPED \"${DVV_SHIPPED_THIRD_PARTY};lucide\")
 set(RAWREEL_FFMPEG_VERSION \"${rawreel_ffmpeg_version}\")
 set(RAWREEL_CUSTOM_FFMPEG_VERSION \"${DVV_CUSTOM_FFMPEG_VERSION}\")
 set(RAWREEL_CPACK_CONFIG \"${rawreel_cpack_config}\")

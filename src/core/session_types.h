@@ -48,6 +48,7 @@ struct FrameSet {
 struct SessionStatus {
     PlayerStatus player;
     std::uint32_t streams = 0;
+    std::uint64_t streamGeneration = 0;  // the stream set's counter; seek, step, play keep it
     std::uint64_t epoch = 0;
     bool gpuAvailable = false;  // a stack is installed
     std::string bottleneck;
@@ -58,7 +59,8 @@ struct SessionStatus {
 
 // Every field except `revision`: what decides whether a new snapshot is published.
 inline bool sameState(const SessionStatus& a, const SessionStatus& b) {
-    return a.player == b.player && a.streams == b.streams && a.epoch == b.epoch &&
+    return a.player == b.player && a.streams == b.streams &&
+           a.streamGeneration == b.streamGeneration && a.epoch == b.epoch &&
            a.gpuAvailable == b.gpuAvailable && a.bottleneck == b.bottleneck &&
            a.inflight == b.inflight && a.readyAhead == b.readyAhead;
 }

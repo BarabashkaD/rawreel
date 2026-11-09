@@ -55,8 +55,10 @@ add_library(rawreel_core STATIC
     src/core/perf_stats.cpp
     src/core/player.cpp
     src/core/session.cpp
+    src/core/timeline.cpp
     src/core/delayed_source.cpp
     src/core/status_text.cpp
+    src/core/svg_colour.cpp
     src/core/timer.cpp
     src/core/view.cpp)
 target_include_directories(rawreel_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -115,6 +117,33 @@ dvv_set_compiler_options(rawreel_cli)
 # tests still build and run there. Windows, Linux (X11, also through XWayland) and macOS (Cocoa).
 if(NOT DVV_SANITIZE)
     find_package(wxWidgets CONFIG REQUIRED COMPONENTS core base aui)
+    if(APPLE)
+        enable_language(OBJCXX)
+    endif()
+    if(UNIX AND NOT APPLE)
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(GTK3 REQUIRED IMPORTED_TARGET gtk+-3.0)
+        find_package(X11 REQUIRED)
+    endif()
+    # rawreel_panel: the transport bar and its native slider queries (video control panel spec
+    # §5.3) and the skim key (§6.4), shared by rawreel-gui and the panel lab.
+    add_library(rawreel_panel STATIC src/gui/icons.cpp src/gui/skim_key.cpp
+                src/gui/timeline_strip.cpp src/gui/transport_bar.cpp)
+    target_link_libraries(rawreel_panel PUBLIC rawreel_core wx::core dvv::base)
+    if(WIN32)
+        target_sources(rawreel_panel PRIVATE src/gui/native_controls_msw.cpp)
+    elseif(UNIX AND NOT APPLE)
+        target_sources(rawreel_panel PRIVATE src/gui/native_controls_gtk.cpp)
+        target_link_libraries(rawreel_panel PRIVATE PkgConfig::GTK3)
+    elseif(APPLE)
+        target_sources(rawreel_panel PRIVATE src/gui/native_controls_cocoa.mm)
+        set_source_files_properties(src/gui/native_controls_cocoa.mm PROPERTIES
+                                    COMPILE_OPTIONS -fobjc-arc)
+        target_link_libraries(rawreel_panel PRIVATE "-framework AppKit")
+    else()
+        target_sources(rawreel_panel PRIVATE src/gui/native_controls_stub.cpp)
+    endif()
+    dvv_set_compiler_options(rawreel_panel)
     add_executable(rawreel_gui WIN32
         src/gui/about.cpp
         src/gui/app.cpp
@@ -128,12 +157,11 @@ if(NOT DVV_SANITIZE)
         src/gui/player_panel.cpp
         src/gui/selftest.cpp
         src/gui/session_bridge.cpp
-        src/gui/transport_bar.cpp
         src/gui/viewport.cpp)
     set_target_properties(rawreel_gui PROPERTIES OUTPUT_NAME rawreel-gui)
     # wx is an imported target, so its headers are SYSTEM includes (our /WX does not apply to them).
-    target_link_libraries(rawreel_gui PRIVATE rawreel_render rawreel_core dvv::platform dvv::gpu
-                                              dvv::base wx::aui wx::core wx::base)
+    target_link_libraries(rawreel_gui PRIVATE rawreel_panel rawreel_render rawreel_core dvv::platform
+                                              dvv::gpu dvv::base wx::aui wx::core wx::base)
     # The source providers (file, synthetic) are components linked into the program.
     dvv_link_components(rawreel_gui dvv::media_sources)
     dvv_set_compiler_options(rawreel_gui)
@@ -143,9 +171,6 @@ if(NOT DVV_SANITIZE)
         target_link_options(rawreel_gui PRIVATE /ENTRY:wmainCRTStartup /MANIFEST:NO)
     elseif(UNIX AND NOT APPLE)
         # Linux (wxGTK): the X11 start-up (gui_platform_gtk.cpp) and the viewport's X11 window.
-        find_package(PkgConfig REQUIRED)
-        pkg_check_modules(GTK3 REQUIRED IMPORTED_TARGET gtk+-3.0)
-        find_package(X11 REQUIRED)
         target_sources(rawreel_gui PRIVATE src/gui/gui_platform_gtk.cpp src/gui/viewport_gtk.cpp)
         target_link_libraries(rawreel_gui PRIVATE PkgConfig::GTK3 X11::X11)
     elseif(APPLE)
@@ -153,7 +178,6 @@ if(NOT DVV_SANITIZE)
         # (viewport_cocoa.mm, ARC as in dvv-platform). rawreel-gui is an app bundle,
         # rawreel-gui.app in the build tree, which finds the prefix's libraries through
         # CMAKE_BUILD_RPATH (ninja-macos preset); the packaged app uses its own Frameworks folder.
-        enable_language(OBJCXX)
         target_sources(rawreel_gui PRIVATE src/gui/viewport_cocoa.mm)
         set_source_files_properties(src/gui/viewport_cocoa.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
         target_link_libraries(rawreel_gui PRIVATE "-framework AppKit" "-framework QuartzCore")
@@ -165,6 +189,22 @@ if(NOT DVV_SANITIZE)
         # Other toolkits: no native viewport yet (the viewport reports a failure).
         target_sources(rawreel_gui PRIVATE src/gui/viewport_stub.cpp)
     endif()
+    # rawreel_panel_lab (video control panel spec §10.1): the transport bar with a simulated
+    # player, for the manual checks and its --report self-check. A console program; no install()
+    # rule: the lab is never packaged.
+    add_executable(rawreel_panel_lab tools/panel_lab/panel_lab.cpp)
+    target_link_libraries(rawreel_panel_lab PRIVATE rawreel_panel)
+    set_target_properties(rawreel_panel_lab PROPERTIES OUTPUT_NAME rawreel-panel-lab)
+    if(WIN32)
+        # The manifest (common controls v6, per-monitor DPI awareness v2) comes from wx.rc.
+        target_sources(rawreel_panel_lab PRIVATE tools/panel_lab/panel_lab.rc)
+        target_link_options(rawreel_panel_lab PRIVATE /MANIFEST:NO)
+    elseif(UNIX AND NOT APPLE)
+        # rawreel-gui's X11 start-up (prepareX11StartUp).
+        target_sources(rawreel_panel_lab PRIVATE src/gui/gui_platform_gtk.cpp)
+        target_link_libraries(rawreel_panel_lab PRIVATE PkgConfig::GTK3 X11::X11)
+    endif()
+    dvv_set_compiler_options(rawreel_panel_lab)
 endif()
 # The wxWidgets line of --version: the build's wx package version, also in rawreel-cli, which does
 # not link wx; builds without wx (the sanitizer presets) say so.
