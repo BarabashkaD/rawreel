@@ -71,7 +71,7 @@ TEST_SUITE("core") {
     TEST_CASE("log mirror: tail stays at the end") {
         LogMirror mirror;
         mirror.apply(batchOf(0, 100));
-        const ListPlace before{.selected = {}, .top = 50, .tail = true};
+        const ListPlace before{.selected = {}, .anchor = {}, .focus = {}, .top = 50, .tail = true};
         mirror.apply(batchOf(100, 10));
         const auto rows = rowsAfterBatch(before, mirror);
         CHECK(rows.tail);
@@ -81,7 +81,7 @@ TEST_SUITE("core") {
     TEST_CASE("log mirror: top dropped") {
         LogMirror mirror;
         mirror.apply(batchOf(0, 5000));
-        const ListPlace before{.selected = {}, .top = 50};
+        const ListPlace before{.selected = {}, .anchor = {}, .focus = {}, .top = 50, .tail = false};
         mirror.apply(batchOf(5000, 100));
         const auto rows = rowsAfterBatch(before, mirror);
         CHECK(rows.top == 0);
