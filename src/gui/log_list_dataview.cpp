@@ -1,6 +1,7 @@
 // The Log list as a wxDataViewCtrl with a virtual list model (Log pane and Settings design §4.1):
 // native on macOS and Linux, built on every OS. A batch resets the model to the mirror's size, then
-// sets the selection, the focus (SetCurrentItem) and the top row (EnsureVisible) from ListRows.
+// sets the selection, the focus (SetCurrentItem) and the top row (EnsureVisible; on GTK a scroll
+// aligned to the top) from ListRows.
 // Nothing here logs.
 
 // clang-format off
@@ -18,6 +19,7 @@
 #include <wx/dataview.h>
 
 #include "gui/log_list.h"
+#include "gui/native_controls.h"
 
 namespace rawreel {
 
@@ -180,17 +182,22 @@ private:
         return top.IsOk() ? model_->GetRow(top) : 0;
     }
 
-    // `row` at the top: EnsureVisible scrolls as little as it can, so a row below the view first
-    // goes to the end and then back up to the top edge.
+    // `row` at the top. GTK: a scroll aligned to the top (scrollDataViewRowToTop). Elsewhere
+    // EnsureVisible scrolls as little as it can, so a row below the view first goes to the end and
+    // then back up to the top edge.
     void showAtTop(std::size_t row) {
         const std::size_t top = topRow();
         if (top == row) {
             return;
         }
+#if defined(__WXGTK__)
+        scrollDataViewRowToTop(*view_, row);
+#else
         if (top < row) {
             view_->EnsureVisible(itemAt(model_->GetCount() - 1));
         }
         view_->EnsureVisible(itemAt(row));
+#endif
     }
 
     wxObjectDataPtr<LogListModel> model_;

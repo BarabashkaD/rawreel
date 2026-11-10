@@ -9,12 +9,15 @@
 // clang-format on
 
 #include <cmath>
+#include <cstddef>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <string_view>
 #include <system_error>
 
 #include <gtk/gtk.h>
+#include <wx/dataview.h>
 
 #include "dvv/media/types.h"
 #include "gui/native_controls.h"
@@ -112,6 +115,19 @@ void revealInFileManager(const std::filesystem::path& file_or_folder) {
                                              ? file_or_folder
                                              : file_or_folder.parent_path();
     (void)wxLaunchDefaultApplication(wxString::FromUTF8(dvv::media::utf8FromPath(folder)));
+}
+
+// A list model's path is the row alone. Aligned scrolls are deferred by GtkTreeView itself until
+// its rows are laid out, like EnsureVisible's.
+void scrollDataViewRowToTop(wxDataViewCtrl& view, std::size_t row) {
+    GtkWidget* const tree = view.GtkGetTreeView();
+    if (tree == nullptr || row > static_cast<std::size_t>(std::numeric_limits<gint>::max())) {
+        return;
+    }
+    gint index = static_cast<gint>(row);
+    GtkTreePath* const path = gtk_tree_path_new_from_indicesv(&index, 1);
+    gtk_tree_view_scroll_to_cell(GTK_TREE_VIEW(tree), path, nullptr, TRUE, 0.0F, 0.0F);
+    gtk_tree_path_free(path);
 }
 
 }  // namespace rawreel

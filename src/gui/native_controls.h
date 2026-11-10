@@ -8,12 +8,15 @@
 #include <wx/wx.h>  // first (R11)
 // clang-format on
 
+#include <cstddef>
 #include <filesystem>
 #include <optional>
 #include <string_view>
 
 #include <wx/bmpbndl.h>
 #include <wx/slider.h>
+
+class wxDataViewCtrl;
 
 namespace rawreel {
 
@@ -82,6 +85,14 @@ void revealInFileManager(const std::filesystem::path& file_or_folder);
 // whose window delegate would send it back to the main window as a menu event.
 [[nodiscard]] bool canUndoText(wxWindow& window, bool redo);
 bool undoText(wxWindow& window, bool redo);  // false when there was nothing to undo or redo
+#endif
+
+#if defined(__WXGTK__)
+// `row` of a list wxDataViewCtrl at the top edge of its view: gtk_tree_view_scroll_to_cell with
+// the row aligned to the top. wxGTK's EnsureVisible scrolls as little as it can (no alignment) and
+// repeats that at idle, which can leave the row above partly in view, and GetTopItem then names
+// that row.
+void scrollDataViewRowToTop(wxDataViewCtrl& view, std::size_t row);
 #endif
 
 }  // namespace rawreel
