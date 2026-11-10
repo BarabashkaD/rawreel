@@ -17,6 +17,7 @@
 #include <span>
 #include <vector>
 
+#include <wx/choice.h>
 #include <wx/preferences.h>
 #include <wx/weakref.h>
 
@@ -33,8 +34,8 @@ class SettingsWindow;
 // the window with the page shown.
 [[nodiscard]] wxString settingsTitle();
 
-// The Log page (§5.2): Write a log file, the folder (Choose..., Use Default, Show in Finder /
-// Explorer, Open Folder) and the system log.
+// The Log page (§5.2): Level (log level design §2.2), Write a log file, the folder (Choose..., Use
+// Default, Show in Finder / Explorer, Open Folder) and the system log.
 class LogSettingsPage final : public wxPanel {
 public:
     LogSettingsPage(wxWindow* parent, MainFrame& frame, SettingsWindow& owner);
@@ -47,6 +48,11 @@ public:
     void reveal();                 // Show in Finder / Explorer, Open Folder (revealFile)
     void setFileEnabled(bool on);  // Write a log file
     void setSystemLog(bool on);    // Send warnings and errors to the system log
+    // Level (log level design §2.2): shows the saved log.level. A change saves log.level, sets
+    // the active level and ends any run-only level (macOS, GTK: at once; Windows: on OK, only when
+    // the control changed). A second copy applies it without saving ("this window only").
+    void setLevel(dvv::LogLevel level);
+    [[nodiscard]] dvv::LogLevel level() const;  // the selected level
     // Use Default is enabled: the value is a folder that is not the default one.
     [[nodiscard]] bool useDefaultEnabled() const;
     // Show in ... is enabled: the folder in use (or else the chosen one) exists.
@@ -63,12 +69,13 @@ public:
 
 private:
     struct Choice {
+        dvv::LogLevel level = dvv::LogLevel::Info;  // the saved log.level
         bool fileEnabled = true;
         std::filesystem::path folder;  // empty: the default folder
         bool systemLog = false;
     };
     struct Prepared {
-        std::shared_ptr<dvv::RotatingFileSink> sink;
+        std::shared_ptr<dvv::SplitFileSink> sink;
         std::filesystem::path folder;
     };
     [[nodiscard]] bool active() const;  // the main window exists and is not closing
@@ -91,6 +98,10 @@ private:
     // Choose... or Use Default ran since the last prepare(): the folder is opened even when the
     // value did not change (the saved folder chosen again after a fallback at start).
     bool folder_chosen_ = false;
+    // setLevel() ran since the last apply: on macOS and GTK the chosen level is applied even when
+    // it is the saved one (it ends a run-only level).
+    bool level_chosen_ = false;
+    wxChoice* level_ = nullptr;
     wxCheckBox* file_box_ = nullptr;
     wxTextCtrl* folder_ = nullptr;
     wxButton* use_default_ = nullptr;

@@ -230,12 +230,13 @@ private:
     void onEditMenu(wxCommandEvent& event);
     void onEditUpdateUi(wxUpdateUIEvent& event);
     // File -> Save Log... (every record of the mirror) and Save Selected Lines... (spec §4.3,
-    // §4.4): the records are taken first, then the save dialog; the live rawreel.log and its
-    // backups are refused and a failed write is reported, each with a message.
+    // §4.4): the records are taken first, then the save dialog; the log files rawreel writes are
+    // refused and a failed write is reported, each with a message.
     void saveLog(bool selected);
     void onStatusChanged();
     // Posted by the LogStore's notify (spec §3.2): the store's new records into the Log pane,
-    // whose list follows only while the pane is shown. Never logs.
+    // whose list follows only while the pane is shown; also the log size check after a split
+    // (App::checkLogSplits). Never logs.
     void onLogChanged();
     void onIconize(wxIconizeEvent& event);
     void onShow(wxShowEvent& event);

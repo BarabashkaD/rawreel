@@ -15,13 +15,15 @@
 
 #include "core/log_mirror.h"
 #include "core/log_store.h"
+#include "dvv/base/log.h"
 #include "gui/log_list.h"
 
 namespace rawreel {
 
 class LogPanel final : public wxPanel {
 public:
-    explicit LogPanel(wxWindow* parent, LogListKind kind = nativeLogListKind());
+    // The list shows the Source column only when `with_source` (log.source, addendum §4).
+    LogPanel(wxWindow* parent, bool with_source, LogListKind kind = nativeLogListKind());
     LogPanel(const LogPanel&) = delete;
     LogPanel& operator=(const LogPanel&) = delete;
     LogPanel(LogPanel&&) = delete;
@@ -46,13 +48,18 @@ public:
     [[nodiscard]] bool hasSelection() const;
     // The context menu's Save Selected Lines... (true) and Save Log... (false).
     void setSaveHandler(std::function<void(bool selected)> save) { save_ = std::move(save); }
+    // Spec §4.3, log level design §2.2: Copy, Select All, a separator, Level ▸ (the five levels as
+    // radio items, the active one checked), a separator, Save Selected Lines..., Save Log....
+    // The right-click; a selftest calls it too (the menu then goes to the logMenu hook, unshown).
+    void showContextMenu();
+    // The menu's Level ▸ items (log level design §2.2): the active level for this run only
+    // (App::setActiveLevel(level, LevelSource::Menu)); nothing is saved.
+    void setRunLevel(dvv::LogLevel level);
 
 private:
-    // Spec §4.3: Copy, Select All, a separator, Save Selected Lines..., Save Log....
-    void showContextMenu();
-
     LogMirror mirror_;
     LogList* list_;  // a child window: wx owns it
+    bool with_source_;
     std::function<void(bool selected)> save_;
 };
 

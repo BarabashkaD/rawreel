@@ -8,6 +8,8 @@
 #include <wx/wx.h>  // first (R11)
 // clang-format on
 
+#include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -18,6 +20,7 @@
 #include "core/config_writer.h"
 #include "core/gui_arguments.h"
 #include "core/log_file_switch.h"
+#include "core/log_level.h"
 #include "core/log_store.h"
 #include "core/session.h"
 #include "core/settings_claim.h"
@@ -36,8 +39,9 @@ class ShowHistory;
 
 class App final : public wxApp {
 public:
-    // main() passes the parsed arguments before wxEntry().
-    static void setArguments(GuiArguments arguments);
+    // main() passes the parsed arguments and the stderr sink it added to the Logger before
+    // wxEntry(); the App sets that sink's level to the active level (log level design §2.1).
+    static void setArguments(GuiArguments arguments, std::shared_ptr<dvv::StderrSink> stderr_sink);
     [[nodiscard]] static const GuiArguments& arguments() noexcept;
     // The exit code the App decided (0 after a passed selftest, 1, 4, 6, 77); nullopt otherwise.
     // main() reads it after wxEntry(), which returns -1 when OnInit() fails.
@@ -93,19 +97,23 @@ public:
     // `folder` is the default log folder (std::filesystem::equivalent, or the same path).
     [[nodiscard]] bool isDefaultLogFolder(const std::filesystem::path& folder) const;
     // Spec §5.3 steps 1 and 2, outside every lock: prepares `folder` (only its last component is
-    // created; the default folder with its parents) and opens rawreel.log there. Nothing changes
-    // in the Logger.
-    [[nodiscard]] dvv::Result<std::shared_ptr<dvv::RotatingFileSink>> prepareLogFile(
+    // created; the default folder with its parents) and opens a log file there (appending to the
+    // newest one only when ownsSettings()). Nothing changes in the Logger.
+    [[nodiscard]] dvv::Result<std::shared_ptr<dvv::SplitFileSink>> prepareLogFile(
         const std::filesystem::path& folder);
     // Spec §5.3 steps 3 and 4: the old file (if any) gets one Info line, "log file moves to
-    // '<folder>/rawreel.log'", then the switch takes `sink`, whose folder is `folder`
-    // (logFolderInUse()); the old sink is dropped outside the switch's lock.
-    void useLogFile(std::shared_ptr<dvv::RotatingFileSink> sink, std::filesystem::path folder);
+    // '<the new file>'", then the switch takes `sink`, whose folder is `folder`
+    // (logFolderInUse()); the old sink is dropped outside the switch's lock. The new file then
+    // gets "log file: '<path>'" and the level marker (addendum §3.1, §5.2), appended or not.
+    void useLogFile(std::shared_ptr<dvv::SplitFileSink> sink, std::filesystem::path folder);
     // Log file off (spec §5.3): the switch drops its file; logFolderInUse() becomes empty.
     void stopLogFile();
     // The values in effect of log.file.enabled and log.file.folder (empty: the default folder),
     // after the Settings window applied them; the log file itself is changed by the calls above.
     void setLogFileConfig(bool enabled, std::filesystem::path folder);
+    // The value in effect of log.level (savedLevel()) after the Settings window applied it; it is
+    // marked as saved only in the settings owner, which saves it. The active level is set apart.
+    void setLevelConfig(dvv::LogLevel level);
     // File reads (spec §5.3): the Session's mode for every later open and config().io.fileReads.
     void useFileReads(dvv::platform::FileReadMode mode);
     // The absolute config file of this run (--config, the selftest's own, or the default); empty
@@ -126,14 +134,37 @@ public:
     // saved. A selftest's OnExit checks it against the file.
     [[nodiscard]] std::optional<bool> savedLogPane() const noexcept { return saved_log_pane_; }
     void setSavedLogPane(bool shown) noexcept { saved_log_pane_ = shown; }
-    // A --selftest run without --config: its own config folder,
-    // <temp>/rawreel-selftest-config-<pid>-<16 hex>/ (spec §7.1); empty otherwise and after
-    // OnExit().
+    // A --selftest run: its own config folder, <temp>/rawreel-selftest-config-<pid>-<16 hex>/
+    // (spec §7.1; with --config its rawreel.json starts as a copy of that file); empty otherwise
+    // and after OnExit().
     [[nodiscard]] const std::filesystem::path& selftestConfigFolder() const noexcept {
         return selftest_config_dir_;
     }
-    // The folder of the open rawreel.log; empty: no log file.
+    // The folder of the open log file; empty: no log file.
     [[nodiscard]] std::filesystem::path logFolderInUse() const { return log_folder_; }
+    // The log file in use (the switch's currentFile()); empty: no log file.
+    [[nodiscard]] std::filesystem::path currentLogFile() const {
+        return log_file_ ? log_file_->currentFile() : std::filesystem::path();
+    }
+    // The active log level (log level design §2.1): the level of the log file switch, the store
+    // and the stderr sink; the Logger itself stays at Trace. log.level at start.
+    [[nodiscard]] dvv::LogLevel activeLevel() const noexcept {
+        return active_level_->load(std::memory_order_relaxed);
+    }
+    // The saved log.level (Info when the key is missing).
+    [[nodiscard]] dvv::LogLevel savedLevel() const noexcept { return config_.log.level; }
+    // Where the active level came from: the menu (a run-only level), Settings (also at start with
+    // a saved log.level), a second copy's Settings, or the default. The marker after each log
+    // file open names it (addendum §3.1).
+    [[nodiscard]] LevelSource activeLevelSource() const noexcept { return level_source_; }
+    // Sets the three sinks' levels to `level`, then writes one change marker (Logger::mark,
+    // levelChangeMarker(old, level, source)); no marker for the level already active, but
+    // `source` becomes activeLevelSource() either way (a Settings change ends a run-only level).
+    // GUI thread. Nothing is saved.
+    void setActiveLevel(dvv::LogLevel level, LevelSource source);
+    // MainFrame::onLogChanged, so never logs (spec §3.3): when the log file started a new file
+    // since the last check, checks the log files' total size (addendum §5.3).
+    void checkLogSplits();
     // --selftest only: the Session's sink, recording every shown FrameSet; null otherwise.
     [[nodiscard]] const std::shared_ptr<ShowHistory>& showHistory() const noexcept {
         return show_history_;
@@ -156,17 +187,31 @@ public:
     [[nodiscard]] const std::shared_ptr<dvv::IExecutor>& io() const noexcept { return io_; }
 
 private:
-    // OnInit() steps 1 to 6 of spec §5.3 "At start" and §7.1: the sinks, the selftest config, the
-    // config, the system log, the log file and the settings claim. False (after finish()) when a
-    // selftest's own config folder cannot be made.
+    // OnInit() steps 2 to 4 of spec §5.3 "At start" and §7.1: the selftest config, the config,
+    // the settings claim (before the log file, whose append_newest is ownsSettings()), the
+    // source flag and the active level (addendum §2.1, §4), the system log, the log file and the
+    // start marker (addendum §3.1). False (after finish()) when a selftest's own config folder
+    // cannot be made.
     [[nodiscard]] bool startLogAndConfig();
-    // A --selftest run without --config: <temp>/rawreel-selftest-config-<pid>/ with its logs/
-    // and a rawreel.json naming them; the file, or an error.
-    [[nodiscard]] dvv::Result<std::filesystem::path> makeSelftestConfig();
+    // A --selftest run: <temp>/rawreel-selftest-config-<pid>-<16 hex>/ with its logs/ and a
+    // rawreel.json naming them, which starts as a copy of `seed` (--config) when that is not
+    // empty; the file, or an error.
+    [[nodiscard]] dvv::Result<std::filesystem::path> makeSelftestConfig(
+        const std::filesystem::path& seed);
     void setAppearance();
     // The first log file (spec §5.3 "At start" step 4): the saved folder, else the default one;
-    // the switch first gets the lines the store already holds.
+    // the switch first gets the lines the store already holds at or above the active level
+    // (addendum §2.3), then the file's "log file: '<path>'" line follows.
     void startLogFile();
+    // openLogFile(folder, creation, ownsSettings()) with the header of each new file (addendum
+    // §5.2): logFileHeader(active level, the previous file's name).
+    [[nodiscard]] dvv::Result<std::shared_ptr<dvv::SplitFileSink>> openLogFileIn(
+        const std::filesystem::path& folder, FolderCreation creation);
+    // The levels of the log file switch, the store and the stderr sink, and activeLevel().
+    void applyLevel(dvv::LogLevel level);
+    // Addendum §5.3: the first time in a run the log files in use pass LOG_SIZE_WARNING_BYTES,
+    // posts one warning (CallAfter, so a caller on the refresh path never logs). Never logs itself.
+    void checkLogSize();
     // The end of OnExit() and of a failed OnInit(): flushes the Logger, closes the log file and
     // releases the settings claim, then removes the selftest's config folder (a failure is one
     // stderr line, the exit code stays).
@@ -189,6 +234,13 @@ private:
     Config config_;
     std::filesystem::path config_path_;
     std::filesystem::path log_folder_;
+    // activeLevel(); shared with the log file header callback, which reads it under the file
+    // sink's mutex on whatever thread splits the file.
+    std::shared_ptr<std::atomic<dvv::LogLevel>> active_level_ =
+        std::make_shared<std::atomic<dvv::LogLevel>>(dvv::LogLevel::Info);
+    LevelSource level_source_ = LevelSource::Default;  // activeLevelSource()
+    std::uint64_t checked_splits_ = 0;  // the switch's splits() at the last size check
+    bool size_warned_ = false;          // the 1 GiB warning was posted in this run
     std::unique_ptr<SettingsClaim> settings_claim_;
     bool save_failed_ = false;            // a saveSettings() failed in this run
     std::optional<bool> saved_log_pane_;  // set by the close's save

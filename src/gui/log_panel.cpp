@@ -4,17 +4,21 @@
 
 #include "gui/log_panel.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include <wx/dataview.h>
 
+#include "core/log_level.h"
 #include "core/log_text.h"
 #include "dvv/base/log.h"
+#include "gui/app.h"
 #include "gui/selftest.h"
 
 namespace rawreel {
@@ -41,14 +45,15 @@ wxString logCellText(const LogMirror& mirror, std::size_t row, std::size_t colum
             return wxString::FromUTF8(name.data(), name.size());
         }
         case 2: return wxString::FromUTF8(logRowMessage(entry.message));
-        case 3: return wxString::FromUTF8(entry.source);
+        case 3: return wxString::FromUTF8(logSourceText(entry));
         default: return {};
     }
 }
 
-LogList* LogList::create(wxWindow* parent, const LogMirror& mirror, LogListKind kind) {
-    return kind == LogListKind::ListCtrl ? createListCtrlLogList(parent, mirror)
-                                         : createDataViewLogList(parent, mirror);
+LogList* LogList::create(wxWindow* parent, const LogMirror& mirror, LogListKind kind,
+                         bool with_source) {
+    return kind == LogListKind::ListCtrl ? createListCtrlLogList(parent, mirror, with_source)
+                                         : createDataViewLogList(parent, mirror, with_source);
 }
 
 LogList::LogList(wxWindow* parent, const LogMirror& mirror) : wxPanel(parent), mirror_(&mirror) {}
@@ -70,11 +75,18 @@ constexpr int CONTEXT_COPY_ID = wxID_HIGHEST + 70;
 constexpr int CONTEXT_SELECT_ALL_ID = wxID_HIGHEST + 71;
 constexpr int CONTEXT_SAVE_SELECTED_ID = wxID_HIGHEST + 72;
 constexpr int CONTEXT_SAVE_LOG_ID = wxID_HIGHEST + 73;
+// Level ▸ (log level design §2.2): one id per level, in MENU_LEVELS order.
+constexpr int CONTEXT_LEVEL_FIRST_ID = wxID_HIGHEST + 74;
+constexpr std::array<dvv::LogLevel, 5> MENU_LEVELS{dvv::LogLevel::Error, dvv::LogLevel::Warn,
+                                                   dvv::LogLevel::Info, dvv::LogLevel::Debug,
+                                                   dvv::LogLevel::Trace};
 
 }  // namespace
 
-LogPanel::LogPanel(wxWindow* parent, LogListKind kind)
-    : wxPanel(parent), list_(LogList::create(this, mirror_, kind)) {
+LogPanel::LogPanel(wxWindow* parent, bool with_source, LogListKind kind)
+    : wxPanel(parent),
+      list_(LogList::create(this, mirror_, kind, with_source)),
+      with_source_(with_source) {
     auto* sizer = new wxBoxSizer(wxVERTICAL);
     sizer->Add(list_, wxSizerFlags(1).Expand());
     SetSizer(sizer);
@@ -110,7 +122,7 @@ void LogPanel::refresh(LogBatch batch, bool shown) {
 
 void LogPanel::recreateList(LogListKind kind) {
     GetSizer()->Clear(true);  // deletes the old list
-    list_ = LogList::create(this, mirror_, kind);
+    list_ = LogList::create(this, mirror_, kind, with_source_);
     GetSizer()->Add(list_, wxSizerFlags(1).Expand());
     Layout();
     list_->rebuild();
@@ -147,6 +159,17 @@ void LogPanel::showContextMenu() {
     menu.Append(CONTEXT_COPY_ID, "Copy");
     menu.Append(CONTEXT_SELECT_ALL_ID, "Select All");
     menu.AppendSeparator();
+    // Log level design §2.2: the five levels as radio items, the active one checked.
+    auto* levels = new wxMenu;  // NOLINT(cppcoreguidelines-owning-memory): the menu owns it
+    const dvv::LogLevel active = wxGetApp().activeLevel();
+    for (std::size_t i = 0; i < MENU_LEVELS.size(); ++i) {
+        const std::string_view name = levelShownName(MENU_LEVELS[i]);
+        const int id = CONTEXT_LEVEL_FIRST_ID + static_cast<int>(i);
+        levels->AppendRadioItem(id, wxString::FromUTF8(name.data(), name.size()));
+        levels->Check(id, MENU_LEVELS[i] == active);
+    }
+    menu.AppendSubMenu(levels, "Level");
+    menu.AppendSeparator();
     menu.Append(CONTEXT_SAVE_SELECTED_ID, "Save Selected Lines...");
     menu.Append(CONTEXT_SAVE_LOG_ID, "Save Log...");
     const bool selection = hasSelection();
@@ -155,7 +178,13 @@ void LogPanel::showContextMenu() {
     menu.Enable(CONTEXT_SAVE_SELECTED_ID, selection);
     menu.Enable(CONTEXT_SAVE_LOG_ID, mirror_.size() > 0);
     // The chosen item acts on this list, wherever the keyboard focus is.
-    switch (GetPopupMenuSelectionFromUser(menu)) {
+    const int chosen = showLogMenu(*this, menu);
+    if (chosen >= CONTEXT_LEVEL_FIRST_ID &&
+        chosen < CONTEXT_LEVEL_FIRST_ID + static_cast<int>(MENU_LEVELS.size())) {
+        setRunLevel(MENU_LEVELS[static_cast<std::size_t>(chosen - CONTEXT_LEVEL_FIRST_ID)]);
+        return;
+    }
+    switch (chosen) {
         case CONTEXT_COPY_ID: setClipboardText(logRecordsText(selectedRecords())); break;
         case CONTEXT_SELECT_ALL_ID: list_->selectAll(); break;
         case CONTEXT_SAVE_SELECTED_ID:
@@ -170,6 +199,10 @@ void LogPanel::showContextMenu() {
             break;
         default: break;  // dismissed
     }
+}
+
+void LogPanel::setRunLevel(dvv::LogLevel level) {
+    wxGetApp().setActiveLevel(level, LevelSource::Menu);  // for this run only: nothing is saved
 }
 
 }  // namespace rawreel

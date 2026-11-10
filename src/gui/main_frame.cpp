@@ -168,46 +168,28 @@ constexpr const char* LOG_SAVE_WILDCARD = "Text files (*.txt)|*.txt";
 constexpr const char* LOG_SAVE_WILDCARD = "Text files (*.txt;*.log)|*.txt;*.log|All files|*";
 #endif
 
-// Spec §4.4: `file` is the live rawreel.log or one of its backups (rawreel.log.1 to .3): it names
-// one of them in the log folder in use (a backup rotation would overwrite, whether it exists yet
-// or not; names compare without case on Windows and macOS), or it is one of them by another path.
-bool isLiveLogFile(const std::filesystem::path& file, const std::filesystem::path& log_folder) {
+// Spec §4.4 (addendum §5.5): `file` is a log file rawreel writes: the current one (by any path),
+// or a name in the log folder in use that strictly matches the log file pattern (a later split
+// could create it; names compare without case on Windows and macOS).
+bool isLiveLogFile(const std::filesystem::path& file, const std::filesystem::path& current,
+                   const std::filesystem::path& log_folder) {
+    std::error_code error;  // a missing file or folder is never equivalent
+    if (!current.empty() && std::filesystem::equivalent(file, current, error) && !error) {
+        return true;
+    }
     if (log_folder.empty()) {
         return false;
     }
-    std::error_code error;  // a missing folder is never equivalent
-    if (std::filesystem::equivalent(file.parent_path(), log_folder, error) && !error) {
-        const auto fold = [](std::string name) {
+    error.clear();
+    if (!std::filesystem::equivalent(file.parent_path(), log_folder, error) || error) {
+        return false;
+    }
 #if defined(_WIN32) || defined(__APPLE__)
-            std::ranges::transform(name, name.begin(), [](char c) {
-                return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
-            });
+    constexpr bool CASE_INSENSITIVE = true;
+#else
+    constexpr bool CASE_INSENSITIVE = false;
 #endif
-            return name;
-        };
-        const std::string name = fold(dvv::media::utf8FromPath(file.filename()));
-        for (int backup = 0; backup <= LOG_FILE_BACKUPS; ++backup) {
-            std::string candidate(LOG_FILE_NAME);
-            if (backup > 0) {
-                candidate += std::format(".{}", backup);
-            }
-            if (name == fold(candidate)) {
-                return true;
-            }
-        }
-    }
-    const std::filesystem::path log = log_folder / std::string(LOG_FILE_NAME);
-    for (int backup = 0; backup <= LOG_FILE_BACKUPS; ++backup) {
-        std::filesystem::path candidate = log;
-        if (backup > 0) {
-            candidate += std::format(".{}", backup);
-        }
-        error.clear();  // a missing file is never equivalent
-        if (std::filesystem::equivalent(file, candidate, error) && !error) {
-            return true;
-        }
-    }
-    return false;
+    return isLogFileName(dvv::media::utf8FromPath(file.filename()), CASE_INSENSITIVE);
 }
 
 // The reason `text` could not be written to `file` (created or replaced); nullopt once written.
@@ -304,7 +286,7 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     player_->SetDropTarget(new DropTarget(open));
     info_ = new InfoPanel(this);
     info_->setText(formatInfo({}));  // "No stream. ..." until the first streamsChanged
-    log_ = new LogPanel(this);
+    log_ = new LogPanel(this, wxGetApp().config().log.source);
     log_->setSaveHandler([this](bool selected) {  // the list's context menu (spec §4.3)
         execute(selected ? Command::SaveSelectedLines : Command::SaveLog, CommandSource::Menu);
     });
@@ -413,7 +395,11 @@ MainFrame::~MainFrame() {
 
 void MainFrame::onLogChanged() {
     // No logging here (spec §3.3): a line logged here would post another refresh, forever.
-    const std::shared_ptr<LogStore>& store = wxGetApp().logStore();
+    App& app = wxGetApp();
+    // Addendum §5.3: a split since the last refresh checks the log files' size; the warning, if
+    // any, is posted, never logged here.
+    app.checkLogSplits();
+    const std::shared_ptr<LogStore>& store = app.logStore();
     if (store == nullptr || log_ == nullptr) {
         return;
     }
@@ -1236,13 +1222,14 @@ void MainFrame::saveLog(bool selected) {
         message.SetExtendedMessage(wxString::FromUTF8(detail));
         (void)showModal(message);
     };
-    // Spec §4.4: the live log and its backups are never overwritten.
-    if (isLiveLogFile(file, wxGetApp().logFolderInUse())) {
-        DVV_LOG_INFO("log not saved: '{}' is the log file rawreel writes", path);
+    // Spec §4.4: the log files rawreel writes are never overwritten.
+    const std::filesystem::path current = wxGetApp().currentLogFile();
+    if (isLiveLogFile(file, current, wxGetApp().logFolderInUse())) {
+        DVV_LOG_INFO("log not saved: '{}' is a log file rawreel writes", path);
         refuse(
-            std::format("'{}' is the log file rawreel writes ({} or one of its backups). Choose "
+            std::format("'{}' is a log file rawreel writes (the current one is '{}'). Choose "
                         "another file.",
-                        path, LOG_FILE_NAME));
+                        path, dvv::media::utf8FromPath(current)));
         return;
     }
     if (const std::optional<std::string> failure = writeTextFile(file, text)) {

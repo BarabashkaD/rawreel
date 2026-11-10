@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "core/log_store.h"
+#include "core/log_text.h"
 #include "dvv/base/log.h"
 
 using rawreel::LOG_STORE_RECORDS;
@@ -122,15 +123,59 @@ TEST_SUITE("core") {
             .where = where,
             .time = std::chrono::system_clock::now(),
         };
-        const std::string line = dvv::formatLogRecord(record);
-        store.write(record, line);
+        store.write(record, dvv::formatLogRecord(record));
         const auto batch = store.take(0);
         REQUIRE(batch.entries.size() == 1);
-        CHECK(batch.entries[0].source == std::format("test_log_store.cpp:{}", where.line()));
-        CHECK(batch.entries[0].line == line);
+        CHECK(rawreel::logSourceText(batch.entries[0]) ==
+              std::format("test_log_store.cpp:{}", where.line()));
+        CHECK(batch.entries[0].where.line() == where.line());
+        CHECK_FALSE(batch.entries[0].mark);
         CHECK(batch.entries[0].level == dvv::LogLevel::Warn);
         CHECK(batch.entries[0].message == "hello");
         CHECK(batch.entries[0].time == record.time);
+    }
+
+    TEST_CASE("log store: lines without source by default") {
+        const dvv::LogRecord record{
+            .level = dvv::LogLevel::Info,
+            .message = "plain",
+            .where = std::source_location::current(),
+            .time = std::chrono::system_clock::now(),
+        };
+        LogStore store;
+        // The line the Logger hands over carries the source; the store formats its own.
+        store.write(record, dvv::formatLogRecord(record));
+        LogStore with_source;
+        with_source.setWithSource(true);
+        with_source.write(record, "ignored");
+        const auto plain = store.take(0);
+        const auto sourced = with_source.take(0);
+        REQUIRE(plain.entries.size() == 1);
+        REQUIRE(sourced.entries.size() == 1);
+        CHECK(plain.entries[0].line == dvv::formatLogRecord(record, false));
+        CHECK(sourced.entries[0].line == dvv::formatLogRecord(record, true));
+        CHECK(plain.entries[0].line != sourced.entries[0].line);
+    }
+
+    TEST_CASE("log store: marks are not counted") {
+        LogStore store;
+        for (const auto level : {dvv::LogLevel::Info, dvv::LogLevel::Warn, dvv::LogLevel::Error}) {
+            const dvv::LogRecord mark{
+                .level = level,
+                .message = "===== marker =====",
+                .where = std::source_location::current(),
+                .time = std::chrono::system_clock::now(),
+                .mark = true,
+            };
+            store.write(mark, dvv::formatLogRecord(mark));
+        }
+        put(store, dvv::LogLevel::Warn, "w");
+        const auto batch = store.take(0);
+        CHECK(batch.counts == LogCounts{.warnings = 1, .errors = 0});
+        REQUIRE(batch.entries.size() == 4);
+        CHECK(batch.entries[0].mark);
+        CHECK(batch.entries[2].mark);
+        CHECK_FALSE(batch.entries[3].mark);
     }
 
     TEST_CASE("log store: writes from 4 threads") {

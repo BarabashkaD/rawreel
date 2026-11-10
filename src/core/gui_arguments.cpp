@@ -16,11 +16,12 @@ namespace rawreel {
 
 namespace {
 
-constexpr std::array<std::pair<std::string_view, Scenario>, 4> SCENARIOS{{
+constexpr std::array<std::pair<std::string_view, Scenario>, 5> SCENARIOS{{
     {"smoke", Scenario::Smoke},
     {"player", Scenario::Player},
     {"lost", Scenario::Lost},
     {"perf", Scenario::Perf},
+    {"about", Scenario::About},
 }};
 
 constexpr std::uint32_t MAX_INFLIGHT = 64;
@@ -161,7 +162,7 @@ dvv::Result<GuiArguments> parseGuiArguments(std::span<const std::string_view> ar
             if (!scenario) {
                 return dvv::makeError(
                     dvv::Errc::Format,
-                    std::format("bad value '{}' for --selftest (smoke, player, lost, perf)",
+                    std::format("bad value '{}' for --selftest (smoke, player, lost, perf, about)",
                                 value));
             }
             arguments.selftest = *scenario;

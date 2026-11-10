@@ -1,11 +1,12 @@
 #pragma once
 
 // The Log pane's list (Log pane and Settings design §4.1): one row per record of the pane's
-// LogMirror, multiple selection, four columns. Two thin adapters read the same mirror: a virtual
-// wxListCtrl (the native ListView on Windows) and a wxDataViewCtrl with a virtual list model
-// (native on macOS and Linux). Both are built on every OS. A batch never deletes rows one by one:
-// the adapter sets the new count, then restores the place rowsAfterBatch() mapped. Nothing here
-// logs (spec §3.3: a line logged in the refresh path would post another refresh, forever).
+// LogMirror, multiple selection, three columns (four with log.source, addendum §4). Two thin
+// adapters read the same mirror: a virtual wxListCtrl (the native ListView on Windows) and a
+// wxDataViewCtrl with a virtual list model (native on macOS and Linux). Both are built on every OS.
+// A batch never deletes rows one by one: the adapter sets the new count, then restores the place
+// rowsAfterBatch() mapped. Nothing here logs (spec §3.3: a line logged in the refresh path would
+// post another refresh, forever).
 
 // clang-format off
 #include <wx/wx.h>  // first (R11)
@@ -30,6 +31,10 @@ enum class LogListKind : std::uint8_t { ListCtrl, DataView };
 
 inline constexpr std::array<std::string_view, 4> LOG_LIST_COLUMNS{"Time (local)", "Level",
                                                                   "Message", "Source"};
+// The columns shown (addendum §4): Source only with log.source.
+[[nodiscard]] constexpr std::size_t logListColumns(bool with_source) noexcept {
+    return with_source ? LOG_LIST_COLUMNS.size() : LOG_LIST_COLUMNS.size() - 1;
+}
 
 // Whether a row is in view: `row` is its rectangle in the control's client coordinates (empty when
 // the control reports it out of view) and its middle lies within the client height. Half a row is
@@ -48,10 +53,10 @@ inline constexpr std::array<std::string_view, 4> LOG_LIST_COLUMNS{"Time (local)"
 
 class LogList : public wxPanel {
 public:
-    // A new list of `kind`, a child of `parent`, reading `mirror` (which outlives it); empty until
-    // rebuild() or applyBatch().
+    // A new list of `kind`, a child of `parent`, reading `mirror` (which outlives it), with the
+    // Source column only when `with_source` (log.source); empty until rebuild() or applyBatch().
     [[nodiscard]] static LogList* create(wxWindow* parent, const LogMirror& mirror,
-                                         LogListKind kind);
+                                         LogListKind kind, bool with_source);
 
     // The rows from the mirror, no selection, the last row visible.
     virtual void rebuild() = 0;
@@ -76,6 +81,8 @@ public:
     // Selftests: the rows the control has and a cell's text as the control's callback gives it.
     [[nodiscard]] virtual std::size_t rowCount() const = 0;
     [[nodiscard]] virtual wxString cellText(std::size_t row, std::size_t column) const = 0;
+    // Selftests: the columns the control shows.
+    [[nodiscard]] virtual std::size_t columnCount() const = 0;
     [[nodiscard]] virtual LogListKind kind() const noexcept = 0;
 
 protected:
@@ -89,7 +96,9 @@ private:
 };
 
 // The adapters (log_list_listctrl.cpp, log_list_dataview.cpp).
-[[nodiscard]] LogList* createListCtrlLogList(wxWindow* parent, const LogMirror& mirror);
-[[nodiscard]] LogList* createDataViewLogList(wxWindow* parent, const LogMirror& mirror);
+[[nodiscard]] LogList* createListCtrlLogList(wxWindow* parent, const LogMirror& mirror,
+                                             bool with_source);
+[[nodiscard]] LogList* createDataViewLogList(wxWindow* parent, const LogMirror& mirror,
+                                             bool with_source);
 
 }  // namespace rawreel
