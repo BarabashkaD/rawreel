@@ -31,6 +31,17 @@ enum class LogListKind : std::uint8_t { ListCtrl, DataView };
 inline constexpr std::array<std::string_view, 4> LOG_LIST_COLUMNS{"Time (local)", "Level",
                                                                   "Message", "Source"};
 
+// Whether a row is in view: `row` is its rectangle in the control's client coordinates (empty when
+// the control reports it out of view) and its middle lies within the client height. Half a row is
+// enough, so a pixel of rounding in either direction does not decide it.
+[[nodiscard]] inline bool logRowInView(const wxRect& row, const wxSize& client) noexcept {
+    if (row.width <= 0 || row.height <= 0) {
+        return false;
+    }
+    const int middle = row.y + row.height / 2;
+    return middle >= 0 && middle < client.y;
+}
+
 // The text of a cell: the local time "HH:MM:SS.mmm", the level name, the message's first line (with
 // " …" when it has more) or the source; "" for a row past the mirror's end or an unknown column.
 [[nodiscard]] wxString logCellText(const LogMirror& mirror, std::size_t row, std::size_t column);
@@ -47,8 +58,12 @@ public:
     // After a batch: the count from the mirror, then `rows` restored (selection, anchor, focus, and
     // the last row or the top row).
     virtual void applyBatch(const ListRows& rows) = 0;
-    // Where the list stands, by sequence number (taken before a batch).
+    // Where the list stands, by sequence number (taken before a batch); tail is lastRowVisible().
     [[nodiscard]] virtual ListPlace place() const = 0;
+    // Whether the last row is in view (logRowInView with the control's own row rectangle), not row
+    // arithmetic: wxOSX's GetCountPerPage counts only whole rows below the header while its
+    // GetTopItem is the partly hidden row under it. False for an empty list.
+    [[nodiscard]] virtual bool lastRowVisible() const = 0;
     // The sequences of the selected rows, ascending.
     [[nodiscard]] virtual std::vector<std::uint64_t> selectedSequences() const = 0;
     // Selftests: exactly `rows` selected.

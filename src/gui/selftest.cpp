@@ -962,8 +962,119 @@ SelfTestStep logListKeepsPlaceStep(SelfTest* test, LogListKind kind) {
                 std::move(start), std::move(passed));
 }
 
-// The keep-its-place steps on the other adapter first, then on the native one, which the pane
-// keeps for the steps after them.
+constexpr std::size_t LOG_LIST_FOLLOW = 200;
+constexpr std::size_t LOG_LIST_FOLLOW_TOP = 1000;
+
+struct LogFollowState {
+    std::uint64_t next = 0;            // the store's next sequence after the step's lines
+    std::optional<std::uint64_t> top;  // the top row's sequence before them
+    bool before = false;               // the last row was in view before them
+};
+
+// What the follow steps show of the list.
+std::string logFollowText(const LogPanel& panel, const LogFollowState& state) {
+    const LogList& list = panel.list();
+    const LogMirror& mirror = panel.mirror();
+    const ListPlace place = list.place();
+    const std::size_t rows = list.rowCount();
+    return std::format(
+        "{} list: {} rows ({} mirror records), mirror next {} (want {}), last row in view {} "
+        "(before {}), last row '{}', top {} (was {})",
+        logListKindName(list.kind()), rows, mirror.size(), mirror.next(), state.next,
+        list.lastRowVisible(), state.before,
+        rows > 0 ? list.cellText(rows - 1, 2).utf8_string() : std::string(),
+        place.top ? std::format("{}", *place.top) : "none",
+        state.top ? std::format("{}", *state.top) : "none");
+}
+
+// Every line logged up to state.next is in the list, and the last row is the mirror's newest.
+bool logFollowArrived(const LogPanel& panel, const LogFollowState& state) {
+    return state.next > 0 && panel.mirror().next() >= state.next &&
+           panel.list().rowCount() == panel.mirror().size();
+}
+
+// Spec §4.1: scrolled up, the list keeps its top record while lines arrive (and stops following).
+SelfTestStep logListStaysStep(SelfTest* test, LogListKind kind) {
+    auto state = std::make_shared<LogFollowState>();
+    auto start = [test, state] {
+        LogList& list = test->frame().logPanel().list();
+        list.scrollToTop(LOG_LIST_FOLLOW_TOP);
+        state->top = list.place().top;
+        state->before = list.lastRowVisible();
+        for (std::size_t i = 0; i < LOG_LIST_FOLLOW; ++i) {
+            DVV_LOG_INFO("selftest stays {}", i);
+        }
+        state->next = logNext(test->app());
+    };
+    auto passed = [test, state, kind](std::string& seen) {
+        const LogPanel& panel = test->frame().logPanel();
+        seen = logFollowText(panel, *state);
+        return panel.list().kind() == kind && logFollowArrived(panel, *state) && !state->before &&
+               state->top && panel.list().place().top == state->top &&
+               !panel.list().lastRowVisible();
+    };
+    return step(std::format("log list stays scrolled up ({})", logListKindName(kind)),
+                std::move(start), std::move(passed));
+}
+
+// Spec §4.1: scrolled back to the end, the list follows: after 200 more lines the last row, the
+// newest record, is in view.
+SelfTestStep logListFollowsStep(SelfTest* test, LogListKind kind) {
+    auto state = std::make_shared<LogFollowState>();
+    auto start = [test, state] {
+        LogList& list = test->frame().logPanel().list();
+        if (list.rowCount() > 0) {
+            list.scrollToTop(list.rowCount() - 1);  // as near as the end allows: the end
+        }
+        state->before = list.lastRowVisible();
+        for (std::size_t i = 0; i < LOG_LIST_FOLLOW; ++i) {
+            DVV_LOG_INFO("selftest follows {}", i);
+        }
+        state->next = logNext(test->app());
+    };
+    auto passed = [test, state, kind](std::string& seen) {
+        const LogPanel& panel = test->frame().logPanel();
+        seen = logFollowText(panel, *state);
+        return panel.list().kind() == kind && logFollowArrived(panel, *state) && state->before &&
+               panel.list().lastRowVisible();
+    };
+    return step(std::format("log list follows at its end ({})", logListKindName(kind)),
+                std::move(start), std::move(passed));
+}
+
+// Spec §3.2, §4.1: hidden while lines arrive, then shown: the rebuilt list shows its last row and
+// keeps following the lines logged after it is shown.
+SelfTestStep logListShownFollowsStep(SelfTest* test, LogListKind kind) {
+    auto state = std::make_shared<LogFollowState>();
+    auto start = [test, state] {
+        MainFrame& frame = test->frame();
+        frame.setLogShown(false);
+        for (std::size_t i = 0; i < LOG_LIST_FOLLOW; ++i) {
+            DVV_LOG_INFO("selftest hidden {}", i);
+        }
+        // After the refresh these lines posted (FIFO): shown with them in the mirror, then more.
+        frame.CallAfter([test, state, &frame] {
+            frame.setLogShown(true);
+            state->before = frame.logPanel().list().lastRowVisible();
+            for (std::size_t i = 0; i < LOG_LIST_FOLLOW; ++i) {
+                DVV_LOG_INFO("selftest shown {}", i);
+            }
+            state->next = logNext(test->app());
+        });
+    };
+    auto passed = [test, state, kind](std::string& seen) {
+        const LogPanel& panel = test->frame().logPanel();
+        seen = std::format("pane shown {}, {}", test->frame().logShown(),
+                           logFollowText(panel, *state));
+        return test->frame().logShown() && panel.list().kind() == kind &&
+               logFollowArrived(panel, *state) && state->before && panel.list().lastRowVisible();
+    };
+    return step(std::format("log list follows once shown ({})", logListKindName(kind)),
+                std::move(start), std::move(passed));
+}
+
+// The keep-its-place and follow steps on the other adapter first, then on the native one, which
+// the pane keeps for the steps after them.
 void addLogListSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     steps.push_back(logListFillsStep(test));
     const LogListKind native = nativeLogListKind();
@@ -972,6 +1083,9 @@ void addLogListSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     for (const LogListKind kind : {other, native}) {
         steps.push_back(logListFillStep(test, kind));
         steps.push_back(logListKeepsPlaceStep(test, kind));
+        steps.push_back(logListStaysStep(test, kind));
+        steps.push_back(logListFollowsStep(test, kind));
+        steps.push_back(logListShownFollowsStep(test, kind));
     }
 }
 

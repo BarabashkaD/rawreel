@@ -119,10 +119,16 @@ public:
             place.anchor = sequenceAt(static_cast<std::size_t>(mark));
         }
 #endif
-        const long top = std::max(list_->GetTopItem(), 0L);
-        place.top = sequenceAt(static_cast<std::size_t>(top));
-        place.tail = top + std::max(list_->GetCountPerPage(), 1) >= count;
+        place.top = sequenceAt(static_cast<std::size_t>(std::max(list_->GetTopItem(), 0L)));
+        place.tail = lastRowVisible();
         return place;
+    }
+
+    [[nodiscard]] bool lastRowVisible() const override {
+        const long count = list_->GetItemCount();
+        wxRect row;
+        return count > 0 && list_->GetItemRect(count - 1, row) &&
+               logRowInView(row, list_->GetClientSize());
     }
 
     [[nodiscard]] std::vector<std::uint64_t> selectedSequences() const override {

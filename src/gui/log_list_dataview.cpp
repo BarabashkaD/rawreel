@@ -102,10 +102,15 @@ public:
         if (const wxDataViewItem focus = view_->GetCurrentItem(); focus.IsOk()) {
             place.focus = sequenceAt(model_->GetRow(focus));
         }
-        const std::size_t top = topRow();
-        place.top = sequenceAt(top);
-        place.tail = top + static_cast<std::size_t>(std::max(view_->GetCountPerPage(), 1)) >= count;
+        place.top = sequenceAt(topRow());
+        place.tail = lastRowVisible();
         return place;
+    }
+
+    [[nodiscard]] bool lastRowVisible() const override {
+        const std::size_t count = model_->GetCount();
+        return count > 0 &&
+               logRowInView(view_->GetItemRect(itemAt(count - 1)), view_->GetClientSize());
     }
 
     [[nodiscard]] std::vector<std::uint64_t> selectedSequences() const override {
