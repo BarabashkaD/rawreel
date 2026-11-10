@@ -1017,13 +1017,15 @@ SelfTestStep logListStaysStep(SelfTest* test, LogListKind kind) {
                 std::move(start), std::move(passed));
 }
 
-// Spec §4.1: scrolled back to the end, the list follows: after 200 more lines the last row, the
-// newest record, is in view.
-SelfTestStep logListFollowsStep(SelfTest* test, LogListKind kind) {
+// Spec §4.1: at the end, the list follows: after 200 more lines the last row, the newest record, is
+// in view. With `scroll` the step scrolls back to the end first; without it the list is where the
+// step before left it (just shown), read a timer tick later, so a scroll the control does on its
+// next layout (wxGTK's scroll_to_cell after a model reset) has happened.
+SelfTestStep logListFollowsStep(SelfTest* test, LogListKind kind, bool scroll) {
     auto state = std::make_shared<LogFollowState>();
-    auto start = [test, state] {
+    auto start = [test, state, scroll] {
         LogList& list = test->frame().logPanel().list();
-        if (list.rowCount() > 0) {
+        if (scroll && list.rowCount() > 0) {
             list.scrollToTop(list.rowCount() - 1);  // as near as the end allows: the end
         }
         state->before = list.lastRowVisible();
@@ -1038,38 +1040,34 @@ SelfTestStep logListFollowsStep(SelfTest* test, LogListKind kind) {
         return panel.list().kind() == kind && logFollowArrived(panel, *state) && state->before &&
                panel.list().lastRowVisible();
     };
-    return step(std::format("log list follows at its end ({})", logListKindName(kind)),
+    return step(std::format("log list follows {} ({})", scroll ? "at its end" : "once shown",
+                            logListKindName(kind)),
                 std::move(start), std::move(passed));
 }
 
-// Spec §3.2, §4.1: hidden while lines arrive, then shown: the rebuilt list shows its last row and
-// keeps following the lines logged after it is shown.
-SelfTestStep logListShownFollowsStep(SelfTest* test, LogListKind kind) {
+// Spec §3.2, §4.1: hidden while lines arrive, then shown: the list is rebuilt from the mirror with
+// its last row in view (polled: a control may scroll on its next layout).
+SelfTestStep logListShowsEndStep(SelfTest* test, LogListKind kind) {
     auto state = std::make_shared<LogFollowState>();
     auto start = [test, state] {
         MainFrame& frame = test->frame();
+        state->before = frame.logPanel().list().lastRowVisible();  // shown, before the hide
         frame.setLogShown(false);
         for (std::size_t i = 0; i < LOG_LIST_FOLLOW; ++i) {
             DVV_LOG_INFO("selftest hidden {}", i);
         }
-        // After the refresh these lines posted (FIFO): shown with them in the mirror, then more.
-        frame.CallAfter([test, state, &frame] {
-            frame.setLogShown(true);
-            state->before = frame.logPanel().list().lastRowVisible();
-            for (std::size_t i = 0; i < LOG_LIST_FOLLOW; ++i) {
-                DVV_LOG_INFO("selftest shown {}", i);
-            }
-            state->next = logNext(test->app());
-        });
+        state->next = logNext(test->app());
+        // After the refresh these lines posted (FIFO): shown with them in the mirror.
+        frame.CallAfter([&frame] { frame.setLogShown(true); });
     };
     auto passed = [test, state, kind](std::string& seen) {
         const LogPanel& panel = test->frame().logPanel();
         seen = std::format("pane shown {}, {}", test->frame().logShown(),
                            logFollowText(panel, *state));
         return test->frame().logShown() && panel.list().kind() == kind &&
-               logFollowArrived(panel, *state) && state->before && panel.list().lastRowVisible();
+               logFollowArrived(panel, *state) && panel.list().lastRowVisible();
     };
-    return step(std::format("log list follows once shown ({})", logListKindName(kind)),
+    return step(std::format("log list shown at its end ({})", logListKindName(kind)),
                 std::move(start), std::move(passed));
 }
 
@@ -1084,8 +1082,9 @@ void addLogListSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
         steps.push_back(logListFillStep(test, kind));
         steps.push_back(logListKeepsPlaceStep(test, kind));
         steps.push_back(logListStaysStep(test, kind));
-        steps.push_back(logListFollowsStep(test, kind));
-        steps.push_back(logListShownFollowsStep(test, kind));
+        steps.push_back(logListFollowsStep(test, kind, true));
+        steps.push_back(logListShowsEndStep(test, kind));
+        steps.push_back(logListFollowsStep(test, kind, false));
     }
 }
 
