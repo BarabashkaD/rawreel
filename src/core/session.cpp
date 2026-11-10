@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <coroutine>
 #include <cstdint>
@@ -115,11 +116,20 @@ public:
                 std::unique_ptr<dvv::media::SourceFactory> factory) noexcept
         : options_(std::move(options)),
           executor_(std::move(executor)),
-          factory_(std::move(factory)) {}
+          factory_(std::move(factory)),
+          file_reads_(options_.fileReads) {}
 
     // --- any thread ---
     [[nodiscard]] dvv::IExecutor& executor() const noexcept { return *executor_; }
     [[nodiscard]] bool stopped() const noexcept { return stopped_.load(std::memory_order_acquire); }
+    // Log pane and Settings design §5.3: the Settings window changes it while workers read it at
+    // every open, reopens included.
+    [[nodiscard]] dvv::platform::FileReadMode fileReads() const noexcept {
+        return file_reads_.load(std::memory_order_relaxed);
+    }
+    void setFileReads(dvv::platform::FileReadMode mode) noexcept {
+        file_reads_.store(mode, std::memory_order_relaxed);
+    }
     [[nodiscard]] SessionStatus status() const {
         std::lock_guard lock(status_mutex_);
         return status_;
@@ -160,9 +170,6 @@ public:
     // --- Session executor only, from here on ---
     [[nodiscard]] bool stopping() const noexcept { return stopping_; }
     [[nodiscard]] dvv::media::SourceFactory& factory() const noexcept { return *factory_; }
-    [[nodiscard]] dvv::platform::FileReadMode fileReads() const noexcept {
-        return options_.fileReads;
-    }
     [[nodiscard]] dvv::IExecutor& io() const noexcept { return *options_.io; }
     // Null: sources are not wrapped (the developer option --debug-seek-delay).
     [[nodiscard]] const std::shared_ptr<ProduceDelay>& produceDelay() const noexcept {
@@ -911,6 +918,7 @@ private:
     std::optional<Clock::time_point> stats_time_;
     bool stopping_ = false;
     std::atomic<bool> stopped_{false};
+    std::atomic<dvv::platform::FileReadMode> file_reads_;  // SessionOptions::fileReads at start
 
     mutable std::mutex status_mutex_;
     SessionStatus status_;
@@ -1251,6 +1259,12 @@ void Session::seek(std::int64_t index) {
 }
 void Session::logDiagnostics() {
     command([](detail::SessionCore& core) { core.logDiagnostics(); });
+}
+void Session::setFileReads(dvv::platform::FileReadMode mode) noexcept {
+    core_->setFileReads(mode);
+}
+dvv::platform::FileReadMode Session::fileReads() const noexcept {
+    return core_->fileReads();
 }
 void Session::reopen() {
     command([](detail::SessionCore& core) { core.reopen(); });

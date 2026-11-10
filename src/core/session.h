@@ -153,6 +153,11 @@ public:
     // stream or with an unbounded length nothing is patched; the seek just runs in order.
     void seek(std::int64_t index);
     void logDiagnostics();  // Help -> Diagnostics: diagnosticsLines() to the log (Info)
+    // Any thread (Log pane and Settings design §5.3): the mode of every later open, reopens and a
+    // lost-device reopen included; an open already running keeps the mode it read. Starts as
+    // SessionOptions::fileReads.
+    void setFileReads(dvv::platform::FileReadMode mode) noexcept;
+    [[nodiscard]] dvv::platform::FileReadMode fileReads() const noexcept;
 
     // Snapshot; any thread. `epoch` is the installed stack's epoch, 0 while no stack is installed
     // (after a device loss); `gpuAvailable` means a stack is installed.
