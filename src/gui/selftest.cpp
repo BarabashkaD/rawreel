@@ -892,8 +892,8 @@ SelfTestStep logListFillsStep(SelfTest* test) {
 }
 
 struct LogListState {
-    std::vector<std::uint64_t> selected;  // the sequences of the selected rows that stay
-    std::uint64_t top = 0;                // the sequence of the top row
+    std::vector<std::uint64_t> selected;  // the sequences of the rows the scroll step selected
+    std::uint64_t top = 0;                // the sequence of the record the scroll step put on top
     std::uint64_t first = 0;              // the mirror's first sequence before the 50 more lines
 };
 
@@ -919,20 +919,54 @@ SelfTestStep logListFillStep(SelfTest* test, LogListKind kind) {
                 std::move(passed));
 }
 
-// Spec §4.1: with the mirror full, 50 more lines drop 50 rows at the front; the selection and the
-// top row stay on their records, and a selected row that was dropped leaves the selection. The
-// rows are past the 50 dropped ones (rows 10, 20 and 5 of the plan would all be dropped).
-SelfTestStep logListKeepsPlaceStep(SelfTest* test, LogListKind kind) {
-    auto state = std::make_shared<LogListState>();
-    auto start = [test, state] {
+// The list scrolled up, `select` rows selected first (none: the selection stays). Passes once the
+// control shows the record of `row` at the top and not its last row. wxGTK scrolls on its next
+// layout, and a refresh before that (the step before's pass line) resets the model and follows the
+// end, so a check that finds the list elsewhere asks for the same record at the top again.
+SelfTestStep logListScrollUpStep(SelfTest* test, LogListKind kind, std::size_t row,
+                                 std::vector<std::size_t> select,
+                                 const std::shared_ptr<LogListState>& state) {
+    auto start = [test, row, select = std::move(select), state] {
         LogPanel& panel = test->frame().logPanel();
         const LogMirror& mirror = panel.mirror();
-        constexpr std::array<std::size_t, 3> SELECTED{10, 110, 120};
-        panel.list().selectRows(SELECTED);
-        panel.list().scrollToTop(105);
-        state->selected = {mirror.at(110).sequence, mirror.at(120).sequence};
-        state->top = mirror.at(105).sequence;
-        state->first = mirror.at(0).sequence;
+        if (!select.empty()) {
+            panel.list().selectRows(select);
+        }
+        state->selected.clear();
+        for (const std::size_t selected : select) {
+            state->selected.push_back(mirror.at(selected).sequence);
+        }
+        state->top = mirror.at(row).sequence;
+        panel.list().scrollToTop(row);
+    };
+    auto passed = [test, state, kind](std::string& seen) {
+        LogPanel& panel = test->frame().logPanel();
+        LogList& list = panel.list();
+        const ListPlace place = list.place();
+        const bool last = list.lastRowVisible();
+        seen = std::format("{} list: top {} (want {}), last row in view {}",
+                           logListKindName(list.kind()),
+                           place.top ? std::format("{}", *place.top) : "none", state->top, last);
+        if (list.kind() == kind && place.top == state->top && !last) {
+            return true;
+        }
+        if (const std::optional<std::size_t> top = panel.mirror().rowOf(state->top)) {
+            list.scrollToTop(*top);
+        }
+        return false;
+    };
+    return step(std::format("log list scrolled up to row {} ({})", row, logListKindName(kind)),
+                std::move(start), std::move(passed));
+}
+
+// Spec §4.1: with the mirror full, 50 more lines drop 50 rows at the front; the selection and the
+// top row stay on their records, and a selected row that was dropped leaves the selection. The
+// scroll step before selected rows 10, 110 and 120 with row 105 on top: rows past the 50 dropped
+// ones but row 10 (rows 10, 20 and 5 of the plan would all be dropped).
+SelfTestStep logListKeepsPlaceStep(SelfTest* test, LogListKind kind,
+                                   const std::shared_ptr<LogListState>& state) {
+    auto start = [test, state] {
+        state->first = test->frame().logPanel().mirror().at(0).sequence;
         for (std::size_t i = 0; i < LOG_LIST_MORE; ++i) {
             DVV_LOG_INFO("selftest more {}", i);
         }
@@ -942,6 +976,13 @@ SelfTestStep logListKeepsPlaceStep(SelfTest* test, LogListKind kind) {
         const LogMirror& mirror = panel.mirror();
         const std::uint64_t first = mirror.size() > 0 ? mirror.at(0).sequence : 0;
         const std::vector<std::uint64_t> selected = panel.list().selectedSequences();
+        std::vector<std::uint64_t> want;  // the selected records past the 50 dropped ones
+        for (const std::uint64_t sequence : state->selected) {
+            if (sequence >= state->first + LOG_LIST_MORE) {
+                want.push_back(sequence);
+            }
+        }
+        std::ranges::sort(want);
         const ListPlace place = panel.list().place();
         const auto text = [](const std::vector<std::uint64_t>& values) {
             std::string out;
@@ -951,12 +992,14 @@ SelfTestStep logListKeepsPlaceStep(SelfTest* test, LogListKind kind) {
             return out;
         };
         seen = std::format(
-            "{} list: first sequence {} (was {}), selected [{}] (want [{}]), top {} (want {}), "
-            "tail {}",
-            logListKindName(kind), first, state->first, text(selected), text(state->selected),
-            place.top ? std::format("{}", *place.top) : "none", state->top, place.tail);
+            "{} list: first sequence {} (was {}), selected [{}] (want [{}] of [{}]), top {} "
+            "(want {}), tail {}",
+            logListKindName(kind), first, state->first, text(selected), text(want),
+            text(state->selected), place.top ? std::format("{}", *place.top) : "none", state->top,
+            place.tail);
         return panel.list().kind() == kind && first >= state->first + LOG_LIST_MORE &&
-               selected == state->selected && place.top == state->top;
+               want.size() + 1 == state->selected.size() && selected == want &&
+               place.top == state->top;
     };
     return step(std::format("log list keeps its place ({})", logListKindName(kind)),
                 std::move(start), std::move(passed));
@@ -993,12 +1036,12 @@ bool logFollowArrived(const LogPanel& panel, const LogFollowState& state) {
            panel.list().rowCount() == panel.mirror().size();
 }
 
-// Spec §4.1: scrolled up, the list keeps its top record while lines arrive (and stops following).
+// Spec §4.1: scrolled up (the scroll step before put row 1000 on top), the list keeps its top
+// record while lines arrive (and stops following).
 SelfTestStep logListStaysStep(SelfTest* test, LogListKind kind) {
     auto state = std::make_shared<LogFollowState>();
     auto start = [test, state] {
-        LogList& list = test->frame().logPanel().list();
-        list.scrollToTop(LOG_LIST_FOLLOW_TOP);
+        const LogList& list = test->frame().logPanel().list();
         state->top = list.place().top;
         state->before = list.lastRowVisible();
         for (std::size_t i = 0; i < LOG_LIST_FOLLOW; ++i) {
@@ -1080,7 +1123,11 @@ void addLogListSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
         native == LogListKind::ListCtrl ? LogListKind::DataView : LogListKind::ListCtrl;
     for (const LogListKind kind : {other, native}) {
         steps.push_back(logListFillStep(test, kind));
-        steps.push_back(logListKeepsPlaceStep(test, kind));
+        auto place = std::make_shared<LogListState>();
+        steps.push_back(logListScrollUpStep(test, kind, 105, {10, 110, 120}, place));
+        steps.push_back(logListKeepsPlaceStep(test, kind, place));
+        steps.push_back(logListScrollUpStep(test, kind, LOG_LIST_FOLLOW_TOP, {},
+                                            std::make_shared<LogListState>()));
         steps.push_back(logListStaysStep(test, kind));
         steps.push_back(logListFollowsStep(test, kind, true));
         steps.push_back(logListShowsEndStep(test, kind));
