@@ -1,59 +1,59 @@
 #pragma once
 
-// The Log pane (design M3 D18): the log lines of this run, newest last, at most 5000.
+// The Log pane (design M3 D18; Log pane and Settings design §3.2, §4.1, §4.3): the records of this
+// run, newest last, at most 5000, in a virtual list. The pane keeps the GUI-thread mirror of the
+// LogStore; MainFrame feeds it one batch per posted refresh (no timer), and the list reads only the
+// mirror, so painting takes no lock. The list's context menu copies and saves its records.
 
 // clang-format off
 #include <wx/wx.h>  // first (R11)
 // clang-format on
 
-#include <cstddef>
-#include <deque>
-#include <memory>
-#include <mutex>
-#include <string>
-#include <string_view>
+#include <functional>
+#include <utility>
 #include <vector>
 
-#include <wx/timer.h>
-
-#include "dvv/base/log.h"
+#include "core/log_mirror.h"
+#include "core/log_store.h"
+#include "gui/log_list.h"
 
 namespace rawreel {
 
-inline constexpr std::size_t LOG_PANEL_LINES = 5000;
-
-// Keeps the formatted log lines in memory for the Log pane (design D18). It never refers to the
-// panel, so it stays valid in the Logger after the panel is gone; it keeps at most 5000 lines.
-class LogPanelSink final : public dvv::ILogSink {
-public:
-    // Any thread, with the Logger's lock held: no logging here.
-    void write(const dvv::LogRecord& record, std::string_view line) override;
-    [[nodiscard]] std::vector<std::string> takeLines();  // and empties the buffer
-
-private:
-    std::mutex mutex_;
-    std::deque<std::string> lines_;
-};
-
-// A read-only wxTextCtrl fed from the sink by a 100 ms timer, capped at 5000 lines.
 class LogPanel final : public wxPanel {
 public:
-    LogPanel(wxWindow* parent, std::shared_ptr<LogPanelSink> sink);
+    explicit LogPanel(wxWindow* parent, LogListKind kind = nativeLogListKind());
     LogPanel(const LogPanel&) = delete;
     LogPanel& operator=(const LogPanel&) = delete;
     LogPanel(LogPanel&&) = delete;
     LogPanel& operator=(LogPanel&&) = delete;
+    // Destroys the list before the mirror it reads.
     ~LogPanel() override;
 
-    [[nodiscard]] wxString text() const;  // selftests
+    // One batch from LogStore::take(mirror().next()). While `shown`, the list's place is taken
+    // before the mirror changes and restored after it; hidden, only the mirror changes (showing
+    // the pane rebuilds the list). Never logs (spec §3.3).
+    void refresh(LogBatch batch, bool shown);
+    [[nodiscard]] const LogMirror& mirror() const noexcept { return mirror_; }
+    [[nodiscard]] LogList& list() const noexcept { return *list_; }
+    // Selftests: replaces the list with one of `kind`, rebuilt from the mirror.
+    void recreateList(LogListKind kind);
+
+    // Spec §4.3: the records of the selected rows, oldest first, copied out of the mirror now (a
+    // snapshot that later batches do not change).
+    [[nodiscard]] std::vector<LogEntry> selectedRecords() const;
+    // Every record the mirror holds, copied out now.
+    [[nodiscard]] std::vector<LogEntry> allRecords() const;
+    [[nodiscard]] bool hasSelection() const;
+    // The context menu's Save Selected Lines... (true) and Save Log... (false).
+    void setSaveHandler(std::function<void(bool selected)> save) { save_ = std::move(save); }
 
 private:
-    void onTimer(wxTimerEvent& event);
+    // Spec §4.3: Copy, Select All, a separator, Save Selected Lines..., Save Log....
+    void showContextMenu();
 
-    std::shared_ptr<LogPanelSink> sink_;  // null: an empty pane
-    wxTextCtrl* text_;                    // a child window: wx owns it
-    wxTimer timer_;
-    std::size_t lines_ = 0;  // lines in text_
+    LogMirror mirror_;
+    LogList* list_;  // a child window: wx owns it
+    std::function<void(bool selected)> save_;
 };
 
 }  // namespace rawreel

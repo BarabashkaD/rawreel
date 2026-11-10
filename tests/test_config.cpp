@@ -16,10 +16,12 @@
 
 #include "core/config.h"
 #include "dvv/base/error.h"
+#include "dvv/base/json.h"
 #include "dvv/base/log.h"
 #include "dvv/base/paths.h"
 #include "dvv/media/types.h"
 #include "dvv/platform/file_reader.h"
+#include "temporary_directory.h"
 
 namespace fs = std::filesystem;
 using dvv::platform::FileReadMode;
@@ -27,37 +29,6 @@ using rawreel::Config;
 using rawreel::LoadedConfig;
 
 namespace {
-
-// A unique directory under the system temporary directory, removed with its contents.
-class TemporaryDirectory {
-public:
-    TemporaryDirectory() {
-        std::random_device random;
-        for (int attempt = 0; attempt < 100; ++attempt) {
-            fs::path candidate = fs::temp_directory_path() /
-                                 std::format("rawreel-config-{:08x}{:08x}", random(), random());
-            std::error_code error;
-            if (fs::create_directory(candidate, error)) {
-                path_ = std::move(candidate);
-                return;
-            }
-        }
-        FAIL("no temporary directory could be created");
-    }
-    TemporaryDirectory(const TemporaryDirectory&) = delete;
-    TemporaryDirectory& operator=(const TemporaryDirectory&) = delete;
-    TemporaryDirectory(TemporaryDirectory&&) = delete;
-    TemporaryDirectory& operator=(TemporaryDirectory&&) = delete;
-    ~TemporaryDirectory() {
-        std::error_code error;
-        fs::remove_all(path_, error);
-    }
-
-    [[nodiscard]] const fs::path& path() const noexcept { return path_; }
-
-private:
-    fs::path path_;
-};
 
 void writeText(const fs::path& path, std::string_view text) {
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
@@ -138,6 +109,36 @@ TEST_SUITE("core") {
         }
     }
 
+    TEST_CASE("config: the gui and log keys") {
+        const auto parse = [](std::string_view text) {
+            CAPTURE(text);
+            dvv::Result<Config> config = rawreel::parseConfig(text);
+            REQUIRE_MESSAGE(config.has_value(), config.error().message);
+            return *config;
+        };
+        const Config defaults = parse("{}");
+        CHECK_FALSE(defaults.gui.showLogPane);
+        CHECK(defaults.log.file.enabled);
+        CHECK(defaults.log.file.folder.empty());
+        CHECK_FALSE(defaults.log.system.enabled);
+
+        CHECK(parse(R"({"gui":{"showLogPane":true}})").gui.showLogPane);
+
+        const fs::path folder = fs::temp_directory_path() / "rawreel logs";
+        const std::string text = std::format(
+            R"({{"log":{{"file":{{"enabled":false,"folder":{}}},"system":{{"enabled":true}}}}}})",
+            dvv::json::dump(dvv::json::Value(dvv::media::utf8FromPath(folder))));
+        const Config set = parse(text);
+        CHECK_FALSE(set.log.file.enabled);
+        CHECK(set.log.file.folder == folder);
+        CHECK(set.log.system.enabled);
+
+        // "" is the default folder (Use Default writes it).
+        const Config empty = parse(R"({"log":{"file":{"folder":""}}})");
+        CHECK(empty.log.file.folder.empty());
+        CHECK(empty.log.file.enabled);
+    }
+
     TEST_CASE("config: invalid text and values") {
         checkInvalid("", "");
         checkInvalid(R"({"io": )", "");
@@ -147,10 +148,20 @@ TEST_SUITE("core") {
                      R"(io.fileReads: expected "auto", "unbuffered" or "buffered", not "fast")");
         checkInvalid(R"({"io": {"fileReads": 1}})", "io.fileReads: expected");
         checkInvalid(R"({"io": {"fileReads": null}})", "io.fileReads: expected");
+        checkInvalid(R"({"gui":1})", "gui: expected an object");
+        checkInvalid(R"({"gui":{"showLogPane":"yes"}})",
+                     R"(gui.showLogPane: expected true or false, not "yes")");
+        checkInvalid(R"({"log":1})", "log: expected an object");
+        checkInvalid(R"({"log":{"file":{"folder":"rel/dir"}}})",
+                     R"(log.file.folder: expected an absolute folder or "", not "rel/dir")");
+        checkInvalid(R"({"log":{"file":{"enabled":1}}})",
+                     "log.file.enabled: expected true or false, not 1");
+        checkInvalid(R"({"log":{"system":{"enabled":0}}})",
+                     "log.system.enabled: expected true or false, not 0");
     }
 
     TEST_CASE("config: a missing file gives the defaults without a warning") {
-        const TemporaryDirectory directory;
+        const TemporaryDirectory directory("rawreel-config");
         const WarningLog log;
         const LoadedConfig loaded = rawreel::loadConfig(directory.path() / "rawreel.json");
         CHECK_FALSE(loaded.found);
@@ -161,7 +172,7 @@ TEST_SUITE("core") {
     }
 
     TEST_CASE("config: a valid file") {
-        const TemporaryDirectory directory;
+        const TemporaryDirectory directory("rawreel-config");
         const fs::path path = directory.path() / "rawreel.json";
         writeText(path, "{\n  \"io\": { \"fileReads\": \"buffered\" }\n}\n");
         const WarningLog log;
@@ -173,7 +184,7 @@ TEST_SUITE("core") {
     }
 
     TEST_CASE("config: an invalid file gives one warning and the defaults") {
-        const TemporaryDirectory directory;
+        const TemporaryDirectory directory("rawreel-config");
         const fs::path path = directory.path() / "rawreel.json";
         std::string reason;
         SUBCASE("invalid JSON") {
@@ -208,7 +219,7 @@ TEST_SUITE("core") {
 
     // --config <file> (UTF-8) replaces the file next to the executable.
     TEST_CASE("config: the file --config names") {
-        const TemporaryDirectory directory;
+        const TemporaryDirectory directory("rawreel-config");
         const fs::path path = directory.path() / fs::path(u8"my config ü.json");
         writeText(path, R"({"io": {"fileReads": "unbuffered"}})");
         const LoadedConfig loaded =
@@ -220,7 +231,7 @@ TEST_SUITE("core") {
 
     // A file the user named must exist: a missing one is one warning (the default file is silent).
     TEST_CASE("config: a missing --config file gives one warning and the defaults") {
-        const TemporaryDirectory directory;
+        const TemporaryDirectory directory("rawreel-config");
         const WarningLog log;
         const LoadedConfig missing = rawreel::loadConfig(
             std::optional<std::string>(dvv::media::utf8FromPath(directory.path() / "none.json")));
@@ -233,8 +244,8 @@ TEST_SUITE("core") {
         CHECK(contains(lines[0], "none.json' ignored: not found; using the defaults"));
     }
 
-    // macOS: an app bundle is read-only and signed, so its executables' config is in the user data
-    // folder; Windows, Linux and an executable outside a bundle keep the file next to it.
+    // The portable file next to the executable wins when it exists (not in a macOS app bundle);
+    // otherwise the user data folder. An app bundle is read-only and signed: always user data.
     TEST_CASE("config: the default file of an executable in an app bundle") {
         const fs::path bundled = fs::path("/Applications/rawreel 2.app/Contents/MacOS/rawreel-gui");
         const fs::path build_tree = fs::path("/work/build/Debug/rawreel-cli");
@@ -252,48 +263,87 @@ TEST_SUITE("core") {
             ++asked;
             return user_data;
         };
+        int existed = 0;
+        const auto exists = [&](const fs::path&) {
+            ++existed;
+            return true;
+        };
+        // In a bundle: the user data folder, the portable file not even asked.
         const dvv::Result<fs::path> mac_bundled =
-            rawreel::defaultConfigPath(bundled, true, user_data_dir);
+            rawreel::defaultConfigPath(bundled, true, user_data_dir, exists);
         REQUIRE(mac_bundled.has_value());
         CHECK(*mac_bundled == user_data / "rawreel.json");
         CHECK(asked == 1);
+        CHECK(existed == 0);
 
-        // Not in a bundle, or not macOS: next to the executable, the user data folder unasked.
-        const dvv::Result<fs::path> mac_build =
-            rawreel::defaultConfigPath(build_tree, true, user_data_dir);
-        REQUIRE(mac_build.has_value());
-        CHECK(*mac_build == build_tree.parent_path() / "rawreel.json");
-        const dvv::Result<fs::path> other =
-            rawreel::defaultConfigPath(bundled, false, user_data_dir);
+        // Not macOS: a bundle-shaped path is an ordinary place, next to the executable.
+        const dvv::Result<fs::path> other = rawreel::defaultConfigPath(
+            bundled, false, user_data_dir, [](const fs::path&) { return true; });
         REQUIRE(other.has_value());
         CHECK(*other == bundled.parent_path() / "rawreel.json");
         CHECK(asked == 1);
 
         // No user data folder: its error (loadConfig warns and uses the defaults).
-        const dvv::Result<fs::path> failed =
-            rawreel::defaultConfigPath(bundled, true, []() -> dvv::Result<fs::path> {
+        const dvv::Result<fs::path> failed = rawreel::defaultConfigPath(
+            bundled, true,
+            []() -> dvv::Result<fs::path> {
                 return dvv::makeError(dvv::Errc::Io, "HOME is not set");
-            });
+            },
+            exists);
         REQUIRE_FALSE(failed.has_value());
         CHECK(failed.error().code == dvv::Errc::Io);
     }
 
-    // The default location is the running executable's directory, never the working directory
-    // (the test executable is in no app bundle).
-    TEST_CASE("config: the default file is rawreel.json next to the executable") {
+    TEST_CASE(
+        "config: the default file is the portable one next to the executable, else user data") {
+        const fs::path build_tree = fs::path("/work/build/Debug/rawreel-cli");
+        const fs::path user_data = fs::path("/user data/rawreel");
+        int asked = 0;
+        const auto user_data_dir = [&]() -> dvv::Result<fs::path> {
+            ++asked;
+            return user_data;
+        };
+        const fs::path portable = build_tree.parent_path() / "rawreel.json";
+        // Outside a bundle with the portable file: next to the executable, user data not called.
+        const dvv::Result<fs::path> with = rawreel::defaultConfigPath(
+            build_tree, true, user_data_dir, [&](const fs::path& p) { return p == portable; });
+        REQUIRE(with.has_value());
+        CHECK(*with == portable);
+        CHECK(asked == 0);
+        // Without it: the user data folder.
+        const dvv::Result<fs::path> without = rawreel::defaultConfigPath(
+            build_tree, true, user_data_dir, [](const fs::path&) { return false; });
+        REQUIRE(without.has_value());
+        CHECK(*without == user_data / "rawreel.json");
+        CHECK(asked == 1);
+    }
+
+    // The running executable: with no rawreel.json next to the test executable, the user data
+    // folder (the test environment points it into the build tree).
+    TEST_CASE("config: the default file of the running executable") {
         const dvv::Result<fs::path> executable = dvv::paths::executablePath();
         REQUIRE_MESSAGE(executable.has_value(), executable.error().describe());
+        REQUIRE_FALSE(fs::exists(executable->parent_path() / "rawreel.json"));
+        const dvv::Result<fs::path> user_data = dvv::paths::userDataDir("rawreel");
+        REQUIRE_MESSAGE(user_data.has_value(), user_data.error().describe());
         const dvv::Result<fs::path> path = rawreel::defaultConfigPath();
         REQUIRE_MESSAGE(path.has_value(), path.error().describe());
-        CHECK(*path == executable->parent_path() / "rawreel.json");
+        CHECK(*path == *user_data / "rawreel.json");
         CHECK(path->is_absolute());
 
         const WarningLog log;
         const LoadedConfig loaded = rawreel::loadConfig(std::optional<std::string>{});
         CHECK(loaded.path == *path);
-        CHECK_FALSE(loaded.found);  // no rawreel.json is shipped next to the test executable
+        CHECK_FALSE(loaded.found);
         CHECK(loaded.warning.empty());
         CHECK(loaded.config.io.fileReads == FileReadMode::Auto);
         CHECK(log.lines().empty());  // a missing default file is silent
+    }
+
+    TEST_CASE("config: a relative --config is made absolute") {
+        const WarningLog log;
+        const LoadedConfig loaded = rawreel::loadConfig(std::optional<std::string>("rel.json"));
+        CHECK(loaded.path.is_absolute());
+        CHECK(loaded.path == fs::absolute(fs::path("rel.json")));
     }
 }

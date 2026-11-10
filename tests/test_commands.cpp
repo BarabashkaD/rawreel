@@ -3,7 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <set>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "core/commands.h"
 
@@ -27,11 +29,18 @@ KeyChord letter(char c, bool ctrl = false) {
     return {static_cast<std::int32_t>(c), ctrl};
 }
 
+// Log pane and Settings design §5.1: GTK calls the window Preferences.
+#if defined(__linux__)
+constexpr std::string_view SETTINGS_LABEL = "Preferences...";
+#else
+constexpr std::string_view SETTINGS_LABEL = "Settings...";
+#endif
+
 }  // namespace
 
 TEST_SUITE("core") {
     TEST_CASE("commands: the table lists every command once, in order") {
-        static_assert(COMMAND_COUNT == 18);
+        static_assert(COMMAND_COUNT == 22);
         const auto table = commandTable();
         REQUIRE(table.size() == COMMAND_COUNT);
         std::set<std::string_view> ids;
@@ -65,9 +74,86 @@ TEST_SUITE("core") {
                 }
             }
         }
-        for (const Command command : {Command::Stop, Command::Format, Command::Reopen,
-                                      Command::GpuInfo, Command::Diagnostics}) {
+        for (const Command command :
+             {Command::Stop, Command::Format, Command::Reopen, Command::LogPane, Command::GpuInfo,
+              Command::Diagnostics, Command::SaveLog, Command::SaveSelectedLines}) {
             CHECK_FALSE(info(command).key);
+        }
+    }
+
+    TEST_CASE("commands: View -> Log") {
+        static_assert(static_cast<std::size_t>(Command::LogPane) ==
+                      static_cast<std::size_t>(Command::Reopen) + 1);
+        const rawreel::CommandInfo& log = info(Command::LogPane);
+        CHECK(log.id == "log_pane");
+        CHECK(log.menu == "View");
+        CHECK(log.label == "Log");  // "Show Log"/"Hide Log" on macOS, set by the GUI
+        CHECK(log.help == "Show or hide the Log pane");
+        CHECK(log.checkable);
+        CHECK_FALSE(log.key);
+        CHECK(log.route == KeyRoute::Accelerator);
+        CHECK(rawreel::menuLabel(log) == "Log");
+    }
+
+    TEST_CASE("commands: File -> Save Log... and Save Selected Lines...") {
+        static_assert(static_cast<std::size_t>(Command::SaveLog) ==
+                      static_cast<std::size_t>(Command::OpenUri) + 1);
+        static_assert(static_cast<std::size_t>(Command::SaveSelectedLines) ==
+                      static_cast<std::size_t>(Command::SaveLog) + 1);
+        const rawreel::CommandInfo& save = info(Command::SaveLog);
+        CHECK(save.id == "save_log");
+        CHECK(save.menu == "File");
+        CHECK(save.label == "Save Log...");
+        CHECK(save.help == "Save the lines of the Log pane to a file");
+        CHECK_FALSE(save.key);  // spec §4.3: Ctrl+S stays free
+        CHECK(save.route == KeyRoute::Accelerator);
+        CHECK_FALSE(save.checkable);
+        CHECK(rawreel::menuLabel(save) == "Save Log...");
+        const rawreel::CommandInfo& selected = info(Command::SaveSelectedLines);
+        CHECK(selected.id == "save_selected_lines");
+        CHECK(selected.menu == "File");
+        CHECK(selected.label == "Save Selected Lines...");
+        CHECK(selected.help == "Save the selected lines of the Log pane to a file");
+        CHECK_FALSE(selected.key);
+        CHECK(selected.route == KeyRoute::Accelerator);
+        CHECK_FALSE(selected.checkable);
+        CHECK(rawreel::menuLabel(selected) == "Save Selected Lines...");
+    }
+
+    TEST_CASE("commands: the File menu's order") {
+        std::vector<std::string_view> file;
+        for (const rawreel::CommandInfo& entry : commandTable()) {
+            if (entry.menu == "File") {
+                file.push_back(entry.label);
+            }
+        }
+        const std::vector<std::string_view> expected{
+            "Open...",      "Open URI...",  "Save Log...", "Save Selected Lines...",
+            "Close stream", SETTINGS_LABEL, "Quit"};
+        CHECK(file == expected);
+    }
+
+    TEST_CASE("commands: File -> Settings...") {
+        static_assert(static_cast<std::size_t>(Command::Settings) ==
+                      static_cast<std::size_t>(Command::CloseStreams) + 1);
+        static_assert(static_cast<std::size_t>(Command::Quit) ==
+                      static_cast<std::size_t>(Command::Settings) + 1);
+        const rawreel::CommandInfo& settings = info(Command::Settings);
+        CHECK(settings.id == "settings");
+        CHECK(settings.menu == "File");  // wxOSX moves it to the app menu, GTK's GUI to Edit
+        CHECK(settings.label == SETTINGS_LABEL);
+        CHECK(settings.help == "Change the settings of rawreel");
+        REQUIRE(settings.key);
+        CHECK(*settings.key == letter(',', true));
+        CHECK(settings.route == KeyRoute::Accelerator);
+        CHECK_FALSE(settings.checkable);
+        CHECK(rawreel::menuLabel(settings) == std::string(SETTINGS_LABEL) + "\tCtrl+,");
+    }
+
+    TEST_CASE("commands: only View -> Log is checkable") {
+        for (const rawreel::CommandInfo& entry : commandTable()) {
+            CAPTURE(entry.id);
+            CHECK(entry.checkable == (entry.command == Command::LogPane));
         }
     }
 

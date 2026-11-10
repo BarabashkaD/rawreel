@@ -8,8 +8,11 @@
 #include <wx/wx.h>  // first (R11)
 // clang-format on
 
+#include <filesystem>
 #include <optional>
+#include <string_view>
 
+#include <wx/bmpbndl.h>
 #include <wx/slider.h>
 
 namespace rawreel {
@@ -57,5 +60,28 @@ void showSliderGhost(wxSlider& slider, std::optional<int> x);
 // NSView; GTK atk_object_set_name on its widget's AtkObject; Windows a wxAccessible returning the
 // name (wxUSE_ACCESSIBILITY; without it, nothing). Other toolkits: nothing.
 void setAccessibleName(wxWindow& window, const wxString& name);
+
+// A Settings page icon (Log pane and Settings design §5.1): on macOS the SF Symbol `sf_symbol` (a
+// template image, so it follows the light and dark appearance), as wxOSX requires an icon for
+// every page; elsewhere an empty bundle (the tabs show no icon).
+[[nodiscard]] wxBitmapBundle settingsPageIcon(std::string_view sf_symbol);
+
+// Show in Finder, Show in Explorer, Open Folder (§5.2): the OS file manager with `file_or_folder`
+// selected where the OS can (macOS activateFileViewerSelectingURLs:, Windows explorer /select,),
+// else the folder (GTK and other toolkits: wxLaunchDefaultApplication on the folder). Selftests
+// never call it (selftest.h revealFile).
+void revealInFileManager(const std::filesystem::path& file_or_folder);
+
+#if defined(__WXOSX__)
+// Edit -> Undo and Redo in a text field (Log pane and Settings design §4.2). wxOSX maps neither
+// item to the native undo:/redo: (its menu event goes to the main window), and its
+// wxTextEntry::CanUndo() is false for every single-line field. These act on the undo manager of the
+// window's first responder when that is an editable NSTextView of `window` (a multi-line control,
+// or the field editor that is editing a single-line field or combo box): the manager the text view
+// registers its typing with. The call goes to that manager only, not down the responder chain,
+// whose window delegate would send it back to the main window as a menu event.
+[[nodiscard]] bool canUndoText(wxWindow& window, bool redo);
+bool undoText(wxWindow& window, bool redo);  // false when there was nothing to undo or redo
+#endif
 
 }  // namespace rawreel

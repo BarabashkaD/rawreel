@@ -9,10 +9,14 @@
 // clang-format on
 
 #include <cmath>
+#include <filesystem>
 #include <optional>
+#include <string_view>
+#include <system_error>
 
 #include <gtk/gtk.h>
 
+#include "dvv/media/types.h"
 #include "gui/native_controls.h"
 
 namespace rawreel {
@@ -94,6 +98,20 @@ void setAccessibleName(wxWindow& window, const wxString& name) {
     if (AtkObject* const accessible = gtk_widget_get_accessible(widget); accessible != nullptr) {
         atk_object_set_name(accessible, name.utf8_str().data());
     }
+}
+
+// No icons on the tabs of the dialog.
+wxBitmapBundle settingsPageIcon(std::string_view /*sf_symbol*/) {
+    return {};
+}
+
+// The file manager cannot select a file here: the folder opens.
+void revealInFileManager(const std::filesystem::path& file_or_folder) {
+    std::error_code error;
+    const std::filesystem::path folder = std::filesystem::is_directory(file_or_folder, error)
+                                             ? file_or_folder
+                                             : file_or_folder.parent_path();
+    (void)wxLaunchDefaultApplication(wxString::FromUTF8(dvv::media::utf8FromPath(folder)));
 }
 
 }  // namespace rawreel
