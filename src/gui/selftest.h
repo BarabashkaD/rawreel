@@ -180,6 +180,9 @@ struct DialogHooks {
     // and GTK it runs once the window is shown; on Windows it is queued (CallAfter) before the
     // modal Show() and runs inside its loop, so it must end the dialog (SettingsWindow::pressOk()).
     dvv::MoveOnlyFunction<void(SettingsWindow&)> settings;
+    // The Log list's context menu (log level design §2.2), built but never shown: its items and
+    // which Level item is checked.
+    dvv::MoveOnlyFunction<void(const wxMenu&)> logMenu;
 };
 [[nodiscard]] DialogHooks& dialogHooks();
 // Every ShowModal of these dialogs goes here. With a hook set, a CallAfter queued before ShowModal
@@ -197,6 +200,10 @@ struct DialogHooks {
 [[nodiscard]] int showModal(wxFileDialog& dialog);
 // The same for the native folder dialog (the chooseFolder hook).
 [[nodiscard]] int showModal(wxDirDialog& dialog);
+// A popup menu (the Log list's context menu) is never shown in a --selftest run: the menu goes to
+// the logMenu hook (without one: one warning) and wxID_NONE is returned. Otherwise
+// window.GetPopupMenuSelectionFromUser(menu).
+[[nodiscard]] int showLogMenu(wxWindow& window, wxMenu& menu);
 // The file a save dialog returned: in a --selftest run the path its hook set (wxGTK's GetPath()
 // reads its file chooser, which a dialog that was never shown may not have updated), else
 // GetPath(). UTF-8.
@@ -216,7 +223,8 @@ void revealFile(const std::filesystem::path& file_or_folder);
 void showSettingsWindow(SettingsWindow& settings, wxWindow& parent);
 
 // The dispatcher: Smoke -> {smokeScenario(test)}, Lost -> {lostScenario(test), false}, Player ->
-// {playerScenario(test)}, Perf -> {perfScenario(test)}; every other scenario -> nullopt.
+// {playerScenario(test)}, Perf -> {perfScenario(test)}, About -> {aboutScenario(test)}; every other
+// scenario -> nullopt.
 [[nodiscard]] std::optional<SelfTestScript> selfTestScript(Scenario scenario, SelfTest& test);
 [[nodiscard]] std::vector<SelfTestStep> smokeScenario(SelfTest& test);
 // Device loss (design v2 §8.4 lost, E3): an injected loss offers Reopen within 5 s without
@@ -228,5 +236,7 @@ void showSettingsWindow(SettingsWindow& settings, wxWindow& parent);
 // The performance run (design v2 §8.4 perf, E7; manual, not a CTest entry): maximise, wait for a
 // full prefetch window, play 600 frames with Loop on, do 20 random seeks and print one JSON line.
 [[nodiscard]] std::vector<SelfTestStep> perfScenario(SelfTest& test);
+// Help -> About (opt-in, not in CTest): a shown frame, then the About step.
+[[nodiscard]] std::vector<SelfTestStep> aboutScenario(SelfTest& test);
 
 }  // namespace rawreel

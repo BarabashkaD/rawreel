@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 
 #include <deque>
+#include <format>
+#include <source_location>
 #include <vector>
 
 #include "core/log_text.h"
@@ -36,6 +38,13 @@ TEST_SUITE("core") {
         CHECK(rawreel::logRecordsText(none).empty());
         const std::deque<LogEntry> queue{lineEntry("a"), lineEntry("b\nc")};
         CHECK(rawreel::logRecordsText(queue) == "a\nb\nc\n");
+    }
+
+    TEST_CASE("log text: source") {
+        LogEntry entry;
+        entry.where = std::source_location::current();
+        CHECK(rawreel::logSourceText(entry) ==
+              std::format("test_log_text.cpp:{}", entry.where.line()));
     }
 
     TEST_CASE("log text: row message") {

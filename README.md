@@ -199,9 +199,10 @@ program's folder as `<app>`, the variable's folder as `$DVV_FFMPEG_DIR` and the 
 `rawreel-gui` plays one video stream. The window has the viewport with the control panel under it,
 an Info pane, a Log pane, a status bar (frame and length, target / actual fps, the pipeline's
 bottleneck, and the colour mapping, e.g. "SDR, no tone mapping" or "PQ → SDR tone mapping (1000 →
-100 nits)") and an infobar for warnings and errors. The log also goes to `rawreel.log` in the
-user's data folder (`%APPDATA%\rawreel\` on Windows, `~/.local/share/rawreel/` on Linux, or
-`$XDG_DATA_HOME/rawreel/` when that is set, `~/Library/Application Support/rawreel/` on macOS).
+100 nits)") and an infobar for warnings and errors. The log also goes to log files
+(`rawreel-YYYYMMDD-HHMMSS.log`, see [Log files](#log-files)) in the user's data folder
+(`%APPDATA%\rawreel\` on Windows, `~/.local/share/rawreel/` on Linux, or `$XDG_DATA_HOME/rawreel/`
+when that is set, `~/Library/Application Support/rawreel/` on macOS).
 
 The control panel has two rows. The upper row is a timeline strip over the slider: ticks, the first
 and last frame numbers, and above the thumb the number of the frame on screen. The lower row has
@@ -231,7 +232,7 @@ Usage: rawreel-gui [--appearance system|light|dark] [--gpu N] [--selftest SCENAR
 
   --appearance  light or dark windows, or the system setting (default)
   --gpu N       use GPU N (the index dvv-gpu-info lists) instead of the best one
-  --selftest S  run a scripted check and exit: smoke, player, lost or perf
+  --selftest S  run a scripted check and exit: smoke, player, lost, perf or about
   --inflight K  frames in flight for --selftest perf (default 4)
   --config F    read config file F instead of the default rawreel.json
   --debug-seek-delay MS  developer: every frame takes MS ms longer to load
@@ -321,6 +322,7 @@ step with a 5 s deadline, closes the window and exits with 6 naming a failed ste
 
 - `smoke`: resizes, minimise and restore, the panes, menus, status fields, infobar and Help
   items, with no stream and then with one.
+- `about` (opt-in, not in CTest): Help → About, its layout and links; run it when About changes.
 - `player` (needs a URI): play, pause, step, Home/End, the slider, loop, resize, View → Format…
   and file drops.
 - `lost` (needs a URI): an injected device loss, Reopen, play, a second loss.
@@ -338,7 +340,8 @@ no display, unless `DVV_REQUIRE_GPU=1` (then 4).
 
 The Log pane is hidden at start. It shows the records of this run, the last 5000 of them. The list
 has the columns Time (local, `HH:MM:SS.mmm`), Level, Message (a message of several lines shows its
-first line followed by " …") and Source (`file.cpp:42`); several rows can be selected. While the
+first line followed by " …"); the Source column (`file.cpp:42`) is there only when `log.source`
+is `true` (see [Configuration](#configuration)). Several rows can be selected. While the
 list has the focus it keeps every key (arrows, Page Up/Down, Home, End, Shift to extend the
 selection); the playback keys work again once the focus is elsewhere.
 
@@ -355,11 +358,29 @@ selection); the playback keys work again once the focus is elsewhere.
   Select All). Delete has no key.
 - **Copy and save:** File → Save Log… saves every record the pane holds; File → Save Selected
   Lines… saves the selected rows and is disabled without a selection. The Log list's context menu
-  has Copy, Select All, Save Selected Lines… and Save Log…. Copy and save write one record per
-  line in the format of `rawreel.log` (`2026-10-20T12:34:56.789Z INFO  message [file.cpp:42]`,
-  UTC; a multi-line message keeps its lines), UTF-8, with `\n` line ends. The save dialog
-  suggests `rawreel-log-YYYYMMDD-HHMMSS.txt`. A target that is the live `rawreel.log` or one of
-  its backups is refused.
+  has Copy, Select All, Level ▸, Save Selected Lines… and Save Log…. Copy and save write one
+  record per line in the format of the log files (`2026-10-20T12:34:56.789Z INFO  message`, UTC;
+  with ` [file.cpp:42]` at the end when `log.source` is `true`; a multi-line message keeps its
+  lines), UTF-8, with `\n` line ends. The save dialog suggests `rawreel-log-YYYYMMDD-HHMMSS.txt`.
+  A target that is the log file in use, or a file in the log folder in use whose name is that of a
+  log file (`rawreel-YYYYMMDD-HHMMSS.log`, with an optional `-N` before `.log`; names compare
+  without regard to case on Windows and macOS), is refused.
+- **Level:** the active log level decides which records are recorded. The list's context menu has
+  Level ▸ with Errors, Warnings, Info, Debug and Trace, the active one checked. A level chosen
+  there holds for this run only and is not saved; the next start uses the saved level. The saved
+  level is chosen in Settings (Log page, Level).
+- **Below the level:** a record below the active level is not recorded: not in the Log pane, not
+  in the log file, not on stderr. Lowering the level (Info to Debug) shows Debug records from then
+  on, never earlier ones. The system log keeps its own rule (warnings and errors, when it is on).
+  Records from before the config was read are all in the pane; the log file gets those at or above
+  the level.
+- **Level markers:** rawreel records a marker line at every level, so a log shows its level:
+  `===== log level: Info (settings) =====` once at start (`(default)` when no level is saved or
+  the config was not used), `===== log level changed: Info -> Debug (settings) =====` when the
+  level changes (`(this window only)` for a Settings change in a second copy,
+  `(this run, Log pane menu)` for the menu), and a `===== log level: ... =====` line after every
+  log file opens. Choosing the level that is already active writes nothing. Markers reach the
+  Log pane, the log file, stderr and the system log when it is on.
 
 ### Settings window
 
@@ -371,14 +392,19 @@ selection); the playback keys work again once the focus is elsewhere.
 
 The pages and their controls:
 
-- **Log:** "Write a log file" (`log.file.enabled`); Folder, the folder of `rawreel.log`, with
+- **Log:** Level (`log.level`: Errors, Warnings, Info, Debug or Trace; it shows the saved level,
+  not a level chosen for this run in the Log list's menu; changing it saves it and makes it the
+  active level, which ends a run-only level; on Windows it applies with OK); "Write a log file"
+  (`log.file.enabled`); Folder, the folder of the log files, with
   Choose…, Use Default (back to the user data folder) and a button that shows the folder in the
   file manager (Show in Finder, Show in Explorer or Open Folder); and the system log checkbox
   (`log.system.enabled`, off by default): "Send warnings and errors to the system log (Console)"
   on macOS, "… (journal/syslog)" on Linux, "Send warnings and errors to the debugger output" on
   Windows. A new folder takes effect at once; the old file gets the line `log file moves to
-  '<new path>'` and stays where it was. When the saved folder cannot be used, rawreel writes to
-  the default folder, logs one warning, and the page says "Not available, writing to <folder>".
+  '<new path>'` (at Warnings or Errors that Info line is not recorded) and
+  stays where it was. When the saved folder cannot be used, rawreel
+  writes to the default folder, logs one warning, and the page says "Not available, writing to
+  <folder>".
 - **Files:** File reads, Automatic, Unbuffered (no OS cache) or Buffered (OS cache)
   (`io.fileReads`), which applies to files opened after the change and to reopens; and the path
   of the settings file in use.
@@ -386,6 +412,34 @@ The pages and their controls:
 Only the first `rawreel-gui` process that uses a config file saves settings. A second copy runs
 normally: its Settings window says "Another rawreel window owns the settings. Changes here apply
 to this window only and are not saved.", and its changes and its Log pane state are not saved.
+
+### Log files
+
+- **Names:** a log file is named by its creation time in local time,
+  `rawreel-YYYYMMDD-HHMMSS.log` (for example `rawreel-20261110-153126.log`); a name already taken
+  gets `-2`, `-3`, … before `.log`. The lines inside carry UTC times. Because the names are local
+  time, a clock set back (a daylight-saving change, a new time zone) can make an older file the
+  newest for a while.
+- **Which file is written:** at start, and when the log folder changes, the first `rawreel-gui`
+  process that uses a config file (the one that saves settings) appends to the newest log file of
+  the folder if it is below 4 MiB, else it creates a new file. A second copy always creates its
+  own file. The newest file is the one with the latest name, the number after the time breaking a
+  tie; a file whose name does not follow the pattern (`rawreel-old.log`) is never touched.
+- **Splitting:** a log file is closed at 4 MiB and the next line starts a new file; a line is
+  never split across two files. If a new file cannot be created, the current one goes on past
+  4 MiB rather than lose lines.
+- **First lines:** a file that rawreel creates starts with a line that names its level and the
+  file before it, `===== log file: level Info, continues rawreel-20261110-140210.log =====`
+  (a file created at start or when the folder changes has no `continues` part; a split names
+  the file it follows). After every open, the file then gets the line
+  `log file: '<full path>'` (at Warnings or Errors that Info line is not recorded) and the level
+  marker. When the folder changes, the last line of the old file is
+  `log file moves to '<full path>'` (also an Info line).
+- **Never deleted:** rawreel deletes, renames and rotates no log file. A `rawreel.log` and its
+  backups from an earlier version stay where they are and are not written any more.
+- **Size warning:** at start, when a log folder is opened and after each split, rawreel adds up
+  the sizes of the log files in the folder. Over 1 GiB it logs one warning, once per run: `log
+  files in '<folder>' use <N> MiB (over 1 GiB); rawreel never deletes them`.
 
 ## rawreel-cli
 
@@ -595,7 +649,7 @@ either executable reads another file instead. The default file is:
   never the working directory), else `rawreel.json` in the user data folder
   (`%APPDATA%\rawreel\` on Windows, `~/.local/share/rawreel/` or `$XDG_DATA_HOME/rawreel/` on
   Linux, `~/Library/Application Support/rawreel/` on macOS), the folder of the default
-  `rawreel.log`.
+  log files.
 
 No `rawreel.json` is shipped, so the built-in defaults apply until a file exists. `rawreel-gui`
 creates it in the user data folder when a setting is saved.
@@ -605,6 +659,8 @@ creates it in the user data folder when a setting is saved.
   "io":  { "fileReads": "auto" },
   "gui": { "showLogPane": false },
   "log": {
+    "level":  "info",
+    "source": false,
     "file":   { "enabled": true, "folder": "" },
     "system": { "enabled": false }
   }
@@ -615,9 +671,16 @@ creates it in the user data folder when a setting is saved.
 | --- | --- | --- | --- |
 | `io.fileReads` | `auto`, `unbuffered`, `buffered` | `auto` | both executables |
 | `gui.showLogPane` | `true`, `false` | `false` | rawreel-gui |
+| `log.level` | `error`, `warn`, `info`, `debug`, `trace` (any letter case) | `info` | rawreel-gui |
+| `log.source` | `true`, `false` | `false` | rawreel-gui |
 | `log.file.enabled` | `true`, `false` | `true` | rawreel-gui |
 | `log.file.folder` | an absolute folder path; `""` is the user data folder | `""` | rawreel-gui |
 | `log.system.enabled` | `true`, `false` | `false` | rawreel-gui |
+
+`log.level` is the active log level at start (see [Log pane](#log-pane)); Settings writes it.
+`log.source` has no control in the GUI, is read at start and is never written by rawreel: when
+`true`, the log files, Copy and save end each line with ` [file.cpp:42]` and the Log list has the
+Source column; the few lines logged before the config is read have no source.
 
 `io.fileReads` sets how raw and Y4M files are read. FFmpeg container sources read through
 FFmpeg's own file I/O (`reads: ffmpeg`) and `lavfi:` graphs read no files (`reads: lavfi`), so the
@@ -677,7 +740,7 @@ knows. Unknown keys are ignored. To try another file:
 
 When `rawreel-gui` or `rawreel-cli` crashes, it writes a minidump to `%APPDATA%\rawreel\crashes\`
 (`<exe>-<yyyymmdd-hhmmss>-<pid>.dmp`). Attach the `.dmp` file and the log to the bug report: for
-`rawreel-gui` its log file `%APPDATA%\rawreel\rawreel.log`; for `rawreel-cli` its console output,
+`rawreel-gui` its newest log file in `%APPDATA%\rawreel\` (`rawreel-*.log`); for `rawreel-cli` its console output,
 which includes the `rawreel: crash dump <path>` line. Add the output of `rawreel-cli --version`.
 The maintainer reads the dump with the symbols of the same release,
 `rawreel-<v>-windows-x64-symbols.zip`. `abort` and `__fastfail` end the process without a dump.
@@ -686,8 +749,9 @@ On Linux, rawreel writes no crash report; the system can write a core dump inste
 `ulimit -c unlimited` in the shell that starts rawreel. Where the core goes depends on the system
 (`cat /proc/sys/kernel/core_pattern`): on Ubuntu, apport usually stores it below
 `/var/lib/apport/coredump/`; with systemd-coredump, `coredumpctl` lists it. Attach the
-core, the log (`~/.local/share/rawreel/rawreel.log` for `rawreel-gui`, the console output for
-`rawreel-cli`) and the output of `rawreel-cli --version`. A core holds the program's memory,
+core, the log (the newest `rawreel-*.log` in `~/.local/share/rawreel/` for `rawreel-gui`,
+the console output for `rawreel-cli`) and the output of `rawreel-cli --version`. A core holds the
+program's memory,
 including frames of the open video. The maintainer reads it with the symbols of the same release,
 `rawreel-<v>-linux-x64-symbols.tar.xz`, extracted into the package folder
 (`tar xf rawreel-<v>-linux-x64-symbols.tar.xz -C rawreel-<v>`), so that gdb finds
@@ -695,8 +759,9 @@ including frames of the open video. The maintainer reads it with the symbols of 
 
 On macOS, rawreel has no crash handler; the system writes a crash report for `rawreel-gui` or
 `rawreel-cli` to `~/Library/Logs/DiagnosticReports/`. Attach it, the log
-(`~/Library/Application Support/rawreel/rawreel.log` for `rawreel-gui`, the console output for
-`rawreel-cli`; the log names the Vulkan driver) and the output of `rawreel-cli --version`, whose
+(the newest `rawreel-*.log` in `~/Library/Application Support/rawreel/` for
+`rawreel-gui`, the console output for `rawreel-cli`; the log names the Vulkan driver) and
+the output of `rawreel-cli --version`, whose
 version line includes `driver KosmicKrisp ...`. The maintainer reads the report with the symbols
 of the same release, `rawreel-<v>-macos-arm64-symbols.zip` (each `.dSYM` matches its executable
 by UUID).
@@ -787,9 +852,10 @@ CTest sets these variables itself. The tests (`ctest --preset vs2026`, or
   config loader and the headless Session, without a GPU.
 - `rawreel.gpu` (label `gpu`): the fit compositor against its CPU reference and the Session on the
   GPU.
-- `rawreel.gui_selftest.smoke`, `.smoke_noffmpeg`, `.player` and `.lost` (labels
-  `gpu;display;gui`): the selftests above, and smoke without FFmpeg; `rawreel.gui_fault.presenter`
-  and `.stack`: an injected presenter failure and a failed start exit with 4.
+- `rawreel.gui_selftest.smoke`, `.smoke_source`, `.smoke_noffmpeg`, `.player` and `.lost` (labels
+  `gpu;display;gui`): the selftests above, smoke with `log.source` on, and smoke without FFmpeg;
+  `rawreel.gui_fault.presenter` and `.stack`: an injected presenter failure and a failed start exit
+  with 4.
 - `rawreel.cli_unit` and `rawreel.cli_e2e.*`: the `rawreel-cli` arguments and output forms, and
   the built `rawreel-cli` (`info`, `dump`, exit codes, non-ASCII paths, `dump --via gpu`, `bench`,
   FFmpeg sources and `--version`).

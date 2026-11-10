@@ -54,6 +54,7 @@ add_library(rawreel_core STATIC
     src/core/info_text.cpp
     src/core/layout.cpp
     src/core/log_file_switch.cpp
+    src/core/log_level.cpp
     src/core/log_mirror.cpp
     src/core/log_store.cpp
     src/core/log_text.cpp

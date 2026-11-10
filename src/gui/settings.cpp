@@ -4,6 +4,7 @@
 
 #include "gui/settings.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <filesystem>
@@ -16,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include <wx/choice.h>
 #include <wx/dirdlg.h>
 #include <wx/preferences.h>
 #include <wx/radiobut.h>
@@ -23,6 +25,7 @@
 #include "core/config.h"
 #include "core/config_writer.h"
 #include "core/log_file_switch.h"
+#include "core/log_level.h"
 #include "dvv/base/log.h"
 #include "dvv/media/types.h"
 #include "gui/app.h"
@@ -60,6 +63,11 @@ constexpr std::array<dvv::platform::FileReadMode, 3> READ_MODES{
     dvv::platform::FileReadMode::Buffered};
 constexpr std::array<std::string_view, 3> READ_LABELS{"Automatic", "Unbuffered (no OS cache)",
                                                       "Buffered (OS cache)"};
+
+// Log level design §2.2: the Level choice's items, in this order.
+constexpr std::array<dvv::LogLevel, 5> LEVELS{dvv::LogLevel::Error, dvv::LogLevel::Warn,
+                                              dvv::LogLevel::Info, dvv::LogLevel::Debug,
+                                              dvv::LogLevel::Trace};
 
 wxString fromUtf8(std::string_view text) {
     return wxString::FromUTF8(text.data(), text.size());
@@ -111,6 +119,23 @@ LogSettingsPage::LogSettingsPage(wxWindow* parent, MainFrame& frame, SettingsWin
     auto* sizer = new wxBoxSizer(wxVERTICAL);
     addSecondCopyLine(*this, *sizer);
 
+    // Log level design §2.2: first on the page.
+    auto* level_row = new wxBoxSizer(wxHORIZONTAL);
+    level_row->Add(new wxStaticText(this, wxID_ANY, "Level:"),
+                   wxSizerFlags().CenterVertical().Border(wxRIGHT));
+    level_ = new wxChoice(this, wxID_ANY);
+    for (const dvv::LogLevel level : LEVELS) {
+        level_->Append(fromUtf8(levelShownName(level)));
+    }
+    level_->Bind(wxEVT_CHOICE, [this](wxCommandEvent& event) {
+        const int index = event.GetSelection();
+        if (index >= 0 && static_cast<std::size_t>(index) < LEVELS.size()) {
+            setLevel(LEVELS[static_cast<std::size_t>(index)]);
+        }
+    });
+    level_row->Add(level_, wxSizerFlags().CenterVertical());
+    sizer->Add(level_row, wxSizerFlags().Border(wxALL));
+
     file_box_ = new wxCheckBox(this, wxID_ANY, "Write a log file");
     file_box_->Bind(wxEVT_CHECKBOX,
                     [this](wxCommandEvent& event) { setFileEnabled(event.IsChecked()); });
@@ -160,7 +185,8 @@ bool LogSettingsPage::active() const {
 
 LogSettingsPage::Choice LogSettingsPage::applied() const {
     const App& app = wxGetApp();
-    return {.fileEnabled = app.config().log.file.enabled,
+    return {.level = app.savedLevel(),
+            .fileEnabled = app.config().log.file.enabled,
             .folder = app.config().log.file.folder,
             .systemLog = app.systemLogEnabled()};
 }
@@ -209,9 +235,9 @@ void LogSettingsPage::reveal() {
     if (folder.empty()) {
         folder = folderOf(wanted_).value_or(std::filesystem::path());
     }
-    const std::filesystem::path file = folder / std::string(LOG_FILE_NAME);
+    const std::filesystem::path file = wxGetApp().currentLogFile();
     std::error_code error;
-    revealFile(std::filesystem::exists(file, error) && !error ? file : folder);
+    revealFile(!file.empty() && std::filesystem::exists(file, error) && !error ? file : folder);
 }
 
 void LogSettingsPage::setFileEnabled(bool on) {
@@ -220,6 +246,22 @@ void LogSettingsPage::setFileEnabled(bool on) {
     }
     wanted_.fileEnabled = on;
     changed();
+}
+
+void LogSettingsPage::setLevel(dvv::LogLevel level) {
+    if (!active()) {
+        return;
+    }
+    wanted_.level = level;
+    level_chosen_ = true;
+    changed();
+}
+
+dvv::LogLevel LogSettingsPage::level() const {
+    const int index = level_->GetSelection();
+    return index >= 0 && static_cast<std::size_t>(index) < LEVELS.size()
+               ? LEVELS[static_cast<std::size_t>(index)]
+               : dvv::LogLevel::Info;
 }
 
 void LogSettingsPage::setSystemLog(bool on) {
@@ -257,6 +299,7 @@ bool LogSettingsPage::TransferDataToWindow() {
     }
     wanted_ = applied();
     folder_chosen_ = false;  // a choice in a cancelled dialog does not linger
+    level_chosen_ = false;
     prepared_.reset();
     refresh();
     return wxPanel::TransferDataToWindow();
@@ -286,6 +329,7 @@ void LogSettingsPage::changed() {
     if (!prepare()) {
         wanted_ = applied();  // spec §5.3: the field keeps the old value
         folder_chosen_ = false;
+        level_chosen_ = false;
         refresh();
         return;
     }
@@ -316,7 +360,7 @@ bool LogSettingsPage::prepare() {
         if (sameFolder(*folder, app.logFolderInUse())) {
             return true;
         }
-        dvv::Result<std::shared_ptr<dvv::RotatingFileSink>> opened = app.prepareLogFile(*folder);
+        dvv::Result<std::shared_ptr<dvv::SplitFileSink>> opened = app.prepareLogFile(*folder);
         if (opened) {
             prepared_ = Prepared{.sink = std::move(*opened), .folder = *folder};
             return true;
@@ -358,10 +402,27 @@ void LogSettingsPage::apply(std::vector<ConfigValue>& values) {
         app.useSystemLog(wanted_.systemLog);
         values.push_back({.key = "log.system.enabled", .value = wanted_.systemLog});
     }
+    // Log level design §2.2: a changed level is saved (only the owner saves) and becomes the
+    // active level, which ends a run-only level. On macOS and GTK choosing the saved level does
+    // that too; on Windows OK with the control unchanged leaves a run-only level as it is.
+    const bool level_chosen = std::exchange(level_chosen_, false);
+    const bool level_changed = wanted_.level != before.level;
+    if (level_changed) {
+        app.setLevelConfig(wanted_.level);
+        values.push_back(
+            {.key = "log.level", .value = std::string(levelConfigValue(wanted_.level))});
+    }
+    if (level_changed || (level_chosen && wxPreferencesEditor::ShouldApplyChangesImmediately())) {
+        app.setActiveLevel(wanted_.level,
+                           app.ownsSettings() ? LevelSource::Settings : LevelSource::ThisWindow);
+    }
 }
 
 void LogSettingsPage::refresh() {
     const App& app = wxGetApp();
+    const auto level = std::ranges::find(LEVELS, wanted_.level);
+    level_->SetSelection(level != LEVELS.end() ? static_cast<int>(level - LEVELS.begin())
+                                               : wxNOT_FOUND);
     file_box_->SetValue(wanted_.fileEnabled);
     folder_->ChangeValue(pathText(wanted_.folder));
     const dvv::Result<std::filesystem::path> fallback = app.defaultLogFolder();

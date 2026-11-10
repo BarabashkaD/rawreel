@@ -53,9 +53,9 @@ private:
 
 class ListCtrlLogList final : public LogList {
 public:
-    ListCtrlLogList(wxWindow* parent, const LogMirror& mirror)
+    ListCtrlLogList(wxWindow* parent, const LogMirror& mirror, bool with_source)
         : LogList(parent, mirror), list_(new VirtualListCtrl(this, mirror)) {
-        for (std::size_t column = 0; column < LOG_LIST_COLUMNS.size(); ++column) {
+        for (std::size_t column = 0; column < logListColumns(with_source); ++column) {
             const std::string_view title = LOG_LIST_COLUMNS[column];
             list_->AppendColumn(wxString::FromUTF8(title.data(), title.size()), wxLIST_FORMAT_LEFT,
                                 FromDIP(COLUMN_WIDTHS_DIP[column]));
@@ -175,10 +175,14 @@ public:
     }
 
     [[nodiscard]] wxString cellText(std::size_t row, std::size_t column) const override {
-        if (row >= rowCount() || column >= LOG_LIST_COLUMNS.size()) {
+        if (row >= rowCount() || column >= columnCount()) {
             return {};
         }
         return list_->GetItemText(static_cast<long>(row), static_cast<int>(column));
+    }
+
+    [[nodiscard]] std::size_t columnCount() const override {
+        return static_cast<std::size_t>(list_->GetColumnCount());
     }
 
     [[nodiscard]] LogListKind kind() const noexcept override { return LogListKind::ListCtrl; }
@@ -203,8 +207,8 @@ private:
 
 }  // namespace
 
-LogList* createListCtrlLogList(wxWindow* parent, const LogMirror& mirror) {
-    return new ListCtrlLogList(parent, mirror);
+LogList* createListCtrlLogList(wxWindow* parent, const LogMirror& mirror, bool with_source) {
+    return new ListCtrlLogList(parent, mirror, with_source);
 }
 
 }  // namespace rawreel

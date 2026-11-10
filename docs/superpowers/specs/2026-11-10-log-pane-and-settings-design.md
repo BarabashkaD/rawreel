@@ -518,7 +518,7 @@ separate from the smoke scenario's scratch folder, which a step deletes mid-run.
 So a selftest never touches the user's config, log file or system log: when its `logs/` cannot
 be opened, it runs without a log file instead of falling back to the default folder. The folder
 is removed in
-`OnExit` after the log file is closed. With `--config`, a selftest uses that file as it is.
+`OnExit` after the log file is closed. A selftest given `--config` starts its own scratch config as a copy of that file and never writes the original.
 
 Every dialog and every OS hand-off in a selftest goes through a hook, so nothing blocks and
 nothing reaches the desktop:

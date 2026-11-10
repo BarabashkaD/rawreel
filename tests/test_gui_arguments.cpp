@@ -124,11 +124,12 @@ TEST_CASE("gui arguments: --gpu") {
 
 TEST_CASE("gui arguments: --selftest") {
     SUBCASE("every scenario maps and its name round-trips") {
-        const std::array<std::pair<std::string_view, Scenario>, 4> scenarios{{
+        const std::array<std::pair<std::string_view, Scenario>, 5> scenarios{{
             {"smoke", Scenario::Smoke},
             {"player", Scenario::Player},
             {"lost", Scenario::Lost},
             {"perf", Scenario::Perf},
+            {"about", Scenario::About},
         }};
         for (const auto& [name, scenario] : scenarios) {
             CAPTURE(name);
@@ -141,7 +142,7 @@ TEST_CASE("gui arguments: --selftest") {
     }
     SUBCASE("the cut scenarios are bad values") {
         checkFormatError({"--selftest", "tools"},
-                         "bad value 'tools' for --selftest (smoke, player, lost, perf)");
+                         "bad value 'tools' for --selftest (smoke, player, lost, perf, about)");
         checkFormatError({"--selftest", "recovery"}, "bad value 'recovery' for --selftest");
     }
     SUBCASE("without its value") {

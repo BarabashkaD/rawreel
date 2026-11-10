@@ -2,6 +2,8 @@
 
 #include <format>
 
+#include "dvv/base/error.h"
+
 namespace rawreel {
 
 std::string logNoticeText(std::uint64_t errors, std::uint64_t warnings) {
@@ -46,6 +48,10 @@ std::string logRowMessage(std::string_view message) {
         return std::string(message);
     }
     return std::string(message.substr(0, newline)) + " …";
+}
+
+std::string logSourceText(const LogEntry& entry) {
+    return std::format("{}:{}", dvv::sourceFileName(entry.where), entry.where.line());
 }
 
 std::string logSaveFileName(const LocalTime& time) {

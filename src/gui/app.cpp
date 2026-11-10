@@ -10,6 +10,8 @@
 #include <cstdio>
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <ios>
 #include <memory>
 #include <optional>
 #include <random>
@@ -27,6 +29,7 @@
 #include "core/config.h"
 #include "core/config_writer.h"
 #include "core/log_file_switch.h"
+#include "core/log_level.h"
 #include "core/log_store.h"
 #include "core/settings_claim.h"
 #include "core/timer.h"
@@ -53,6 +56,8 @@ namespace {
 // Written by main() before wxEntry() and by the GUI thread afterwards; read by main() after
 // wxEntry() returns. No other thread touches them.
 GuiArguments the_arguments;
+// main()'s stderr sink (in the Logger since before wxEntry()); its level follows the active level.
+std::shared_ptr<dvv::StderrSink> the_stderr_sink;
 std::optional<int> decided_exit_code;
 
 constexpr std::size_t IO_THREADS = 4;
@@ -137,8 +142,9 @@ std::string randomSuffix() {
 
 }  // namespace
 
-void App::setArguments(GuiArguments arguments) {
+void App::setArguments(GuiArguments arguments, std::shared_ptr<dvv::StderrSink> stderr_sink) {
     the_arguments = std::move(arguments);
+    the_stderr_sink = std::move(stderr_sink);
 }
 
 const GuiArguments& App::arguments() noexcept {
@@ -176,12 +182,16 @@ bool App::OnInit() {
     const std::string crash_warning = CrashHandler::install("rawreel-gui");  // first (D22)
     // Spec §5.3 "At start" step 1: the sinks, added once for the whole run and never removed (the
     // stderr sink is main()'s). The log file switch holds no file yet; the system log is off until
-    // the config says otherwise.
+    // the config says otherwise. The Logger itself is at Trace for the whole run, so only the
+    // sinks' levels filter (addendum §2.1). Until the config gives the active level, the store
+    // takes every level (the first file gets only those at or above it, §2.3); the switch and
+    // main()'s stderr sink are at Info, the default level.
     dvv::Logger& logger = dvv::Logger::instance();
+    logger.setLevel(dvv::LogLevel::Trace);
     log_store_ = std::make_shared<LogStore>();
-    logger.addSink(log_store_);
+    logger.addSink(log_store_, dvv::LogLevel::Trace);
     log_file_ = std::make_shared<LogFileSwitch>();
-    logger.addSink(log_file_);
+    logger.addSink(log_file_, dvv::LogLevel::Info);
     system_sink_ = std::make_shared<dvv::SystemLogSink>("rawreel");
     logger.addSink(system_sink_, dvv::LogLevel::Off);
     if (!crash_warning.empty()) {
@@ -329,9 +339,14 @@ void App::setAppearance() {
 }
 
 bool App::startLogAndConfig() {
-    // §7.1: a selftest without --config never reads or writes the user's config or log file.
-    if (selftest() && !the_arguments.config) {
-        dvv::Result<std::filesystem::path> made = makeSelftestConfig();
+    // §7.1: a selftest never reads or writes the user's config or log file. With --config, its own
+    // config starts as a copy of that file (log level design §8: smoke_source), which it never
+    // writes.
+    if (selftest()) {
+        const std::filesystem::path seed = the_arguments.config
+                                               ? dvv::media::pathFromUtf8(*the_arguments.config)
+                                               : std::filesystem::path();
+        dvv::Result<std::filesystem::path> made = makeSelftestConfig(seed);
         if (!made) {
             finish(exit_code::BAD_ARGUMENTS,
                    "rawreel-gui --selftest: its config folder could not be made: " +
@@ -344,17 +359,74 @@ bool App::startLogAndConfig() {
     LoadedConfig loaded = loadConfig(the_arguments.config);
     config_ = std::move(loaded.config);
     config_path_ = std::move(loaded.path);
+    // The claim before the first log file: only the settings owner appends to the newest log
+    // file (addendum §5.1, D10).
+    if (!config_path_.empty()) {
+        settings_claim_ = SettingsClaim::tryClaim(config_path_);
+    }
+    // Addendum §4: log.source for the store's lines and the file's live lines; the lines the
+    // store took before this keep the default (no source).
+    log_store_->setWithSource(config_.log.source);
+    log_file_->setWithSource(config_.log.source);
+    applyLevel(config_.log.level);  // addendum §2.2: the active level is log.level
+    level_source_ = config_.log.levelSaved ? LevelSource::Settings : LevelSource::Default;
     useSystemLog(config_.log.system.enabled);
     if (config_.log.file.enabled) {
         startLogFile();
     }
-    if (!config_path_.empty()) {
-        settings_claim_ = SettingsClaim::tryClaim(config_path_);
-    }
+    // Addendum §3.1: after the file's header and "log file: '<path>'" line.
+    dvv::Logger::instance().mark(levelMarker(activeLevel(), level_source_));
+    checkLogSize();
     return true;
 }
 
-dvv::Result<std::filesystem::path> App::makeSelftestConfig() {
+void App::applyLevel(dvv::LogLevel level) {
+    // First, so a file the switch starts from now on has the new level in its header.
+    active_level_->store(level, std::memory_order_relaxed);
+    dvv::Logger& logger = dvv::Logger::instance();
+    logger.setSinkLevel(*log_file_, level);
+    logger.setSinkLevel(*log_store_, level);
+    if (the_stderr_sink) {
+        logger.setSinkLevel(*the_stderr_sink, level);
+    }
+}
+
+void App::setActiveLevel(dvv::LogLevel level, LevelSource source) {
+    const dvv::LogLevel from = activeLevel();
+    level_source_ = source;  // also for the level already active: Settings ends a run-only level
+    if (level == from) {
+        return;  // addendum §3.1: no marker for the level already active
+    }
+    applyLevel(level);  // §2.1: the sinks' levels, then the marker
+    dvv::Logger::instance().mark(levelChangeMarker(from, level, source));
+}
+
+void App::checkLogSplits() {
+    const std::uint64_t splits = log_file_ ? log_file_->splits() : 0;
+    if (splits == checked_splits_) {
+        return;
+    }
+    checked_splits_ = splits;
+    checkLogSize();
+}
+
+void App::checkLogSize() {
+    if (size_warned_ || log_folder_.empty()) {
+        return;
+    }
+    const std::uintmax_t bytes = log_file_->totalBytes();
+    if (bytes <= LOG_SIZE_WARNING_BYTES) {
+        return;
+    }
+    size_warned_ = true;  // once per run
+    // Posted: the caller may be on the Log pane's refresh path, where a line logged would post
+    // another refresh (spec §3.3).
+    CallAfter([text = logSizeWarning(dvv::media::utf8FromPath(log_folder_), bytes)] {
+        DVV_LOG_TEXT(dvv::LogLevel::Warn, text);
+    });
+}
+
+dvv::Result<std::filesystem::path> App::makeSelftestConfig(const std::filesystem::path& seed) {
     std::error_code error;
     const std::filesystem::path temp = std::filesystem::temp_directory_path(error);
     if (error) {
@@ -386,6 +458,16 @@ dvv::Result<std::filesystem::path> App::makeSelftestConfig() {
     }
     DVV_TRY_VOID(secureNewFolder(logs));
     std::filesystem::path file = folder / CONFIG_FILE_NAME;
+    if (!seed.empty()) {
+        DVV_TRY(const std::string text, readConfigText(seed));
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        out << text;
+        out.close();
+        if (!out) {
+            return dvv::makeError(dvv::Errc::Io, std::format("{} could not be written",
+                                                             dvv::media::utf8FromPath(file)));
+        }
+    }
     const std::array<ConfigValue, 2> values{{
         {.key = "log.file.folder", .value = dvv::media::utf8FromPath(logs)},
         {.key = "log.system.enabled", .value = false},
@@ -461,22 +543,46 @@ bool App::isDefaultLogFolder(const std::filesystem::path& folder) const {
     return folder == *fallback || (std::filesystem::equivalent(folder, *fallback, error) && !error);
 }
 
-dvv::Result<std::shared_ptr<dvv::RotatingFileSink>> App::prepareLogFile(
+dvv::Result<std::shared_ptr<dvv::SplitFileSink>> App::prepareLogFile(
     const std::filesystem::path& folder) {
-    return rawreel::openLogFile(folder, isDefaultLogFolder(folder) ? FolderCreation::WithParents
-                                                                   : FolderCreation::LastOnly);
+    return openLogFileIn(folder, isDefaultLogFolder(folder) ? FolderCreation::WithParents
+                                                            : FolderCreation::LastOnly);
 }
 
-void App::useLogFile(std::shared_ptr<dvv::RotatingFileSink> sink, std::filesystem::path folder) {
+dvv::Result<std::shared_ptr<dvv::SplitFileSink>> App::openLogFileIn(
+    const std::filesystem::path& folder, FolderCreation creation) {
+    DVV_TRY(std::shared_ptr<dvv::SplitFileSink> sink,
+            rawreel::openLogFile(folder, creation, ownsSettings()));
+    // Runs under the sink's mutex, on the thread whose line starts a new file: it only builds the
+    // text (no logging, no lock of ours); the level comes from the shared atomic. A new file from
+    // open() gets its header here at once; an appended one gets none.
+    sink->setHeader([level = active_level_](const std::filesystem::path& previous) {
+        return logFileHeader(level->load(std::memory_order_relaxed),
+                             dvv::media::utf8FromPath(previous.filename()));
+    });
+    return sink;
+}
+
+void App::useLogFile(std::shared_ptr<dvv::SplitFileSink> sink, std::filesystem::path folder) {
+    const std::filesystem::path file = sink->currentFile();
     if (!log_folder_.empty()) {
-        // Step 3: the last line of the old file names the new one.
-        DVV_LOG_INFO("log file moves to '{}'",
-                     dvv::media::utf8FromPath(folder / std::string(LOG_FILE_NAME)));
+        // Step 3: the last line of the old file names the new one (addendum §5.2: its full path).
+        DVV_LOG_INFO("log file moves to '{}'", dvv::media::utf8FromPath(file));
         dvv::Logger::instance().flush();  // in the old file before the swap, even when queued
     }
     std::shared_ptr<dvv::ILogSink> previous = log_file_->replace(std::move(sink));
     previous.reset();  // outside the switch's lock
     log_folder_ = std::move(folder);
+    // Addendum §5.2: after its header, the new file names itself, then the level marker follows.
+    // The marker comes after every open, because an appended file (the settings owner reopening a
+    // folder whose newest file is below the limit) gets no header to carry the level.
+    DVV_LOG_INFO("log file: '{}'", dvv::media::utf8FromPath(file));
+    // The marker names where the active level came from: "(this run, Log pane menu)" for a
+    // run-only level.
+    dvv::Logger::instance().mark(levelMarker(activeLevel(), level_source_));
+    // Addendum §5.3: the files of the new folder; a new count of splits.
+    checked_splits_ = log_file_->splits();
+    checkLogSize();
 }
 
 void App::stopLogFile() {
@@ -495,6 +601,11 @@ void App::setLogFileConfig(bool enabled, std::filesystem::path folder) {
     config_.log.file.folder = std::move(folder);
 }
 
+void App::setLevelConfig(dvv::LogLevel level) {
+    config_.log.level = level;
+    config_.log.levelSaved = config_.log.levelSaved || ownsSettings();
+}
+
 void App::useFileReads(dvv::platform::FileReadMode mode) {
     config_.io.fileReads = mode;
     if (session_) {
@@ -505,12 +616,12 @@ void App::useFileReads(dvv::platform::FileReadMode mode) {
 void App::startLogFile() {
     // Spec §11: without a log file the program goes on with a warning.
     const std::filesystem::path& saved = config_.log.file.folder;
-    std::shared_ptr<dvv::RotatingFileSink> file;
+    std::shared_ptr<dvv::SplitFileSink> file;
     std::filesystem::path folder;
     std::optional<std::string> saved_failure;  // why the saved folder cannot be used
     if (!saved.empty()) {
-        dvv::Result<std::shared_ptr<dvv::RotatingFileSink>> opened =
-            rawreel::openLogFile(saved, FolderCreation::LastOnly);
+        dvv::Result<std::shared_ptr<dvv::SplitFileSink>> opened =
+            openLogFileIn(saved, FolderCreation::LastOnly);
         if (opened) {
             file = std::move(*opened);
             folder = saved;
@@ -540,8 +651,8 @@ void App::startLogFile() {
                          dvv::media::utf8FromPath(saved), *saved_failure,
                          dvv::media::utf8FromPath(*directory));
         }
-        dvv::Result<std::shared_ptr<dvv::RotatingFileSink>> opened =
-            rawreel::openLogFile(*directory, FolderCreation::WithParents);
+        dvv::Result<std::shared_ptr<dvv::SplitFileSink>> opened =
+            openLogFileIn(*directory, FolderCreation::WithParents);
         if (!opened) {
             DVV_LOG_WARN("no log file: {}", opened.error().describe());
             return;
@@ -553,15 +664,23 @@ void App::startLogFile() {
     // One call: the file first gets the lines the store holds (the config's among them), then
     // takes every later one. Nothing was in the switch before (a null old sink). Only the GUI
     // thread logs at this point (no pool runs yet), so no line falls between the two calls.
-    const std::vector<LogEntry> held = log_store_->entries();
+    // Addendum §2.3: the store took the lines before the config at every level; the file gets
+    // only those at or above the active level (and marks, which pass every level).
+    std::vector<LogEntry> held = log_store_->entries();
+    const dvv::LogLevel level = activeLevel();
+    std::erase_if(held,
+                  [level](const LogEntry& entry) { return !entry.mark && entry.level < level; });
     std::shared_ptr<dvv::ILogSink> previous = log_file_->replace(std::move(file), held);
     previous.reset();  // outside the switch's lock
+    // Addendum §5.2: after the header (and the held lines), the file names itself.
+    DVV_LOG_INFO("log file: '{}'", dvv::media::utf8FromPath(currentLogFile()));
+    checked_splits_ = log_file_->splits();
 }
 
 void App::closeLogAndConfig() {
     dvv::Logger::instance().flush();
     if (log_file_) {
-        // At the very end, so the shutdown lines above reached rawreel.log.
+        // At the very end, so the shutdown lines above reached the log file.
         std::shared_ptr<dvv::ILogSink> closed = log_file_->replace(nullptr);
         closed.reset();  // the file closes here, outside the switch's lock
     }

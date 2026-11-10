@@ -41,6 +41,9 @@ struct LocalTime {
 [[nodiscard]] LocalTime localTime(std::chrono::system_clock::time_point time);  // localtime_r/_s
 [[nodiscard]] std::string logRowTime(const LocalTime& time);                    // "HH:MM:SS.mmm"
 [[nodiscard]] std::string logRowMessage(std::string_view message);  // first line + " …" if more
+// "file.cpp:42": the file name without folders and the line of the entry's call site (the Source
+// column).
+[[nodiscard]] std::string logSourceText(const LogEntry& entry);
 [[nodiscard]] std::string logSaveFileName(
     const LocalTime& time);  // "rawreel-log-YYYYMMDD-HHMMSS.txt"
 

@@ -13,6 +13,7 @@
 #include <system_error>
 #include <utility>
 
+#include "core/log_level.h"
 #include "dvv/base/error.h"
 #include "dvv/base/json.h"
 #include "dvv/base/log.h"
@@ -89,6 +90,26 @@ dvv::Result<void> readFolder(const dvv::json::Value& section, std::string_view k
     return {};
 }
 
+// "error", "warn", "info", "debug" or "trace", in any letter case.
+dvv::Result<void> readLevel(const dvv::json::Value& log, LogConfig& target) {
+    const auto found = log.find("level");
+    if (found == log.end()) {
+        return {};
+    }
+    const std::optional<dvv::LogLevel> level =
+        found->is_string() ? parseLevel(found->get_ref<const std::string&>()) : std::nullopt;
+    if (!level) {
+        return dvv::makeError(
+            dvv::Errc::Format,
+            std::format(
+                R"(log.level: expected "error", "warn", "info", "debug" or "trace", not {})",
+                dvv::json::dump(*found)));
+    }
+    target.level = *level;
+    target.levelSaved = true;
+    return {};
+}
+
 dvv::Result<void> readFileReads(const dvv::json::Value& io, IoConfig& target) {
     if (const auto reads = io.find("fileReads"); reads != io.end()) {
         const std::optional<FileReadMode> mode =
@@ -146,6 +167,8 @@ dvv::Result<Config> parseConfig(std::string_view text) {
             DVV_TRY_VOID(readBool(*file, "enabled", "log.file.enabled", config.log.file.enabled));
             DVV_TRY_VOID(readFolder(*file, "folder", "log.file.folder", config.log.file.folder));
         }
+        DVV_TRY_VOID(readLevel(*log, config.log));
+        DVV_TRY_VOID(readBool(*log, "source", "log.source", config.log.source));
         DVV_TRY(const dvv::json::Value* const system, objectAt(*log, "system", "log.system"));
         if (system != nullptr) {
             DVV_TRY_VOID(
@@ -242,11 +265,12 @@ LoadedConfig load(const std::filesystem::path& path, bool named) {
     loaded.config = *config;
     const Config& c = loaded.config;
     DVV_LOG_INFO(
-        "config '{}': io.fileReads {}, gui.showLogPane {}, log.file {} '{}', log.system {}", shown,
-        fileReadsName(c.io.fileReads), c.gui.showLogPane, c.log.file.enabled ? "on" : "off",
+        "config '{}': io.fileReads {}, gui.showLogPane {}, log.file {} '{}', log.system {}, "
+        "log.level {}, log.source {}",
+        shown, fileReadsName(c.io.fileReads), c.gui.showLogPane, c.log.file.enabled ? "on" : "off",
         c.log.file.folder.empty() ? std::string("default")
                                   : dvv::media::utf8FromPath(c.log.file.folder),
-        c.log.system.enabled ? "on" : "off");
+        c.log.system.enabled ? "on" : "off", levelConfigValue(c.log.level), c.log.source);
     return loaded;
 }
 

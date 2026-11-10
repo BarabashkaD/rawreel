@@ -51,8 +51,11 @@ int run(std::span<const std::string_view> args, StartWx start_wx) {
                                                               : rawreel::exit_code::BAD_ARGUMENTS;
     }
 #endif
-    dvv::Logger::instance().addSink(std::make_shared<dvv::StderrSink>());
-    rawreel::App::setArguments(std::move(*arguments));
+    // At Info, the default level, until the App sets it to the active log level (log level
+    // design §2.1).
+    auto stderr_sink = std::make_shared<dvv::StderrSink>();
+    dvv::Logger::instance().addSink(stderr_sink, dvv::LogLevel::Info);
+    rawreel::App::setArguments(std::move(*arguments), std::move(stderr_sink));
     const int wx_result = start_wx();
     int code = rawreel::exit_code::SUCCESS;
     if (const std::optional<int> decided = rawreel::App::exitCode(); decided) {
