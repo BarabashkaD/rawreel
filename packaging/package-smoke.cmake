@@ -11,13 +11,13 @@
 # Gatekeeper's app translocation has; Review Focus 2) and everything runs from there with the
 # working folder /. The CLI and GUI runs unset the DYLD_* search variables and the Vulkan
 # loader's driver and layer variables, so the app finds FFmpeg, the loader and KosmicKrisp on its
-# own, and set HOME to a folder below WORK_DIR, so the app's Application Support (config, log)
-# is a fresh one. The loaded-image audit (U-MAC8) runs the CLI and the GUI with
-# DYLD_PRINT_LIBRARIES=1 and VK_LOADER_DEBUG=driver: every image is inside the app, /usr/lib or
-# /System, the driver is the bundled KosmicKrisp, nothing comes from a Vulkan SDK in the home
-# folder; the GUI runs once more through `open` (LaunchServices, as from Finder; Focus 4),
-# checked from its output files and its log file. ALLOW_GUI_SKIP=ON also accepts a Mac without a
-# usable GPU (rawreel-cli's Vulkan line then says "not available").
+# own, and set HOME to a folder below WORK_DIR, so the app's Application Support (config) is a
+# fresh one (a selftest keeps its log in a temporary folder). The loaded-image audit (U-MAC8)
+# runs the CLI and the GUI with DYLD_PRINT_LIBRARIES=1 and VK_LOADER_DEBUG=driver: every image
+# is inside the app, /usr/lib or /System, the driver is the bundled KosmicKrisp, nothing comes
+# from a Vulkan SDK in the home folder; the GUI runs once more through `open` (LaunchServices, as
+# from Finder; Focus 4), checked from its output files. ALLOW_GUI_SKIP=ON also accepts a Mac
+# without a usable GPU (rawreel-cli's Vulkan line then says "not available").
 cmake_minimum_required(VERSION 3.25)
 include("${CMAKE_CURRENT_LIST_DIR}/check-package.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/scan-artifact-privacy.cmake")
@@ -810,7 +810,9 @@ if(NOT GUI_SMOKE STREQUAL "off")
 
     # 8b. macOS: once through LaunchServices, as Finder starts the app (Review Focus 4): no
     # terminal environment (only the --env values), the working folder /; the result is read
-    # from the output files and from the log in <HOME>/Library/Application Support/rawreel.
+    # from the output files. A selftest keeps its config and log in a temporary folder that it
+    # removes at exit (Log pane and Settings design §7.1), so there is no log to read in
+    # <HOME>/Library/Application Support/rawreel.
     if(PLATFORM STREQUAL "macos" AND NOT gui_skipped)
         # A variable that launchd hands to every app would change this run.
         foreach(name IN ITEMS DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH DYLD_INSERT_LIBRARIES
@@ -861,13 +863,8 @@ if(NOT GUI_SMOKE STREQUAL "off")
         endif()
         audit("open" "open -a rawreel.app --selftest smoke" "${open_text}" DRIVER
               ${ffmpeg_audit})
-        set(open_log "${open_home}/Library/Application Support/rawreel/rawreel.log")
-        if(NOT EXISTS "${open_log}")
-            fail("open" "no log in <HOME>/Library/Application Support/rawreel/rawreel.log")
-        endif()
-        file(READ "${open_log}" log)
-        if(NOT log MATCHES "${device_regex}" OR NOT log MATCHES "rawreel-gui --selftest: passed")
-            fail("open" "the log names no KosmicKrisp device or no passed selftest:\n${log}")
+        if(NOT open_text MATCHES "${device_regex}")
+            fail("open" "the output names no KosmicKrisp device (Vulkan device: ...):\n${open_text}")
         endif()
         ok("open")
     endif()
