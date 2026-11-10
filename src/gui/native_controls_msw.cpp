@@ -5,9 +5,14 @@
 #include <wx/wx.h>  // first: wx's Windows headers before anything else includes <windows.h> (R11)
 // clang-format on
 
+#include <filesystem>
 #include <optional>
+#include <string>
+#include <string_view>
+#include <system_error>
 
 #include <commctrl.h>  // TBM_*; needs <windows.h>, which wx/wx.h has included already
+#include <shellapi.h>  // ShellExecuteW
 #include <windows.h>
 
 #if wxUSE_ACCESSIBILITY
@@ -96,6 +101,20 @@ std::optional<wxRect> sliderThumbRect(const wxSlider& slider) {
 
 // Not drawn yet on this toolkit (spec §6.4): skimming still previews and moves the number.
 void showSliderGhost(wxSlider& /*slider*/, std::optional<int> /*x*/) {}
+
+// No icons on the tabs of the Windows dialog.
+wxBitmapBundle settingsPageIcon(std::string_view /*sf_symbol*/) {
+    return {};
+}
+
+// Explorer selects a file (explorer /select,"<file>") and opens a folder.
+void revealInFileManager(const std::filesystem::path& file_or_folder) {
+    std::error_code error;
+    const bool folder = std::filesystem::is_directory(file_or_folder, error);
+    const std::wstring arguments = (folder ? std::wstring(L"\"") : std::wstring(L"/select,\"")) +
+                                   file_or_folder.wstring() + L"\"";
+    ::ShellExecuteW(nullptr, L"open", L"explorer.exe", arguments.c_str(), nullptr, SW_SHOWNORMAL);
+}
 
 // The window owns the wxAccessible (SetAccessible deletes the previous one).
 void setAccessibleName(wxWindow& window, const wxString& name) {

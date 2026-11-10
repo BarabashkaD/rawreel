@@ -17,42 +17,62 @@ constexpr KeyChord plainKey(char letter) noexcept {
 constexpr auto ACC = KeyRoute::Accelerator;
 constexpr auto HOOK = KeyRoute::CharHook;
 
-// In Command order (design v2 §4.3, D17, D18); menus in order File, Playback, View, Help.
+// GTK calls the window Preferences (Log pane and Settings design §5.1).
+#if defined(__linux__)
+constexpr std::string_view SETTINGS_LABEL = "Preferences...";
+#else
+constexpr std::string_view SETTINGS_LABEL = "Settings...";
+#endif
+
+// In Command order (design v2 §4.3, D17, D18); menus in order File, Playback, View, Help (the GUI
+// inserts Edit after File).
 constexpr std::array<CommandInfo, COMMAND_COUNT> TABLE{{
-    {Command::Open, "open", "File", "Open...", "Open a raw video file", ctrlKey('O'), ACC},
+    {Command::Open, "open", "File", "Open...", "Open a raw video file", ctrlKey('O'), ACC, false},
     {Command::OpenUri, "open_uri", "File", "Open URI...", "Open a source by its URI", ctrlKey('U'),
-     ACC},
+     ACC, false},
+    // Log pane and Settings design §4.3: no key (rawreel has no documents, so Ctrl+S stays free).
+    {Command::SaveLog, "save_log", "File", "Save Log...",
+     "Save the lines of the Log pane to a file", std::nullopt, ACC, false},
+    {Command::SaveSelectedLines, "save_selected_lines", "File", "Save Selected Lines...",
+     "Save the selected lines of the Log pane to a file", std::nullopt, ACC, false},
     {Command::CloseStreams, "close_streams", "File", "Close stream", "Close the open stream",
-     ctrlKey('W'), ACC},
-    {Command::Quit, "quit", "File", "Quit", "Quit rawreel", ctrlKey('Q'), ACC},
+     ctrlKey('W'), ACC, false},
+    // Log pane and Settings design §5.1: wxID_PREFERENCES; wxOSX moves it to the app menu.
+    {Command::Settings, "settings", "File", SETTINGS_LABEL, "Change the settings of rawreel",
+     ctrlKey(','), ACC, false},
+    {Command::Quit, "quit", "File", "Quit", "Quit rawreel", ctrlKey('Q'), ACC, false},
     {Command::PlayPause, "play_pause", "Playback", "Play/Pause", "Start or pause playback",
-     chord(Key::Space), HOOK},
+     chord(Key::Space), HOOK, false},
     {Command::Stop, "stop", "Playback", "Stop", "Stop playback and go to the first frame",
-     std::nullopt, ACC},
+     std::nullopt, ACC, false},
     {Command::StepBack, "step_back", "Playback", "Step back", "Show the previous frame",
-     chord(Key::Left), HOOK},
+     chord(Key::Left), HOOK, false},
     {Command::StepForward, "step_forward", "Playback", "Step forward", "Show the next frame",
-     chord(Key::Right), HOOK},
+     chord(Key::Right), HOOK, false},
     {Command::StepBack10, "step_back_10", "Playback", "Step back 10", "Go back 10 frames",
-     chord(Key::Left, false, true), HOOK},
+     chord(Key::Left, false, true), HOOK, false},
     {Command::StepForward10, "step_forward_10", "Playback", "Step forward 10",
-     "Go forward 10 frames", chord(Key::Right, false, true), HOOK},
+     "Go forward 10 frames", chord(Key::Right, false, true), HOOK, false},
     {Command::First, "first", "Playback", "First frame", "Show the first frame", chord(Key::Home),
-     HOOK},
-    {Command::Last, "last", "Playback", "Last frame", "Show the last frame", chord(Key::End), HOOK},
+     HOOK, false},
+    {Command::Last, "last", "Playback", "Last frame", "Show the last frame", chord(Key::End), HOOK,
+     false},
     {Command::Loop, "loop", "Playback", "Loop", "Turn looping at the end on or off", plainKey('L'),
-     HOOK},
+     HOOK, false},
     {Command::Format, "format", "View", "Format...",
-     "Choose the pixel format, size, frame rate and colour of the stream", std::nullopt, ACC},
+     "Choose the pixel format, size, frame rate and colour of the stream", std::nullopt, ACC,
+     false},
     {Command::Reopen, "reopen", "View", "Restart GPU and reopen",
      "Restart the GPU (after an error) and reopen the stream at the same frame, paused",
-     std::nullopt, ACC},
+     std::nullopt, ACC, false},
+    {Command::LogPane, "log_pane", "View", "Log", "Show or hide the Log pane", std::nullopt, ACC,
+     true},  // "Show Log"/"Hide Log" on macOS (the GUI sets the title)
     {Command::GpuInfo, "gpu_info", "Help", "GPU info", "Show the GPU and its driver", std::nullopt,
-     ACC},
+     ACC, false},
     {Command::Diagnostics, "diagnostics", "Help", "Diagnostics",
-     "Show the pipeline statistics and the log", std::nullopt, ACC},
+     "Show the pipeline statistics and the log", std::nullopt, ACC, false},
     {Command::About, "about", "Help", "About rawreel",
-     "Show the versions, the licence and the FFmpeg status", std::nullopt, ACC},
+     "Show the versions, the licence and the FFmpeg status", std::nullopt, ACC, false},
 }};
 
 consteval bool tableInOrder() {
@@ -88,8 +108,8 @@ std::span<const CommandInfo> commandTable() noexcept {
     return TABLE;
 }
 
-std::optional<Command> commandForKey(const KeyChord& chord, bool text_focus) noexcept {
-    if (text_focus) {
+std::optional<Command> commandForKey(const KeyChord& chord, bool focus_keeps_keys) noexcept {
+    if (focus_keeps_keys) {
         return std::nullopt;
     }
     for (const CommandInfo& info : TABLE) {

@@ -334,6 +334,59 @@ URI"), or the GUI could not start; 4 GPU error (no Vulkan loader, no usable devi
 failure in a selftest); 6 a `--selftest` check failed; 77 (`--selftest` only) no usable device or
 no display, unless `DVV_REQUIRE_GPU=1` (then 4).
 
+### Log pane
+
+The Log pane is hidden at start. It shows the records of this run, the last 5000 of them. The list
+has the columns Time (local, `HH:MM:SS.mmm`), Level, Message (a message of several lines shows its
+first line followed by " …") and Source (`file.cpp:42`); several rows can be selected. While the
+list has the focus it keeps every key (arrows, Page Up/Down, Home, End, Shift to extend the
+selection); the playback keys work again once the focus is elsewhere.
+
+- **Show and hide:** on macOS, View → Show Log / Hide Log; on Windows and Linux, View → Log, a
+  check item. The pane's caption has a close button. Help → Diagnostics shows the pane. A warning
+  or an error never opens it by itself.
+- **Status bar notice:** the status bar's last field counts the warnings and errors logged since
+  the pane was last shown, for example "1 warning in the log" or "2 errors, 3 warnings in the log".
+  It is empty while the pane is shown and when there are none. A click on it shows the pane.
+- **Remembered:** the choice is kept in `rawreel.json` as `gui.showLogPane` and is saved when the
+  window closes, only if it differs from its value at start.
+- **Edit menu:** Undo, Redo, Cut, Copy, Paste, Delete and Select All act on the focused control:
+  a text field, the Info pane (Copy, Select All) or the Log list (Copy of the selected rows,
+  Select All). Delete has no key.
+- **Copy and save:** File → Save Log… saves every record the pane holds; File → Save Selected
+  Lines… saves the selected rows and is disabled without a selection. The Log list's context menu
+  has Copy, Select All, Save Selected Lines… and Save Log…. Copy and save write one record per
+  line in the format of `rawreel.log` (`2026-10-20T12:34:56.789Z INFO  message [file.cpp:42]`,
+  UTC; a multi-line message keeps its lines), UTF-8, with `\n` line ends. The save dialog
+  suggests `rawreel-log-YYYYMMDD-HHMMSS.txt`. A target that is the live `rawreel.log` or one of
+  its backups is refused.
+
+### Settings window
+
+| | macOS | Windows | Linux |
+| --- | --- | --- | --- |
+| Menu item | rawreel → Settings… (⌘,) | File → Settings… (Ctrl+,) | Edit → Preferences… (Ctrl+,) |
+| Window | toolbar with the pages | dialog with tabs | dialog with tabs |
+| Applies | each change at once | OK; Cancel applies nothing | each change at once |
+
+The pages and their controls:
+
+- **Log:** "Write a log file" (`log.file.enabled`); Folder, the folder of `rawreel.log`, with
+  Choose…, Use Default (back to the user data folder) and a button that shows the folder in the
+  file manager (Show in Finder, Show in Explorer or Open Folder); and the system log checkbox
+  (`log.system.enabled`, off by default): "Send warnings and errors to the system log (Console)"
+  on macOS, "… (journal/syslog)" on Linux, "Send warnings and errors to the debugger output" on
+  Windows. A new folder takes effect at once; the old file gets the line `log file moves to
+  '<new path>'` and stays where it was. When the saved folder cannot be used, rawreel writes to
+  the default folder, logs one warning, and the page says "Not available, writing to <folder>".
+- **Files:** File reads, Automatic, Unbuffered (no OS cache) or Buffered (OS cache)
+  (`io.fileReads`), which applies to files opened after the change and to reopens; and the path
+  of the settings file in use.
+
+Only the first `rawreel-gui` process that uses a config file saves settings. A second copy runs
+normally: its Settings window says "Another rawreel window owns the settings. Changes here apply
+to this window only and are not saved.", and its changes and its Log pane state are not saved.
+
 ## rawreel-cli
 
 ```text
@@ -532,23 +585,39 @@ goes to stderr.
 
 ## Configuration
 
-`rawreel-gui` and `rawreel-cli` read an optional JSON file, `rawreel.json`, from the folder of
-the executable (never from the working directory). `--config <file>` on either executable reads
-another file instead. No `rawreel.json` is shipped, so the built-in defaults apply until you
-create one; to keep one next to the executables, unzip or extract rawreel to a folder you can
-write to (not under Program Files). On macOS, an executable inside an app bundle (the shipped
-`rawreel.app`, and the build tree's `rawreel-gui.app`) reads
-`~/Library/Application Support/rawreel/rawreel.json` instead, never a file inside the signed
-bundle; only an executable outside a bundle, such as the build tree's `rawreel-cli`, keeps the
-next-to-the-executable rule.
+`rawreel-gui` and `rawreel-cli` read an optional JSON file, `rawreel.json`. `--config <file>` on
+either executable reads another file instead. The default file is:
+
+- on macOS, for an executable inside an app bundle (the shipped `rawreel.app`, and the build
+  tree's `rawreel-gui.app`): `~/Library/Application Support/rawreel/rawreel.json`, never a file
+  inside the signed bundle;
+- otherwise, `rawreel.json` in the executable's folder if that file exists (a portable setup;
+  never the working directory), else `rawreel.json` in the user data folder
+  (`%APPDATA%\rawreel\` on Windows, `~/.local/share/rawreel/` or `$XDG_DATA_HOME/rawreel/` on
+  Linux, `~/Library/Application Support/rawreel/` on macOS), the folder of the default
+  `rawreel.log`.
+
+No `rawreel.json` is shipped, so the built-in defaults apply until a file exists. `rawreel-gui`
+creates it in the user data folder when a setting is saved.
 
 ```json
-{ "io": { "fileReads": "auto" } }
+{
+  "io":  { "fileReads": "auto" },
+  "gui": { "showLogPane": false },
+  "log": {
+    "file":   { "enabled": true, "folder": "" },
+    "system": { "enabled": false }
+  }
+}
 ```
 
-| Key | Values | Default |
-| --- | --- | --- |
-| `io.fileReads` | `auto`, `unbuffered`, `buffered` | `auto` |
+| Key | Values | Default | Used by |
+| --- | --- | --- | --- |
+| `io.fileReads` | `auto`, `unbuffered`, `buffered` | `auto` | both executables |
+| `gui.showLogPane` | `true`, `false` | `false` | rawreel-gui |
+| `log.file.enabled` | `true`, `false` | `true` | rawreel-gui |
+| `log.file.folder` | an absolute folder path; `""` is the user data folder | `""` | rawreel-gui |
+| `log.system.enabled` | `true`, `false` | `false` | rawreel-gui |
 
 `io.fileReads` sets how raw and Y4M files are read. FFmpeg container sources read through
 FFmpeg's own file I/O (`reads: ffmpeg`) and `lavfi:` graphs read no files (`reads: lavfi`), so the
@@ -563,10 +632,18 @@ key does not apply to them.
 
 The mode in use shows as `reads:` in `rawreel-cli info` and in the GUI Info pane.
 
+`rawreel-gui` writes the file when a setting changes (see [Settings window](#settings-window)),
+only the keys it sets: it keeps the other keys, the key order, a symbolic link and the file's
+permissions. It does not write a file that is not valid, has a bad value or is read-only; the
+setting then holds for the session only, with the warning "config '<path>' not saved: <reason>".
+`rawreel-cli` never writes the file.
+
 A missing default `rawreel.json` means the defaults, silently. A missing
 `--config` file, or a file that cannot be read, is not valid JSON or has a bad value, gives one
-warning in the log ("config '<path>' ignored: <reason>; using the defaults") and the defaults.
-Unknown keys are ignored. To try another file:
+warning in the log ("config '<path>' ignored: <reason>; using the defaults") and the defaults. A
+bad value in any key, including a `gui` or `log` key that `rawreel-cli` does not use, makes both
+executables use the defaults. An older rawreel ignores a file that holds a value only a newer one
+knows. Unknown keys are ignored. To try another file:
 
 ```powershell
 & $cli info <uri> --config <folder>/rawreel.json

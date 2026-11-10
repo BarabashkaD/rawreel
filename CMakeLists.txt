@@ -45,6 +45,7 @@ dvv_set_compiler_options(rawreel_render)
 add_library(rawreel_core STATIC
     src/core/commands.cpp
     src/core/config.cpp
+    src/core/config_writer.cpp
     src/core/drop.cpp
     src/core/format_choice.cpp
     src/core/format_presets.cpp
@@ -52,9 +53,14 @@ add_library(rawreel_core STATIC
     src/core/gui_arguments.cpp
     src/core/info_text.cpp
     src/core/layout.cpp
+    src/core/log_file_switch.cpp
+    src/core/log_mirror.cpp
+    src/core/log_store.cpp
+    src/core/log_text.cpp
     src/core/perf_stats.cpp
     src/core/player.cpp
     src/core/session.cpp
+    src/core/settings_claim.cpp
     src/core/timeline.cpp
     src/core/delayed_source.cpp
     src/core/status_text.cpp
@@ -149,14 +155,18 @@ if(NOT DVV_SANITIZE)
         src/gui/app.cpp
         src/gui/dock_manager.cpp
         src/gui/drop_target.cpp
+        src/gui/edit_dispatch.cpp
         src/gui/format_dialog.cpp
         src/gui/info_panel.cpp
+        src/gui/log_list_dataview.cpp
+        src/gui/log_list_listctrl.cpp
         src/gui/log_panel.cpp
         src/gui/main.cpp
         src/gui/main_frame.cpp
         src/gui/player_panel.cpp
         src/gui/selftest.cpp
         src/gui/session_bridge.cpp
+        src/gui/settings.cpp
         src/gui/viewport.cpp)
     set_target_properties(rawreel_gui PROPERTIES OUTPUT_NAME rawreel-gui)
     # wx is an imported target, so its headers are SYSTEM includes (our /WX does not apply to them).

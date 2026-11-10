@@ -1,4 +1,11 @@
 find_package(doctest 2.5 REQUIRED CONFIG)
+# Every test runs with its user data folder inside the build tree (never the developer's own):
+# macOS reads $HOME, Linux $XDG_DATA_HOME (then $HOME); on Windows the known folder ignores these.
+set(DVV_TEST_HOME ${CMAKE_BINARY_DIR}/test-home)
+file(MAKE_DIRECTORY ${DVV_TEST_HOME})
+list(APPEND DVV_TEST_ENVIRONMENT
+    "HOME=set:${DVV_TEST_HOME}" "XDG_DATA_HOME=set:${DVV_TEST_HOME}" "APPDATA=set:${DVV_TEST_HOME}")
+
 # The FFmpeg of the third-party prefix (M4 Task 1): DVV_FFMPEG_PROGRAM makes the CLI fixtures,
 # DVV_FFMPEG_RUNTIME_DIR is the DVV_FFMPEG_DIR of the FFmpeg tests. dvv-components' own
 # find_package() sets these in its directory scope only.
@@ -34,10 +41,10 @@ set_tests_properties(rawreel.cli_unit PROPERTIES
 # "session" and "timer", each its own CTest entry, so the race checks can repeat them), every preset.
 # The slow:/fail: test provider is a component of this executable.
 add_executable(rawreel_core_tests
-    core_main.cpp session_fixture.cpp test_commands.cpp test_config.cpp test_drop.cpp
+    core_main.cpp session_fixture.cpp test_commands.cpp test_config.cpp test_config_writer.cpp test_drop.cpp
     test_format_choice.cpp test_format_presets.cpp
-    test_gui_arguments.cpp test_info_text.cpp test_layout.cpp test_perf_stats.cpp test_player.cpp test_session.cpp
-    test_session_notify.cpp test_session_storm.cpp test_session_types.cpp
+    test_gui_arguments.cpp test_info_text.cpp test_layout.cpp test_log_file_switch.cpp test_log_mirror.cpp test_log_store.cpp test_log_text.cpp test_perf_stats.cpp test_player.cpp test_session.cpp
+    test_session_notify.cpp test_session_storm.cpp test_session_types.cpp test_settings_claim.cpp
     test_open_text.cpp test_source_provider.cpp test_startup.cpp test_vulkan_driver.cpp
     test_status_text.cpp test_svg_colour.cpp test_timeline.cpp test_timer.cpp test_view.cpp)
 target_link_libraries(rawreel_core_tests PRIVATE rawreel_core doctest::doctest)
@@ -121,7 +128,8 @@ if(TARGET rawreel_gui)
         LABELS "display;gui"
         SKIP_RETURN_CODE 77
         TIMEOUT 60
-        ENVIRONMENT "NO_AT_BRIDGE=1")
+        ENVIRONMENT "NO_AT_BRIDGE=1"
+        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
     # Device loss (design v2 §8.4 lost, E3): injected loss -> infobar with Reopen -> the kept frame
     # presented again on the new stack.
     add_test(NAME rawreel.gui_selftest.lost

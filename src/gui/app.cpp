@@ -5,17 +5,30 @@
 #include "gui/app.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <format>
+#include <memory>
 #include <optional>
+#include <random>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
+#if defined(__WXGTK__)
+#include <wx/clipbrd.h>  // OnExit's Flush()
+#endif
+
 #include "core/config.h"
+#include "core/config_writer.h"
+#include "core/log_file_switch.h"
+#include "core/log_store.h"
+#include "core/settings_claim.h"
 #include "core/timer.h"
 #include "dvv/base/environment.h"
 #include "dvv/base/executors.h"
@@ -27,7 +40,6 @@
 #include "dvv/media/types.h"
 #include "dvv/platform/native_window.h"
 #include "gui/crash_handler.h"
-#include "gui/log_panel.h"
 #include "gui/main_frame.h"
 #include "gui/selftest.h"
 #include "gui/session_bridge.h"
@@ -43,9 +55,6 @@ namespace {
 GuiArguments the_arguments;
 std::optional<int> decided_exit_code;
 
-// The log file (plan choice): <user data dir>/rawreel.log, 4 MiB, 3 backups.
-constexpr std::uintmax_t LOG_FILE_BYTES = std::uintmax_t{4} << 20U;
-constexpr int LOG_FILE_BACKUPS = 3;
 constexpr std::size_t IO_THREADS = 4;
 
 bool selftest() noexcept {
@@ -83,6 +92,47 @@ wxApp::Appearance wxAppearance(Appearance appearance) noexcept {
         case Appearance::Dark: return wxApp::Appearance::Dark;
     }
     return wxApp::Appearance::System;
+}
+
+// Spec §7.1: true when this call created `folder`; false when the path already exists (a stale
+// or planted folder, or a symbolic link), which the caller never adopts.
+dvv::Result<bool> createNewFolder(const std::filesystem::path& folder) {
+    std::error_code error;
+    const bool created = std::filesystem::create_directory(folder, error);
+    if (error) {
+        return dvv::makeError(
+            dvv::Errc::Io,
+            std::format("cannot create {}: {}", dvv::media::utf8FromPath(folder), error.message()));
+    }
+    return created;
+}
+
+// A folder createNewFolder() made: mode 0700 on POSIX, and still a real folder, not a link.
+dvv::Result<void> secureNewFolder(const std::filesystem::path& folder) {
+    std::error_code error;
+#if !defined(_WIN32)
+    std::filesystem::permissions(folder, std::filesystem::perms::owner_all,
+                                 std::filesystem::perm_options::replace, error);
+    if (error) {
+        return dvv::makeError(
+            dvv::Errc::Io, std::format("cannot restrict {}: {}", dvv::media::utf8FromPath(folder),
+                                       error.message()));
+    }
+#endif
+    const std::filesystem::file_status status = std::filesystem::symlink_status(folder, error);
+    if (error || status.type() != std::filesystem::file_type::directory) {
+        return dvv::makeError(dvv::Errc::Io, std::format("{} is not a folder of its own",
+                                                         dvv::media::utf8FromPath(folder)));
+    }
+    return {};
+}
+
+// 16 hex digits from the OS's random source.
+std::string randomSuffix() {
+    std::random_device device;
+    const std::uint64_t value =
+        (static_cast<std::uint64_t>(device()) << 32U) | static_cast<std::uint64_t>(device());
+    return std::format("{:016x}", value);
 }
 
 }  // namespace
@@ -124,6 +174,25 @@ void App::finish(int code, const std::string& message) {
 
 bool App::OnInit() {
     const std::string crash_warning = CrashHandler::install("rawreel-gui");  // first (D22)
+    // Spec §5.3 "At start" step 1: the sinks, added once for the whole run and never removed (the
+    // stderr sink is main()'s). The log file switch holds no file yet; the system log is off until
+    // the config says otherwise.
+    dvv::Logger& logger = dvv::Logger::instance();
+    log_store_ = std::make_shared<LogStore>();
+    logger.addSink(log_store_);
+    log_file_ = std::make_shared<LogFileSwitch>();
+    logger.addSink(log_file_);
+    system_sink_ = std::make_shared<dvv::SystemLogSink>("rawreel");
+    logger.addSink(system_sink_, dvv::LogLevel::Off);
+    if (!crash_warning.empty()) {
+        DVV_LOG_TEXT(dvv::LogLevel::Warn, crash_warning);  // now that the sinks exist
+    }
+    // A failed start after the selftest's config folder exists removes it here: wx calls no
+    // OnExit() after a failed OnInit().
+    const auto failed = [this] {
+        closeLogAndConfig();
+        return false;
+    };
 #if defined(__WXOSX__)
     // The application menu says "About rawreel", "Hide rawreel" and "Quit rawreel", not the
     // executable's capitalised name.
@@ -133,31 +202,28 @@ bool App::OnInit() {
         // wx's default GUI log target shows modal dialogs; the selftest runs unattended.
         delete wxLog::SetActiveTarget(new wxLogStderr());
     }
-    setAppearance();  // 1. before any window
-    openLogFile();    // 2. the log file and the Log pane's sink (before the Session exists)
-    log_sink_ = std::make_shared<LogPanelSink>();
-    dvv::Logger::instance().addSink(log_sink_);
-    if (!crash_warning.empty()) {
-        DVV_LOG_TEXT(dvv::LogLevel::Warn, crash_warning);  // now that the sinks exist
+    // 1. The config, the system log, the log file and the settings claim, before the Session
+    // exists (spec §5.3 steps 2 to 4, §6.3, §7.1).
+    if (!startLogAndConfig()) {
+        return failed();
     }
-    // The config file, after the log sinks so a warning reaches the Log pane.
-    const LoadedConfig config = loadConfig(the_arguments.config);
+    setAppearance();                     // 2. before any window
     if (!startPools() || !startGpu()) {  // 3., 4.
-        return false;
+        return failed();
     }
     // 5. FFmpeg, the capabilities and the source providers (design M4 v2 §4.6).
     startup_ = startComponents({});
     DVV_LOG_INFO("ffmpeg: {}", ffmpegStatusLine(startup_.ffmpeg));
     if (!startup_.components) {
         finish(exit_code::BAD_ARGUMENTS, "rawreel-gui: the component registry could not start");
-        return false;
+        return failed();
     }
     // The media clock's timer thread (not a GPU failure: exit 1 like the pools).
     auto timer = makeThreadTimer();
     if (!timer) {
         finish(exit_code::BAD_ARGUMENTS,
                "rawreel-gui: the media clock timer could not start: " + timer.error().describe());
-        return false;
+        return failed();
     }
     // 6. wx owns top-level windows; the frame is shown once the Session exists.
     display_ = std::make_shared<DisplayState>();
@@ -193,7 +259,7 @@ bool App::OnInit() {
                          .device = device_,
                          .presentation = true,
                          .inflight = the_arguments.inflight,
-                         .fileReads = config.config.io.fileReads,
+                         .fileReads = config_.io.fileReads,
                          .clock = steadyClock(),
                          .timer = std::move(*timer),
                          .sink = std::move(sink),
@@ -204,7 +270,7 @@ bool App::OnInit() {
         finish(exit_code::GPU_ERROR, "Vulkan could not start: " + session.error().describe());
         bridge_->detach();
         frame->Destroy();  // never shown; wx deletes it with the remaining windows
-        return false;
+        return failed();
     }
     session_ = std::move(*session);
 
@@ -262,24 +328,255 @@ void App::setAppearance() {
                  appearanceResultName(result));
 }
 
-void App::openLogFile() {
+bool App::startLogAndConfig() {
+    // §7.1: a selftest without --config never reads or writes the user's config or log file.
+    if (selftest() && !the_arguments.config) {
+        dvv::Result<std::filesystem::path> made = makeSelftestConfig();
+        if (!made) {
+            finish(exit_code::BAD_ARGUMENTS,
+                   "rawreel-gui --selftest: its config folder could not be made: " +
+                       made.error().describe());
+            return false;
+        }
+        the_arguments.config = dvv::media::utf8FromPath(*made);
+    }
+    // Its lines reach the store and stderr; the log file gets them when it opens.
+    LoadedConfig loaded = loadConfig(the_arguments.config);
+    config_ = std::move(loaded.config);
+    config_path_ = std::move(loaded.path);
+    useSystemLog(config_.log.system.enabled);
+    if (config_.log.file.enabled) {
+        startLogFile();
+    }
+    if (!config_path_.empty()) {
+        settings_claim_ = SettingsClaim::tryClaim(config_path_);
+    }
+    return true;
+}
+
+dvv::Result<std::filesystem::path> App::makeSelftestConfig() {
+    std::error_code error;
+    const std::filesystem::path temp = std::filesystem::temp_directory_path(error);
+    if (error) {
+        return dvv::makeError(dvv::Errc::Io,
+                              std::format("no temporary folder: {}", error.message()));
+    }
+    // A name of its own, created exclusively: an existing path is never reused, a few random
+    // names are tried before giving up.
+    constexpr int ATTEMPTS = 8;
+    for (int attempt = 0; attempt < ATTEMPTS && selftest_config_dir_.empty(); ++attempt) {
+        const std::filesystem::path candidate =
+            temp / std::format("rawreel-selftest-config-{}-{}", wxGetProcessId(), randomSuffix());
+        DVV_TRY(const bool created, createNewFolder(candidate));
+        if (created) {
+            selftest_config_dir_ = candidate;  // made by this run: removed at the end from here on
+        }
+    }
+    if (selftest_config_dir_.empty()) {
+        return dvv::makeError(dvv::Errc::Io, std::format("no new folder in {} after {} names",
+                                                         dvv::media::utf8FromPath(temp), ATTEMPTS));
+    }
+    const std::filesystem::path& folder = selftest_config_dir_;
+    DVV_TRY_VOID(secureNewFolder(folder));
+    const std::filesystem::path logs = folder / "logs";
+    DVV_TRY(const bool logs_created, createNewFolder(logs));
+    if (!logs_created) {
+        return dvv::makeError(dvv::Errc::Io,
+                              std::format("{} already exists", dvv::media::utf8FromPath(logs)));
+    }
+    DVV_TRY_VOID(secureNewFolder(logs));
+    std::filesystem::path file = folder / CONFIG_FILE_NAME;
+    const std::array<ConfigValue, 2> values{{
+        {.key = "log.file.folder", .value = dvv::media::utf8FromPath(logs)},
+        {.key = "log.system.enabled", .value = false},
+    }};
+    DVV_TRY_VOID(saveConfigValues(file, values));
+    return file;
+}
+
+bool App::saveSettings(std::span<const ConfigValue> values, bool closing) {
+    if (!ownsSettings()) {
+        return false;  // spec §6.3
+    }
+    const dvv::Result<void> saved = saveConfigValues(config_path_, values);
+    if (saved) {
+        return true;
+    }
+    // Spec §5.4: one warning; the setting stays applied for the session.
+    const std::string text = std::format(
+        "config '{}' not saved: {}", dvv::media::utf8FromPath(config_path_), saved.error().message);
+    DVV_LOG_TEXT(dvv::LogLevel::Warn, text);
+    // The run's first failure also shows a native message, but never while the main window
+    // closes (it would block quitting and logging out). A selftest's goes to its hook.
+    if (!std::exchange(save_failed_, true) && !closing) {
+        wxMessageDialog dialog(GetTopWindow(), "The settings could not be saved.", "rawreel",
+                               wxOK | wxICON_ERROR);
+        dialog.SetExtendedMessage(wxString::FromUTF8(text));
+        (void)showModal(dialog);
+    }
+    return false;
+}
+
+void App::checkSavedLogPane(bool saved) {
+    std::string found = "no value";
+    bool same = false;
+    if (dvv::Result<std::string> text = readConfigText(config_path_); !text) {
+        found = text.error().message;
+    } else if (dvv::Result<Config> parsed = parseConfig(*text); !parsed) {
+        found = parsed.error().message;
+    } else {
+        found = parsed->gui.showLogPane ? "true" : "false";
+        same = parsed->gui.showLogPane == saved;
+    }
+    if (!same) {
+        // One line (the log's stderr sink), exit 6 like the other selftest checks, unless an
+        // earlier failure decided the code.
+        record(exit_code::SELFTEST_FAILED,
+               std::format("rawreel-gui --selftest: gui.showLogPane {} was saved at close, but "
+                           "'{}' has {}",
+                           saved, dvv::media::utf8FromPath(config_path_), found));
+    }
+}
+
+void App::useSystemLog(bool on) {
+    dvv::Logger::instance().setSinkLevel(*system_sink_,
+                                         on ? dvv::LogLevel::Warn : dvv::LogLevel::Off);
+    system_log_enabled_ = on;
+    config_.log.system.enabled = on;
+}
+
+dvv::Result<std::filesystem::path> App::defaultLogFolder() const {
+    if (!selftest_config_dir_.empty()) {
+        return selftest_config_dir_ / "logs";  // §7.1
+    }
+    return dvv::paths::userDataDir("rawreel");
+}
+
+bool App::isDefaultLogFolder(const std::filesystem::path& folder) const {
+    const dvv::Result<std::filesystem::path> fallback = defaultLogFolder();
+    if (!fallback || folder.empty()) {
+        return false;
+    }
+    std::error_code error;
+    return folder == *fallback || (std::filesystem::equivalent(folder, *fallback, error) && !error);
+}
+
+dvv::Result<std::shared_ptr<dvv::RotatingFileSink>> App::prepareLogFile(
+    const std::filesystem::path& folder) {
+    return rawreel::openLogFile(folder, isDefaultLogFolder(folder) ? FolderCreation::WithParents
+                                                                   : FolderCreation::LastOnly);
+}
+
+void App::useLogFile(std::shared_ptr<dvv::RotatingFileSink> sink, std::filesystem::path folder) {
+    if (!log_folder_.empty()) {
+        // Step 3: the last line of the old file names the new one.
+        DVV_LOG_INFO("log file moves to '{}'",
+                     dvv::media::utf8FromPath(folder / std::string(LOG_FILE_NAME)));
+        dvv::Logger::instance().flush();  // in the old file before the swap, even when queued
+    }
+    std::shared_ptr<dvv::ILogSink> previous = log_file_->replace(std::move(sink));
+    previous.reset();  // outside the switch's lock
+    log_folder_ = std::move(folder);
+}
+
+void App::stopLogFile() {
+    if (log_folder_.empty()) {
+        return;
+    }
+    DVV_LOG_INFO("log file turned off");
+    dvv::Logger::instance().flush();
+    std::shared_ptr<dvv::ILogSink> closed = log_file_->replace(nullptr);
+    closed.reset();  // the file closes here, outside the switch's lock
+    log_folder_.clear();
+}
+
+void App::setLogFileConfig(bool enabled, std::filesystem::path folder) {
+    config_.log.file.enabled = enabled;
+    config_.log.file.folder = std::move(folder);
+}
+
+void App::useFileReads(dvv::platform::FileReadMode mode) {
+    config_.io.fileReads = mode;
+    if (session_) {
+        session_->setFileReads(mode);
+    }
+}
+
+void App::startLogFile() {
     // Spec §11: without a log file the program goes on with a warning.
-    const dvv::Result<std::filesystem::path> directory = dvv::paths::userDataDir("rawreel");
-    if (!directory) {
-        DVV_LOG_WARN("no log file: {}", directory.error().describe());
+    const std::filesystem::path& saved = config_.log.file.folder;
+    std::shared_ptr<dvv::RotatingFileSink> file;
+    std::filesystem::path folder;
+    std::optional<std::string> saved_failure;  // why the saved folder cannot be used
+    if (!saved.empty()) {
+        dvv::Result<std::shared_ptr<dvv::RotatingFileSink>> opened =
+            rawreel::openLogFile(saved, FolderCreation::LastOnly);
+        if (opened) {
+            file = std::move(*opened);
+            folder = saved;
+        } else {
+            saved_failure = opened.error().message;
+        }
+    }
+    if (!file && !selftest_config_dir_.empty()) {
+        // §7.1: a selftest never writes the user's log file, so no default folder here.
+        DVV_LOG_WARN("log folder '{}' cannot be used: {}; no log file in this selftest",
+                     dvv::media::utf8FromPath(saved), saved_failure.value_or("no folder"));
         return;
     }
-    if (const dvv::Result<void> made = dvv::paths::ensureDirectory(*directory); !made) {
-        DVV_LOG_WARN("no log file: {}", made.error().describe());
-        return;
+    if (!file) {
+        // §5.3: the default folder; a saved one that failed stays in the config.
+        const dvv::Result<std::filesystem::path> directory = dvv::paths::userDataDir("rawreel");
+        if (!directory) {
+            if (saved_failure) {
+                DVV_LOG_WARN("log folder '{}' cannot be used: {}", dvv::media::utf8FromPath(saved),
+                             *saved_failure);
+            }
+            DVV_LOG_WARN("no log file: {}", directory.error().describe());
+            return;
+        }
+        if (saved_failure) {
+            DVV_LOG_WARN("log folder '{}' cannot be used: {}; writing to '{}'",
+                         dvv::media::utf8FromPath(saved), *saved_failure,
+                         dvv::media::utf8FromPath(*directory));
+        }
+        dvv::Result<std::shared_ptr<dvv::RotatingFileSink>> opened =
+            rawreel::openLogFile(*directory, FolderCreation::WithParents);
+        if (!opened) {
+            DVV_LOG_WARN("no log file: {}", opened.error().describe());
+            return;
+        }
+        file = std::move(*opened);
+        folder = *directory;
     }
-    auto sink =
-        dvv::RotatingFileSink::open(*directory / "rawreel.log", LOG_FILE_BYTES, LOG_FILE_BACKUPS);
-    if (!sink) {
-        DVV_LOG_WARN("no log file: {}", sink.error().describe());
-        return;
+    log_folder_ = std::move(folder);
+    // One call: the file first gets the lines the store holds (the config's among them), then
+    // takes every later one. Nothing was in the switch before (a null old sink). Only the GUI
+    // thread logs at this point (no pool runs yet), so no line falls between the two calls.
+    const std::vector<LogEntry> held = log_store_->entries();
+    std::shared_ptr<dvv::ILogSink> previous = log_file_->replace(std::move(file), held);
+    previous.reset();  // outside the switch's lock
+}
+
+void App::closeLogAndConfig() {
+    dvv::Logger::instance().flush();
+    if (log_file_) {
+        // At the very end, so the shutdown lines above reached rawreel.log.
+        std::shared_ptr<dvv::ILogSink> closed = log_file_->replace(nullptr);
+        closed.reset();  // the file closes here, outside the switch's lock
     }
-    dvv::Logger::instance().addSink(std::move(*sink));
+    log_folder_.clear();
+    settings_claim_.reset();  // its lock file may sit in the selftest's folder
+    if (!selftest_config_dir_.empty()) {
+        std::error_code error;
+        std::filesystem::remove_all(selftest_config_dir_, error);
+        if (error) {
+            std::fprintf(
+                stderr, "rawreel-gui --selftest: the config folder '%s' was not removed: %s\n",
+                dvv::media::utf8FromPath(selftest_config_dir_).c_str(), error.message().c_str());
+        }
+        selftest_config_dir_.clear();
+    }
 }
 
 bool App::startPools() {
@@ -358,6 +655,11 @@ void App::shutdownSession() {
 }
 
 int App::OnExit() {
+    // 1. Selftest only (spec §2, §7.3): the gui.showLogPane value the close saved is in the
+    // selftest's config file. Nothing is checked when nothing was saved.
+    if (selftest() && saved_log_pane_) {
+        checkSavedLogPane(*saved_log_pane_);
+    }
     dvv::components::stopFfmpegSources();  // before the Session shutdown (design M4 v2 D5)
     // Every viewport, and so every presenter, is gone: MainFrame::onClose destroyed it.
     if (session_) {
@@ -379,7 +681,16 @@ int App::OnExit() {
     registry_.reset();
     io_.reset();
     cpu_.reset();
-    dvv::Logger::instance().flush();
+#if defined(__WXGTK__)
+    // Log pane and Settings design §4.3: text copied in rawreel stays on the clipboard after it
+    // quits (GTK hands it to the clipboard manager). A selftest's copies went to its hook.
+    if (!selftest()) {
+        (void)wxTheClipboard->Flush();
+    }
+#endif
+    // Last: flush, close the log file (every line above reached it) and remove a selftest's
+    // config folder.
+    closeLogAndConfig();
     return wxApp::OnExit();
 }
 

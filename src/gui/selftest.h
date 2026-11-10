@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -28,6 +29,8 @@
 #include "core/session_types.h"
 #include "dvv/base/move_only_function.h"
 
+class wxDirDialog;
+class wxFileDialog;
 class wxGenericAboutDialog;  // NOLINT(readability-identifier-naming): wxWidgets' name
 class wxTextEntryDialog;
 
@@ -36,6 +39,7 @@ namespace rawreel {
 class App;
 class FormatDialog;
 class MainFrame;
+class SettingsWindow;
 
 // --selftest input isolation (an app-wide wx event filter, installed only while a SelfTest runs):
 // real keyboard, mouse-button, wheel and menu events are dropped, counted and logged, so a key
@@ -162,6 +166,20 @@ struct DialogHooks {
     dvv::MoveOnlyFunction<void(FormatDialog&)> format;
     dvv::MoveOnlyFunction<void(wxTextEntryDialog&)> uri;       // Open URI... (D29)
     dvv::MoveOnlyFunction<void(wxGenericAboutDialog&)> about;  // Help -> About (D29)
+    // A message: App::saveSettings' error, a refused or failed log save.
+    dvv::MoveOnlyFunction<void(wxMessageDialog&)> message;
+    // File -> Save Log... / Save Selected Lines...: sets the chosen file (SetPath).
+    dvv::MoveOnlyFunction<void(wxFileDialog&)> saveLog;
+    // The text a copy puts on the clipboard (the developer's clipboard stays untouched).
+    dvv::MoveOnlyFunction<void(std::string)> clipboard;
+    // Settings -> Log -> Choose...: sets the chosen folder (wxDirDialogBase::SetPath).
+    dvv::MoveOnlyFunction<void(wxDirDialog&)> chooseFolder;
+    // Show in Finder, Show in Explorer, Open Folder: the file or folder (nothing is launched).
+    dvv::MoveOnlyFunction<void(std::filesystem::path)> reveal;
+    // The Settings window (Log pane and Settings design §7.1), through showSettingsWindow: on macOS
+    // and GTK it runs once the window is shown; on Windows it is queued (CallAfter) before the
+    // modal Show() and runs inside its loop, so it must end the dialog (SettingsWindow::pressOk()).
+    dvv::MoveOnlyFunction<void(SettingsWindow&)> settings;
 };
 [[nodiscard]] DialogHooks& dialogHooks();
 // Every ShowModal of these dialogs goes here. With a hook set, a CallAfter queued before ShowModal
@@ -171,6 +189,31 @@ struct DialogHooks {
 [[nodiscard]] int showModal(FormatDialog& dialog);
 [[nodiscard]] int showModal(wxTextEntryDialog& dialog);
 [[nodiscard]] int showModal(wxGenericAboutDialog& dialog);
+// A native message dialog is never shown in a --selftest run: with a hook it calls the hook and
+// returns wxID_OK; without one it logs one warning and returns wxID_CANCEL. Outside a selftest it
+// is ShowModal().
+[[nodiscard]] int showModal(wxMessageDialog& dialog);
+// The same for the native file dialog (the saveLog hook).
+[[nodiscard]] int showModal(wxFileDialog& dialog);
+// The same for the native folder dialog (the chooseFolder hook).
+[[nodiscard]] int showModal(wxDirDialog& dialog);
+// The file a save dialog returned: in a --selftest run the path its hook set (wxGTK's GetPath()
+// reads its file chooser, which a dialog that was never shown may not have updated), else
+// GetPath(). UTF-8.
+[[nodiscard]] std::string chosenPath(const wxFileDialog& dialog);
+// Copied text (UTF-8): to the clipboard hook in a --selftest run (without one: one warning), else
+// to wxTheClipboard as plain text.
+void setClipboardText(std::string text);
+// The folder a folder dialog returned (UTF-8): in a --selftest run the path its hook set (wxGTK's
+// SetPath() and GetPath() go to its file chooser), else GetPath().
+[[nodiscard]] std::string chosenFolder(const wxDirDialog& dialog);
+// Show in Finder/Explorer, Open Folder: to the reveal hook in a --selftest run (without one: one
+// warning), else revealInFileManager().
+void revealFile(const std::filesystem::path& file_or_folder);
+// Settings... (Log pane and Settings design §5.1): settings.show(&parent), with the settings hook
+// in a --selftest run. Without a hook a selftest on Windows ends the modal dialog with Cancel
+// (logged), so a script never waits for a user.
+void showSettingsWindow(SettingsWindow& settings, wxWindow& parent);
 
 // The dispatcher: Smoke -> {smokeScenario(test)}, Lost -> {lostScenario(test), false}, Player ->
 // {playerScenario(test)}, Perf -> {perfScenario(test)}; every other scenario -> nullopt.

@@ -723,6 +723,63 @@ TEST_SUITE("session") {
         std::filesystem::remove_all(folder, ignored);
     }
 
+    // Log pane and Settings design §5.3: the Settings window changes the mode for later opens.
+    TEST_CASE("session: setFileReads changes the mode of later opens") {
+        const std::filesystem::path folder =
+            std::filesystem::temp_directory_path() /
+            ("rawreel-session-set-reads-" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(folder);
+        const std::filesystem::path file = folder / "clip_33x17_yuv420p.yuv";
+        {
+            std::ofstream out(file, std::ios::binary);
+            const std::string bytes(std::size_t{3} * 867, '\x40');
+            out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        }
+        {
+            SessionFixture f(dvv::platform::FileReadMode::Buffered);
+            CHECK(f.session->fileReads() == dvv::platform::FileReadMode::Buffered);
+            f.open(0, rawreel::fileUri(file));
+            const SessionEvent first = waitStreamsChanged(f, 1);
+            REQUIRE(first.streams.size() == 1);
+            CHECK(first.streams[0].info.reader == "buffered");
+            REQUIRE(f.sink->waitShown(0));
+
+            f.session->setFileReads(dvv::platform::FileReadMode::Unbuffered);
+            CHECK(f.session->fileReads() == dvv::platform::FileReadMode::Unbuffered);
+
+            f.session->closeStreams();
+            REQUIRE(f.waitStatus([](const SessionStatus& s) { return s.streams == 0; }));
+            f.open(0, rawreel::fileUri(file));
+            // A second streamsChanged with a stream, or an error where the temporary volume
+            // refuses unbuffered reads.
+            REQUIRE(f.events->waitFor([](const std::vector<SessionEvent>& events) {
+                if (rawreel::testing::countKind(events, Kind::Error) >= 1) {
+                    return true;
+                }
+                return std::ranges::count_if(events, [](const SessionEvent& event) {
+                           return event.kind == Kind::StreamsChanged && !event.streams.empty();
+                       }) >= 2;
+            }));
+            const std::vector<SessionEvent> errors = f.events->of(Kind::Error);
+            if (errors.empty()) {
+                const std::vector<SessionEvent> changed = f.events->of(Kind::StreamsChanged);
+                REQUIRE_FALSE(changed.empty());
+                REQUIRE(changed.back().streams.size() == 1);
+                const std::string reader = changed.back().streams[0].info.reader;
+                CHECK(reader != "buffered");
+                CHECK(reader == "unbuffered");
+            } else {
+                const std::string message = errors.front().error.value_or(dvv::Error{}).message;
+                CAPTURE(message);
+                CHECK(message.find("unbuffered") != std::string::npos);
+            }
+            f.shutdown();
+        }
+        std::error_code ignored;
+        std::filesystem::remove_all(folder, ignored);
+    }
+
     TEST_CASE("session: shutdown with requests in flight") {
         closeGate("g11");
         {

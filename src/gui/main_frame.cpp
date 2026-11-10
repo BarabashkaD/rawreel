@@ -6,9 +6,13 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
+#include <format>
+#include <fstream>
+#include <ios>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -24,9 +28,14 @@
 #include <wx/filedlg.h>
 #include <wx/textdlg.h>
 
+#include "core/config.h"
+#include "core/config_writer.h"
 #include "core/drop.h"
 #include "core/info_text.h"
 #include "core/layout.h"
+#include "core/log_file_switch.h"
+#include "core/log_store.h"
+#include "core/log_text.h"
 #include "core/open_text.h"
 #include "core/session.h"
 #include "core/startup.h"
@@ -42,11 +51,13 @@
 #include "gui/about.h"
 #include "gui/app.h"
 #include "gui/drop_target.h"
+#include "gui/edit_dispatch.h"
 #include "gui/format_dialog.h"
 #include "gui/info_panel.h"
 #include "gui/log_panel.h"
 #include "gui/player_panel.h"
 #include "gui/selftest.h"
+#include "gui/settings.h"
 #include "gui/transport_bar.h"
 #include "gui/viewport.h"
 
@@ -75,6 +86,15 @@ constexpr const char* OPEN_WILDCARD =
     "Raw video (*.yuv;*.raw;*.rgb;*.bin;*.y4m)|*.yuv;*.raw;*.rgb;*.bin;*.y4m|All files (*.*)|*.*";
 constexpr std::string_view OPEN_URI_EXAMPLE =
     "synthetic:gradient?fmt=yuv420p&size=1920x1080&frames=250";  // X15
+// Spec §2: the notice field's width comes from this text.
+constexpr const char* LONG_LOG_NOTICE = "99 errors, 99 warnings in the log";
+
+#if defined(__WXOSX__)
+// View -> Show Log / Hide Log (spec §2): the macOS item's title.
+wxString logItemTitle(bool shown) {
+    return shown ? "Hide Log" : "Show Log";
+}
+#endif
 
 // The wx key codes Task 4's normaliser names (core/commands.cpp, D17).
 static_assert(WXK_ESCAPE == 27 && WXK_SPACE == 32);
@@ -140,6 +160,75 @@ FormatDialogContext openContext(const std::string& uri, FormatDetection detectio
                                .autoDetect = auto_detect};
 }
 
+// Log pane and Settings design §4.4: macOS one type, plain text, with no format popup (wxOSX shows
+// one only for two filters or more); Windows and Linux text files and all files.
+#if defined(__WXOSX__)
+constexpr const char* LOG_SAVE_WILDCARD = "Text files (*.txt)|*.txt";
+#else
+constexpr const char* LOG_SAVE_WILDCARD = "Text files (*.txt;*.log)|*.txt;*.log|All files|*";
+#endif
+
+// Spec §4.4: `file` is the live rawreel.log or one of its backups (rawreel.log.1 to .3): it names
+// one of them in the log folder in use (a backup rotation would overwrite, whether it exists yet
+// or not; names compare without case on Windows and macOS), or it is one of them by another path.
+bool isLiveLogFile(const std::filesystem::path& file, const std::filesystem::path& log_folder) {
+    if (log_folder.empty()) {
+        return false;
+    }
+    std::error_code error;  // a missing folder is never equivalent
+    if (std::filesystem::equivalent(file.parent_path(), log_folder, error) && !error) {
+        const auto fold = [](std::string name) {
+#if defined(_WIN32) || defined(__APPLE__)
+            std::ranges::transform(name, name.begin(), [](char c) {
+                return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+            });
+#endif
+            return name;
+        };
+        const std::string name = fold(dvv::media::utf8FromPath(file.filename()));
+        for (int backup = 0; backup <= LOG_FILE_BACKUPS; ++backup) {
+            std::string candidate(LOG_FILE_NAME);
+            if (backup > 0) {
+                candidate += std::format(".{}", backup);
+            }
+            if (name == fold(candidate)) {
+                return true;
+            }
+        }
+    }
+    const std::filesystem::path log = log_folder / std::string(LOG_FILE_NAME);
+    for (int backup = 0; backup <= LOG_FILE_BACKUPS; ++backup) {
+        std::filesystem::path candidate = log;
+        if (backup > 0) {
+            candidate += std::format(".{}", backup);
+        }
+        error.clear();  // a missing file is never equivalent
+        if (std::filesystem::equivalent(file, candidate, error) && !error) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The reason `text` could not be written to `file` (created or replaced); nullopt once written.
+std::optional<std::string> writeTextFile(const std::filesystem::path& file,
+                                         const std::string& text) {
+    const auto reason = [](int code, std::string_view fallback) {
+        return code != 0 ? std::generic_category().message(code) : std::string(fallback);
+    };
+    errno = 0;
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return reason(errno, "it cannot be created");
+    }
+    out.write(text.data(), static_cast<std::streamsize>(text.size()));
+    out.close();
+    if (!out) {
+        return reason(errno, "it cannot be written");
+    }
+    return std::nullopt;
+}
+
 // D5R §2.2: the 4th status field, the display mapping of the active (first) stream.
 wxString mappingField(const std::vector<StreamInfo>& streams) {
     return wxString::FromUTF8(
@@ -149,6 +238,9 @@ wxString mappingField(const std::vector<StreamInfo>& streams) {
 }  // namespace
 
 int menuId(Command command) noexcept {
+    if (command == Command::Settings) {
+        return wxID_PREFERENCES;
+    }
 #if defined(__WXOSX__)
     if (command == Command::About) {
         return wxID_ABOUT;
@@ -161,6 +253,9 @@ int menuId(Command command) noexcept {
 }
 
 std::optional<Command> commandOfMenuId(int id) noexcept {
+    if (id == wxID_PREFERENCES) {
+        return Command::Settings;
+    }
 #if defined(__WXOSX__)
     if (id == wxID_ABOUT) {
         return Command::About;
@@ -209,7 +304,10 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     player_->SetDropTarget(new DropTarget(open));
     info_ = new InfoPanel(this);
     info_->setText(formatInfo({}));  // "No stream. ..." until the first streamsChanged
-    log_ = new LogPanel(this, wxGetApp().logSink());
+    log_ = new LogPanel(this);
+    log_->setSaveHandler([this](bool selected) {  // the list's context menu (spec §4.3)
+        execute(selected ? Command::SaveSelectedLines : Command::SaveLog, CommandSource::Menu);
+    });
     // The centre pane never floats, so the viewport's native child window is never re-parented
     // (M1b F14); no border, so the presented extent equals the pane.
     aui_.AddPane(player_, wxAuiPaneInfo().Name("player").CenterPane().PaneBorder(false));
@@ -220,13 +318,34 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
                             .BestSize(FromDIP(wxSize(320, 400)))
                             .MinSize(FromDIP(wxSize(INFO_MIN_WIDTH_DIP, -1)))
                             .CloseButton(false));
+    // Spec §2: hidden unless the config says otherwise; a selftest always starts with it hidden.
+    log_shown_at_start_ =
+        wxGetApp().config().gui.showLogPane && App::arguments().selftest == Scenario::None;
     aui_.AddPane(log_, wxAuiPaneInfo()
                            .Name("log")
                            .Caption("Log")
                            .Bottom()
                            .BestSize(FromDIP(wxSize(800, 160)))
                            .MinSize(FromDIP(wxSize(-1, LOG_MIN_HEIGHT_DIP)))
-                           .CloseButton(false));
+                           .CloseButton(true)
+                           .Show(log_shown_at_start_));
+    // Spec §2: the pane keeps its height across hide and show within a run. wxAUI sizes the dock
+    // it re-creates on show from the pane's BestSize, so BestSize follows the height the pane has
+    // while shown: it is the last height before any hide (View -> Log, the caption's close button).
+    log_->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+        event.Skip();
+        wxAuiPaneInfo& pane = aui_.GetPane(log_);
+        if (pane.IsOk() && pane.IsShown() && event.GetSize().y > 0) {
+            pane.BestSize(pane.best_size.x, event.GetSize().y);
+        }
+    });
+    // The caption's close button hides the pane without setLogShown(): the focus leaves it after.
+    Bind(wxEVT_AUI_PANE_CLOSE, [this](wxAuiManagerEvent& event) {
+        event.Skip();
+        if (event.GetPane() != nullptr && event.GetPane()->window == log_) {
+            CallAfter([this] { moveFocusOutOfLog(); });  // after wxAUI hid it
+        }
+    });
     aui_.Update();
     buildMenus();
     buildStatusBar();
@@ -266,9 +385,19 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     Bind(wxEVT_ICONIZE, &MainFrame::onIconize, this);
     Bind(wxEVT_SHOW, &MainFrame::onShow, this);
     Bind(wxEVT_CLOSE_WINDOW, &MainFrame::onClose, this);
+    // The Log pane's feed (spec §3.2), last, once the status bar exists: the store's notify posts
+    // onLogChanged to the GUI thread (no timer); the first call takes what was logged so far.
+    if (const std::shared_ptr<LogStore>& store = wxGetApp().logStore(); store != nullptr) {
+        store->setNotify([this] { CallAfter([this] { onLogChanged(); }); });
+    }
+    onLogChanged();
 }
 
 MainFrame::~MainFrame() {
+    // First (spec §3.3): no notify reaches this frame from now on; posted refreshes die with it.
+    if (const std::shared_ptr<LogStore>& store = wxGetApp().logStore(); store != nullptr) {
+        store->setNotify({});
+    }
     stopStatusUpdates();
     if (selftest_) {
         selftest_->stop();
@@ -280,6 +409,22 @@ MainFrame::~MainFrame() {
     }
     aui_.UnInit();
     selftest_.reset();
+}
+
+void MainFrame::onLogChanged() {
+    // No logging here (spec §3.3): a line logged here would post another refresh, forever.
+    const std::shared_ptr<LogStore>& store = wxGetApp().logStore();
+    if (store == nullptr || log_ == nullptr) {
+        return;
+    }
+    LogBatch batch = store->take(log_->mirror().next());
+    log_counts_ = batch.counts;  // setLogShown() sets seen_ from them without another take
+    const bool shown = logShown();
+    log_->refresh(std::move(batch), shown);
+    if (shown) {
+        seen_ = log_counts_;  // nothing is unseen while the pane is shown
+    }
+    updateLogNotice();
 }
 
 void MainFrame::buildMenus() {
@@ -299,12 +444,51 @@ void MainFrame::buildMenus() {
         }
         // An Accelerator command's "\t<key>" makes wx register the accelerator; CharHook commands
         // show their key without "\t" (Task 10 dispatches them).
-        menu->Append(menuId(info.command), wxString::FromUTF8(menuLabel(info)),
-                     wxString::FromUTF8(info.help));
+        const wxString label = wxString::FromUTF8(menuLabel(info));
+        const wxString help = wxString::FromUTF8(info.help);
+#if defined(__WXGTK__)
+        if (info.command == Command::Settings) {
+            continue;  // Edit -> Preferences..., below
+        }
+#endif
+#if defined(__WXOSX__)
+        // Spec §2: macOS shows and hides a part of a window with a title that changes, not a
+        // check mark ("checkable" does not apply); onUpdateUi keeps the title.
+        if (info.command == Command::LogPane) {
+            menu->Append(menuId(info.command), logItemTitle(logShown()), help);
+            continue;
+        }
+        menu->Append(menuId(info.command), label, help);
+#else
+        if (info.checkable) {
+            menu->AppendCheckItem(menuId(info.command), label, help);  // onUpdateUi checks it
+        } else {
+            menu->Append(menuId(info.command), label, help);
+        }
+#endif
     }
+    buildEditMenu(*bar);  // between File and Playback (spec §4.2)
+#if defined(__WXGTK__)
+    // Spec §5.1: GTK puts Preferences... at the end of Edit, after a separator.
+    const CommandInfo& settings = commandTable()[static_cast<std::size_t>(Command::Settings)];
+    wxMenu* edit = bar->GetMenu(1);
+    edit->AppendSeparator();
+    edit->Append(menuId(Command::Settings), wxString::FromUTF8(menuLabel(settings)),
+                 wxString::FromUTF8(settings.help));
+#endif
     SetMenuBar(bar);
     Bind(wxEVT_MENU, &MainFrame::onMenu, this, COMMAND_ID_BASE, LAST_COMMAND_ID);
     Bind(wxEVT_UPDATE_UI, &MainFrame::onUpdateUi, this, COMMAND_ID_BASE, LAST_COMMAND_ID);
+    // Spec §4.2: the Edit items act on the focused control. On macOS these arrive only when the
+    // native responder chain did not handle the item (and always for Undo and Redo).
+    for (const int id :
+         {wxID_UNDO, wxID_REDO, wxID_CUT, wxID_COPY, wxID_PASTE, wxID_CLEAR, wxID_SELECTALL}) {
+        Bind(wxEVT_MENU, &MainFrame::onEditMenu, this, id);
+        Bind(wxEVT_UPDATE_UI, &MainFrame::onEditUpdateUi, this, id);
+    }
+    // Settings... carries wxID_PREFERENCES on every OS (spec §5.1).
+    Bind(wxEVT_MENU, &MainFrame::onMenu, this, wxID_PREFERENCES);
+    Bind(wxEVT_UPDATE_UI, &MainFrame::onUpdateUi, this, wxID_PREFERENCES);
 #if defined(__WXOSX__)
     // The application menu's About and Quit (wxOSX hides the items in Help and File). Quit closes
     // the frame through onClose; unhandled, wxOSX would end the main loop without the frame's close
@@ -329,8 +513,12 @@ void MainFrame::buildStatusBar() {
         mapping = std::max(mapping, dc.GetTextExtent(wxString::FromUTF8(mappingText(&sample))).x);
     }
     mapping += FromDIP(24);
-    const std::array<int, 4> widths{-3, -2, -2, mapping};
+    // Spec §2: field 4, the Log notice, is as wide as a long notice plus the same margin; a left
+    // click inside it shows the pane.
+    const int notice = dc.GetTextExtent(LONG_LOG_NOTICE).x + FromDIP(24);
+    const std::array<int, 5> widths{-3, -2, -2, mapping, notice};
     SetStatusWidths(static_cast<int>(widths.size()), widths.data());
+    GetStatusBar()->Bind(wxEVT_LEFT_UP, &MainFrame::onStatusBarLeftUp, this);
 }
 
 Session& MainFrame::session() const noexcept {
@@ -355,9 +543,15 @@ bool MainFrame::isAvailable(Command command) const {
         case Command::Quit:
         case Command::Reopen:  // D25: also with a healthy stack (rebuilds it) or without a stream
         case Command::GpuInfo:
+        case Command::LogPane:
         case Command::Diagnostics:
+        case Command::Settings:
         case Command::About: return true;
+#if defined(__WXOSX__)
+        case Command::CloseStreams: return hasStream() || settingsInFront() != nullptr;
+#else
         case Command::CloseStreams:
+#endif
         case Command::PlayPause:
         case Command::Stop:
         case Command::StepBack:
@@ -376,6 +570,9 @@ bool MainFrame::isAvailable(Command command) const {
         }
         case Command::Open:
         case Command::OpenUri: return true;
+        case Command::SaveLog: return log_ != nullptr && log_->mirror().size() > 0;
+        // Spec §4.3: disabled when no row is selected (a hidden pane shows none).
+        case Command::SaveSelectedLines: return logShown() && log_->hasSelection();
         case Command::Format: return hasStream() && !streams_.empty();
     }
     return false;
@@ -385,6 +582,16 @@ void MainFrame::execute(Command command, CommandSource source) {
     if (closing_) {
         return;
     }
+#if defined(__WXOSX__)
+    // Spec §5.1: ⌘W closes the Settings window when it is in front (it has no menu of its own);
+    // otherwise Close stream acts on the main window.
+    if (command == Command::CloseStreams) {
+        if (wxWindow* settings = settingsInFront(); settings != nullptr) {
+            settings->Close();
+            return;
+        }
+    }
+#endif
     if (!isAvailable(command)) {
         DVV_LOG_DEBUG("command {} is not available", commandId(command));
         return;
@@ -411,6 +618,18 @@ void MainFrame::execute(Command command, CommandSource source) {
     }
     if (command == Command::About) {
         showAbout(*this);
+        return;
+    }
+    if (command == Command::LogPane) {
+        setLogShown(!logShown());
+        return;
+    }
+    if (command == Command::Settings) {
+        showSettings();
+        return;
+    }
+    if (command == Command::SaveLog || command == Command::SaveSelectedLines) {
+        saveLog(command == Command::SaveSelectedLines);
         return;
     }
     Session* session = wxGetApp().session();
@@ -443,15 +662,47 @@ void MainFrame::execute(Command command, CommandSource source) {
             dismissMessage();
             session->reopen();  // repeated clicks are coalesced by the Session
             return;
-        case Command::Diagnostics: session->logDiagnostics(); return;
+        case Command::Diagnostics:
+            // Spec §2: logDiagnostics() is a queued Session command; the pane is shown now and the
+            // lines stream into it as they are written.
+            session->logDiagnostics();
+            setLogShown(true);
+            return;
         case Command::Quit:
         case Command::GpuInfo:
         case Command::Open:
         case Command::OpenUri:
+        case Command::SaveLog:
+        case Command::SaveSelectedLines:
         case Command::Format:
+        case Command::LogPane:
+        case Command::Settings:
         case Command::About: return;
     }
 }
+
+void MainFrame::showSettings() {
+    if (!settings_) {
+        settings_ = std::make_unique<SettingsWindow>(*this);
+    }
+    showSettingsWindow(*settings_, *this);  // the selftest's hook, if any
+}
+
+#if defined(__WXOSX__)
+wxWindow* MainFrame::settingsInFront() const {
+    wxWindow* const settings = settings_ ? settings_->window() : nullptr;
+    if (settings == nullptr) {
+        return nullptr;
+    }
+    // wxOSX FindFocus() is null when the key window's first responder is the NSWindow itself (no
+    // control has the focus), so the Settings window as the active window counts too.
+    auto* const window = wxDynamicCast(settings, wxTopLevelWindow);
+    wxWindow* const focus = focusedWindow();
+    const bool focused = focus != nullptr && wxGetTopLevelParent(focus) == settings;
+    return focused || (window != nullptr && window->IsShown() && window->IsActive()) ? settings
+                                                                                     : nullptr;
+}
+#endif
 
 void MainFrame::showGpuInfo() {
     std::string text = "no GPU device is in use";
@@ -676,10 +927,11 @@ void MainFrame::onCharHook(wxKeyEvent& event) {
     }
     const KeyChord chord =
         normaliseKey(event.GetKeyCode(), event.ControlDown(), event.ShiftDown(), event.AltDown());
-    // Only an editable text entry keeps bare keys (the read-only Info and Log panes do not, D17).
-    const auto* entry = dynamic_cast<const wxTextEntry*>(wxWindow::FindFocus());
-    const bool text_focus = entry != nullptr && entry->IsEditable();
-    if (const std::optional<Command> command = commandForKey(chord, text_focus)) {
+    // An editable text entry and the Log list keep bare keys (D17; Log pane and Settings design
+    // §4.1); the read-only Info pane does not.
+    const bool keeps_keys =
+        focusKeepsKeys(focusedWindow(), log_ != nullptr ? log_->list().control() : nullptr);
+    if (const std::optional<Command> command = commandForKey(chord, keeps_keys)) {
         execute(*command, CommandSource::Key);
         return;  // consumed: the slider and the buttons never see bare keys
     }
@@ -702,6 +954,17 @@ void MainFrame::onSkimKeyUp() {
 
 TransportBar& MainFrame::transportBar() noexcept {
     return player_->transportBar();
+}
+
+wxWindow* MainFrame::focusedWindow() const {
+    if (wxWindow* window = focus_for_test_.get(); window != nullptr) {
+        return window;
+    }
+    return wxWindow::FindFocus();
+}
+
+void MainFrame::setFocusForTest(wxWindow* window) {
+    focus_for_test_ = window;
 }
 
 void MainFrame::setDebugTransport(bool on) noexcept {
@@ -745,8 +1008,59 @@ bool MainFrame::reopenShown() const {
     return reopen_offered_ && player_->infoBar().IsShown();
 }
 
-std::array<wxString, 4> MainFrame::statusTexts() const {
+std::array<wxString, 5> MainFrame::statusTexts() const {
     return status_texts_;
+}
+
+void MainFrame::setLogShown(bool shown) {
+    if (closing_ || log_ == nullptr) {
+        return;
+    }
+    wxAuiPaneInfo& pane = aui_.GetPane(log_);
+    if (!pane.IsOk() || pane.IsShown() == shown) {
+        return;  // e.g. Help -> Diagnostics with the pane shown: the list keeps its place
+    }
+    pane.Show(shown);
+    aui_.Update();  // the player panel's size event checks the layout limits
+    if (!shown) {
+        moveFocusOutOfLog();
+    }
+    if (shown) {
+        // Spec §3.2: the list did not follow while hidden; it is rebuilt from the mirror.
+        onLogChanged();
+        log_->list().rebuild();
+        seen_ = log_counts_;
+        updateLogNotice();
+    }
+}
+
+bool MainFrame::logShown() const {
+    for (const wxAuiPaneInfo& pane : aui_.GetAllPanes()) {
+        if (pane.window == log_) {
+            return log_ != nullptr && pane.IsShown();
+        }
+    }
+    return false;
+}
+
+void MainFrame::updateLogNotice() {
+    // No logging (spec §3.3): onLogChanged calls this.
+    const wxString notice = wxString::FromUTF8(
+        logNoticeText(log_counts_.errors - seen_.errors, log_counts_.warnings - seen_.warnings));
+    if (notice != status_texts_[LOG_NOTICE_FIELD]) {
+        status_texts_[LOG_NOTICE_FIELD] = notice;
+        SetStatusText(notice, static_cast<int>(LOG_NOTICE_FIELD));
+    }
+}
+
+void MainFrame::onStatusBarLeftUp(wxMouseEvent& event) {
+    event.Skip();
+    wxRect field;
+    if (const wxStatusBar* bar = GetStatusBar();
+        bar != nullptr && bar->GetFieldRect(static_cast<int>(LOG_NOTICE_FIELD), field) &&
+        field.Contains(event.GetPosition())) {
+        setLogShown(true);
+    }
 }
 
 void MainFrame::onStackChanged(const std::weak_ptr<dvv::gpu::ExecutionContext>& context,
@@ -882,6 +1196,62 @@ void MainFrame::onMenu(wxCommandEvent& event) {
 void MainFrame::onUpdateUi(wxUpdateUIEvent& event) {
     const std::optional<Command> command = commandOfMenuId(event.GetId());
     event.Enable(!closing_ && command && isAvailable(*command));
+    if (command == Command::LogPane) {  // spec §2: the item follows the pane however it changed
+#if defined(__WXOSX__)
+        event.SetText(logItemTitle(logShown()));
+#else
+        event.Check(logShown());
+#endif
+    }
+}
+
+void MainFrame::onEditMenu(wxCommandEvent& event) {
+    // The action is called on the focused control; the event is never sent again (spec §4.2).
+    if (!closing_ && log_ != nullptr) {
+        (void)runEdit(event.GetId(), focusedWindow(), *log_);
+    }
+}
+
+void MainFrame::onEditUpdateUi(wxUpdateUIEvent& event) {
+    event.Enable(!closing_ && log_ != nullptr && canEdit(event.GetId(), focusedWindow(), *log_));
+}
+
+void MainFrame::saveLog(bool selected) {
+    // Spec §4.3: the records saved are the ones of the moment the command ran, even if new records
+    // drop them from the mirror while the dialog is open.
+    const std::vector<LogEntry> records = selected ? log_->selectedRecords() : log_->allRecords();
+    const std::string text = logRecordsText(records);
+    const wxString name =
+        wxString::FromUTF8(logSaveFileName(localTime(std::chrono::system_clock::now())));
+    wxFileDialog dialog(this, selected ? "Save Selected Lines" : "Save Log",
+                        dialogFolder(last_log_save_dir_), name, LOG_SAVE_WILDCARD,
+                        wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+    if (showModal(dialog) != wxID_OK || closing_) {
+        return;
+    }
+    const std::filesystem::path file = dvv::media::pathFromUtf8(chosenPath(dialog));
+    const std::string path = dvv::media::utf8FromPath(file);
+    const auto refuse = [this](const std::string& detail) {
+        wxMessageDialog message(this, "The log was not saved.", "rawreel", wxOK | wxICON_ERROR);
+        message.SetExtendedMessage(wxString::FromUTF8(detail));
+        (void)showModal(message);
+    };
+    // Spec §4.4: the live log and its backups are never overwritten.
+    if (isLiveLogFile(file, wxGetApp().logFolderInUse())) {
+        DVV_LOG_INFO("log not saved: '{}' is the log file rawreel writes", path);
+        refuse(
+            std::format("'{}' is the log file rawreel writes ({} or one of its backups). Choose "
+                        "another file.",
+                        path, LOG_FILE_NAME));
+        return;
+    }
+    if (const std::optional<std::string> failure = writeTextFile(file, text)) {
+        DVV_LOG_WARN("log not saved to '{}': {}", path, *failure);
+        refuse(std::format("'{}': {}", path, *failure));
+        return;
+    }
+    last_log_save_dir_ = file.parent_path();  // the next save dialog starts there
+    DVV_LOG_INFO("{} log records saved to '{}'", records.size(), path);
 }
 
 void MainFrame::startStatusUpdates(Session& session) {
@@ -1005,7 +1375,38 @@ void MainFrame::onShow(wxShowEvent& event) {
     if (viewport_ != nullptr) {
         viewport_->topLevelShown(event.IsShown());
     }
+    if (event.IsShown() && !std::exchange(first_shown_, true)) {
+        // wx gives the first focusable child the focus when the window appears, which can be a
+        // panel of the Log pane (shown or hidden): after that, the player has it.
+        CallAfter([this] { moveFocusOutOfLog(); });
+    }
     event.Skip();
+}
+
+void MainFrame::moveFocusOutOfLog() {
+    if (closing_ || log_ == nullptr || player_ == nullptr) {
+        return;
+    }
+    if (const wxWindow* focus = wxWindow::FindFocus();
+        focus != nullptr && windowWithin(focus, log_)) {
+        player_->SetFocus();  // its first focusable child (the transport bar)
+    }
+}
+
+void MainFrame::saveLogPaneState() {
+    // Spec §2: written once, at close, only when the pane's state differs from its state at start
+    // (an untouched pane writes nothing: no file is created, and a selftest that starts hidden
+    // never overwrites a --config file's true) and only by the settings owner (saveSettings).
+    // Closing: a failure is logged, never shown in a dialog.
+    App& app = wxGetApp();
+    const bool shown = logShown();
+    if (shown == log_shown_at_start_) {
+        return;
+    }
+    const std::array<ConfigValue, 1> values{{{.key = "gui.showLogPane", .value = shown}}};
+    if (app.saveSettings(values, /*closing=*/true)) {
+        app.setSavedLogPane(shown);
+    }
 }
 
 void MainFrame::onClose(wxCloseEvent& event) {
@@ -1014,6 +1415,7 @@ void MainFrame::onClose(wxCloseEvent& event) {
         return;
     }
     closing_ = true;
+    saveLogPaneState();
     stopStatusUpdates();
     if (selftest_) {
         selftest_->stop();  // the runner lives until ~MainFrame
@@ -1021,6 +1423,9 @@ void MainFrame::onClose(wxCloseEvent& event) {
     format_queue_.clear();
     if (format_dialog_ != nullptr && format_dialog_->IsModal()) {
         format_dialog_->EndModal(wxID_CANCEL);  // its caller sees closing_ and returns
+    }
+    if (settings_) {
+        settings_->dismiss();  // spec §5.1: before the Session shuts down
     }
     if (viewport_ != nullptr) {
         viewport_->detachStack();  // setOnChanged({}), presenter, renderer, context
