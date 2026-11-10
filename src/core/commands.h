@@ -16,7 +16,10 @@ namespace rawreel {
 enum class Command : std::uint8_t {
     Open,
     OpenUri,
+    SaveLog,            // File -> Save Log... (Log pane and Settings design §4.3)
+    SaveSelectedLines,  // File -> Save Selected Lines...
     CloseStreams,
+    Settings,  // File -> Settings... (Log pane and Settings design §5.1; Edit on Linux)
     Quit,
     PlayPause,
     Stop,
@@ -29,6 +32,7 @@ enum class Command : std::uint8_t {
     Loop,
     Format,
     Reopen,
+    LogPane,  // View -> Log (Log pane and Settings design §2)
     GpuInfo,
     Diagnostics,
     About,
@@ -67,12 +71,15 @@ struct CommandInfo {
     std::string_view id, menu, label, help;
     std::optional<KeyChord> key;
     KeyRoute route;
+    // A check item on Windows and Linux (View -> Log); macOS changes the item's title instead.
+    bool checkable = false;
 };
 
 [[nodiscard]] std::span<const CommandInfo> commandTable() noexcept;  // in Command order
-// CharHook commands only; nullopt when `text_focus` (an editable wxTextEntry has focus) or when
-// no command matches.
-[[nodiscard]] std::optional<Command> commandForKey(const KeyChord& chord, bool text_focus) noexcept;
+// CharHook commands only; nullopt when `focus_keeps_keys` (the focus is an editable wxTextEntry or
+// inside the Log pane, Log pane and Settings design §4.1) or when no command matches.
+[[nodiscard]] std::optional<Command> commandForKey(const KeyChord& chord,
+                                                   bool focus_keeps_keys) noexcept;
 // wx 3.3 key code + modifiers -> KeyChord. Unknown codes keep their value.
 [[nodiscard]] KeyChord normaliseKey(std::int32_t keycode, bool ctrl, bool shift, bool alt) noexcept;
 // "Ctrl+O", "Ctrl+Shift+O", "F11", "Space", "Shift+Left", "+", "Esc", "1", "L".
