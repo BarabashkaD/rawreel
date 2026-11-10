@@ -18,6 +18,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <regex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -50,6 +51,7 @@
 #include "core/format_choice.h"
 #include "core/layout.h"
 #include "core/log_file_switch.h"
+#include "core/log_level.h"
 #include "core/log_mirror.h"
 #include "core/log_store.h"
 #include "core/log_text.h"
@@ -325,6 +327,7 @@ std::optional<SelfTestScript> selfTestScript(Scenario scenario, SelfTest& test) 
             return SelfTestScript{.steps = lostScenario(test), .presenterFailureFails = false};
         case Scenario::Player: return SelfTestScript{.steps = playerScenario(test)};
         case Scenario::Perf: return SelfTestScript{.steps = perfScenario(test)};
+        case Scenario::About: return SelfTestScript{.steps = aboutScenario(test)};
         case Scenario::None: return std::nullopt;
     }
     return std::nullopt;
@@ -1187,6 +1190,24 @@ std::optional<std::string> fileText(const std::filesystem::path& file) {
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
+// The store holds a mark whose message is `text`, with a sequence of at least `since`.
+bool storeHasMark(const App& app, std::string_view text, std::uint64_t since = 0) {
+    const std::shared_ptr<LogStore>& store = app.logStore();
+    if (store == nullptr) {
+        return false;
+    }
+    return std::ranges::any_of(store->entries(), [text, since](const LogEntry& entry) {
+        return entry.mark && entry.sequence >= since && entry.message == text;
+    });
+}
+
+// The current log file's text, after Logger::flush(); empty when there is none.
+std::string currentLogText(const App& app) {
+    dvv::Logger::instance().flush();
+    const std::filesystem::path file = app.currentLogFile();
+    return file.empty() ? std::string() : fileText(file).value_or(std::string());
+}
+
 // The copy/save text of the mirror rows `rows` (each row's record by its sequence).
 std::string mirrorRowsText(const LogMirror& mirror, std::span<const std::size_t> rows) {
     std::vector<LogEntry> entries;
@@ -1217,7 +1238,7 @@ struct EditState {
     std::filesystem::path file;            // the file a save step chose
     std::optional<std::string> directory;  // the save dialog's start folder (remembers the folder)
     std::optional<std::string> message;    // the message hook's text and extended text
-    std::uintmax_t logSize = 0;            // over the live log: rawreel.log's size before
+    std::uintmax_t logSize = 0;            // over the live log: the file's size before
     std::uint64_t logNext = 0;             // write failure: the store's next sequence before
 };
 
@@ -1290,7 +1311,7 @@ SelfTestStep pauseAtFirstStep(SelfTest* test) {
 }
 
 // Spec §4.2, §4.3: Select All, then Edit -> Copy with the Log list focused puts every selected
-// record on the clipboard, as rawreel.log writes it.
+// record on the clipboard, as the store formats it.
 SelfTestStep logCopyStep(SelfTest* test, const std::shared_ptr<EditState>& state) {
     auto start = [test, state] {
         MainFrame& frame = test->frame();
@@ -1411,10 +1432,85 @@ SelfTestStep saveSelectedStep(SelfTest* test, const std::shared_ptr<EditState>& 
     return step("save selected lines", std::move(start), std::move(passed));
 }
 
-// Spec §4.4: the live rawreel.log is refused with a message, and the file is not replaced.
+// Addendum §4: the Source column only with log.source (smoke_source turns it on): Time (local),
+// Level and Message by default; with the flag a fourth column whose cells are "file.cpp:42".
+SelfTestStep sourceColumnStep(SelfTest* test) {
+    const bool source = test->app().config().log.source;
+    auto passed = [test, source](std::string& seen) {
+        const LogPanel& panel = test->frame().logPanel();
+        const LogList& list = panel.list();
+        const std::size_t columns = list.columnCount();
+        const std::size_t rows = list.rowCount();
+        const std::string cell = rows > 0 ? list.cellText(rows - 1, 3).utf8_string() : "";
+        const std::string want = source && panel.mirror().size() > 0
+                                     ? logSourceText(panel.mirror().at(panel.mirror().size() - 1))
+                                     : std::string();
+        seen = std::format("log.source {}, {} columns, last row's Source cell '{}' (want '{}')",
+                           source, columns, cell, want);
+        return source ? columns == 4 && !want.empty() && cell == want : columns == 3;
+    };
+    return step(source ? "source column" : "no source column", {}, std::move(passed));
+}
+
+// Addendum §4: Save Log writes each record's line, "<time>Z <LEVEL> <message>", with
+// " [file.cpp:42]" only with log.source. The selftest's own Info lines (the list fill lines) show
+// it: they end in " [selftest.cpp:<n>]" with the flag and never without it; the log file has the
+// same lines.
+SelfTestStep savedTextStep(SelfTest* test, const std::shared_ptr<EditState>& state) {
+    const bool source = test->app().config().log.source;
+    auto records = std::make_shared<std::vector<LogEntry>>();
+    auto start = [test, state, records] {
+        state->file = saveFolder(test) / "format.txt";
+        *records = test->frame().logPanel().allRecords();  // what the save below writes
+        state->expected = logRecordsText(*records);
+        dialogHooks().saveLog = [state](wxFileDialog& dialog) {
+            dialog.SetPath(wxString::FromUTF8(dvv::media::utf8FromPath(state->file)));
+        };
+        test->frame().execute(Command::SaveLog);
+    };
+    auto passed = [test, state, records, source](std::string& seen) {
+        std::string saved;
+        const bool written = !saveFolder(test).empty() && savedAsExpected(*state, saved);
+        static const std::regex LINE(R"(^\d{4}-\d\d-\d\dT[\d:.]+Z [A-Z]+ +.*$)");
+        std::size_t bad = 0;
+        std::string first_bad;
+        std::size_t own = 0;  // the selftest's own Info lines
+        std::size_t own_right = 0;
+        const LogEntry* last_own = nullptr;
+        for (const LogEntry& entry : *records) {
+            const std::string first = entry.line.substr(0, entry.line.find('\n'));
+            if (!std::regex_match(first, LINE)) {
+                if (bad++ == 0) {
+                    first_bad = first;
+                }
+            }
+            if (entry.level != dvv::LogLevel::Info || entry.mark ||
+                dvv::sourceFileName(entry.where) != "selftest.cpp") {
+                continue;
+            }
+            ++own;
+            last_own = &entry;
+            const std::string suffix = std::format(" [selftest.cpp:{}]", entry.where.line());
+            own_right += entry.line.ends_with(suffix) == source ? 1 : 0;
+        }
+        const std::string file = currentLogText(test->app());
+        const bool in_file = last_own != nullptr && file.find(last_own->line) != std::string::npos;
+        seen = std::format(
+            "log.source {}; {}; {} lines not in the format (first '{}'); {} of {} selftest lines "
+            "{} the source; the last one in the log file {}",
+            source, saved, bad, first_bad, own_right, own, source ? "end in" : "without", in_file);
+        return written && bad == 0 && own > 0 && own_right == own && in_file;
+    };
+    return step(source ? "saved text with source" : "saved text without source", std::move(start),
+                std::move(passed));
+}
+
+// Spec §4.4: the current log file is refused with a message naming it, and the file is not
+// replaced.
 SelfTestStep saveOverLiveLogStep(SelfTest* test, const std::shared_ptr<EditState>& state) {
     auto start = [test, state] {
-        state->file = test->app().logFolderInUse() / std::string(LOG_FILE_NAME);
+        dvv::Logger::instance().flush();
+        state->file = test->app().currentLogFile();
         std::error_code error;
         state->logSize = std::filesystem::file_size(state->file, error);
         state->message.reset();
@@ -1427,27 +1523,28 @@ SelfTestStep saveOverLiveLogStep(SelfTest* test, const std::shared_ptr<EditState
         };
         test->frame().execute(Command::SaveLog);
     };
-    auto passed = [test, state](std::string& seen) {
+    auto passed = [state](std::string& seen) {
         std::error_code error;
         const std::uintmax_t size = std::filesystem::file_size(state->file, error);
-        seen = std::format("log folder '{}', message '{}', rawreel.log {} bytes (was {})",
-                           dvv::media::utf8FromPath(test->app().logFolderInUse()),
-                           state->message.value_or("none"), error ? 0 : size, state->logSize);
-        return !test->app().logFolderInUse().empty() && state->logSize > 0 && !error &&
-               size >= state->logSize && state->message &&
-               state->message->find(LOG_FILE_NAME) != std::string::npos;
+        seen = std::format("log file '{}', message '{}', {} bytes (was {})",
+                           dvv::media::utf8FromPath(state->file), state->message.value_or("none"),
+                           error ? 0 : size, state->logSize);
+        return !state->file.empty() && state->logSize > 0 && !error && size >= state->logSize &&
+               state->message &&
+               state->message->find(dvv::media::utf8FromPath(state->file)) != std::string::npos;
     };
     return step("save over the live log", std::move(start), std::move(passed));
 }
 
-// Spec §4.4: a backup name that does not exist yet (rawreel.log.3; another case on Windows and
-// macOS) is refused too, since a rotation would overwrite it; no file is created.
-SelfTestStep saveOverLogBackupStep(SelfTest* test, const std::shared_ptr<EditState>& state) {
+// Spec §4.4 (addendum §5.5): a name in the log folder that matches the log file pattern (another
+// case on Windows and macOS) is refused too, since rawreel may create it; no file is created,
+// and the message names the current file.
+SelfTestStep saveOverLogFileStep(SelfTest* test, const std::shared_ptr<EditState>& state) {
     auto start = [test, state] {
 #if defined(_WIN32) || defined(__APPLE__)
-        const std::string name = std::format("{}.{}", "RawReel.LOG", LOG_FILE_BACKUPS);
+        const std::string name = "RawReel-20200101-000000.LOG";
 #else
-        const std::string name = std::format("{}.{}", LOG_FILE_NAME, LOG_FILE_BACKUPS);
+        const std::string name = "rawreel-20200101-000000.log";
 #endif
         state->file = test->app().logFolderInUse() / name;
         state->message.reset();
@@ -1463,12 +1560,13 @@ SelfTestStep saveOverLogBackupStep(SelfTest* test, const std::shared_ptr<EditSta
     auto passed = [test, state](std::string& seen) {
         std::error_code error;
         const bool exists = std::filesystem::exists(state->file, error);
+        const std::string current = dvv::media::utf8FromPath(test->app().currentLogFile());
         seen = std::format("'{}' {}, message '{}'", dvv::media::utf8FromPath(state->file),
                            exists ? "exists" : "absent", state->message.value_or("none"));
-        return !test->app().logFolderInUse().empty() && !error && !exists && state->message &&
-               state->message->find(LOG_FILE_NAME) != std::string::npos;
+        return !test->app().logFolderInUse().empty() && !current.empty() && !error && !exists &&
+               state->message && state->message->find(current) != std::string::npos;
     };
-    return step("save over a log backup", std::move(start), std::move(passed));
+    return step("save over a log file", std::move(start), std::move(passed));
 }
 
 // Spec §4.4: a write that fails shows a message naming the path and logs one warning.
@@ -1530,8 +1628,10 @@ void addEditSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     steps.push_back(saveLogStep(test, state));
     steps.push_back(saveLogFolderStep(test, state));
     steps.push_back(saveSelectedStep(test, state));
+    steps.push_back(sourceColumnStep(test));
+    steps.push_back(savedTextStep(test, state));
     steps.push_back(saveOverLiveLogStep(test, state));
-    steps.push_back(saveOverLogBackupStep(test, state));
+    steps.push_back(saveOverLogFileStep(test, state));
     steps.push_back(saveFailureStep(test, state));
     steps.push_back(hiddenLogKeysStep(test, state));
 }
@@ -1622,6 +1722,118 @@ SelfTestStep selftestConfigStep(SelfTest* test) {
         return in_folder && logs_used && private_folders && !app.systemLogEnabled();
     };
     return step("selftest config", {}, std::move(passed));
+}
+
+// --- the log level (log level and files design §2, §3, §5.2) ------------------------------------
+
+// §3.1, §5.2: the current file (new in the selftest's empty logs/) starts with the header, then
+// names itself; the start marker follows, and the store holds it too.
+SelfTestStep levelStartMarkerStep(SelfTest* test) {
+    auto passed = [test](std::string& seen) {
+        const App& app = test->app();
+        const std::string marker =
+            levelStartMarker(dvv::LogLevel::Info, app.config().log.levelSaved);
+        const std::string header = logFileHeader(dvv::LogLevel::Info, "");
+        const std::string text = currentLogText(app);
+        const std::string first = text.substr(0, text.find('\n'));
+        const bool starts = first.ends_with(header);
+        const std::string named =
+            std::format("log file: '{}'", dvv::media::utf8FromPath(app.currentLogFile()));
+        const bool names = text.find(named) != std::string::npos;
+        const bool in_file = text.find(marker) != std::string::npos;
+        const bool in_store = storeHasMark(app, marker);
+        seen = std::format(
+            "active {}, first line '{}' is the header {}, names the file {}, marker '{}' in the "
+            "file {}, in the store {}",
+            levelShownName(app.activeLevel()), first, starts, names, marker, in_file, in_store);
+        return app.activeLevel() == dvv::LogLevel::Info && starts && names && in_file && in_store;
+    };
+    return step("log level start marker", {}, std::move(passed));
+}
+
+struct LevelState {
+    std::string marker;  // the change marker the step expects
+    bool systemLogBefore = true;
+};
+
+// §2.1: Debug lets a DVV_LOG_DEBUG line through the Logger's gate into the store and the file,
+// with one change marker in both.
+SelfTestStep levelDebugStep(SelfTest* test, const std::shared_ptr<LevelState>& state) {
+    auto start = [test, state] {
+        App& app = test->app();
+        state->marker =
+            levelChangeMarker(app.activeLevel(), dvv::LogLevel::Debug, LevelSource::Settings);
+        app.setActiveLevel(dvv::LogLevel::Debug, LevelSource::Settings);
+        DVV_LOG_DEBUG("selftest debug line");
+    };
+    auto passed = [test, state](std::string& seen) {
+        const App& app = test->app();
+        const std::string text = currentLogText(app);
+        const std::shared_ptr<LogStore>& store = app.logStore();
+        const bool line_stored =
+            store != nullptr && std::ranges::any_of(store->entries(), [](const LogEntry& entry) {
+                return entry.level == dvv::LogLevel::Debug &&
+                       entry.message == "selftest debug line";
+            });
+        const bool line_in_file = text.find("selftest debug line") != std::string::npos;
+        const bool marker_in_file = text.find(state->marker) != std::string::npos;
+        const bool marker_stored = storeHasMark(app, state->marker);
+        seen = std::format(
+            "active {}, debug line in the store {}, in the file {}; marker '{}' in the store {}, "
+            "in the file {}",
+            levelShownName(app.activeLevel()), line_stored, line_in_file, state->marker,
+            marker_stored, marker_in_file);
+        return app.activeLevel() == dvv::LogLevel::Debug && line_stored && line_in_file &&
+               marker_stored && marker_in_file;
+    };
+    return step("log level debug reaches the file", std::move(start), std::move(passed));
+}
+
+// §2.1, D11: with the system log off, a change still reaches the store and the file, and the
+// system sink stays off. The level goes back to Info afterwards for the later steps.
+SelfTestStep levelSystemLogOffStep(SelfTest* test, const std::shared_ptr<LevelState>& state) {
+    auto start = [test, state] {
+        App& app = test->app();
+        app.useSystemLog(false);
+        state->marker =
+            levelChangeMarker(app.activeLevel(), dvv::LogLevel::Warn, LevelSource::Menu);
+        app.setActiveLevel(dvv::LogLevel::Warn, LevelSource::Menu);
+        state->systemLogBefore = app.systemLogEnabled();
+        app.setActiveLevel(dvv::LogLevel::Info, LevelSource::Menu);
+    };
+    auto passed = [test, state](std::string& seen) {
+        const App& app = test->app();
+        const std::string text = currentLogText(app);
+        const bool in_file = text.find(state->marker) != std::string::npos;
+        const bool in_store = storeHasMark(app, state->marker);
+        seen = std::format(
+            "marker '{}' in the store {}, in the file {}; system log at Warn {}, now {}; active {}",
+            state->marker, in_store, in_file, state->systemLogBefore, app.systemLogEnabled(),
+            levelShownName(app.activeLevel()));
+        return in_store && in_file && !state->systemLogBefore && !app.systemLogEnabled() &&
+               app.activeLevel() == dvv::LogLevel::Info;
+    };
+    return step("log level with system log off", std::move(start), std::move(passed));
+}
+
+// §5.1: the selftest's log file is named rawreel-YYYYMMDD-HHMMSS.log.
+SelfTestStep logFileTimestampedStep(SelfTest* test) {
+    auto passed = [test](std::string& seen) {
+        const std::filesystem::path file = test->app().currentLogFile();
+        const std::string name = dvv::media::utf8FromPath(file.filename());
+        const bool matches = !name.empty() && isLogFileName(name, false);
+        seen = std::format("log file '{}' matches {}", dvv::media::utf8FromPath(file), matches);
+        return matches;
+    };
+    return step("log file is timestamped", {}, std::move(passed));
+}
+
+void addLevelSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
+    const auto state = std::make_shared<LevelState>();
+    steps.push_back(levelStartMarkerStep(test));
+    steps.push_back(levelDebugStep(test, state));
+    steps.push_back(levelSystemLogOffStep(test, state));
+    steps.push_back(logFileTimestampedStep(test));
 }
 
 // Help -> Diagnostics writes the store counters to the log, which reaches the Log pane, and shows
@@ -1731,13 +1943,16 @@ SelfTestStep menusStep(SelfTest* test, const SharedState& state) {
 // Design C5: About and Quit carry the standard ids, so wxOSX shows them in the application menu
 // as "About rawreel" and "Quit rawreel" (and hides them in Help and File); the application menu's
 // About opens Help -> About.
-SelfTestStep appMenuStep(SelfTest* test) {
+SelfTestStep appMenuStep(SelfTest* test, bool opens_about) {
     struct Seen {
         std::uint64_t about0 = 0;
         bool hookRan = false;
     };
     auto seen_state = std::make_shared<Seen>();
-    auto start = [test, seen_state] {
+    auto start = [test, seen_state, opens_about] {
+        if (!opens_about) {
+            return;  // smoke: the menu only, no About window
+        }
         MainFrame& frame = test->frame();
         seen_state->about0 = frame.aboutShown();
         dialogHooks().about = [seen_state](wxGenericAboutDialog& /*dialog*/) {
@@ -1747,7 +1962,7 @@ SelfTestStep appMenuStep(SelfTest* test) {
         about.SetEventObject(&frame);
         injectInput(*frame.GetEventHandler(), about);
     };
-    auto passed = [test, seen_state](std::string& seen) {
+    auto passed = [test, seen_state, opens_about](std::string& seen) {
         const MainFrame& frame = test->frame();
         const wxMenuBar* bar = frame.GetMenuBar();
         const wxMenu* apple = bar != nullptr ? bar->OSXGetAppleMenu() : nullptr;
@@ -1767,10 +1982,13 @@ SelfTestStep appMenuStep(SelfTest* test) {
             bar->FindItem(COMMAND_ID_BASE + static_cast<int>(Command::About)) == nullptr &&
             bar->FindItem(COMMAND_ID_BASE + static_cast<int>(Command::Quit)) == nullptr;
         const bool shown = frame.aboutShown() > seen_state->about0 && seen_state->hookRan;
-        seen = std::format("application menu '{}' '{}' '{}', standard ids {}, About shown {}",
-                           about, settings, quit, ids, shown);
+        seen = opens_about
+                   ? std::format("application menu '{}' '{}' '{}', standard ids {}, About shown {}",
+                                 about, settings, quit, ids, shown)
+                   : std::format("application menu '{}' '{}' '{}', standard ids {}", about,
+                                 settings, quit, ids);
         return about == "About rawreel" && settings == "Settings..." && quit == "Quit rawreel" &&
-               ids && shown;
+               ids && (shown || !opens_about);
     };
     return step("application menu", std::move(start), std::move(passed));
 }
@@ -2144,8 +2362,9 @@ struct SettingsState {
     wxString folderBefore;  // folder failure: the field before Choose...
     bool useDefaultEnabled = false;
     bool revealEnabled = false;
-    std::filesystem::path inUse;   // logFolderInUse() before the step's action
-    std::filesystem::path target;  // the folder the chooseFolder hook returns
+    std::filesystem::path inUse;    // logFolderInUse() before the step's action
+    std::filesystem::path target;   // the folder the chooseFolder hook returns
+    std::filesystem::path oldFile;  // currentLogFile() before the step's action
     std::optional<std::string> message;
     std::optional<std::filesystem::path> revealed;
     bool systemOn = false;              // system log: after "on"
@@ -2219,11 +2438,12 @@ SelfTestStep settingsOpensStep(SelfTest* test, const std::shared_ptr<SettingsSta
     return step("settings opens", std::move(start), std::move(passed));
 }
 
-// Spec §5.3: Choose... a new folder: logs2/ is created, gets rawreel.log, and the old file's last
-// line names the new one; the value is saved and Use Default is enabled.
+// Spec §5.3: Choose... a new folder: logs2/ is created and gets a log file, and the old file's
+// last line names the new file; the value is saved and Use Default is enabled.
 SelfTestStep settingsLogFolderStep(SelfTest* test, const std::shared_ptr<SettingsState>& state) {
     auto start = [test, state] {
         state->inUse = test->app().logFolderInUse();
+        state->oldFile = test->app().currentLogFile();
         state->target = test->app().selftestConfigFolder() / "logs2";
         dialogHooks().chooseFolder = [state](wxDirDialog& dialog) {
             dialog.wxDirDialogBase::SetPath(
@@ -2238,29 +2458,71 @@ SelfTestStep settingsLogFolderStep(SelfTest* test, const std::shared_ptr<Setting
     auto passed = [test, state](std::string& seen) {
         const App& app = test->app();
         const bool moved = sameFolder(app.logFolderInUse(), state->target);
+        const std::filesystem::path current = app.currentLogFile();
         std::error_code error;
-        const bool file =
-            std::filesystem::exists(state->target / std::string(LOG_FILE_NAME), error) && !error;
-        const std::optional<std::string> old_text =
-            fileText(state->inUse / std::string(LOG_FILE_NAME));
+        const bool file = !current.empty() && sameFolder(current.parent_path(), state->target) &&
+                          std::filesystem::exists(current, error) && !error;
+        const std::optional<std::string> old_text = fileText(state->oldFile);
         bool named = false;
-        if (old_text) {
+        if (old_text && !current.empty()) {
             const std::size_t line = old_text->rfind("log file moves to");
-            named =
-                line != std::string::npos &&
-                old_text->find(dvv::media::utf8FromPath(state->target), line) != std::string::npos;
+            named = line != std::string::npos &&
+                    old_text->find(dvv::media::utf8FromPath(current), line) != std::string::npos;
         }
         const std::optional<Config> saved = scratchConfig(app);
         const bool stored = saved && sameFolder(saved->log.file.folder, state->target);
         seen = std::format(
-            "hook ran {}, log folder '{}' is logs2 {}, logs2/rawreel.log {}, old file names it {}, "
-            "saved log.file.folder '{}' {}, field '{}', Use Default enabled {}",
-            state->hookRan, dvv::media::utf8FromPath(app.logFolderInUse()), moved, file, named,
+            "hook ran {}, log folder '{}' is logs2 {}, log file '{}' in logs2 {}, old file names "
+            "it {}, saved log.file.folder '{}' {}, field '{}', Use Default enabled {}",
+            state->hookRan, dvv::media::utf8FromPath(app.logFolderInUse()), moved,
+            dvv::media::utf8FromPath(current), file, named,
             saved ? dvv::media::utf8FromPath(saved->log.file.folder) : "not readable", stored,
             state->folderText.utf8_string(), state->useDefaultEnabled);
         return state->hookRan && moved && file && named && stored && state->useDefaultEnabled;
     };
     return step("settings log folder", std::move(start), std::move(passed));
+}
+
+// Addendum §3.1, §5.2: the settings owner moving to a folder whose newest log file is below the
+// limit appends to it; the appended part (no header) names the file and carries the level marker.
+SelfTestStep settingsLogAppendStep(SelfTest* test, const std::shared_ptr<SettingsState>& state) {
+    auto start = [test, state] {
+        state->target = test->app().selftestConfigFolder() / "logs-append";
+        state->oldFile = state->target / "rawreel-20200101-000000.log";
+        std::error_code error;
+        std::filesystem::create_directory(state->target, error);
+        std::ofstream(state->oldFile, std::ios::binary) << "an older line\n";
+        dialogHooks().chooseFolder = [state](wxDirDialog& dialog) {
+            dialog.wxDirDialogBase::SetPath(
+                wxString::FromUTF8(dvv::media::utf8FromPath(state->target)));
+        };
+        runSettings(test, state,
+                    [](SettingsWindow& settings) { settings.logPage().chooseFolder(); });
+    };
+    auto passed = [test, state](std::string& seen) {
+        const App& app = test->app();
+        const std::filesystem::path current = app.currentLogFile();
+        std::error_code error;
+        const bool appended = !current.empty() &&
+                              std::filesystem::equivalent(current, state->oldFile, error) && !error;
+        const std::string text = currentLogText(app);
+        const std::string older = "an older line\n";
+        const bool kept = text.starts_with(older);
+        const std::string rest = kept ? text.substr(older.size()) : std::string();
+        const std::string marker = levelMarker(app.activeLevel(), app.activeLevelSource());
+        const std::size_t named = rest.find(
+            std::format("log file: '{}'", dvv::media::utf8FromPath(app.currentLogFile())));
+        const bool marked =
+            named != std::string::npos && rest.find(marker, named) != std::string::npos;
+        const bool no_header = rest.find("===== log file: level") == std::string::npos;
+        seen = std::format(
+            "hook ran {}, log file '{}' is the existing one {}, older line kept {}, names itself "
+            "{}, marker '{}' after it {}, no header {}",
+            state->hookRan, dvv::media::utf8FromPath(current), appended, kept,
+            named != std::string::npos, marker, marked, no_header);
+        return state->hookRan && appended && kept && marked && no_header;
+    };
+    return step("settings log folder append", std::move(start), std::move(passed));
 }
 
 // Spec §5.3: a folder whose parent does not exist is refused with a message naming it; the log
@@ -2308,7 +2570,7 @@ SelfTestStep settingsFolderFailureStep(SelfTest* test,
     return step("settings folder failure", std::move(start), std::move(passed));
 }
 
-// Spec §5.2: Show in Finder/Explorer, Open Folder hands the live rawreel.log to the file manager.
+// Spec §5.2: Show in Finder/Explorer, Open Folder hands the current log file to the file manager.
 SelfTestStep settingsRevealStep(SelfTest* test, const std::shared_ptr<SettingsState>& state) {
     auto start = [test, state] {
         state->revealed.reset();
@@ -2321,14 +2583,13 @@ SelfTestStep settingsRevealStep(SelfTest* test, const std::shared_ptr<SettingsSt
         });
     };
     auto passed = [test, state](std::string& seen) {
-        const std::filesystem::path want =
-            test->app().logFolderInUse() / std::string(LOG_FILE_NAME);
+        const std::filesystem::path want = test->app().currentLogFile();
         const bool same = state->revealed && *state->revealed == want;
         seen = std::format("hook ran {}, enabled {}, revealed '{}' (want '{}') {}", state->hookRan,
                            state->revealEnabled,
                            state->revealed ? dvv::media::utf8FromPath(*state->revealed) : "none",
                            dvv::media::utf8FromPath(want), same);
-        return state->hookRan && state->revealEnabled && same;
+        return state->hookRan && state->revealEnabled && !want.empty() && same;
     };
     return step("settings reveal", std::move(start), std::move(passed));
 }
@@ -2377,6 +2638,247 @@ SelfTestStep settingsFileReadsStep(SelfTest* test, const std::shared_ptr<Setting
         return state->hookRan && mode == dvv::platform::FileReadMode::Buffered && stored;
     };
     return step("settings file reads", std::move(start), std::move(passed));
+}
+
+// --- the log level in Settings and the Log list's menu (log level and files design §2.2, §3.1) ---
+
+struct LevelChangeState {
+    std::uint64_t logNext = 0;                   // the store's next sequence before the change
+    std::string marker;                          // the change marker the step expects
+    dvv::LogLevel saved = dvv::LogLevel::Info;   // savedLevel() before the change
+    std::optional<std::string> configText;       // the scratch file before the change
+    std::optional<dvv::LogLevel> settingsShows;  // the Settings Level choice
+    std::string menuItems;                       // the context menu: its items, "-" a separator
+    std::string levelItems;                      // the Level submenu's radio items
+    std::string checked;                         // the checked Level item
+};
+
+// The labels of `menu`'s items joined by "|" ("-" for a separator); `checked` gets the label of
+// the checked one. The radio items of `level_items` are listed by the first "Level" submenu.
+void describeMenu(const wxMenu& menu, std::string& items, std::string& level_items,
+                  std::string& checked) {
+    for (wxMenuItemList::compatibility_iterator node = menu.GetMenuItems().GetFirst();
+         node != nullptr; node = node->GetNext()) {
+        const wxMenuItem* item = node->GetData();
+        items += items.empty() ? "" : "|";
+        items += item->IsSeparator() ? std::string("-") : item->GetItemLabelText().utf8_string();
+        const wxMenu* sub = item->GetSubMenu();
+        if (sub == nullptr || item->GetItemLabelText() != "Level" || !level_items.empty()) {
+            continue;
+        }
+        for (wxMenuItemList::compatibility_iterator level = sub->GetMenuItems().GetFirst();
+             level != nullptr; level = level->GetNext()) {
+            const wxMenuItem* radio = level->GetData();
+            const std::string label = radio->GetItemLabelText().utf8_string();
+            level_items += std::format("{}{}{}", level_items.empty() ? "" : "|", label,
+                                       radio->IsRadio() ? "" : " (not a radio item)");
+            if (radio->IsChecked()) {
+                checked += checked.empty() ? label : "|" + label;
+            }
+        }
+    }
+}
+
+// Whether a line of `level` with `message`, logged at or after `since`, reached the store and the
+// current log file (read after Logger::flush()).
+std::pair<bool, bool> lineReached(const App& app, dvv::LogLevel level, std::string_view message,
+                                  std::uint64_t since) {
+    const std::string text = currentLogText(app);  // flushes first
+    const std::shared_ptr<LogStore>& store = app.logStore();
+    const bool stored =
+        store != nullptr &&
+        std::ranges::any_of(store->entries(), [level, message, since](const LogEntry& entry) {
+            return !entry.mark && entry.sequence >= since && entry.level == level &&
+                   entry.message == message;
+        });
+    // The file's line: "<time>Z <LEVEL padded to 5> <message>[ [file:line]]".
+    const std::string head = std::format("Z {:<5} {}", dvv::logLevelName(level), message);
+    return {stored, text.find(head) != std::string::npos};
+}
+
+// §2.2: Settings -> Log -> Level to Debug saves log.level and sets the active level, with one
+// "(settings)" change marker; a DVV_LOG_DEBUG line then reaches the store and the current file
+// (the sinks' levels changed, which the marker, a mark, cannot show).
+SelfTestStep settingsLevelStep(SelfTest* test, const std::shared_ptr<SettingsState>& state,
+                               const std::shared_ptr<LevelChangeState>& level) {
+    auto start = [test, state, level] {
+        App& app = test->app();
+        level->logNext = logNext(app);
+        level->marker =
+            levelChangeMarker(app.activeLevel(), dvv::LogLevel::Debug, LevelSource::Settings);
+        runSettings(test, state, [level](SettingsWindow& settings) {
+            level->settingsShows = settings.logPage().level();
+            settings.logPage().setLevel(dvv::LogLevel::Debug);
+        });
+        DVV_LOG_DEBUG("selftest settings debug line");
+    };
+    auto passed = [test, state, level](std::string& seen) {
+        const App& app = test->app();
+        const std::optional<Config> saved = scratchConfig(app);
+        const bool stored =
+            saved && saved->log.levelSaved && saved->log.level == dvv::LogLevel::Debug;
+        const bool marked = storeHasMark(app, level->marker, level->logNext);
+        const bool in_file = currentLogText(app).find(level->marker) != std::string::npos;
+        const auto [line_stored, line_in_file] =
+            lineReached(app, dvv::LogLevel::Debug, "selftest settings debug line", level->logNext);
+        seen = std::format(
+            "hook ran {}, Settings showed {}, saved log.level '{}', active {}, saved {}, marker "
+            "'{}' in the store {}, in the file {}; debug line in the store {}, in the file {}",
+            state->hookRan, level->settingsShows ? levelShownName(*level->settingsShows) : "none",
+            saved ? (saved->log.levelSaved ? levelConfigValue(saved->log.level) : "missing")
+                  : "not readable",
+            levelShownName(app.activeLevel()), levelShownName(app.savedLevel()), level->marker,
+            marked, in_file, line_stored, line_in_file);
+        return state->hookRan && level->settingsShows == dvv::LogLevel::Info && stored &&
+               app.activeLevel() == dvv::LogLevel::Debug &&
+               app.savedLevel() == dvv::LogLevel::Debug && marked && in_file && line_stored &&
+               line_in_file;
+    };
+    return step("settings level", std::move(start), std::move(passed));
+}
+
+// §2.2: the Log list's Level ▸ Trace is for this run only: the active level is Trace, the saved
+// level and the scratch file stay as they were, and the marker says "(this run, Log pane menu)".
+// The menu (never shown) has Level ▸ after Select All between separators, Trace checked; Settings
+// still shows the saved level, and its OK with the control untouched (Windows) keeps Trace. A
+// DVV_LOG_TRACE line then reaches the store and the current file.
+SelfTestStep menuLevelStep(SelfTest* test, const std::shared_ptr<SettingsState>& state,
+                           const std::shared_ptr<LevelChangeState>& level) {
+    auto start = [test, state, level] {
+        App& app = test->app();
+        LogPanel& panel = test->frame().logPanel();
+        level->logNext = logNext(app);
+        level->saved = app.savedLevel();
+        level->marker =
+            levelChangeMarker(app.activeLevel(), dvv::LogLevel::Trace, LevelSource::Menu);
+        const dvv::Result<std::string> before = readConfigText(app.configPath());
+        level->configText = before ? std::optional<std::string>(*before) : std::nullopt;
+        panel.setRunLevel(dvv::LogLevel::Trace);
+        DVV_LOG_TRACE("selftest menu trace line");
+        level->menuItems.clear();
+        level->levelItems.clear();
+        level->checked.clear();
+        dialogHooks().logMenu = [level](const wxMenu& menu) {
+            describeMenu(menu, level->menuItems, level->levelItems, level->checked);
+        };
+        panel.showContextMenu();
+        level->settingsShows.reset();
+        runSettings(test, state, [level](SettingsWindow& settings) {
+            level->settingsShows = settings.logPage().level();
+        });
+    };
+    auto passed = [test, state, level](std::string& seen) {
+        const App& app = test->app();
+        const dvv::Result<std::string> now = readConfigText(app.configPath());
+        const bool unchanged = level->configText && now && *now == *level->configText;
+        const bool marked = storeHasMark(app, level->marker, level->logNext);
+        const bool in_file = currentLogText(app).find(level->marker) != std::string::npos;
+        const bool items =
+            level->menuItems == "Copy|Select All|-|Level|-|Save Selected Lines...|Save Log...";
+        const bool levels = level->levelItems == "Errors|Warnings|Info|Debug|Trace";
+        const auto [line_stored, line_in_file] =
+            lineReached(app, dvv::LogLevel::Trace, "selftest menu trace line", level->logNext);
+        seen = std::format(
+            "active {}, saved {} (was {}), scratch file unchanged {}, marker '{}' in the store {}, "
+            "in the file {}; trace line in the store {}, in the file {}; menu '{}', Level '{}', "
+            "checked '{}'; hook ran {}, Settings shows {}",
+            levelShownName(app.activeLevel()), levelShownName(app.savedLevel()),
+            levelShownName(level->saved), unchanged, level->marker, marked, in_file, line_stored,
+            line_in_file, level->menuItems, level->levelItems, level->checked, state->hookRan,
+            level->settingsShows ? levelShownName(*level->settingsShows) : "none");
+        return app.activeLevel() == dvv::LogLevel::Trace && app.savedLevel() == level->saved &&
+               unchanged && marked && in_file && items && levels && level->checked == "Trace" &&
+               state->hookRan && level->settingsShows == level->saved && line_stored &&
+               line_in_file;
+    };
+    return step("menu level", std::move(start), std::move(passed));
+}
+
+// Addendum §3.1, §5.2: the marker after a log file open names the run-only level's source: the
+// file turned off and on again (two openings, so Windows' OK applies each) gets
+// "===== log level: Trace (this run, Log pane menu) =====" after its "log file:" line.
+SelfTestStep menuLevelReopenStep(SelfTest* test, const std::shared_ptr<SettingsState>& state,
+                                 const std::shared_ptr<LevelChangeState>& level) {
+    auto start = [test, state, level] {
+        level->marker = levelMarker(dvv::LogLevel::Trace, LevelSource::Menu);
+        runSettings(test, state,
+                    [](SettingsWindow& settings) { settings.logPage().setFileEnabled(false); });
+        runSettings(test, state,
+                    [](SettingsWindow& settings) { settings.logPage().setFileEnabled(true); });
+    };
+    auto passed = [test, state, level](std::string& seen) {
+        const App& app = test->app();
+        const std::filesystem::path current = app.currentLogFile();
+        const std::string text = currentLogText(app);
+        const std::size_t named =
+            current.empty()
+                ? std::string::npos
+                : text.rfind(std::format("log file: '{}'", dvv::media::utf8FromPath(current)));
+        const bool marked =
+            named != std::string::npos && text.find(level->marker, named) != std::string::npos;
+        seen = std::format(
+            "hook ran {}, log file '{}' names itself {}, marker '{}' after it {}, "
+            "active {}",
+            state->hookRan, dvv::media::utf8FromPath(current), named != std::string::npos,
+            level->marker, marked, levelShownName(app.activeLevel()));
+        return state->hookRan && marked && app.activeLevel() == dvv::LogLevel::Trace;
+    };
+    return step("menu level after a log file reopen", std::move(start), std::move(passed));
+}
+
+// §2.1, §2.4: at Warnings an Info line reaches neither the store nor the current file. The menu
+// sets Warnings, the line is logged and flushed, then the menu sets Trace back for the next step.
+SelfTestStep menuLevelDropsStep(SelfTest* test, const std::shared_ptr<LevelChangeState>& level) {
+    auto start = [test, level] {
+        App& app = test->app();
+        LogPanel& panel = test->frame().logPanel();
+        level->logNext = logNext(app);
+        panel.setRunLevel(dvv::LogLevel::Warn);
+        level->checked = levelShownName(app.activeLevel());
+        DVV_LOG_INFO("selftest info line at warnings");
+        dvv::Logger::instance().flush();  // through every sink before the level goes back
+        panel.setRunLevel(dvv::LogLevel::Trace);
+    };
+    auto passed = [test, level](std::string& seen) {
+        const App& app = test->app();
+        const auto [line_stored, line_in_file] =
+            lineReached(app, dvv::LogLevel::Info, "selftest info line at warnings", level->logNext);
+        seen = std::format("active level when logged {}, info line in the store {}, in the file {}",
+                           level->checked, line_stored, line_in_file);
+        return level->checked == "Warnings" && !line_stored && !line_in_file;
+    };
+    return step("menu level warnings drops info", std::move(start), std::move(passed));
+}
+
+// §2.2: a Settings change ends the run-only level: Level to Info gives "Trace -> Info (settings)"
+// and saves log.level "info".
+SelfTestStep settingsLevelEndsRunStep(SelfTest* test, const std::shared_ptr<SettingsState>& state,
+                                      const std::shared_ptr<LevelChangeState>& level) {
+    auto start = [test, state, level] {
+        App& app = test->app();
+        level->logNext = logNext(app);
+        level->marker =
+            levelChangeMarker(app.activeLevel(), dvv::LogLevel::Info, LevelSource::Settings);
+        runSettings(test, state, [](SettingsWindow& settings) {
+            settings.logPage().setLevel(dvv::LogLevel::Info);
+        });
+    };
+    auto passed = [test, state, level](std::string& seen) {
+        const App& app = test->app();
+        const std::optional<Config> saved = scratchConfig(app);
+        const bool stored =
+            saved && saved->log.levelSaved && saved->log.level == dvv::LogLevel::Info;
+        const bool marked = storeHasMark(app, level->marker, level->logNext);
+        const bool settings_source = app.activeLevelSource() == LevelSource::Settings;
+        seen = std::format(
+            "hook ran {}, marker '{}' in the store {}, active {} from Settings {}, saved info {}",
+            state->hookRan, level->marker, marked, levelShownName(app.activeLevel()),
+            settings_source, stored);
+        return state->hookRan &&
+               level->marker.find("Trace -> Info (settings)") != std::string::npos && marked &&
+               app.activeLevel() == dvv::LogLevel::Info && settings_source && stored;
+    };
+    return step("settings level ends the run level", std::move(start), std::move(passed));
 }
 
 #if defined(__WXOSX__)
@@ -2449,10 +2951,17 @@ void addSettingsSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     const auto state = std::make_shared<SettingsState>();
     steps.push_back(settingsOpensStep(test, state));
     steps.push_back(settingsLogFolderStep(test, state));
+    steps.push_back(settingsLogAppendStep(test, state));
     steps.push_back(settingsFolderFailureStep(test, state));
     steps.push_back(settingsRevealStep(test, state));
     steps.push_back(settingsSystemLogStep(test, state));
     steps.push_back(settingsFileReadsStep(test, state));
+    const auto level = std::make_shared<LevelChangeState>();
+    steps.push_back(settingsLevelStep(test, state, level));
+    steps.push_back(menuLevelStep(test, state, level));
+    steps.push_back(menuLevelReopenStep(test, state, level));
+    steps.push_back(menuLevelDropsStep(test, level));
+    steps.push_back(settingsLevelEndsRunStep(test, state, level));
 #if defined(__WXOSX__)
     steps.push_back(settingsCloseKeyStep(test, state));
     steps.push_back(closeKeyOtherWindowStep(test, state));  // closes the stream (last)
@@ -2466,6 +2975,7 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
     steps.push_back(firstFramesStep(t, state));
     steps.push_back(settingsOwnerStep(t));
     steps.push_back(selftestConfigStep(t));
+    addLevelSteps(steps, t);
     steps.push_back(resizeStep(t, state, "resize 800x600", wxSize(800, 600)));
     steps.push_back(shrinkStep(t, state));
     steps.push_back(movedPaneStep(t, state, false));
@@ -2493,9 +3003,8 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
     steps.push_back(diagnosticsStep(t, state));
     steps.push_back(menusStep(t, state));
     steps.push_back(infobarStep(t));
-    steps.push_back(aboutStep(t, state));
 #if defined(__WXOSX__)
-    steps.push_back(appMenuStep(t));
+    steps.push_back(appMenuStep(t, false));
 #endif
     if (test.app().startup().ffmpeg.lavfi) {
         steps.push_back(lavfiUriStep(t, state));
@@ -2509,6 +3018,18 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
     addSettingsSteps(steps, t);  // after the smoke stream is open again (the close key)
     steps.push_back(appearanceStep(t));
     steps.push_back(logPaneAtCloseStep(t));  // last: the close saves gui.showLogPane = true
+    return steps;
+}
+
+std::vector<SelfTestStep> aboutScenario(SelfTest& test) {
+    SelfTest* const t = &test;
+    const auto state = std::make_shared<SmokeState>();
+    std::vector<SelfTestStep> steps;
+    steps.push_back(firstFramesStep(t, state));
+#if defined(__WXOSX__)
+    steps.push_back(appMenuStep(t, true));
+#endif
+    steps.push_back(aboutStep(t, state));
     return steps;
 }
 
@@ -2802,6 +3323,22 @@ int showModal(wxDirDialog& dialog) {
     slot = nullptr;
     hook(dialog);
     return wxID_OK;
+}
+
+int showLogMenu(wxWindow& window, wxMenu& menu) {
+    if (App::arguments().selftest == Scenario::None) {
+        return window.GetPopupMenuSelectionFromUser(menu);
+    }
+    // A popup menu is modal on every OS: in a selftest it is never shown.
+    dvv::MoveOnlyFunction<void(const wxMenu&)>& slot = dialogHooks().logMenu;
+    if (!slot) {
+        DVV_LOG_WARN("rawreel-gui --selftest: a context menu without a hook was dismissed");
+        return wxID_NONE;
+    }
+    auto hook = std::move(slot);  // one shot
+    slot = nullptr;
+    hook(menu);
+    return wxID_NONE;
 }
 
 std::string chosenFolder(const wxDirDialog& dialog) {

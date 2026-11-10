@@ -1,26 +1,26 @@
 #include "core/log_store.h"
 
-#include <format>
 #include <utility>
-
-#include "dvv/base/error.h"
 
 namespace rawreel {
 
-void LogStore::write(const dvv::LogRecord& record, std::string_view line) {
+void LogStore::write(const dvv::LogRecord& record, std::string_view /*line*/) {
     LogEntry entry;
     entry.level = record.level;
     entry.time = record.time;
     entry.message = std::string(record.message);
-    entry.source = std::format("{}:{}", dvv::sourceFileName(record.where), record.where.line());
-    entry.line = std::string(line);
+    entry.where = record.where;
+    entry.mark = record.mark;
+    entry.line = dvv::formatLogRecord(record, with_source_.load(std::memory_order_relaxed));
 
     const std::lock_guard lock(mutex_);
     entry.sequence = next_++;
-    if (record.level == dvv::LogLevel::Warn) {
-        ++counts_.warnings;
-    } else if (record.level == dvv::LogLevel::Error) {
-        ++counts_.errors;
+    if (!record.mark) {
+        if (record.level == dvv::LogLevel::Warn) {
+            ++counts_.warnings;
+        } else if (record.level == dvv::LogLevel::Error) {
+            ++counts_.errors;
+        }
     }
     entries_.push_back(std::move(entry));
     if (entries_.size() > LOG_STORE_RECORDS) {
@@ -30,6 +30,10 @@ void LogStore::write(const dvv::LogRecord& record, std::string_view line) {
         pending_ = true;
         notify_();
     }
+}
+
+void LogStore::setWithSource(bool with_source) noexcept {
+    with_source_.store(with_source, std::memory_order_relaxed);
 }
 
 void LogStore::setNotify(std::function<void()> notify) {

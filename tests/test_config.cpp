@@ -40,10 +40,11 @@ void writeText(const fs::path& path, std::string_view text) {
 // Captures warnings for one test; restores the logger afterwards (the tests add no other sinks).
 class WarningLog {
 public:
-    WarningLog() : level_(dvv::Logger::instance().level()) {
+    explicit WarningLog(dvv::LogLevel level = dvv::LogLevel::Warn)
+        : level_(dvv::Logger::instance().level()) {
         dvv::Logger::instance().clearSinks();
         dvv::Logger::instance().addSink(sink_);
-        dvv::Logger::instance().setLevel(dvv::LogLevel::Warn);
+        dvv::Logger::instance().setLevel(level);
     }
     WarningLog(const WarningLog&) = delete;
     WarningLog& operator=(const WarningLog&) = delete;
@@ -137,6 +138,41 @@ TEST_SUITE("core") {
         const Config empty = parse(R"({"log":{"file":{"folder":""}}})");
         CHECK(empty.log.file.folder.empty());
         CHECK(empty.log.file.enabled);
+    }
+
+    TEST_CASE("config: log.level and log.source") {
+        const auto parse = [](std::string_view text) {
+            CAPTURE(text);
+            dvv::Result<Config> config = rawreel::parseConfig(text);
+            REQUIRE_MESSAGE(config.has_value(), config.error().message);
+            return *config;
+        };
+        const Config set = parse(R"({"log":{"level":"Debug","source":true}})");
+        CHECK(set.log.level == dvv::LogLevel::Debug);
+        CHECK(set.log.levelSaved);
+        CHECK(set.log.source);
+        const Config defaults = parse("{}");
+        CHECK(defaults.log.level == dvv::LogLevel::Info);
+        CHECK_FALSE(defaults.log.levelSaved);
+        CHECK_FALSE(defaults.log.source);
+        CHECK_FALSE(parse(R"({"log":{"source":false}})").log.levelSaved);
+        checkInvalid(
+            R"({"log":{"level":"verbose"}})",
+            R"(log.level: expected "error", "warn", "info", "debug" or "trace", not "verbose")");
+        checkInvalid(R"({"log":{"level":3}})", "log.level: expected");
+        checkInvalid(R"({"log":{"source":1}})", "log.source: expected true or false, not 1");
+    }
+
+    TEST_CASE("config: the info line names log.level") {
+        const TemporaryDirectory directory("rawreel-config");
+        const fs::path path = directory.path() / "rawreel.json";
+        writeText(path, R"({"log":{"level":"debug"}})");
+        const WarningLog log(dvv::LogLevel::Info);
+        const LoadedConfig loaded = rawreel::loadConfig(path);
+        CHECK(loaded.found);
+        const std::vector<std::string> lines = log.lines();
+        REQUIRE_FALSE(lines.empty());
+        CHECK(contains(lines.back(), "log.level debug"));
     }
 
     TEST_CASE("config: invalid text and values") {

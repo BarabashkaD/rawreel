@@ -47,13 +47,13 @@ private:
 
 class DataViewLogList final : public LogList {
 public:
-    DataViewLogList(wxWindow* parent, const LogMirror& mirror)
+    DataViewLogList(wxWindow* parent, const LogMirror& mirror, bool with_source)
         : LogList(parent, mirror),
           model_(new LogListModel(mirror)),
           view_(
               new wxDataViewCtrl(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxDV_MULTIPLE)) {
         view_->AssociateModel(model_.get());
-        for (std::size_t column = 0; column < LOG_LIST_COLUMNS.size(); ++column) {
+        for (std::size_t column = 0; column < logListColumns(with_source); ++column) {
             const std::string_view title = LOG_LIST_COLUMNS[column];
             view_->AppendTextColumn(wxString::FromUTF8(title.data(), title.size()),
                                     static_cast<unsigned>(column), wxDATAVIEW_CELL_INERT,
@@ -153,13 +153,15 @@ public:
     [[nodiscard]] std::size_t rowCount() const override { return model_->GetCount(); }
 
     [[nodiscard]] wxString cellText(std::size_t row, std::size_t column) const override {
-        if (row >= rowCount() || column >= LOG_LIST_COLUMNS.size()) {
+        if (row >= rowCount() || column >= columnCount()) {
             return {};
         }
         wxVariant value;
         model_->GetValueByRow(value, static_cast<unsigned>(row), static_cast<unsigned>(column));
         return value.GetString();
     }
+
+    [[nodiscard]] std::size_t columnCount() const override { return view_->GetColumnCount(); }
 
     [[nodiscard]] LogListKind kind() const noexcept override { return LogListKind::DataView; }
 
@@ -210,8 +212,8 @@ private:
 
 }  // namespace
 
-LogList* createDataViewLogList(wxWindow* parent, const LogMirror& mirror) {
-    return new DataViewLogList(parent, mirror);
+LogList* createDataViewLogList(wxWindow* parent, const LogMirror& mirror, bool with_source) {
+    return new DataViewLogList(parent, mirror, with_source);
 }
 
 }  // namespace rawreel

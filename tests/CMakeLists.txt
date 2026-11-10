@@ -43,7 +43,7 @@ set_tests_properties(rawreel.cli_unit PROPERTIES
 add_executable(rawreel_core_tests
     core_main.cpp session_fixture.cpp test_commands.cpp test_config.cpp test_config_writer.cpp test_drop.cpp
     test_format_choice.cpp test_format_presets.cpp
-    test_gui_arguments.cpp test_info_text.cpp test_layout.cpp test_log_file_switch.cpp test_log_mirror.cpp test_log_store.cpp test_log_text.cpp test_perf_stats.cpp test_player.cpp test_session.cpp
+    test_gui_arguments.cpp test_info_text.cpp test_layout.cpp test_log_file_switch.cpp test_log_level.cpp test_log_mirror.cpp test_log_store.cpp test_log_text.cpp test_perf_stats.cpp test_player.cpp test_session.cpp
     test_session_notify.cpp test_session_storm.cpp test_session_types.cpp test_settings_claim.cpp
     test_open_text.cpp test_source_provider.cpp test_startup.cpp test_vulkan_driver.cpp
     test_status_text.cpp test_svg_colour.cpp test_timeline.cpp test_timer.cpp test_view.cpp)
@@ -110,6 +110,7 @@ set_tests_properties(rawreel.gpu PROPERTIES
 # test fails on an X error (FAIL_REGULAR_EXPRESSION here, the same check in the two scripts).
 set(gui_x_error "X Window System error|BadWindow|BadDrawable|BadMatch")
 if(TARGET rawreel_gui)
+    # Help -> About is checked by --selftest about (opt-in, not in CTest): run it when About changes.
     add_test(NAME rawreel.gui_selftest.smoke
              COMMAND rawreel_gui --selftest smoke --appearance dark)
     set_tests_properties(rawreel.gui_selftest.smoke PROPERTIES
@@ -120,6 +121,20 @@ if(TARGET rawreel_gui)
         ENVIRONMENT "${gpu_test_environment};NO_AT_BRIDGE=1"
         ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT};DVV_FFMPEG_DIR=set:${DVV_FFMPEG_RUNTIME_DIR}")
     set_property(TEST rawreel.gui_selftest.smoke APPEND PROPERTY LABELS sanity)
+    # The same script with log.source on (log level and files design §4, §8): the Source column
+    # shows, and saved and logged lines end in " [file.cpp:42]". The selftest's own config starts
+    # as a copy of this file, which is never written.
+    set(gui_source_config ${DVV_TEST_HOME}/source/rawreel.json)
+    file(WRITE ${gui_source_config} "{\"log\":{\"source\":true}}\n")
+    add_test(NAME rawreel.gui_selftest.smoke_source
+             COMMAND rawreel_gui --selftest smoke --config ${gui_source_config})
+    set_tests_properties(rawreel.gui_selftest.smoke_source PROPERTIES
+        FAIL_REGULAR_EXPRESSION "${gui_x_error}"
+        LABELS "gpu;display;gui"
+        SKIP_RETURN_CODE 77
+        TIMEOUT 180
+        ENVIRONMENT "${gpu_test_environment};NO_AT_BRIDGE=1"
+        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT};DVV_FFMPEG_DIR=set:${DVV_FFMPEG_RUNTIME_DIR}")
     # The panel lab's self-check (video control panel spec §10.1): the native slider's track and
     # thumb queries against the travel formula, at two widths. No GPU; it needs a display.
     add_test(NAME rawreel.panel_lab.report COMMAND rawreel_panel_lab --report)

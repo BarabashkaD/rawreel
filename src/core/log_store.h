@@ -5,12 +5,14 @@
 // and neither logs nor calls back into the Logger. The notify function is called under the store's
 // own lock, so it must only wake the consumer (no take(), no logging).
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <source_location>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -26,9 +28,11 @@ struct LogEntry {
     dvv::LogLevel level = dvv::LogLevel::Info;
     std::chrono::system_clock::time_point time;
     std::string message;
-    std::string
-        source;        // "file.cpp:42": the file name without folders, as formatLogRecord shows it
-    std::string line;  // the formatted line write() received
+    std::source_location where;  // the record's call site (its strings are static)
+    bool mark = false;           // a marker line (Logger::mark), never counted
+    // formatLogRecord(record, with_source) with the store's flag: what copy, save and the log
+    // file's backfill use.
+    std::string line;
 };
 
 struct LogCounts {
@@ -46,7 +50,11 @@ struct LogBatch {
 
 class LogStore final : public dvv::ILogSink {
 public:
+    // Formats each record itself (the Logger's `line` is not kept); a mark is not counted.
     void write(const dvv::LogRecord& record, std::string_view line) override;
+    // Whether the lines keep " [file.cpp:42]" (log.source); false by default. Set at start,
+    // before any record.
+    void setWithSource(bool with_source) noexcept;
     // Called after the first record that follows a take() (or the call itself), until the next
     // take(). Empty: none.
     void setNotify(std::function<void()> notify);
@@ -62,6 +70,7 @@ private:
     LogCounts counts_;
     bool pending_ = false;  // true only after notify_ was called, until take()
     std::function<void()> notify_;
+    std::atomic<bool> with_source_{false};
 };
 
 }  // namespace rawreel

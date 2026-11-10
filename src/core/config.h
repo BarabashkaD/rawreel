@@ -10,7 +10,9 @@
 //     "gui": { "showLogPane": false },
 //     "log": { "file":   { "enabled": true, "folder": "" },  // "" or an absolute folder; ""
 //                                                            // is the default folder
-//              "system": { "enabled": false } } }
+//              "system": { "enabled": false },
+//              "level": "info",                        // error, warn, info, debug or trace
+//              "source": false } }
 //
 // A missing default file means the defaults; a missing --config file, an
 // unreadable or invalid file, or a bad value, means one warning in the log and the defaults.
@@ -25,6 +27,7 @@
 #include <string_view>
 
 #include "dvv/base/error.h"
+#include "dvv/base/log.h"
 #include "dvv/platform/file_reader.h"
 
 namespace rawreel {
@@ -54,6 +57,9 @@ struct SystemLogConfig {
 struct LogConfig {
     LogFileConfig file;
     SystemLogConfig system;
+    dvv::LogLevel level = dvv::LogLevel::Info;
+    bool levelSaved = false;  // log.level is present in the file
+    bool source = false;      // show the source file and line in each log line (JSON only)
 };
 
 struct Config {
