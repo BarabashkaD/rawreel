@@ -115,12 +115,13 @@ public:
     [[nodiscard]] const Config& config() const noexcept { return config_; }
     // This process holds the settings claim of configPath() (spec §6.3): it alone may save.
     [[nodiscard]] bool ownsSettings() const noexcept { return settings_claim_ != nullptr; }
-    // The only way rawreel-gui writes its config (spec §5.4, §6.3): fails with "not the settings
-    // owner" unless ownsSettings(); otherwise saveConfigValues(configPath(), values). A failure is
-    // logged as one warning, "config '<path>' not saved: <reason>"; the run's first failure also
-    // shows an error message (showModal(wxMessageDialog&)) unless `closing` (no dialog while the
-    // main window closes).
-    dvv::Result<void> saveSettings(std::span<const ConfigValue> values, bool closing);
+    // The only way rawreel-gui writes its config (spec §5.4, §6.3): false, and nothing written,
+    // unless ownsSettings(); otherwise saveConfigValues(configPath(), values), true when it saved.
+    // A failure to save is reported here, so a caller may ignore the result: one warning,
+    // "config '<path>' not saved: <reason>"; the run's first failure also shows an error
+    // message (showModal(wxMessageDialog&)) unless `closing` (no dialog while the main window
+    // closes).
+    bool saveSettings(std::span<const ConfigValue> values, bool closing);
     // The gui.showLogPane value the main window's close saved (spec §2); nullopt when nothing was
     // saved. A selftest's OnExit checks it against the file.
     [[nodiscard]] std::optional<bool> savedLogPane() const noexcept { return saved_log_pane_; }
@@ -170,9 +171,9 @@ private:
     // releases the settings claim, then removes the selftest's config folder (a failure is one
     // stderr line, the exit code stays).
     void closeLogAndConfig();
-    // OnExit step 1 of a selftest: the config file holds saved_log_pane_; a mismatch records
-    // exit 6.
-    void checkSavedLogPane();
+    // OnExit step 1 of a selftest: the config file holds `saved`, the value the close saved; a
+    // mismatch records exit 6.
+    void checkSavedLogPane(bool saved);
     [[nodiscard]] bool startPools();
     // The registry and the device of --gpu; false (after finish()) when there is none to use.
     [[nodiscard]] bool startGpu();

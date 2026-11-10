@@ -143,8 +143,10 @@ TEST_SUITE("core") {
         CHECK(settings.menu == "File");  // wxOSX moves it to the app menu, GTK's GUI to Edit
         CHECK(settings.label == SETTINGS_LABEL);
         CHECK(settings.help == "Change the settings of rawreel");
-        REQUIRE(settings.key);
-        CHECK(*settings.key == letter(',', true));
+        CHECK(settings.key.has_value());
+        if (settings.key) {
+            CHECK(*settings.key == letter(',', true));
+        }
         CHECK(settings.route == KeyRoute::Accelerator);
         CHECK_FALSE(settings.checkable);
         CHECK(rawreel::menuLabel(settings) == std::string(SETTINGS_LABEL) + "\tCtrl+,");

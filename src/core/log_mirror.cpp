@@ -55,13 +55,15 @@ std::vector<LogEntry> LogMirror::range(std::uint64_t first, std::uint64_t last) 
     if (entries_.empty() || first > last) {
         return result;
     }
-    const std::uint64_t from = std::max(first, entries_.front().sequence);
-    const std::uint64_t to = std::min(last, entries_.back().sequence);
-    for (std::uint64_t sequence = from; sequence <= to; ++sequence) {
-        result.push_back(entries_[*rowOf(sequence)]);
-        if (sequence == to) {
-            break;
-        }
+    // Both ends clamped to the mirror; none when [first, last] misses it.
+    const std::optional<std::size_t> from = rowOf(std::max(first, entries_.front().sequence));
+    const std::optional<std::size_t> to = rowOf(std::min(last, entries_.back().sequence));
+    if (!from || !to || *from > *to) {
+        return result;
+    }
+    result.reserve(*to - *from + 1);
+    for (std::size_t row = *from; row <= *to; ++row) {
+        result.push_back(entries_[row]);
     }
     return result;
 }

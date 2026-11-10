@@ -188,7 +188,7 @@ dvv::Result<std::filesystem::path> defaultConfigPath(
     const std::function<dvv::Result<std::filesystem::path>()>& user_data_dir,
     const std::function<bool(const std::filesystem::path&)>& exists) {
     if (!(macos && inAppBundle(executable))) {
-        const std::filesystem::path portable = executable.parent_path() / CONFIG_FILE_NAME;
+        std::filesystem::path portable = executable.parent_path() / CONFIG_FILE_NAME;
         if (exists(portable)) {
             return portable;
         }

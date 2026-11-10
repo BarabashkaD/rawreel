@@ -385,7 +385,7 @@ dvv::Result<std::filesystem::path> App::makeSelftestConfig() {
                               std::format("{} already exists", dvv::media::utf8FromPath(logs)));
     }
     DVV_TRY_VOID(secureNewFolder(logs));
-    const std::filesystem::path file = folder / CONFIG_FILE_NAME;
+    std::filesystem::path file = folder / CONFIG_FILE_NAME;
     const std::array<ConfigValue, 2> values{{
         {.key = "log.file.folder", .value = dvv::media::utf8FromPath(logs)},
         {.key = "log.system.enabled", .value = false},
@@ -394,13 +394,13 @@ dvv::Result<std::filesystem::path> App::makeSelftestConfig() {
     return file;
 }
 
-dvv::Result<void> App::saveSettings(std::span<const ConfigValue> values, bool closing) {
+bool App::saveSettings(std::span<const ConfigValue> values, bool closing) {
     if (!ownsSettings()) {
-        return dvv::makeError(dvv::Errc::Unsupported, "not the settings owner");  // spec §6.3
+        return false;  // spec §6.3
     }
-    dvv::Result<void> saved = saveConfigValues(config_path_, values);
+    const dvv::Result<void> saved = saveConfigValues(config_path_, values);
     if (saved) {
-        return saved;
+        return true;
     }
     // Spec §5.4: one warning; the setting stays applied for the session.
     const std::string text = std::format(
@@ -414,11 +414,10 @@ dvv::Result<void> App::saveSettings(std::span<const ConfigValue> values, bool cl
         dialog.SetExtendedMessage(wxString::FromUTF8(text));
         (void)showModal(dialog);
     }
-    return saved;
+    return false;
 }
 
-void App::checkSavedLogPane() {
-    const bool saved = *saved_log_pane_;
+void App::checkSavedLogPane(bool saved) {
     std::string found = "no value";
     bool same = false;
     if (dvv::Result<std::string> text = readConfigText(config_path_); !text) {
@@ -659,7 +658,7 @@ int App::OnExit() {
     // 1. Selftest only (spec §2, §7.3): the gui.showLogPane value the close saved is in the
     // selftest's config file. Nothing is checked when nothing was saved.
     if (selftest() && saved_log_pane_) {
-        checkSavedLogPane();
+        checkSavedLogPane(*saved_log_pane_);
     }
     dvv::components::stopFfmpegSources();  // before the Session shutdown (design M4 v2 D5)
     // Every viewport, and so every presenter, is gone: MainFrame::onClose destroyed it.

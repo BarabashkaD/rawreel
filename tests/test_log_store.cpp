@@ -138,8 +138,10 @@ TEST_SUITE("core") {
         std::atomic<int> calls{0};
         store.setNotify([&calls] { calls.fetch_add(1); });
         {
+            constexpr int THREADS = 4;
             std::vector<std::jthread> threads;
-            for (int t = 0; t < 4; ++t) {
+            threads.reserve(THREADS);
+            for (int t = 0; t < THREADS; ++t) {
                 threads.emplace_back([&store] {
                     for (int i = 0; i < 1000; ++i) {
                         put(store, dvv::LogLevel::Info, "m");
