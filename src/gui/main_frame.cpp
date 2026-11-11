@@ -50,6 +50,7 @@
 #include "dvv/media/types.h"
 #include "gui/about.h"
 #include "gui/app.h"
+#include "gui/app_icon.h"
 #include "gui/drop_target.h"
 #include "gui/edit_dispatch.h"
 #include "gui/format_dialog.h"
@@ -260,6 +261,11 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
                      ? player_->minimumSize()
                      : FromDIP(wxSize(MIN_VIEWPORT_DIP.width, MIN_VIEWPORT_DIP.height));
       }) {
+    // App icon plan D4, D5: the ICO group (Windows), the embedded set (Linux); none on macOS, where
+    // the bundle icon is used. wx asserts on an empty bundle, so it is set only when loaded.
+    if (const wxIconBundle icons = windowIcons(); !icons.IsEmpty()) {
+        SetIcons(icons);
+    }
     aui_.manage(this);
     player_ = new PlayerPanel(
         this, std::move(display),

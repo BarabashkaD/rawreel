@@ -39,6 +39,7 @@ ours README.md
 ours rawreel.app/Contents/Info.plist
 ours rawreel.app/Contents/MacOS/rawreel-cli
 ours rawreel.app/Contents/MacOS/rawreel-gui
+ours rawreel.app/Contents/Resources/rawreel.icns
 ours rawreel.app/Contents/Resources/vulkan/icd.d/libkosmickrisp_icd.json
 ours rawreel.app/Contents/_CodeSignature/CodeResources
 ours-bundled SOURCE.txt

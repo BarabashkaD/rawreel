@@ -1,6 +1,14 @@
-// rawreel-gui resources: wxWidgets' standard resources and its application manifest (common
-// controls v6, per-monitor DPI awareness v2). The linker writes no manifest (/MANIFEST:NO), so
-// this is the program's only one.
+// rawreel-gui resources: the rawreel icon, wxWidgets' standard resources and its application
+// manifest (common controls v6, per-monitor DPI awareness v2). The linker writes no manifest
+// (/MANIFEST:NO), so this is the program's only one.
+
+// The app icon (owl-on-film-reel-square-background.ico in
+// packaging/icons/owl-on-film-reel/square-background/Windows, 10 sizes; found through the resource
+// compiler's /I).
+// Explorer shows an exe's first RT_GROUP_ICON; named groups sort by their upper-case name, so
+// RAWREEL comes before wx.rc's WXICON_* groups (wx.rc's own comment on wxICON_AAA states the rule).
+rawreel ICON "owl-on-film-reel-square-background.ico"
+
 #define wxUSE_RC_MANIFEST 1
 #define wxUSE_DPI_AWARE_MANIFEST 2
 #include "wx/msw/wx.rc"

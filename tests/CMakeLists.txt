@@ -25,9 +25,11 @@ set_tests_properties(rawreel.unit PROPERTIES
 # has no package test, so no entry carries the `package` label that vs2026-small excludes.
 set_property(TEST rawreel.unit APPEND PROPERTY LABELS sanity)
 
-# rawreel-cli unit tests (M2 Task 13): arguments, output forms and the Windows argument helper.
+# rawreel-cli unit tests (M2 Task 13): arguments, output forms, the Windows argument helper and
+# the Windows exes' icon resources (test_exe_icons.cpp, app icon plan D8).
 add_executable(rawreel_cli_tests
-    cli_main.cpp test_cli_arguments.cpp test_cli_output.cpp test_cli_utf8_arguments.cpp)
+    cli_main.cpp test_cli_arguments.cpp test_cli_output.cpp test_cli_utf8_arguments.cpp
+    test_exe_icons.cpp)
 target_link_libraries(rawreel_cli_tests PRIVATE rawreel_cli_core doctest::doctest)
 target_compile_definitions(rawreel_cli_tests PRIVATE DOCTEST_CONFIG_USE_STD_HEADERS)
 dvv_set_compiler_options(rawreel_cli_tests)
@@ -36,6 +38,15 @@ set_tests_properties(rawreel.cli_unit PROPERTIES
     TIMEOUT 300
     ENVIRONMENT DVV_LEAK_CHECK=fail
     ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
+if(WIN32)
+    # The exes whose first icon group test_exe_icons.cpp reads; no rawreel-gui under the sanitizers.
+    set_property(TEST rawreel.cli_unit APPEND PROPERTY
+                 ENVIRONMENT "RAWREEL_CLI_EXE=$<TARGET_FILE:rawreel_cli>")
+    if(TARGET rawreel_gui)
+        set_property(TEST rawreel.cli_unit APPEND PROPERTY
+                     ENVIRONMENT "RAWREEL_GUI_EXE=$<TARGET_FILE:rawreel_gui>")
+    endif()
+endif()
 
 # rawreel_core's unit tests, the headless Session suite and the ThreadTimer suite (doctest suites
 # "session" and "timer", each its own CTest entry, so the race checks can repeat them), every preset.
@@ -312,3 +323,13 @@ add_test(NAME rawreel.packaging_scripts
          COMMAND ${CMAKE_COMMAND} -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/packaging-scripts-test
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/packaging/test_packaging_scripts.cmake)
 set_tests_properties(rawreel.packaging_scripts PROPERTIES LABELS unit)
+
+# The committed icon files of packaging/icons: both delivered sets complete, the structure of the
+# used set (owl-on-film-reel/square-background), v1's sources.sha256 and the privacy of the
+# binaries (app-icon plan D1, D8).
+add_test(NAME rawreel.icons
+         COMMAND ${CMAKE_COMMAND} -DICONS_DIR=${PROJECT_SOURCE_DIR}/packaging/icons
+                 -DREPO_DIR=${PROJECT_SOURCE_DIR}
+                 -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/icons-test
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/packaging/test_icons.cmake)
+set_tests_properties(rawreel.icons PROPERTIES LABELS unit)

@@ -123,11 +123,15 @@ set(rawreel_exe_rpath "")
 if(rawreel_platform STREQUAL "macos")
     # The .dmg root holds rawreel.app and the documents. The app (plan Global Constraints):
     # Contents/MacOS/{rawreel-gui, rawreel-cli}, Contents/Frameworks/{the Vulkan loader, the
-    # KosmicKrisp driver, ffmpeg/<the six libraries>}, Contents/Resources/vulkan/icd.d/<the driver
-    # manifest> and Resources/ffmpeg/{licenses, build-info.txt} (Frameworks holds code only:
-    # codesign refuses a data file there). The exes are installed as files, not as targets: the
-    # build tree's bundle is rawreel-gui.app. make-packages.cmake replaces their build rpaths with
-    # rawreel_exe_rpath and signs the app.
+    # KosmicKrisp driver, ffmpeg/<the six libraries>}, Contents/Resources/{rawreel.icns,
+    # vulkan/icd.d/<the driver manifest>} and Resources/ffmpeg/{licenses,
+    # build-info.txt} (Frameworks holds code only: codesign refuses a data file there). The exes
+    # are installed as files, not as targets: the build tree's bundle is rawreel-gui.app.
+    # make-packages.cmake replaces their build rpaths with rawreel_exe_rpath and signs the app.
+    if(NOT rawreel_icon_set OR NOT rawreel_icon_name)
+        message(FATAL_ERROR "rawreel packaging: rawreel_icon_set and rawreel_icon_name are set by "
+                            "CMakeLists.txt's rawreel_gui block, which must come before this file")
+    endif()
     set(rawreel_contents "rawreel.app/Contents")
     set(rawreel_ffmpeg_dir "${rawreel_contents}/Frameworks/ffmpeg")
     set(rawreel_ffmpeg_texts_dir "${rawreel_contents}/Resources/ffmpeg")
@@ -141,6 +145,11 @@ if(rawreel_platform STREQUAL "macos")
             DESTINATION "${rawreel_contents}/MacOS" COMPONENT rawreel CONFIGURATIONS Release)
     install(FILES "$<TARGET_BUNDLE_CONTENT_DIR:rawreel_gui>/Info.plist"
             DESTINATION "${rawreel_contents}" COMPONENT rawreel CONFIGURATIONS Release)
+    # The app icon: owl-on-film-reel-square-background.icns as delivered, under the name the plist
+    # gives it.
+    install(FILES "${rawreel_icon_set}/macOS/${rawreel_icon_name}.icns"
+            DESTINATION "${rawreel_contents}/Resources" RENAME rawreel.icns COMPONENT rawreel
+            CONFIGURATIONS Release)
 
     # The Vulkan loader (built by the superbuild) under the name dvv-gpu opens
     # (@rpath/libvulkan.1.dylib), one real file.
