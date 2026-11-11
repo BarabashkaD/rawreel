@@ -36,6 +36,7 @@ struct StreamInfo {
     std::string resolvedUri;
     dvv::media::SourceInfo info;
     dvv::media::ResolvedColour colour;
+    std::string requestedUri;  // dvv::formatUri of the open request
 };
 // One shown frame: the display views of every stream for one index (one stream at a time; the array
 // keeps the v1.x tile shape, D2).

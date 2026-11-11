@@ -51,6 +51,7 @@ add_library(rawreel_core STATIC
     src/core/format_presets.cpp
     src/core/open_text.cpp
     src/core/stream_name.cpp
+    src/core/recent.cpp
     src/core/gui_arguments.cpp
     src/core/info_text.cpp
     src/core/layout.cpp

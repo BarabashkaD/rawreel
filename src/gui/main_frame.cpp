@@ -38,6 +38,7 @@
 #include "core/log_store.h"
 #include "core/log_text.h"
 #include "core/open_text.h"
+#include "core/recent.h"
 #include "core/session.h"
 #include "core/startup.h"
 #include "core/status_text.h"
@@ -279,6 +280,15 @@ std::optional<Command> commandOfMenuId(int id) noexcept {
     return menuId(command) == id ? std::optional(command) : std::nullopt;
 }
 
+std::string typedRecentEntry(std::string_view text) {
+    std::error_code error;
+    std::filesystem::path folder = std::filesystem::current_path(error);
+    if (error) {
+        folder.clear();
+    }
+    return recentEntryOfText(text, folder);
+}
+
 MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     : wxFrame(nullptr, wxID_ANY, "rawreel"), aui_([this] {
           // A size event before the player panel exists: the viewport minimum.
@@ -374,10 +384,12 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     player_->infoBar().Bind(
         wxEVT_BUTTON,
         [this](wxCommandEvent& /*event*/) {
-            std::string error_uri = format_error_uri_;  // dismissMessage() clears it
+            std::string error_uri = format_error_uri_;  // dismissMessage() clears both
+            std::optional<std::string> error_entry = format_error_entry_;
             dismissMessage();
             if (!error_uri.empty()) {
                 format_error_uri_ = std::move(error_uri);
+                format_error_entry_ = std::move(error_entry);
                 showErrorFormat();  // an open error of a raw file (D4b): no stream to format
             } else {
                 execute(Command::Format, CommandSource::Button);
@@ -478,6 +490,11 @@ void MainFrame::buildMenus() {
             menu->Append(menuId(info.command), label, help);
         }
 #endif
+        if (info.command == Command::OpenUri) {
+            // Open Recent spec §3: right after Open URI... on every OS, no key, no mnemonic; its
+            // items come from recentChanged().
+            recent_item_ = menu->AppendSubMenu(new wxMenu(), "Open Recent");
+        }
     }
     buildEditMenu(*bar);  // between File and Playback (spec §4.2)
 #if defined(__WXGTK__)
@@ -491,6 +508,14 @@ void MainFrame::buildMenus() {
     SetMenuBar(bar);
     Bind(wxEVT_MENU, &MainFrame::onMenu, this, COMMAND_ID_BASE, LAST_COMMAND_ID);
     Bind(wxEVT_UPDATE_UI, &MainFrame::onUpdateUi, this, COMMAND_ID_BASE, LAST_COMMAND_ID);
+    // Open Recent's items (spec §3): not commands, and no update-UI handler (recentChanged()
+    // enables the submenu item).
+    Bind(
+        wxEVT_MENU,
+        [this](wxCommandEvent& event) {
+            openRecent(static_cast<std::size_t>(event.GetId() - RECENT_ID_BASE));
+        },
+        RECENT_ID_BASE, RECENT_ID_BASE + 9);
     // Spec §4.2: the Edit items act on the focused control. On macOS these arrive only when the
     // native responder chain did not handle the item (and always for Undo and Redo).
     for (const int id :
@@ -510,6 +535,48 @@ void MainFrame::buildMenus() {
         Bind(wxEVT_UPDATE_UI, &MainFrame::onUpdateUi, this, id);
     }
 #endif
+    recentChanged();
+}
+
+void MainFrame::recentChanged() {
+    if (recent_item_ == nullptr) {
+        return;
+    }
+    wxMenu& submenu = *recent_item_->GetSubMenu();
+    while (submenu.GetMenuItemCount() > 0) {
+        submenu.Destroy(submenu.FindItemByPosition(0));
+    }
+    const std::vector<std::string>& entries = wxGetApp().recent().entries();
+    const std::vector<RecentMenuItem> items = recentMenuItems(entries, NATIVE_TITLE_STYLE);
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        submenu.Append(RECENT_ID_BASE + static_cast<int>(i), wxString::FromUTF8(items[i].label),
+                       wxString::FromUTF8(items[i].help));
+    }
+    recent_item_->Enable(!entries.empty());
+}
+
+void MainFrame::openRecent(std::size_t index) {
+    const std::vector<std::string>& entries = wxGetApp().recent().entries();
+    if (index >= entries.size()) {
+        return;
+    }
+    const std::string entry = entries[index];  // a copy: the open's success changes the list
+    openUri(0, entry, std::nullopt, entry);
+}
+
+void MainFrame::recordRecent(const std::string& entry) {
+    if (const std::optional<std::string_view> problem = recentEntryProblem(entry)) {
+        DVV_LOG_INFO("not added to Open Recent: {}", *problem);
+        return;
+    }
+    App& app = wxGetApp();
+    if (!app.recent().add(entry)) {
+        return;  // already on top: nothing is saved (spec §7)
+    }
+    const std::array<ConfigValue, 1> values{
+        {{.key = "gui.recent", .value = app.recent().entries()}}};
+    app.saveHistory(values);  // a failure is logged there; the list stays in effect
+    recentChanged();
 }
 
 void MainFrame::buildStatusBar() {
@@ -687,7 +754,10 @@ void MainFrame::execute(Command command, CommandSource source) {
         return;
     }
     switch (command) {
-        case Command::CloseStreams: session->closeStreams(); return;
+        case Command::CloseStreams:
+            recent_pending_.closed();  // Open Recent spec §5
+            session->closeStreams();
+            return;
         case Command::PlayPause: session->togglePlay(); return;
         case Command::Stop: session->stop(); return;
         case Command::StepBack: session->step(-1); return;
@@ -835,7 +905,7 @@ void MainFrame::showOpenUriDialog() {
         return;
     }
     last_typed_uri_ = cleanUriText(dialog.GetValue().utf8_string());
-    openUri(0, last_typed_uri_, std::nullopt);
+    openUri(0, last_typed_uri_, std::nullopt, typedRecentEntry(last_typed_uri_));
 }
 
 void MainFrame::logOpenCancelled() const {
@@ -872,6 +942,7 @@ void MainFrame::showStreamFormat() {
 void MainFrame::showErrorFormat() {
     // The failed open closed the stream, so View -> Format... has nothing to show (D4b).
     const std::string uri = std::exchange(format_error_uri_, {});
+    std::optional<std::string> entry = std::exchange(format_error_entry_, std::nullopt);
     if (format_dialog_ != nullptr || uri.empty() || closing_) {
         return;
     }
@@ -885,7 +956,7 @@ void MainFrame::showErrorFormat() {
         last_choice_ = choice;
         // The raw dialog's choice goes to the raw provider (no Y4M or container
         // provider wins the reopen again).
-        openWithChoice(0, withRawImpl(uri), choice, std::nullopt);
+        openWithChoice(0, withRawImpl(uri), choice, std::nullopt, std::move(entry));
     } else if (!closing_) {
         DVV_LOG_INFO("open of {} cancelled", uri);
     }
@@ -926,7 +997,7 @@ void MainFrame::showFormatDialogs() {
         }
         const FormatChoice choice = dialog.choice();
         last_choice_ = choice;
-        openWithChoice(pending.slot, uri, choice, std::nullopt);
+        openWithChoice(pending.slot, uri, choice, std::nullopt, pending.entry);
     }
 }
 
@@ -936,7 +1007,8 @@ void MainFrame::openFiles(std::vector<std::filesystem::path> files) {
     }
     const DropPlan plan = routeDrop(files);
     if (plan.uri) {
-        openUri(0, *plan.uri, std::nullopt);  // frame 0 (design v2 §4.3)
+        // Frame 0 (design v2 §4.3); the first file's Open Recent entry (spec §4).
+        openUri(0, *plan.uri, std::nullopt, recentEntryOfPath(files.front()));
     }
     if (plan.ignored > 0) {
         DVV_LOG_INFO("{} files ignored: one stream at a time", plan.ignored);
@@ -944,7 +1016,7 @@ void MainFrame::openFiles(std::vector<std::filesystem::path> files) {
 }
 
 void MainFrame::openUri(std::uint32_t slot, const std::string& text,
-                        std::optional<std::int64_t> start) {
+                        std::optional<std::int64_t> start, std::optional<std::string> entry) {
     // M4 GUI D3: every open (Open, Open URI, drop, command line, View -> Format) of a URI that
     // parses first closes the current stream. The Session keeps replace-on-success. A text that
     // does not parse only warns and keeps the stream (and a loss's Reopen target).
@@ -954,6 +1026,8 @@ void MainFrame::openUri(std::uint32_t slot, const std::string& text,
         return;
     }
     if (Session* session = closing_ ? nullptr : wxGetApp().session(); session != nullptr) {
+        // Open Recent spec §5: this open's entry is the pending one until its stream shows.
+        recent_pending_.opened(std::move(entry), dvv::formatUri(*uri));
         session->closeStreams();
         last_open_uri_ = text;
         // M4 GUI D6: File -> Open starts in the folder of the last opened file.
@@ -968,13 +1042,14 @@ void MainFrame::openUri(std::uint32_t slot, const std::string& text,
 }
 
 void MainFrame::openWithChoice(std::uint32_t slot, const std::string& uri,
-                               const FormatChoice& choice, std::optional<std::int64_t> start) {
+                               const FormatChoice& choice, std::optional<std::int64_t> start,
+                               std::optional<std::string> entry) {
     const dvv::Result<std::string> applied = applyChoice(uri, choice);
     if (!applied) {
         showWarning(applied.error().describe());
         return;
     }
-    openUri(slot, *applied, start);
+    openUri(slot, *applied, start, std::move(entry));
 }
 
 void MainFrame::showWarning(const std::string& text) {
@@ -1048,6 +1123,7 @@ void MainFrame::showMessage(const wxString& text, int icon, std::span<const Info
     last_message_ = text;
     reopen_offered_ = false;
     format_error_uri_.clear();
+    format_error_entry_.reset();
     // The bar lives inside the player panel, so no size event runs the check.
     checkLayoutLimits();
 }
@@ -1056,6 +1132,7 @@ void MainFrame::dismissMessage() {
     player_->infoBar().Dismiss();
     reopen_offered_ = false;
     format_error_uri_.clear();
+    format_error_entry_.reset();
     checkLayoutLimits();
 }
 
@@ -1252,6 +1329,10 @@ void MainFrame::onStreamsChanged(const std::vector<StreamInfo>& streams) {
             DVV_LOG_INFO("stream {}: {}", stream.slot, note);
         }
     }
+    // Open Recent spec §5: the stream of the pending open records its entry.
+    if (const std::optional<std::string> entry = recent_pending_.streamsChanged(streams_)) {
+        recordRecent(*entry);
+    }
     // D5R §2.2: the mapping field changes with the stream (open, reopen, Format, close), not on
     // the status tick.
     status_texts_[MAPPING_FIELD] = mappingField(streams_);
@@ -1294,8 +1375,12 @@ void MainFrame::onFormatNeeded(std::uint32_t slot, const dvv::media::SourceReque
         DVV_LOG_TEXT(dvv::LogLevel::Info, ffmpegStatusLine(startup.ffmpeg));
     }
     // D21: one dialog at a time; the next one after the current one closes.
-    format_queue_.push_back(
-        {.slot = slot, .request = request, .candidates = candidates, .reason = reason});
+    // Open Recent spec §5: the dialog's OK opens with the entry of the open that asked.
+    format_queue_.push_back({.slot = slot,
+                             .request = request,
+                             .candidates = candidates,
+                             .reason = reason,
+                             .entry = recent_pending_.formatNeeded(uri)});
     showFormatDialogs();
 }
 
@@ -1328,9 +1413,48 @@ void MainFrame::onError(const dvv::Error& error) {
             {{.id = INFOBAR_FORMAT_ID, .label = "Format..."}}};
         showMessage(wxString::FromUTF8(text), wxICON_WARNING, format_button);
         format_error_uri_ = last_open_uri_;
+        format_error_entry_ = recent_pending_.entry();  // Open Recent spec §5: for the reopen
     } else {
         showMessage(wxString::FromUTF8(text), wxICON_WARNING);
     }
+    // Open Recent spec §6: a listed entry whose open failed with Errc::Io gets one look at its
+    // file, on the io executor (a dead network share can block it); recentChecked() acts on it.
+    if (open_error && error.code == dvv::Errc::Io) {
+        App& app = wxGetApp();
+        std::optional<std::string> entry = recent_pending_.entry();
+        if (entry && app.recent().contains(*entry) && app.io()) {
+            app.io()->post([entry = std::move(*entry)]() mutable {
+                const RecentFileState state = recentFileState(entry);
+                wxGetApp().CallAfter([entry = std::move(entry), state] {
+                    if (MainFrame* frame = wxGetApp().mainFrame(); frame != nullptr) {
+                        frame->recentChecked(entry, state);
+                    }
+                });
+            });
+        }
+    }
+}
+
+void MainFrame::recentChecked(const std::string& entry, RecentFileState state) {
+    if (closing_) {
+        return;
+    }
+    std::string_view reason;
+    switch (state) {
+        case RecentFileState::Missing: reason = "missing"; break;
+        case RecentFileState::NotAccessible: reason = "not accessible"; break;
+        case RecentFileState::Readable:
+        case RecentFileState::NotChecked: return;  // the entry stays
+    }
+    App& app = wxGetApp();
+    if (!app.recent().remove(entry)) {
+        return;  // no longer listed
+    }
+    const std::array<ConfigValue, 1> values{
+        {{.key = "gui.recent", .value = app.recent().entries()}}};
+    app.saveHistory(values);  // a failure is logged there; the list stays in effect
+    recentChanged();
+    DVV_LOG_INFO("\"{}\" removed from Open Recent: {}", entry, reason);
 }
 
 void MainFrame::onPresenterFailed(const dvv::Error& error) {

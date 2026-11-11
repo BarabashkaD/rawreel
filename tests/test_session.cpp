@@ -302,6 +302,17 @@ TEST_SUITE("session") {
         CHECK(status.streams == 1);
     }
 
+    TEST_CASE("session: a stream carries the URI it was requested by") {
+        SessionFixture f;
+        f.open(0, A);  // w=32&h=16: the provider resolves them to size=32x16
+        const SessionEvent changed = waitStreamsChanged(f, 1);
+        REQUIRE(changed.streams.size() == 1);
+        const std::string requested = dvv::formatUri(*dvv::parseUri(A));
+        CHECK(changed.streams[0].requestedUri == requested);
+        CHECK(changed.streams[0].resolvedUri != requested);
+        CHECK(changed.streams[0].resolvedUri.find("size=32x16") != std::string::npos);
+    }
+
     TEST_CASE("session: play shows every index once, in order") {
         SessionFixture f;
         f.open(0, A);

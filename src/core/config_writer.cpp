@@ -303,6 +303,9 @@ dvv::Result<void> saveConfigValues(const fs::path& path, std::span<const ConfigV
 
     // 3. Merge, then check the result as the loader will read it.
     DVV_TRY(const std::string text, mergedText(exists ? &original : nullptr, values));
+    if (text.size() > CONFIG_MAX_BYTES) {
+        return dvv::makeError(dvv::Errc::Format, std::format("{} bytes is too large", text.size()));
+    }
     DVV_TRY_VOID(parseConfig(text));
 
     // 4. Write safely.

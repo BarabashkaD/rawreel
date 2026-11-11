@@ -301,6 +301,14 @@ and frame rate come from the file and show as read-only "(from file)" rows; only
 changed there, and Load JSON… takes only a clip description's colour. A file with "N trailing
 bytes ignored" shows the warning in the infobar with a Format… button.
 
+**Open Recent.** File → Open Recent lists the last opened files and URIs, newest first: 5, set
+from 1 to 10 in [Settings](#settings-window). Choosing one opens the same text again; an open adds
+its entry once its stream shows. An entry whose file is missing or cannot be read is removed when
+its open fails. A raw file that needed the format dialog asks again. The labels are the file name
+on macOS and Linux (the full text when two names are the same) and the full text cut to 60
+characters on Windows and for every URI, numbered `1`–`10` on Windows and Linux; the full text
+shows in the status bar.
+
 **Playback** shows every frame in order (it waits for a slow frame instead of skipping it) and
 always fits the frame to the viewport: scaled up or down, centred, aspect ratio kept.
 
@@ -418,8 +426,9 @@ The pages and their controls:
   writes to the default folder, logs one warning, and the page says "Not available, writing to
   <folder>".
 - **Files:** File reads, Automatic, Unbuffered (no OS cache) or Buffered (OS cache)
-  (`io.fileReads`), which applies to files opened after the change and to reopens; and the path
-  of the settings file in use.
+  (`io.fileReads`), which applies to files opened after the change and to reopens; Items in Open
+  Recent, 1 to 10 (`gui.recentSize`): lowering it removes the extra entries, raising it brings
+  none back; and the path of the settings file in use.
 
 Only the first `rawreel-gui` process that uses a config file saves settings. A second copy runs
 normally: its Settings window says "Another rawreel window owns the settings. Changes here apply
@@ -664,12 +673,16 @@ either executable reads another file instead. The default file is:
   log files.
 
 No `rawreel.json` is shipped, so the built-in defaults apply until a file exists. `rawreel-gui`
-creates it in the user data folder when a setting is saved.
+creates it in the user data folder when a setting is saved or an open changes Open Recent.
 
 ```json
 {
   "io":  { "fileReads": "auto" },
-  "gui": { "showLogPane": false },
+  "gui": {
+    "showLogPane": false,
+    "recentSize":  5,
+    "recent":      ["/data/clips/clip_1920x1080_v210.yuv", "lavfi:testsrc2=size=1280x720"]
+  },
   "log": {
     "level":  "info",
     "source": false,
@@ -683,6 +696,8 @@ creates it in the user data folder when a setting is saved.
 | --- | --- | --- | --- |
 | `io.fileReads` | `auto`, `unbuffered`, `buffered` | `auto` | both executables |
 | `gui.showLogPane` | `true`, `false` | `false` | rawreel-gui |
+| `gui.recentSize` | a whole number from 1 to 10 | `5` | rawreel-gui |
+| `gui.recent` | an array of strings (files and URIs of Open Recent), newest first | `[]` | rawreel-gui |
 | `log.level` | `error`, `warn`, `info`, `debug`, `trace` (any letter case) | `info` | rawreel-gui |
 | `log.source` | `true`, `false` | `false` | rawreel-gui |
 | `log.file.enabled` | `true`, `false` | `true` | rawreel-gui |
@@ -707,18 +722,23 @@ key does not apply to them.
 
 The mode in use shows as `reads:` in `rawreel-cli info`.
 
-`rawreel-gui` writes the file when a setting changes (see [Settings window](#settings-window)),
-only the keys it sets: it keeps the other keys, the key order, a symbolic link and the file's
-permissions. It does not write a file that is not valid, has a bad value or is read-only; the
-setting then holds for the session only, with the warning "config '<path>' not saved: <reason>".
-`rawreel-cli` never writes the file.
+`rawreel-gui` writes the file when a setting changes (see [Settings window](#settings-window))
+and when Open Recent changes (`gui.recent`), only the keys it sets: it keeps the
+other keys, the key order, a symbolic link and the file's permissions. It does not write a file
+that is not valid, has a bad value, is read-only or would grow over 1 MiB; the setting then holds
+for the session only, with the warning "config '<path>' not saved: <reason>". A failed Open Recent
+write logs that warning once per run, and the list holds for the session. `rawreel-cli` never
+writes the file.
 
 A missing default `rawreel.json` means the defaults, silently. A missing
 `--config` file, or a file that cannot be read, is not valid JSON or has a bad value, gives one
 warning in the log ("config '<path>' ignored: <reason>; using the defaults") and the defaults. A
 bad value in any key, including a `gui` or `log` key that `rawreel-cli` does not use, makes both
-executables use the defaults. An older rawreel ignores a file that holds a value only a newer one
-knows. Unknown keys are ignored. To try another file:
+executables use the defaults. The two Open Recent keys are the exception: a wrong `gui.recentSize`
+gives 5 and a wrong `gui.recent` an empty list (a wrong entry in it is dropped), each with a
+warning, and the rest of the file is used; `rawreel-cli` ignores both keys. An older rawreel
+ignores a file that holds a value only a newer one knows. Unknown keys are ignored. To try
+another file:
 
 ```powershell
 & $cli info <uri> --config <folder>/rawreel.json

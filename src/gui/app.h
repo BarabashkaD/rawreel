@@ -22,6 +22,7 @@
 #include "core/log_file_switch.h"
 #include "core/log_level.h"
 #include "core/log_store.h"
+#include "core/recent.h"
 #include "core/session.h"
 #include "core/settings_claim.h"
 #include "core/startup.h"
@@ -34,6 +35,7 @@
 
 namespace rawreel {
 
+class MainFrame;
 class SessionBridge;
 class ShowHistory;
 
@@ -69,6 +71,10 @@ public:
     // frame (a failed start) or once it is closing.
     void MacOpenFiles(const wxArrayString& names) override;
 #endif
+
+    // The top-level MainFrame that is not being deleted; null otherwise (before it exists, after a
+    // failed start, once it is destroyed). GUI thread.
+    [[nodiscard]] MainFrame* mainFrame() const;
 
     // Called by MainFrame::onClose: detaches the bridge, then syncWait(session->shutdown()) and
     // releases the Session. Nothing it waits for needs the GUI thread. A second call does nothing.
@@ -130,6 +136,15 @@ public:
     // message (showModal(wxMessageDialog&)) unless `closing` (no dialog while the main window
     // closes).
     bool saveSettings(std::span<const ConfigValue> values, bool closing);
+    // File > Open Recent's list (Open Recent spec §7): loaded with the config at start (the
+    // defaults without a usable file); the frame builds the submenu from it.
+    [[nodiscard]] RecentList& recent() noexcept { return recent_; }
+    [[nodiscard]] const RecentList& recent() const noexcept { return recent_; }
+    // The history's save (spec §7): false, and nothing written, unless ownsSettings(); otherwise
+    // saveConfigValues(configPath(), values), true when it saved. A failure shows no dialog: the
+    // run's first history failure logs one warning, "config '<path>' not saved: <reason>", later
+    // ones nothing; it never counts as a saveSettings() failure.
+    bool saveHistory(std::span<const ConfigValue> values);
     // The gui.showLogPane value the main window's close saved (spec §2); nullopt when nothing was
     // saved. A selftest's OnExit checks it against the file.
     [[nodiscard]] std::optional<bool> savedLogPane() const noexcept { return saved_log_pane_; }
@@ -243,6 +258,8 @@ private:
     bool size_warned_ = false;          // the 1 GiB warning was posted in this run
     std::unique_ptr<SettingsClaim> settings_claim_;
     bool save_failed_ = false;            // a saveSettings() failed in this run
+    bool history_save_failed_ = false;    // a saveHistory() failed in this run
+    RecentList recent_;                   // recent()
     std::optional<bool> saved_log_pane_;  // set by the close's save
     std::optional<AppearanceResult> appearance_result_;
     std::shared_ptr<dvv::IExecutor> cpu_;

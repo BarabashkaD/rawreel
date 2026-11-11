@@ -608,7 +608,8 @@ TEST_SUITE("core") {
             return rawreel::StreamInfo{.slot = 0,
                                        .resolvedUri = std::string(uri),
                                        .info = info,
-                                       .colour = dvv::media::resolveColour(info.desc)};
+                                       .colour = dvv::media::resolveColour(info.desc),
+                                       .requestedUri = {}};
         };
         constexpr std::uint8_t ALL = dvv::media::AssumedMatrix | dvv::media::AssumedRange |
                                      dvv::media::AssumedTransfer | dvv::media::AssumedPrimaries;

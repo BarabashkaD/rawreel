@@ -5,19 +5,22 @@
 // and replaces the file safely. wx-free; it never logs and never retries, the caller reports a
 // failure. Only the settings owner (core/settings_claim.h) calls it.
 
+#include <cstdint>
 #include <filesystem>
 #include <span>
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 #include "dvv/base/error.h"
 
 namespace rawreel {
 
 struct ConfigValue {
-    std::string_view key;                   // dotted, e.g. "gui.showLogPane", "log.file.folder"
-    std::variant<bool, std::string> value;  // strings are UTF-8
+    std::string_view key;  // dotted, e.g. "gui.showLogPane", "log.file.folder"
+    std::variant<bool, std::string, std::int64_t, std::vector<std::string>>
+        value;  // strings are UTF-8
 };
 
 // Sets each key of `values` in the config file `path` and keeps every other key, unknown ones
