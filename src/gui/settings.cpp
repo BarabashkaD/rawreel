@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <format>
 #include <memory>
@@ -468,6 +469,22 @@ FilesSettingsPage::FilesSettingsPage(wxWindow* parent, MainFrame& frame, Setting
     help->SetFont(help->GetFont().Smaller());
     sizer->Add(help, wxSizerFlags().Border(wxALL));
 
+    // Open Recent spec §9: above the Settings file line, the Log page's Level control.
+    auto* recent_row = new wxBoxSizer(wxHORIZONTAL);
+    recent_row->Add(new wxStaticText(this, wxID_ANY, "Items in Open Recent:"),
+                    wxSizerFlags().CenterVertical().Border(wxRIGHT));
+    recent_size_ = new wxChoice(this, wxID_ANY);
+    for (std::size_t size = RECENT_MIN_SIZE; size <= RECENT_MAX_SIZE; ++size) {
+        recent_size_->Append(fromUtf8(std::format("{}", size)));
+    }
+    recent_size_->Bind(wxEVT_CHOICE, [this](wxCommandEvent& event) {
+        if (const int index = event.GetSelection(); index >= 0) {
+            setRecentSize(static_cast<std::size_t>(index) + 1);
+        }
+    });
+    recent_row->Add(recent_size_, wxSizerFlags().CenterVertical());
+    sizer->Add(recent_row, wxSizerFlags().Border(wxALL));
+
     auto* file_row = new wxBoxSizer(wxHORIZONTAL);
     file_row->Add(new wxStaticText(this, wxID_ANY, "Settings file:"),
                   wxSizerFlags().CenterVertical().Border(wxRIGHT));
@@ -512,6 +529,20 @@ dvv::platform::FileReadMode FilesSettingsPage::fileReads() const {
     return dvv::platform::FileReadMode::Auto;
 }
 
+void FilesSettingsPage::setRecentSize(std::size_t size) {
+    if (!active() || size < RECENT_MIN_SIZE || size > RECENT_MAX_SIZE) {
+        return;
+    }
+    wanted_size_ = size;
+    recent_size_->SetSelection(static_cast<int>(size) - 1);
+    changed();
+}
+
+std::size_t FilesSettingsPage::recentSize() const {
+    const int index = recent_size_->GetSelection();
+    return index >= 0 ? static_cast<std::size_t>(index) + 1 : RECENT_DEFAULT_SIZE;
+}
+
 wxString FilesSettingsPage::configPathText() const {
     return config_path_->GetValue();
 }
@@ -522,6 +553,8 @@ bool FilesSettingsPage::TransferDataToWindow() {
         for (std::size_t i = 0; i < modes_.size(); ++i) {
             modes_[i]->SetValue(READ_MODES[i] == wanted_);
         }
+        wanted_size_ = wxGetApp().recent().capacity();  // the size in effect (spec §9)
+        recent_size_->SetSelection(static_cast<int>(wanted_size_) - 1);
     }
     return wxPanel::TransferDataToWindow();
 }
@@ -548,11 +581,23 @@ void FilesSettingsPage::changed() {
 
 void FilesSettingsPage::apply(std::vector<ConfigValue>& values) {
     App& app = wxGetApp();
-    if (wanted_ == app.config().io.fileReads) {
-        return;
+    if (wanted_ != app.config().io.fileReads) {
+        app.useFileReads(wanted_);  // spec §5.3: every later open, reopens included
+        values.push_back({.key = "io.fileReads", .value = std::string(fileReadsName(wanted_))});
     }
-    app.useFileReads(wanted_);  // spec §5.3: every later open, reopens included
-    values.push_back({.key = "io.fileReads", .value = std::string(fileReadsName(wanted_))});
+    // Open Recent spec §7, §9: a smaller size cuts the list for good, a larger one brings nothing
+    // back; the cut list is saved with the size.
+    if (wanted_size_ != app.recent().capacity()) {
+        const bool cut = app.recent().setCapacity(wanted_size_);
+        values.push_back(
+            {.key = "gui.recentSize", .value = static_cast<std::int64_t>(wanted_size_)});
+        if (cut) {
+            values.push_back({.key = "gui.recent", .value = app.recent().entries()});
+            if (frame_) {
+                frame_->recentChanged();
+            }
+        }
+    }
 }
 
 void FilesSettingsPage::onTopLevelShown(wxShowEvent& event) {

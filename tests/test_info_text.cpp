@@ -35,7 +35,7 @@ StreamInfo stream(const ColourParams& colour = {}, std::string_view uri = URI) {
     info.fps = {25, 1};
     info.frameCount = 40;
     info.resolvedUri = std::string(uri);
-    return StreamInfo{0, std::string(uri), info, dvv::media::resolveColour(info.desc)};
+    return StreamInfo{0, std::string(uri), info, dvv::media::resolveColour(info.desc), {}};
 }
 
 }  // namespace

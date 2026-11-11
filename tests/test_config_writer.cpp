@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -61,6 +62,50 @@ std::vector<fs::path> temporaryFiles(const fs::path& folder) {
 }  // namespace
 
 TEST_SUITE("core") {
+    TEST_CASE("config writer: a number and a string array") {
+        const TemporaryDirectory temporary("rawreel-config-writer");
+        const fs::path file = temporary.path() / rawreel::CONFIG_FILE_NAME;
+        writeText(file, R"({"x":1,"gui":{"showLogPane":true}})");
+        writeText(file, R"({"x":1,"y":2,"gui":{"showLogPane":true}})");  // edited before the save
+        const std::vector<std::string> recent{"/data/a.yuv", "lavfi:testsrc2"};
+        const std::array values{ConfigValue{.key = "gui.recentSize", .value = std::int64_t{3}},
+                                ConfigValue{.key = "gui.recent", .value = recent}};
+        const dvv::Result<void> saved = rawreel::saveConfigValues(file, values);
+        REQUIRE_MESSAGE(saved.has_value(), (saved ? "" : saved.error().describe()));
+        const nlohmann::ordered_json root = nlohmann::ordered_json::parse(readText(file));
+        CHECK(root["gui"]["recentSize"] == 3);
+        CHECK(root["gui"]["recent"] ==
+              nlohmann::ordered_json::array({"/data/a.yuv", "lavfi:testsrc2"}));
+        CHECK(root["gui"]["showLogPane"] == true);
+        CHECK(root["x"] == 1);
+        CHECK(root["y"] == 2);
+    }
+
+    TEST_CASE("config writer: bad history values never refuse a save") {
+        const TemporaryDirectory temporary("rawreel-config-writer");
+        const fs::path file = temporary.path() / rawreel::CONFIG_FILE_NAME;
+        writeText(file, R"({"gui":{"recentSize":"x","recent":3}})");
+        save(file, {.key = "gui.showLogPane", .value = true});
+        const nlohmann::ordered_json root = nlohmann::ordered_json::parse(readText(file));
+        CHECK(root["gui"]["recentSize"] == "x");
+        CHECK(root["gui"]["showLogPane"] == true);
+    }
+
+    TEST_CASE("config writer: refuses a text over 1 MiB") {
+        const TemporaryDirectory temporary("rawreel-config-writer");
+        const fs::path file = temporary.path() / rawreel::CONFIG_FILE_NAME;
+        const std::string original = R"({"gui":{"showLogPane":true}})";
+        writeText(file, original);
+        const std::vector<std::string> recent(300, std::string(4000, 'a'));
+        const std::array values{ConfigValue{.key = "gui.recent", .value = recent}};
+        const dvv::Result<void> saved = rawreel::saveConfigValues(file, values);
+        REQUIRE_FALSE(saved.has_value());
+        CHECK(saved.error().code == dvv::Errc::Format);
+        CHECK(saved.error().message.find("bytes is too large") != std::string::npos);
+        CHECK(readText(file) == original);
+        CHECK(temporaryFiles(temporary.path()).empty());
+    }
+
     TEST_CASE("config writer: creates the file") {
         const TemporaryDirectory temporary("rawreel-config-writer");
         const fs::path folder = temporary.path() / "u";

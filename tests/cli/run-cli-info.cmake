@@ -45,6 +45,20 @@ run_cli(0 out err info a_4x2_yuv420p.yuv --config bad.json)
 expect_match("${out}" "\nreads: ${auto_reads}\n" "info text, invalid config")
 expect_match("${err}" "config '[^']*bad.json' ignored: io.fileReads" "warning, invalid config")
 
+# The history keys belong to the GUI: the CLI reads them without a warning.
+file(WRITE "${WORK_DIR}/history.json"
+     "{ \"io\": { \"fileReads\": \"buffered\" }, \"gui\": { \"recentSize\": 5, \"recent\": [\"/data/clip.yuv\"] } }\n")
+file(WRITE "${WORK_DIR}/history-bad.json"
+     "{ \"io\": { \"fileReads\": \"buffered\" }, \"gui\": { \"recentSize\": 11, \"recent\": [\"/data/clip.yuv\", 3] } }\n")
+foreach(history history.json history-bad.json)
+    run_cli(0 out err info a_4x2_yuv420p.yuv --config ${history})
+    expect_match("${out}" "\nreads: buffered\n" "info text, ${history}")
+    if(err MATCHES "WARN|ignored")
+        message(FATAL_ERROR "${history}: unexpected warning: ${err}")
+    endif()
+endforeach()
+
+
 # A Y4M file of two 4x2 gray frames; file(CONFIGURE) writes LF line ends and appends one LF, which
 # the provider reports as a trailing byte.
 file(CONFIGURE OUTPUT "${WORK_DIR}/y.y4m"

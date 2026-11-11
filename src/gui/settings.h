@@ -11,6 +11,7 @@
 // clang-format on
 
 #include <array>
+#include <cstddef>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -22,6 +23,7 @@
 #include <wx/weakref.h>
 
 #include "core/config_writer.h"
+#include "core/recent.h"
 #include "dvv/base/log.h"
 #include "dvv/platform/file_reader.h"
 #include "gui/main_frame.h"  // wxWeakRef<MainFrame> needs the class
@@ -110,7 +112,8 @@ private:
     wxCheckBox* system_box_ = nullptr;
 };
 
-// The Files page (§5.2): File reads and the Settings file.
+// The Files page (§5.2): File reads, Items in Open Recent (Open Recent spec §9) and the Settings
+// file.
 class FilesSettingsPage final : public wxPanel {
 public:
     FilesSettingsPage(wxWindow* parent, MainFrame& frame, SettingsWindow& owner);
@@ -118,7 +121,11 @@ public:
     // Selects the mode's button; macOS and GTK: applied to the Session and saved at once.
     void setFileReads(dvv::platform::FileReadMode mode);
     [[nodiscard]] dvv::platform::FileReadMode fileReads() const;  // the selected button
-    [[nodiscard]] wxString configPathText() const;                // the Settings file line
+    // Items in Open Recent (1 to 10): selects the size; macOS and GTK: applied to the list (a
+    // smaller size cuts it for good) and saved at once, Windows on OK.
+    void setRecentSize(std::size_t size);
+    [[nodiscard]] std::size_t recentSize() const;   // the selection
+    [[nodiscard]] wxString configPathText() const;  // the Settings file line
     bool TransferDataToWindow() override;
     bool TransferDataFromWindow() override;  // Windows OK
 
@@ -131,7 +138,9 @@ private:
     wxWeakRef<MainFrame> frame_;
     SettingsWindow* owner_;
     dvv::platform::FileReadMode wanted_ = dvv::platform::FileReadMode::Auto;
-    std::array<wxRadioButton*, 3> modes_{};  // Automatic, Unbuffered, Buffered
+    std::size_t wanted_size_ = RECENT_DEFAULT_SIZE;  // Items in Open Recent
+    std::array<wxRadioButton*, 3> modes_{};          // Automatic, Unbuffered, Buffered
+    wxChoice* recent_size_ = nullptr;
     wxTextCtrl* config_path_ = nullptr;
 };
 

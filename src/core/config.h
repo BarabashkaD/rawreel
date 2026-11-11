@@ -13,6 +13,9 @@
 //              "system": { "enabled": false },
 //              "level": "info",                        // error, warn, info, debug or trace
 //              "source": false } }
+//   Also under "gui": "recentSize" (1 to 10, default 5) and "recent" (an array of strings, newest
+//   first), the Open Recent history. parseConfig does not read them; core/recent.h's parseRecent
+//   does, from LoadedConfig::text, and a bad value there is a warning for the history only.
 //
 // A missing default file means the defaults; a missing --config file, an
 // unreadable or invalid file, or a bad value, means one warning in the log and the defaults.
@@ -104,6 +107,7 @@ struct LoadedConfig {
     std::filesystem::path path;
     bool found = false;   // the file exists
     std::string warning;  // why an existing file was not used (also logged); empty otherwise
+    std::string text;     // the file's text when the config was used; empty otherwise
 };
 
 // Loads `path`. A missing file gives the defaults (one info line); an unreadable, too large (over

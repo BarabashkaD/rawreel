@@ -56,6 +56,7 @@ struct Stream {
     std::shared_ptr<dvv::media::ISource> source;  // released on a device loss (design v2 D7)
     dvv::media::SourceInfo info;
     dvv::media::ResolvedColour colour;
+    std::string requestedUri;         // dvv::formatUri of the open request
     dvv::media::OriginId origin = 0;  // in the current stack's store
     dvv::media::ViewSpec view{};      // stack.viewFor(info.desc)
 };
@@ -390,7 +391,7 @@ public:
             } else {
                 attachSource(job.slot,
                              std::shared_ptr<dvv::media::ISource>(std::move(std::get<0>(*opened))),
-                             job.start);
+                             job.start, dvv::formatUri(request.uri));
             }
         }  // else closeStreams() or a loss ran meanwhile: the source dies here, nothing is reported
         startNextOpen();
@@ -658,7 +659,7 @@ private:
 
     // D21 (one stream at a time): any size, format or colour replaces the stream in slot 0.
     void attachSource(std::uint32_t slot, std::shared_ptr<dvv::media::ISource> source,
-                      std::optional<std::int64_t> start) {
+                      std::optional<std::int64_t> start, std::string requested_uri) {
         static_cast<void>(slot);  // slot 0: startNextOpen() refused every other slot
         if (!stack_.store) {
             // Not reachable: an open job builds a stack first, and a loss makes its open stale.
@@ -678,6 +679,7 @@ private:
         stream.colour = dvv::media::resolveColour(stream.info.desc);
         stream.colour.standard =
             dvv::media::resolveColour(stream.info.desc, labelHint(stream.info)).standard;
+        stream.requestedUri = std::move(requested_uri);
         stream.origin = *attached;
         stream.view = stack_.viewFor(stream.info.desc);
         stream.source = std::move(source);
@@ -878,7 +880,8 @@ private:
             streams.push_back(StreamInfo{.slot = static_cast<std::uint32_t>(slot),
                                          .resolvedUri = stream.info.resolvedUri,
                                          .info = stream.info,
-                                         .colour = stream.colour});
+                                         .colour = stream.colour,
+                                         .requestedUri = stream.requestedUri});
         }
         options_.events->streamsChanged(std::move(streams));
     }

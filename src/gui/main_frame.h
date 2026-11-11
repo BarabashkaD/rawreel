@@ -19,6 +19,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <wx/aui/framemanager.h>
@@ -28,6 +29,7 @@
 #include "core/format_choice.h"
 #include "core/gui_arguments.h"
 #include "core/log_store.h"
+#include "core/recent.h"
 #include "core/session.h"
 #include "core/session_types.h"
 #include "core/version_text.h"
@@ -58,7 +60,13 @@ struct InfoButton {
 };
 inline constexpr int INFOBAR_REOPEN_ID = wxID_HIGHEST + 60;  // below COMMAND_ID_BASE (+100)
 inline constexpr int INFOBAR_FORMAT_ID = wxID_HIGHEST + 61;  // "Format..." (§7 trailing bytes)
-inline constexpr int COMMAND_ID_BASE = wxID_HIGHEST + 100;   // menu id = base + int(command)
+// File > Open Recent's items (Open Recent spec §3): entry i has RECENT_ID_BASE + i, up to +89.
+inline constexpr int RECENT_ID_BASE = wxID_HIGHEST + 80;
+inline constexpr int COMMAND_ID_BASE = wxID_HIGHEST + 100;  // menu id = base + int(command)
+
+// The Open Recent entry of a typed text (the command line, Open URI...; spec §4):
+// recentEntryOfText(text, the working folder); an empty folder when it cannot be found.
+[[nodiscard]] std::string typedRecentEntry(std::string_view text);
 
 // The menu item id of `command`: COMMAND_ID_BASE + int(command), except Settings, which is
 // wxID_PREFERENCES everywhere (wxOSX shows it in the application menu, Log pane and Settings design
@@ -169,8 +177,21 @@ public:
     void openFiles(std::vector<std::filesystem::path> files);
     // File -> Open URI..., a format choice and the command line's URI: session().closeStreams()
     // first (M4 GUI D3), then parseUri (an error: log + infobar), then session().open(slot, {uri},
-    // start); the URI is kept for onError's hint.
-    void openUri(std::uint32_t slot, const std::string& text, std::optional<std::int64_t> start);
+    // start); the URI is kept for onError's hint. `entry` is the open's Open Recent entry (spec
+    // §4, §5), pending until its stream shows; none records nothing. A text that does not parse
+    // leaves the pending entry as it is.
+    void openUri(std::uint32_t slot, const std::string& text, std::optional<std::int64_t> start,
+                 std::optional<std::string> entry = std::nullopt);
+    // Rebuilds File > Open Recent's items from wxGetApp().recent() and enables its item exactly
+    // when the list is not empty (spec §3); after every change of the list.
+    void recentChanged();
+    // The file check of `entry` after its failed open (spec §6), back on the GUI thread: Missing
+    // or NotAccessible removes a still listed entry, saves the list (App::saveHistory), rebuilds
+    // the submenu and logs "\"<entry>\" removed from Open Recent: missing" (or "not accessible");
+    // Readable and NotChecked keep it. Nothing while the window closes.
+    void recentChecked(const std::string& entry, RecentFileState state);
+    // The File menu's Open Recent item (its submenu holds the entries); null before buildMenus().
+    [[nodiscard]] wxMenuItem* recentMenuItem() const noexcept { return recent_item_; }
     // The streams of the last streamsChanged.
     [[nodiscard]] const std::vector<StreamInfo>& streams() const noexcept { return streams_; }
     // Format dialogs shown so far (formatNeeded and View -> Format...).
@@ -210,6 +231,7 @@ private:
         dvv::media::SourceRequest request;
         dvv::media::Ambiguous candidates;
         std::string reason;
+        std::optional<std::string> entry;  // the Open Recent entry of the open that asked
     };
 
     void buildMenus();      // from commandTable() (D17)
@@ -247,9 +269,16 @@ private:
     void showFormatDialogs();
     // showModal(dialog) with the open-dialog bookkeeping; wxID_CANCEL once the frame is closing.
     int runFormatDialog(FormatDialog& dialog);
-    // applyChoice(uri, choice), then openUri.
+    // applyChoice(uri, choice), then openUri with `entry`.
     void openWithChoice(std::uint32_t slot, const std::string& uri, const FormatChoice& choice,
-                        std::optional<std::int64_t> start);
+                        std::optional<std::int64_t> start,
+                        std::optional<std::string> entry = std::nullopt);
+    // Spec §5: a shown open's entry goes on top of the list; a changed list is saved
+    // (App::saveHistory) and the submenu rebuilt. An invalid entry only logs
+    // "not added to Open Recent: <reason>".
+    void recordRecent(const std::string& entry);
+    // The Open Recent item `index`: its entry is opened, and is its own entry.
+    void openRecent(std::size_t index);
     void showWarning(const std::string& text);  // log + infobar (wxICON_WARNING)
     [[nodiscard]] bool hasStream() const;
     void onCharHook(wxKeyEvent& event);
@@ -335,6 +364,10 @@ private:
     std::filesystem::path last_log_save_dir_;
     // The URI whose open error shows the Format... button (D4b); empty otherwise.
     std::string format_error_uri_;
+    // That open's Open Recent entry (spec §5), cleared with format_error_uri_.
+    std::optional<std::string> format_error_entry_;
+    RecentPending recent_pending_;             // the entry of the open in flight (spec §5)
+    wxMenuItem* recent_item_ = nullptr;        // File > Open Recent (wx owns it)
     std::vector<StreamInfo> streams_;          // of the last streamsChanged
     std::deque<PendingFormat> format_queue_;   // formatNeeded events not shown yet
     FormatDialog* format_dialog_ = nullptr;    // the open format dialog (a local of its caller)

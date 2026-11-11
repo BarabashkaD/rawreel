@@ -61,6 +61,7 @@
 #include "core/log_store.h"
 #include "core/log_text.h"
 #include "core/perf_stats.h"
+#include "core/recent.h"
 #include "core/session.h"
 #include "core/settings_claim.h"
 #include "core/startup.h"
@@ -4457,6 +4458,583 @@ std::string infoValue(const MainFrame& frame, std::string_view label) {
     return {};
 }
 
+// --- File > Open Recent (Open Recent spec §3 to §7, §11) -----------------------------------------
+
+// The selftest's rawreel.json as it is now: its text and its gui.recent (parseRecent); nullopt
+// when it cannot be read.
+struct FileRecent {
+    std::string text;
+    std::vector<std::string> entries;
+};
+
+std::optional<FileRecent> fileRecent(const App& app) {
+    dvv::Result<std::string> text = readConfigText(app.configPath());
+    if (!text) {
+        return std::nullopt;
+    }
+    RecentConfig parsed = parseRecent(*text);
+    return FileRecent{.text = std::move(*text), .entries = std::move(parsed.entries)};
+}
+
+void writeText(const std::filesystem::path& file, std::string_view text) {
+    std::ofstream(file, std::ios::binary | std::ios::trunc)
+        .write(text.data(), static_cast<std::streamsize>(text.size()));
+}
+
+std::string entriesText(std::span<const std::string> entries) {
+    std::string text;
+    for (const std::string& entry : entries) {
+        text += std::format("{}'{}'", text.empty() ? "" : ", ", entry);
+    }
+    return "[" + text + "]";
+}
+
+// The submenu shows the App's list (recentMenuItems in the native style: labels and help), its
+// item is enabled exactly when the list is not empty, and the config file's gui.recent is the
+// list.
+bool recentMatches(const MainFrame& frame, const App& app, std::string& seen) {
+    const wxMenuItem* item = frame.recentMenuItem();
+    if (item == nullptr || item->GetSubMenu() == nullptr) {
+        seen = "no Open Recent submenu";
+        return false;
+    }
+    const std::vector<std::string>& entries = app.recent().entries();
+    const std::vector<RecentMenuItem> expected = recentMenuItems(entries, NATIVE_TITLE_STYLE);
+    const wxMenu& submenu = *item->GetSubMenu();
+    std::vector<RecentMenuItem> shown;
+    for (std::size_t i = 0; i < submenu.GetMenuItemCount(); ++i) {
+        const wxMenuItem* entry = submenu.FindItemByPosition(i);
+        shown.push_back(
+            {.label = entry->GetItemLabel().utf8_string(), .help = entry->GetHelp().utf8_string()});
+    }
+    const std::optional<FileRecent> file = fileRecent(app);
+    const bool menu_same = shown == expected;
+    const bool enabled = item->IsEnabled();
+    const bool file_same = file && file->entries == entries;
+    seen = std::format("list {}, menu {} items (the list's {}), enabled {}, file {}",
+                       entriesText(entries), shown.size(), menu_same, enabled,
+                       file ? entriesText(file->entries) : std::string("unreadable"));
+    return menu_same && enabled == !entries.empty() && file_same;
+}
+
+// Clicks an infobar button (the lost scenario's Reopen click).
+void clickInfobar(MainFrame& frame, int id) {
+    wxInfoBarGeneric& bar = frame.playerPanel().infoBar();
+    wxCommandEvent click(wxEVT_BUTTON, id);
+    click.SetEventObject(&bar);
+    bar.GetEventHandler()->ProcessEvent(click);
+}
+
+// The frame shows one stream of `w` x `h` in `format`.
+bool streamIs(const MainFrame& frame, std::uint32_t w, std::uint32_t h, std::string_view format) {
+    const auto& streams = frame.streams();
+    return streams.size() == 1 && streams[0].info.desc.width == w &&
+           streams[0].info.desc.height == h &&
+           dvv::media::descriptor(streams[0].info.desc.format).name == format;
+}
+
+// Spec §11: the scenario's earlier opens, then routes, failures, Format dialogs and the history
+// saves. `dir` is the scenario's scratch folder (known once its first step ran).
+void addRecentSteps(std::vector<SelfTestStep>& steps, SelfTest& test,
+                    std::function<std::filesystem::path()> dir) {
+    MainFrame& frame = test.frame();
+    App& app = test.app();
+    struct State {
+        std::filesystem::path fileA;
+        std::filesystem::path fileB;
+        std::filesystem::path fileNoSize;
+        std::filesystem::path fileFmtOnly;
+        std::string uriS = "synthetic:gradient?fmt=gray&size=16x16&frames=4";
+        std::string uriS2 = "synthetic:gradient?fmt=gray&size=16x8&frames=4";
+        std::string uriS3 = "synthetic:gradient?fmt=gray&size=8x8&frames=4";
+        std::vector<std::string> entriesBefore;  // the list at the step's start
+        std::string textBefore;                  // the config file's text at the step's start
+        std::string keptText;                    // the valid file R10 replaced, written back by R12
+        std::string compactText;                 // R13: the file as its compact JSON
+        std::uint64_t dialogs0 = 0;
+        std::uint64_t logNext = 0;
+        std::size_t index = 0;  // R12, R14: the entry's place in the list
+        bool messageRan = false;
+        bool formatHookRan = false;
+        bool removed = false;         // R18: fileA was deleted
+        std::error_code removeError;  // R18: the delete's error
+    };
+    auto st = std::make_shared<State>();
+    // The list, the file's text, the dialog count and the log at the step's start.
+    auto remember = [&frame, &app, st] {
+        st->entriesBefore = app.recent().entries();
+        const std::optional<FileRecent> file = fileRecent(app);
+        st->textBefore = file ? file->text : std::string();
+        st->dialogs0 = frame.formatDialogsShown();
+        st->logNext = logNext(app);
+    };
+    // The list and the file's text are as at the step's start.
+    auto unchanged = [&app, st](std::string& seen) {
+        const std::optional<FileRecent> file = fileRecent(app);
+        const bool same_list = app.recent().entries() == st->entriesBefore;
+        const bool same_file = file && file->text == st->textBefore;
+        seen += std::format(", list {} (unchanged {}), file unchanged {}",
+                            entriesText(app.recent().entries()), same_list, same_file);
+        return same_list && same_file;
+    };
+    auto top_is = [&app](const std::string& entry) {
+        const std::vector<std::string>& entries = app.recent().entries();
+        return !entries.empty() && entries[0] == entry;
+    };
+    // A format hook: yuv420p 64x48, OK.
+    auto set_64x48 = [st] {
+        st->formatHookRan = false;
+        dialogHooks().format = [st](FormatDialog& dialog) {
+            FormatChoice choice = dialog.choice();
+            choice.format = "yuv420p";
+            choice.width = 64;
+            choice.height = 48;
+            dialog.setChoice(choice);
+            st->formatHookRan = true;
+        };
+    };
+    // The open the step started showed its stream: a "stream 0: " line naming `name` since the
+    // step's start (onStreamsChanged logs it before it records the entry).
+    auto stream_logged = [&app, st](std::string_view name) {
+        const std::string logged = loggedSince(app, st->logNext);
+        std::size_t at = 0;
+        while ((at = logged.find("stream 0: ", at)) != std::string::npos) {
+            const std::size_t end = logged.find('\n', at);
+            if (logged.substr(at, end == std::string::npos ? end : end - at).contains(name)) {
+                return true;
+            }
+            at += 1;
+        }
+        return false;
+    };
+
+    // R1: the earlier opens of the scenario (the command line, drops, Finder) are listed.
+    steps.push_back(step(
+        "Open Recent lists the earlier opens",
+        [st, dir = std::move(dir)] {
+            const std::filesystem::path folder = dir();
+            st->fileA = folder / dvv::media::pathFromUtf8("recent & \xC3\xBC_64x48_yuv420p.yuv");
+            st->fileB = folder / "recent_second_64x48_yuv420p.yuv";
+            st->fileNoSize = folder / "recent_nosize.yuv";
+            st->fileFmtOnly = folder / "recent_fmtonly.yuv";
+            for (const std::filesystem::path* file :
+                 {&st->fileA, &st->fileB, &st->fileNoSize, &st->fileFmtOnly}) {
+                writeFile(*file, std::size_t{64} * 48 * 3 / 2 * 2, '\x80');  // 2 frames
+            }
+        },
+        [&frame, &app](std::string& seen) {
+            const wxMenuItem* item = frame.recentMenuItem();
+            wxMenu* file_menu = nullptr;
+            const wxMenuBar* bar = frame.GetMenuBar();
+            if (item == nullptr || bar == nullptr ||
+                bar->FindItem(menuId(Command::OpenUri), &file_menu) == nullptr ||
+                file_menu == nullptr) {
+                seen = "no Open Recent or no Open URI... item";
+                return false;
+            }
+            std::size_t pos = 0;
+            (void)file_menu->FindChildItem(menuId(Command::OpenUri), &pos);
+            const bool after_open_uri = file_menu->FindItemByPosition(pos + 1) == item;
+            const wxString label = item->GetItemLabelText();
+            const bool listed = recentMatches(frame, app, seen);
+            seen += std::format(", label '{}', right after Open URI... {}", label.utf8_string(),
+                                after_open_uri);
+            return label == "Open Recent" && after_open_uri && !app.recent().entries().empty() &&
+                   listed;
+        }));
+    // R2a: a drop opens its first file only (D21), so only that one is recorded.
+    steps.push_back(step(
+        "a drop of two files records the first",
+        [&frame, st] { dropFiles(frame.viewport(), {st->fileA, st->fileB}); },
+        [&frame, &app, st, top_is](std::string& seen) {
+            const bool listed = recentMatches(frame, app, seen);
+            const wxMenuItem* item = frame.recentMenuItem();
+            const wxMenu* submenu = item != nullptr ? item->GetSubMenu() : nullptr;
+            const std::string first =
+                submenu != nullptr && submenu->GetMenuItemCount() > 0
+                    ? submenu->FindItemByPosition(0)->GetItemLabelText().utf8_string()
+                    : std::string();
+            const bool label_right = std::ranges::count(first, '&') == 1 &&
+                                     first.ends_with("recent & \xC3\xBC_64x48_yuv420p.yuv");
+            seen += std::format(", yuv420p 64x48 {}, first label '{}'",
+                                streamIs(frame, 64, 48, "yuv420p"), first);
+            return streamIs(frame, 64, 48, "yuv420p") && top_is(recentEntryOfPath(st->fileA)) &&
+                   !app.recent().contains(recentEntryOfPath(st->fileB)) && listed && label_right;
+        }));
+    // R2b: Open URI... records the text as typed.
+    steps.push_back(step(
+        "Open URI records the typed text on top",
+        [&frame, st] {
+            dialogHooks().uri = [st](wxTextEntryDialog& dialog) {
+                dialog.SetValue(wxString::FromUTF8(st->uriS));
+            };
+            frame.execute(Command::OpenUri);
+        },
+        [&frame, &app, st](std::string& seen) {
+            const bool listed = recentMatches(frame, app, seen);
+            const std::vector<std::string>& entries = app.recent().entries();
+            seen += std::format(", gray 16x16 {}", streamIs(frame, 16, 16, "gray"));
+            return streamIs(frame, 16, 16, "gray") && entries.size() >= 2 &&
+                   entries[0] == st->uriS && entries[1] == recentEntryOfPath(st->fileA) && listed;
+        }));
+    // R3: the second entry through its menu item moves to the top; nothing is duplicated.
+    steps.push_back(step(
+        "Open Recent's second entry reopens it on top",
+        [&frame, st, remember] {
+            remember();
+            sendMenu(frame, RECENT_ID_BASE + 1);
+        },
+        [&frame, &app, st](std::string& seen) {
+            const bool listed = recentMatches(frame, app, seen);
+            const std::vector<std::string>& entries = app.recent().entries();
+            const std::string a = recentEntryOfPath(st->fileA);
+            const auto count_a = std::ranges::count(entries, a);
+            seen += std::format(", yuv420p 64x48 {}, entry A {} times, {} entries ({} before)",
+                                streamIs(frame, 64, 48, "yuv420p"), count_a, entries.size(),
+                                st->entriesBefore.size());
+            return streamIs(frame, 64, 48, "yuv420p") && entries.size() >= 2 && entries[0] == a &&
+                   entries[1] == st->uriS && count_a == 1 &&
+                   entries.size() == st->entriesBefore.size() && listed;
+        }));
+    // R4 (focus 1): the later of two opens is the pending one; the earlier records nothing.
+    steps.push_back(step(
+        "two opens back to back record the second only",
+        [&frame, st] {
+            frame.openFiles({st->fileB});
+            frame.openUri(0, st->uriS2, std::nullopt, st->uriS2);
+        },
+        [&frame, &app, st, top_is](std::string& seen) {
+            const bool listed = recentMatches(frame, app, seen);
+            seen += std::format(", gray 16x8 {}", streamIs(frame, 16, 8, "gray"));
+            return streamIs(frame, 16, 8, "gray") && top_is(st->uriS2) &&
+                   !app.recent().contains(recentEntryOfPath(st->fileB)) && listed;
+        }));
+    // R5: an open error records nothing.
+    steps.push_back(step(
+        "a failed open adds nothing",
+        [&frame, st, remember] {
+            remember();
+            dialogHooks().uri = [st](wxTextEntryDialog& dialog) {
+                dialog.SetValue(wxString::FromUTF8(dvv::media::utf8FromPath(
+                    st->fileA.parent_path() / "recent_missing_64x48_yuv420p.yuv")));
+            };
+            frame.execute(Command::OpenUri);
+        },
+        [&frame, unchanged](std::string& seen) {
+            const bool shown = frame.playerPanel().infoBar().IsShown();
+            const bool named = frame.lastMessage().Contains("recent_missing");
+            seen = std::format("{} streams, infobar shown {}, message '{}'", frame.streams().size(),
+                               shown, frame.lastMessage().utf8_string());
+            return frame.streams().empty() && shown && named && unchanged(seen);
+        }));
+    // R6: a cancelled Format dialog (no hook) records nothing.
+    steps.push_back(step(
+        "a cancelled Format dialog adds nothing",
+        [&frame, st, remember] {
+            remember();
+            dropFiles(frame.viewport(), {st->fileNoSize});
+        },
+        [&frame, &app, st, unchanged](std::string& seen) {
+            const std::string logged = loggedSince(app, st->logNext);
+            bool cancelled = false;
+            for (std::size_t at = 0; at < logged.size();) {
+                const std::size_t end = std::min(logged.find('\n', at), logged.size());
+                const std::string_view line = std::string_view(logged).substr(at, end - at);
+                cancelled = cancelled || (line.contains("open of ") &&
+                                          line.contains("recent_nosize.yuv cancelled"));
+                at = end + 1;
+            }
+            seen = std::format("dialogs {}, cancel logged {}, {} streams",
+                               frame.formatDialogsShown() - st->dialogs0, cancelled,
+                               frame.streams().size());
+            return frame.formatDialogsShown() > st->dialogs0 && cancelled &&
+                   frame.streams().empty() && unchanged(seen);
+        }));
+    // R7: the dialog's choice opens the file; the entry is the path the user opened.
+    steps.push_back(step(
+        "Format OK records the path, not the choice",
+        [&frame, st, set_64x48] {
+            set_64x48();
+            dropFiles(frame.viewport(), {st->fileNoSize});
+        },
+        [&frame, &app, st, top_is](std::string& seen) {
+            const bool listed = recentMatches(frame, app, seen);
+            const std::string uri =
+                frame.streams().size() == 1 ? frame.streams()[0].resolvedUri : std::string();
+            const std::string entry = recentEntryOfPath(st->fileNoSize);
+            seen += std::format(", hook {}, yuv420p 64x48 {}, URI '{}'", st->formatHookRan,
+                                streamIs(frame, 64, 48, "yuv420p"), uri);
+            return st->formatHookRan && streamIs(frame, 64, 48, "yuv420p") &&
+                   uri.contains("fmt=yuv420p") && top_is(entry) && !entry.contains('?') && listed;
+        }));
+    // R8 (focus 3): a raw file without a size fails to open; the infobar offers Format...
+    steps.push_back(step(
+        "an open error offers Format...",
+        [&frame, st, remember] {
+            remember();
+            dialogHooks().uri = [st](wxTextEntryDialog& dialog) {
+                dialog.SetValue(
+                    wxString::FromUTF8(dvv::media::utf8FromPath(st->fileFmtOnly) + "?fmt=yuv420p"));
+            };
+            frame.execute(Command::OpenUri);
+        },
+        [&frame, &app, st](std::string& seen) {
+            wxInfoBarGeneric& bar = frame.playerPanel().infoBar();
+            const bool shown = bar.IsShown();
+            const bool format = bar.HasButtonId(INFOBAR_FORMAT_ID);
+            const bool named = frame.lastMessage().Contains("recent_fmtonly");
+            const bool same_list = app.recent().entries() == st->entriesBefore;
+            seen = std::format(
+                "{} streams, infobar shown {} with Format... {}, message '{}', list "
+                "unchanged {}",
+                frame.streams().size(), shown, format, frame.lastMessage().utf8_string(),
+                same_list);
+            return frame.streams().empty() && shown && format && named && same_list;
+        }));
+    // R9: the infobar's Format... reopens with the choice; the entry is the text as typed.
+    steps.push_back(step(
+        "Format... OK records the typed text",
+        [&frame, st, remember, set_64x48] {
+            remember();
+            set_64x48();
+            clickInfobar(frame, INFOBAR_FORMAT_ID);
+        },
+        [&frame, &app, st, top_is](std::string& seen) {
+            const bool listed = recentMatches(frame, app, seen);
+            seen += std::format(", hook {}, yuv420p 64x48 {}", st->formatHookRan,
+                                streamIs(frame, 64, 48, "yuv420p"));
+            return st->formatHookRan && streamIs(frame, 64, 48, "yuv420p") &&
+                   top_is(dvv::media::utf8FromPath(st->fileFmtOnly) + "?fmt=yuv420p") && listed;
+        }));
+    // R10 (focus 4): a history save that fails logs one warning and shows no message.
+    steps.push_back(step(
+        "an invalid rawreel.json: the history save fails once, quietly",
+        [&frame, &app, st] {
+            const std::optional<FileRecent> file = fileRecent(app);
+            st->keptText = file ? file->text : std::string();
+            writeText(app.configPath(), "{ not json");
+            st->messageRan = false;
+            dialogHooks().message = [st](wxMessageDialog& /*dialog*/) { st->messageRan = true; };
+            st->logNext = logNext(app);
+            frame.openUri(0, st->uriS3, std::nullopt, st->uriS3);
+        },
+        [&frame, &app, st, top_is](std::string& seen) {
+            const std::optional<FileRecent> file = fileRecent(app);
+            const std::string logged = loggedSince(app, st->logNext);
+            std::size_t warnings = 0;
+            for (std::size_t at = logged.find("not saved"); at != std::string::npos;
+                 at = logged.find("not saved", at + 1)) {
+                ++warnings;
+            }
+            const bool still_bad = file && file->text == "{ not json";
+            seen = std::format(
+                "gray 8x8 {}, list {}, file still bad {}, {} 'not saved' lines, "
+                "message hook ran {}",
+                streamIs(frame, 8, 8, "gray"), entriesText(app.recent().entries()), still_bad,
+                warnings, st->messageRan);
+            return streamIs(frame, 8, 8, "gray") && top_is(st->uriS3) && still_bad &&
+                   warnings == 1 && !st->messageRan;
+        }));
+    // R11: the run's second history save failure logs nothing.
+    steps.push_back(step(
+        "a second failed history save logs nothing",
+        [&frame, &app, st] {
+            st->logNext = logNext(app);
+            frame.openUri(0, st->uriS2, std::nullopt, st->uriS2);
+        },
+        [&frame, &app, st, top_is](std::string& seen) {
+            const std::optional<FileRecent> file = fileRecent(app);
+            const bool logged = loggedSince(app, st->logNext).contains("not saved");
+            const bool still_bad = file && file->text == "{ not json";
+            seen = std::format(
+                "gray 16x8 {}, list {}, file still bad {}, 'not saved' logged {}, "
+                "message hook ran {}",
+                streamIs(frame, 16, 8, "gray"), entriesText(app.recent().entries()), still_bad,
+                logged, st->messageRan);
+            if (!(streamIs(frame, 16, 8, "gray") && top_is(st->uriS2) && still_bad && !logged &&
+                  !st->messageRan)) {
+                return false;
+            }
+            dialogHooks().message = {};
+            return true;
+        }));
+    // R12: the next save writes the whole list into the valid file again; a raw file without a
+    // size asks for its format again.
+    steps.push_back(step(
+        "a valid file again; a raw file without a size asks again",
+        [&frame, &app, st, remember, set_64x48] {
+            writeText(app.configPath(), st->keptText);
+            remember();
+            set_64x48();
+            const std::vector<std::string>& entries = app.recent().entries();
+            st->index = static_cast<std::size_t>(
+                std::ranges::find(entries, recentEntryOfPath(st->fileNoSize)) - entries.begin());
+            if (st->index < entries.size()) {
+                sendMenu(frame, RECENT_ID_BASE + static_cast<int>(st->index));
+            }
+        },
+        [&frame, &app, st, top_is](std::string& seen) {
+            const bool listed = recentMatches(frame, app, seen);
+            const std::optional<FileRecent> file = fileRecent(app);
+            const dvv::Result<Config> now = parseConfig(file ? file->text : std::string());
+            const dvv::Result<Config> kept = parseConfig(st->keptText);
+            const bool folder_kept = now && kept && !kept->log.file.folder.empty() &&
+                                     now->log.file.folder == kept->log.file.folder;
+            seen +=
+                std::format(", entry index {}, dialogs {}, yuv420p 64x48 {}, log folder kept {}",
+                            st->index, frame.formatDialogsShown() - st->dialogs0,
+                            streamIs(frame, 64, 48, "yuv420p"), folder_kept);
+            return frame.formatDialogsShown() == st->dialogs0 + 1 &&
+                   streamIs(frame, 64, 48, "yuv420p") &&
+                   top_is(recentEntryOfPath(st->fileNoSize)) && listed && folder_kept;
+        }));
+    // R13 (focus 5): reopening the top entry leaves the list as it is and writes nothing.
+    steps.push_back(step(
+        "reopening the top entry does not rewrite rawreel.json",
+        [&frame, &app, st, remember, set_64x48] {
+            const std::optional<FileRecent> file = fileRecent(app);
+            const dvv::Result<dvv::json::Value> parsed =
+                dvv::json::parse(file ? file->text : std::string());
+            st->compactText = parsed ? dvv::json::dump(*parsed) : std::string();
+            writeText(app.configPath(), st->compactText);
+            remember();
+            set_64x48();
+            sendMenu(frame, RECENT_ID_BASE);
+        },
+        [&frame, &app, st, top_is, stream_logged](std::string& seen) {
+            const std::optional<FileRecent> file = fileRecent(app);
+            const bool shown = stream_logged("recent_nosize.yuv");
+            const bool same_file =
+                !st->compactText.empty() && file && file->text == st->compactText;
+            const std::size_t count = app.recent().entries().size();
+            seen = std::format(
+                "dialogs {}, the stream shown {}, yuv420p 64x48 {}, list {} ({} "
+                "before), file unchanged {}",
+                frame.formatDialogsShown() - st->dialogs0, shown,
+                streamIs(frame, 64, 48, "yuv420p"), entriesText(app.recent().entries()),
+                st->entriesBefore.size(), same_file);
+            return frame.formatDialogsShown() == st->dialogs0 + 1 && shown &&
+                   streamIs(frame, 64, 48, "yuv420p") &&
+                   top_is(recentEntryOfPath(st->fileNoSize)) && count == st->entriesBefore.size() &&
+                   same_file;
+        }));
+    // R14: a named file's entry, chosen from the menu, opens without a dialog and goes on top.
+    steps.push_back(step(
+        "Open Recent of a named file puts it on top",
+        [&frame, &app, st, remember] {
+            remember();
+            const std::vector<std::string>& entries = app.recent().entries();
+            st->index = static_cast<std::size_t>(
+                std::ranges::find(entries, recentEntryOfPath(st->fileA)) - entries.begin());
+            if (st->index < entries.size()) {
+                sendMenu(frame, RECENT_ID_BASE + static_cast<int>(st->index));
+            }
+        },
+        [&frame, &app, st, top_is](std::string& seen) {
+            const bool listed = recentMatches(frame, app, seen);
+            seen += std::format(", entry index {}, yuv420p 64x48 {}", st->index,
+                                streamIs(frame, 64, 48, "yuv420p"));
+            return streamIs(frame, 64, 48, "yuv420p") && top_is(recentEntryOfPath(st->fileA)) &&
+                   listed;
+        }));
+    // R15, R16 (spec §9): the size from Settings; the list keeps only fileA, in the menu and in
+    // the file, which holds the size.
+    auto settings = std::make_shared<SettingsState>();
+    auto only_a_at = [&frame, &app, st, settings](std::size_t size, std::string& seen) {
+        const bool listed = recentMatches(frame, app, seen);
+        const std::vector<std::string> only_a{recentEntryOfPath(st->fileA)};
+        const wxMenuItem* item = frame.recentMenuItem();
+        const std::size_t items = item != nullptr && item->GetSubMenu() != nullptr
+                                      ? item->GetSubMenu()->GetMenuItemCount()
+                                      : 0;
+        const std::optional<FileRecent> file = fileRecent(app);
+        const RecentConfig saved = parseRecent(file ? file->text : std::string());
+        seen += std::format(", hook ran {}, capacity {}, {} submenu items, file size {} list {}",
+                            settings->hookRan, app.recent().capacity(), items, saved.size,
+                            entriesText(saved.entries));
+        return settings->hookRan && app.recent().capacity() == size &&
+               app.recent().entries() == only_a && items == 1 && file && saved.size == size &&
+               saved.entries == only_a && listed;
+    };
+    steps.push_back(step(
+        "Settings: 1 item cuts the menu and the file",
+        [test = &test, settings] {
+            runSettings(test, settings,
+                        [](SettingsWindow& window) { window.filesPage().setRecentSize(1); });
+        },
+        [only_a_at](std::string& seen) { return only_a_at(1, seen); }));
+    steps.push_back(step(
+        "Settings: 2 items bring nothing back",
+        [test = &test, settings] {
+            runSettings(test, settings,
+                        [](SettingsWindow& window) { window.filesPage().setRecentSize(2); });
+        },
+        [only_a_at](std::string& seen) { return only_a_at(2, seen); }));
+    // R17: no stream and no request task of the old stream: the snapshot with streams 0 is taken
+    // after the close, so inflight 0 in it means every holder of fileA's source has let go (the
+    // delete of R18 needs it on Windows). Settings goes first: on macOS Close would close it.
+    steps.push_back(step(
+        "close the stream and release the file before the delete",
+        [&frame] {
+            if (SettingsWindow* window = frame.settingsWindow(); window != nullptr) {
+                window->dismiss();
+            }
+            frame.execute(Command::CloseStreams);
+        },
+        [&frame](std::string& seen) {
+            const SettingsWindow* window = frame.settingsWindow();
+            const bool hidden = window == nullptr || !window->shown();
+            const SessionStatus status = frame.session().status();
+            seen = std::format("Settings hidden {}, {} streams, status streams {} inflight {}",
+                               hidden, frame.streams().size(), status.streams, status.inflight);
+            return hidden && frame.streams().empty() && status.streams == 0 && status.inflight == 0;
+        }));
+    // R18 (spec §6): the open of a deleted listed file fails; the check removes its entry after
+    // the open's warning, and the empty submenu's item is disabled.
+    steps.push_back(step(
+        "a deleted listed file leaves Open Recent",
+        [&frame, &app, st] {
+            st->removed = std::filesystem::remove(st->fileA, st->removeError);
+            st->logNext = logNext(app);
+            sendMenu(frame, RECENT_ID_BASE);
+        },
+        [&frame, &app, st](std::string& seen) {
+            const std::string line = std::format("\"{}\" removed from Open Recent: missing",
+                                                 recentEntryOfPath(st->fileA));
+            bool warned = false;
+            bool removal_logged = false;
+            for (const LogEntry& logged : app.logStore()->entries()) {
+                if (logged.sequence < st->logNext) {
+                    continue;
+                }
+                if (logged.level == dvv::LogLevel::Warn &&
+                    logged.message.contains("could not be opened")) {
+                    warned = true;
+                } else if (warned && logged.level == dvv::LogLevel::Info &&
+                           logged.message == line) {
+                    removal_logged = true;
+                }
+            }
+            const wxMenuItem* item = frame.recentMenuItem();
+            const std::size_t items = item != nullptr && item->GetSubMenu() != nullptr
+                                          ? item->GetSubMenu()->GetMenuItemCount()
+                                          : 0;
+            const bool enabled = item != nullptr && item->IsEnabled();
+            const std::optional<FileRecent> file = fileRecent(app);
+            const bool file_empty = file && file->entries.empty();
+            seen = std::format(
+                "deleted {} ({}), list {}, {} submenu items, enabled {}, file {}, open warned {}, "
+                "removal logged {}",
+                st->removed, st->removeError ? st->removeError.message() : std::string("none"),
+                entriesText(app.recent().entries()), items, enabled,
+                file ? entriesText(file->entries) : std::string("unreadable"), warned,
+                removal_logged);
+            return st->removed && !st->removeError && app.recent().entries().empty() &&
+                   item != nullptr && items == 0 && !enabled && file_empty && warned &&
+                   removal_logged;
+        }));
+}
+
 }  // namespace
 
 std::vector<SelfTestStep> playerScenario(SelfTest& test) {
@@ -7072,6 +7650,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             seen = std::format("idle {}, streams {}", idle, frame.streams().size());
             return idle && frame.streams().empty();
         }));
+    addRecentSteps(steps, test, [st] { return st->dir; });
     steps.push_back(step(
         "close stream and clean up", [&frame] { frame.execute(Command::CloseStreams); },
         [&frame, st](std::string& seen) {

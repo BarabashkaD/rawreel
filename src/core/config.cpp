@@ -239,7 +239,7 @@ namespace {
 
 // `named`: the file --config names, which must exist (a missing one is a warning).
 LoadedConfig load(const std::filesystem::path& path, bool named) {
-    LoadedConfig loaded{.config = {}, .path = path, .found = false, .warning = {}};
+    LoadedConfig loaded{.config = {}, .path = path, .found = false, .warning = {}, .text = {}};
     const std::string shown = dvv::media::utf8FromPath(path);
     std::error_code error;
     const bool exists = std::filesystem::exists(path, error);
@@ -263,6 +263,7 @@ LoadedConfig load(const std::filesystem::path& path, bool named) {
         return ignored(std::move(loaded), config.error().message);
     }
     loaded.config = *config;
+    loaded.text = std::move(*text);
     const Config& c = loaded.config;
     DVV_LOG_INFO(
         "config '{}': io.fileReads {}, gui.showLogPane {}, log.file {} '{}', log.system {}, "
@@ -293,7 +294,7 @@ LoadedConfig loadConfig(const std::optional<std::string>& config_utf8) {
     if (!path) {
         DVV_LOG_WARN("no config file: {}; using the defaults", path.error().describe());
         return LoadedConfig{
-            .config = {}, .path = {}, .found = false, .warning = path.error().message};
+            .config = {}, .path = {}, .found = false, .warning = path.error().message, .text = {}};
     }
     return loadConfig(*path);
 }

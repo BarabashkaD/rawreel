@@ -31,6 +31,7 @@
 #include "core/log_file_switch.h"
 #include "core/log_level.h"
 #include "core/log_store.h"
+#include "core/recent.h"
 #include "core/settings_claim.h"
 #include "core/timer.h"
 #include "dvv/base/environment.h"
@@ -301,9 +302,10 @@ bool App::OnInit() {
     frame->viewport().CallAfter([viewport = &frame->viewport()] { viewport->markReady(); });
 
     // 9. The stream of the command line, at frame 0, through the path of File -> Open URI... (its
-    // open error carries the FFmpeg status hint for a lavfi: URI, design v2 §4.6).
+    // open error carries the FFmpeg status hint for a lavfi: URI, design v2 §4.6), and its Open
+    // Recent entry (Open Recent spec §4).
     if (the_arguments.uri) {
-        frame->openUri(0, *the_arguments.uri, std::nullopt);
+        frame->openUri(0, *the_arguments.uri, std::nullopt, typedRecentEntry(*the_arguments.uri));
     }
 
     // 10. A scenario without a script yet finishes with 6 (SelfTest::start).
@@ -321,15 +323,21 @@ void App::MacOpenFiles(const wxArrayString& names) {
         files.push_back(dvv::media::pathFromUtf8(name.utf8_string()));
     }
     DVV_LOG_INFO("{} files opened from Finder or the Dock", files.size());
-    for (wxWindow* window : wxTopLevelWindows) {
-        if (auto* frame = dynamic_cast<MainFrame*>(window);
-            frame != nullptr && !frame->IsBeingDeleted()) {
-            frame->openFiles(std::move(files));  // returns at once while the frame closes
-            return;
-        }
+    if (MainFrame* frame = mainFrame(); frame != nullptr) {
+        frame->openFiles(std::move(files));  // returns at once while the frame closes
     }
 }
 #endif
+
+MainFrame* App::mainFrame() const {
+    for (wxWindow* window : wxTopLevelWindows) {
+        if (auto* frame = dynamic_cast<MainFrame*>(window);
+            frame != nullptr && !frame->IsBeingDeleted()) {
+            return frame;
+        }
+    }
+    return nullptr;
+}
 
 void App::setAppearance() {
     const AppearanceResult result = SetAppearance(wxAppearance(the_arguments.appearance));
@@ -359,6 +367,18 @@ bool App::startLogAndConfig() {
     LoadedConfig loaded = loadConfig(the_arguments.config);
     config_ = std::move(loaded.config);
     config_path_ = std::move(loaded.path);
+    // Open Recent spec §7, §8: the history keys of the text the config was read from; nothing is
+    // written at start.
+    if (!loaded.text.empty()) {
+        const std::string shown = dvv::media::utf8FromPath(config_path_);
+        RecentConfig history = parseRecent(loaded.text);
+        for (const std::string& warning : history.warnings) {
+            DVV_LOG_WARN("config '{}': {}", shown, warning);
+        }
+        DVV_LOG_INFO("config '{}': gui.recentSize {}, gui.recent {} entries", shown, history.size,
+                     history.entries.size());
+        recent_ = RecentList(history.size, std::move(history.entries));
+    }
     // The claim before the first log file: only the settings owner appends to the newest log
     // file (addendum §5.1, D10).
     if (!config_path_.empty()) {
@@ -495,6 +515,23 @@ bool App::saveSettings(std::span<const ConfigValue> values, bool closing) {
                                wxOK | wxICON_ERROR);
         dialog.SetExtendedMessage(wxString::FromUTF8(text));
         (void)showModal(dialog);
+    }
+    return false;
+}
+
+bool App::saveHistory(std::span<const ConfigValue> values) {
+    if (!ownsSettings()) {
+        return false;  // spec §7: only the settings owner saves
+    }
+    const dvv::Result<void> saved = saveConfigValues(config_path_, values);
+    if (saved) {
+        return true;
+    }
+    // Spec §7: never a dialog; one warning on the run's first history failure only. The list
+    // stays in effect for the run.
+    if (!std::exchange(history_save_failed_, true)) {
+        DVV_LOG_WARN("config '{}' not saved: {}", dvv::media::utf8FromPath(config_path_),
+                     saved.error().message);
     }
     return false;
 }

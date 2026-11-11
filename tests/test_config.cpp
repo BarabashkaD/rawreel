@@ -245,12 +245,29 @@ TEST_SUITE("core") {
         CHECK(loaded.found);
         CHECK(loaded.config.io.fileReads == FileReadMode::Auto);
         CHECK_FALSE(loaded.warning.empty());
+        CHECK(loaded.text.empty());
         CHECK(contains(loaded.warning, reason));
         const std::vector<std::string> lines = log.lines();
         REQUIRE(lines.size() == 1);
         CHECK(contains(lines[0], "WARN"));
         CHECK(contains(lines[0], "rawreel.json' ignored: "));
         CHECK(contains(lines[0], "using the defaults"));
+    }
+
+    TEST_CASE("config: the history keys are not parseConfig's") {
+        const TemporaryDirectory directory("rawreel-config");
+        const fs::path path = directory.path() / "rawreel.json";
+        const std::string text =
+            R"({"io":{"fileReads":"buffered"},"gui":{"showLogPane":true,"recentSize":"x","recent":3}})";
+        writeText(path, text);
+        const WarningLog log;
+        const LoadedConfig loaded = rawreel::loadConfig(path);
+        CHECK(loaded.found);
+        CHECK(loaded.warning.empty());
+        CHECK(loaded.config.io.fileReads == FileReadMode::Buffered);
+        CHECK(loaded.config.gui.showLogPane);
+        CHECK(loaded.text == text);
+        CHECK(log.lines().empty());
     }
 
     // --config <file> (UTF-8) replaces the file next to the executable.
