@@ -1,9 +1,9 @@
 # macOS on Apple Silicon: design
 
-Status: implemented on the branch `macos-apple-silicon` (rawreel 0.10.0, plan
-`docs/superpowers/plans/2026-11-07-macos-apple-silicon.md`); done pending the `release.yml` dry run
-and the user's check of its `.dmg` (plan Tasks 21 and 22). Not released. Date 2026-11-07 (written
-as a draft, builder check done and the user's answers applied, before the plan). Inputs: rawreel `main` at 9318881 (0.9.0 plus the
+Status: implemented on the branch `macos-apple-silicon` (rawreel 0.10.0, from its implementation
+plan); done pending the `release.yml` dry run and the user's check of its `.dmg` (plan Tasks 21
+and 22). Not released. Date 2026-11-07 (written as a draft, builder check done and the user's
+answers applied, before the plan). Inputs: rawreel `main` at 4b6215e (0.9.0 plus the
 dvv-build 0.1.1 / dvv-components 0.1.2 bump), the dvv libraries at their pins (dvv-build v0.1.1,
 dvv-base v0.1.0, dvv-registry v0.1.0, dvv-platform v0.1.0, dvv-gpu v0.1.0, dvv-media v0.1.0,
 dvv-components v0.1.2), the rawreel spec (`2026-10-19-rawreel-design.md`, which lists macOS with

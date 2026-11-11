@@ -3,7 +3,7 @@
 Status: revision 2, 2026-11-10, for review.
 - It folds in a builder check and an optimistic and a pessimistic review; their findings are
   resolved in the text, and the calls are listed in §11.
-- It replaces the plan draft `docs/superpowers/plans/2026-11-10-log-pane-hide.md`, which covered
+- It replaces an earlier plan draft for hiding the Log pane, which covered
   only §2 and §3; that plan is rewritten from this design.
 
 ## 1. Intent
