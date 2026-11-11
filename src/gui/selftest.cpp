@@ -40,6 +40,7 @@
 #include <wx/clipbrd.h>
 #include <wx/collpane.h>
 #include <wx/dirdlg.h>
+#include <wx/display.h>
 #include <wx/filedlg.h>
 #include <wx/filename.h>
 #include <wx/hyperlink.h>
@@ -52,6 +53,7 @@
 #include "core/commands.h"
 #include "core/config.h"
 #include "core/format_choice.h"
+#include "core/info_text.h"
 #include "core/layout.h"
 #include "core/log_file_switch.h"
 #include "core/log_level.h"
@@ -62,6 +64,7 @@
 #include "core/session.h"
 #include "core/settings_claim.h"
 #include "core/startup.h"
+#include "core/stream_name.h"
 #include "core/timeline.h"
 #include "core/version_text.h"
 #include "core/view.h"
@@ -84,7 +87,7 @@
 #include "gui/drop_target.h"
 #include "gui/format_dialog.h"
 #include "gui/icons.h"
-#include "gui/info_panel.h"
+#include "gui/info_window.h"
 #include "gui/log_list.h"
 #include "gui/log_panel.h"
 #include "gui/main_frame.h"
@@ -350,6 +353,7 @@ constexpr std::string_view REFUSED_STREAM = "synthetic:gradient?w=64&h=48&fmt=yu
 
 struct SmokeState {
     std::uint64_t startFrames = 0;
+    wxSize logBestSize;  // moved pane: the Log pane's BestSize before it docked on the right
     std::uint64_t startSwapchains = 0;
     dvv::platform::PixelSize previousSize{};
     int ticks = 0;
@@ -538,20 +542,24 @@ SelfTestStep shrinkStep(SelfTest* test, const SharedState& state) {
             .passed = std::move(passed)};
 }
 
-// A pane moved at the minimum: Info docked as a second bottom row raises the
-// minimum client height, the frame grows to it and the viewport keeps 320x240 DIP. `back` docks
-// Info on the right again, as the later steps expect.
+// A pane moved at the minimum: the Log pane shown and docked on the right (the user can dock it on
+// any side) raises the minimum client width, the frame grows to it and the viewport keeps 320x240
+// DIP. `back` docks it at the bottom again and hides it, as the later steps expect.
 SelfTestStep movedPaneStep(SelfTest* test, const SharedState& state, bool back) {
     auto start = [test, state, back] {
         markStart(test->frame().viewport(), *state);
         MainFrame& frame = test->frame();
-        wxAuiPaneInfo& info = frame.aui().GetPane("info");
+        wxAuiPaneInfo& log = frame.aui().GetPane("log");
         if (back) {
-            info.Right().Row(0);
+            log.Bottom().Row(0);
+            log.BestSize(state->logBestSize);  // the height it had at the bottom
+            frame.setLogShown(false);          // updates the layout
         } else {
-            info.Bottom().Row(1);
+            state->logBestSize = log.best_size;
+            log.Right().Row(0);
+            frame.setLogShown(true);  // updates the layout
+            frame.aui().Update();     // when it was shown already
         }
-        frame.aui().Update();
         const wxSize around = frame.GetClientSize() - frame.viewport().GetClientSize();
         frame.SetClientSize(wxSize(100, 80) + around);
     };
@@ -563,15 +571,17 @@ SelfTestStep movedPaneStep(SelfTest* test, const SharedState& state, bool back) 
         const wxSize least = frame.FromDIP(wxSize(MIN_VIEWPORT_DIP.width, MIN_VIEWPORT_DIP.height));
         const wxSize panel = frame.playerPanel().GetClientSize();
         const wxSize centre = frame.playerPanel().minimumSize();
-        const int direction = frame.aui().GetPane("info").dock_direction;
-        const bool docked = direction == (back ? wxAUI_DOCK_RIGHT : wxAUI_DOCK_BOTTOM);
+        const wxAuiPaneInfo& log = frame.aui().GetPane("log");
+        const int direction = log.dock_direction;
+        const bool docked = direction == (back ? wxAUI_DOCK_BOTTOM : wxAUI_DOCK_RIGHT) &&
+                            log.IsShown() == !back && frame.logShown() == !back;
         // The panel holds the infobar's reserve too, so the viewport alone would pass without the
         // fix while no message is shown. No tolerance: the frame's minimum carries a 2 DIP margin
         // for wxAUI's rounding.
         const bool minimal = std::cmp_greater_equal(now.width, least.x) &&
                              std::cmp_greater_equal(now.height, least.y) && panel.x >= centre.x &&
                              panel.y >= centre.y;
-        seen = std::format("{}; info dock {}, player panel {}x{}, its minimum {}x{}",
+        seen = std::format("{}; log dock {}, player panel {}x{}, its minimum {}x{}",
                            describe(viewport, *state), direction, panel.x, panel.y, centre.x,
                            centre.y);
         return stats && docked && minimal && stats->presentedExtent == now;
@@ -629,19 +639,24 @@ SelfTestStep restoreStep(SelfTest* test, const SharedState& state) {
     return {.name = "restore", .start = std::move(start), .passed = std::move(passed)};
 }
 
+// Opens SMOKE_STREAM in slot 0 through the Session (no dialog).
+void openSmokeStream(SelfTest* test) {
+    Session* session = test->app().session();
+    dvv::Result<dvv::Uri> uri = dvv::parseUri(SMOKE_STREAM);
+    if (session == nullptr || !uri) {
+        DVV_LOG_ERROR("rawreel-gui --selftest: cannot open {}", SMOKE_STREAM);
+        return;
+    }
+    session->open(0, dvv::media::SourceRequest{.uri = std::move(*uri), .hint = {}});
+}
+
 // 6. One stream: its frame 0 is shown for the current epoch, and a frame is presented after the
 // snapshot first showed it.
 SelfTestStep openStreamStep(SelfTest* test, const SharedState& state) {
     auto start = [test, state] {
         markStart(test->frame().viewport(), *state);
         state->framesWhenShown.reset();
-        Session* session = test->app().session();
-        dvv::Result<dvv::Uri> uri = dvv::parseUri(SMOKE_STREAM);
-        if (session == nullptr || !uri) {
-            DVV_LOG_ERROR("rawreel-gui --selftest: cannot open {}", SMOKE_STREAM);
-            return;
-        }
-        session->open(0, dvv::media::SourceRequest{.uri = std::move(*uri), .hint = {}});
+        openSmokeStream(test);
     };
     auto passed = [test, state](std::string& seen) {
         const Viewport& viewport = test->frame().viewport();
@@ -672,6 +687,92 @@ SelfTestStep openStreamStep(SelfTest* test, const SharedState& state) {
         return stats->framesPresented > *state->framesWhenShown;
     };
     return {.name = "open stream", .start = std::move(start), .passed = std::move(passed)};
+}
+
+// The tooltip the status bar's motion handler sets with the pointer at the centre of `field`
+// (spec §8: the same helpers, not the OS tooltip window). "<no field>" when the bar has no such
+// field.
+wxString fieldTooltip(const MainFrame& frame, std::size_t field) {
+    const wxStatusBar* const bar = frame.GetStatusBar();
+    wxRect rect;
+    if (bar == nullptr || !bar->GetFieldRect(static_cast<int>(field), rect)) {
+        return "<no field>";
+    }
+    const wxPoint centre(rect.x + (rect.width / 2), rect.y + (rect.height / 2));
+    return frame.statusTooltipFor(frame.statusFieldAt(centre));
+}
+
+// Spec §5, §7, §8: after the smoke stream opened, the title and the file field show its name and
+// the file field's tooltip is the stream's full path (a non-file URI: the URI itself).
+SelfTestStep titleAndFileFieldStep(SelfTest* test) {
+    auto passed = [test](std::string& seen) {
+        const MainFrame& frame = test->frame();
+        // The resolved URI: the Session adds the provider's keys to SMOKE_STREAM.
+        const std::string uri =
+            frame.streams().size() == 1 ? frame.streams().front().resolvedUri : std::string();
+        wxRect rect;
+        if (const wxStatusBar* const bar = frame.GetStatusBar(); bar != nullptr) {
+            bar->GetFieldRect(static_cast<int>(MainFrame::FILE_FIELD), rect);
+        }
+        const wxString name = wxString::FromUTF8(streamName(uri));
+        const wxString title = wxString::FromUTF8(windowTitle(streamName(uri), NATIVE_TITLE_STYLE));
+        const wxString field = frame.statusTexts()[MainFrame::FILE_FIELD];
+        const wxString tip = fieldTooltip(frame, MainFrame::FILE_FIELD);
+        bool represented_empty = true;
+#if defined(__WXOSX__)
+        MainFrame& window = test->frame();
+        represented_empty = representedFilename(window).empty();
+#endif
+        seen = std::format(
+            "title '{}', file field '{}' ({} px wide), tooltip '{}', path '{}', represented "
+            "filename empty {}",
+            frame.GetTitle().utf8_string(), field.utf8_string(), rect.width, tip.utf8_string(),
+            frame.streamPath().utf8_string(), represented_empty);
+        return uri.starts_with("synthetic:gradient") && frame.GetTitle() == title &&
+               field == name && tip == frame.streamPath() &&
+               frame.streamPath() == wxString::FromUTF8(uri) && represented_empty;
+    };
+    return step("title and file field", {}, std::move(passed));
+}
+
+// Spec §7: at the minimum width, a tick field wx cut shows its full text as its tooltip, an uncut
+// one none. Passes with "no cut field" when wx cut none of them at the minimum.
+SelfTestStep cutFieldTooltipStep(SelfTest* test) {
+    auto start = [test] {
+        MainFrame& frame = test->frame();
+        frame.SetClientSize(frame.GetMinClientSize().x, frame.GetClientSize().y);
+    };
+    auto passed = [test](std::string& seen) {
+        const MainFrame& frame = test->frame();
+        const wxStatusBar* const bar = frame.GetStatusBar();
+        if (bar == nullptr) {
+            seen = "no status bar";
+            return false;
+        }
+        const std::array<wxString, MainFrame::STATUS_FIELD_COUNT> texts = frame.statusTexts();
+        bool ok = true;
+        int cut = 0;
+        for (std::size_t n = MainFrame::FIRST_TICK_FIELD; n < MainFrame::FIRST_TICK_FIELD + 3;
+             ++n) {
+            const bool ellipsized = bar->GetField(static_cast<int>(n)).IsEllipsized();
+            const wxString tip = fieldTooltip(frame, n);
+            seen += std::format("field {} '{}' cut {} tooltip '{}'; ", n, texts[n].utf8_string(),
+                                ellipsized, tip.utf8_string());
+            cut += ellipsized ? 1 : 0;
+            ok = ok && (ellipsized ? tip == texts[n] : tip.empty());
+        }
+        seen += std::format(
+            "client width {} (minimum {}, fixed fields {} + {} DIP){}", frame.GetClientSize().x,
+            frame.GetMinClientSize().x,
+            frame.ToDIP(bar->GetStatusWidth(static_cast<int>(MainFrame::MAPPING_FIELD))),
+            frame.ToDIP(bar->GetStatusWidth(static_cast<int>(MainFrame::LOG_NOTICE_FIELD))),
+            cut == 0 ? "; no cut field" : "");
+        if (ok && cut == 0) {
+            DVV_LOG_INFO("selftest: no cut field at the minimum width");
+        }
+        return ok;
+    };
+    return step("cut field tooltip", std::move(start), std::move(passed));
 }
 
 // 8. The --appearance request took effect (Failure and CannotChange are not errors, §7).
@@ -705,26 +806,467 @@ SelfTestStep appearanceStep(SelfTest* test) {
     return {.name = "appearance", .start = {}, .passed = std::move(passed)};
 }
 
-// The shell (design D18): the Info pane is shown, the Log pane is not (a selftest starts with it
-// hidden, Log pane and Settings design §2), the player panel is the centre pane and holds the
-// viewport.
+// The shell (design D18; window title and Info design §10): no Info pane (the Info window replaced
+// it), the Log pane is hidden (a selftest starts with it hidden, Log pane and Settings design §2),
+// the player panel is the centre pane and holds the viewport.
 SelfTestStep panesStep(SelfTest* test) {
     auto passed = [test](std::string& seen) {
         MainFrame& frame = test->frame();
-        const wxAuiPaneInfo& info = frame.aui().GetPane("info");
+        const bool info = frame.aui().GetPane("info").IsOk();
         const wxAuiPaneInfo& log = frame.aui().GetPane("log");
         const wxAuiPaneInfo& player = frame.aui().GetPane("player");
         const bool centre = player.IsOk() && player.dock_direction == wxAUI_DOCK_CENTER;
         const bool child = frame.viewport().GetParent() == &frame.playerPanel();
         seen = std::format(
-            "info shown {}, log pane {} shown {} (logShown {}), player pane {}, centre {}, "
+            "info pane {}, log pane {} shown {} (logShown {}), player pane {}, centre {}, "
             "viewport in the player panel {}",
-            info.IsOk() && info.IsShown(), log.IsOk(), log.IsShown(), frame.logShown(),
-            player.IsOk(), centre, child);
-        return info.IsOk() && info.IsShown() && log.IsOk() && !log.IsShown() && !frame.logShown() &&
-               centre && child;
+            info, log.IsOk(), log.IsShown(), frame.logShown(), player.IsOk(), centre, child);
+        return !info && log.IsOk() && !log.IsShown() && !frame.logShown() && centre && child;
     };
     return step("panes", {}, std::move(passed));
+}
+
+// --- The Info window (window title and Info design §10, §11) ---
+
+struct InfoWindowState {
+    bool frameWasActive = false;  // "info window opens": the frame was active before the command
+    wxSize size;                  // "info window rows": the window's size with the smoke stream
+    int phase = 0;                // the two-part steps: 0 before, 1 after their second action
+    wxRect requestedBefore;       // "minimised": the place asked for before the minimise
+};
+
+// The native focus is inside `window` (a top-level window).
+bool focusInside(const wxWindow* window) {
+    wxWindow* const focus = wxWindow::FindFocus();
+    return window != nullptr && focus != nullptr && wxGetTopLevelParent(focus) == window;
+}
+
+// §10 Place, computed again from the frame as InfoWindow::showBesideOwner does.
+wxRect expectedInfoPlace(MainFrame& frame, const InfoWindow& info) {
+    const int display = wxDisplay::GetFromWindow(&frame);
+    const wxRect work =
+        wxDisplay(display == wxNOT_FOUND ? 0U : static_cast<unsigned>(display)).GetClientArea();
+    const wxRect outer = frame.GetScreenRect();
+    const wxPoint client_origin = frame.ClientToScreen(wxPoint(0, 0));
+    const wxSize client = frame.GetClientSize();
+    const wxSize size = info.GetSize();
+    const ScreenRect place = infoWindowPlace(
+        {.x = outer.x, .y = outer.y, .width = outer.width, .height = outer.height},
+        {.x = client_origin.x, .y = client_origin.y, .width = client.x, .height = client.y},
+        {.width = size.x, .height = size.y},
+        {.x = work.x, .y = work.y, .width = work.width, .height = work.height}, info.FromDIP(8));
+    return {place.x, place.y, place.width, place.height};
+}
+
+std::string rectText(const wxRect& rect) {
+    return std::format("({}, {}, {}x{})", rect.x, rect.y, rect.width, rect.height);
+}
+
+// macOS: after an update-UI pass, View -> Show/Hide Info still carries its key (wxOSX rebuilds the
+// key equivalent from the title at every SetText). Elsewhere the check item keeps menuLabel's key.
+bool infoItemHasKey(MainFrame& frame, std::string& text) {
+    wxMenuBar* const bar = frame.GetMenuBar();
+    if (bar == nullptr) {
+        text = "no menu bar";
+        return false;
+    }
+    bar->UpdateMenus();
+    const wxMenuItem* const item = bar->FindItem(menuId(Command::InfoWindow));
+    // GetAccel() returns a new copy, or null without a key.
+    const std::unique_ptr<wxAcceleratorEntry> key(item != nullptr ? item->GetAccel() : nullptr);
+    text = item != nullptr ? std::format("item '{}', key {}", item->GetItemLabel().utf8_string(),
+                                         key ? key->ToString().utf8_string() : "none")
+                           : "no View -> Info item";
+    return key != nullptr && key->GetKeyCode() == 'I';
+}
+
+// View -> Info opens the window beside the main window without taking the focus.
+SelfTestStep infoWindowOpensStep(SelfTest* test, const std::shared_ptr<InfoWindowState>& state) {
+    auto start = [test, state] {
+        state->frameWasActive = test->frame().IsActive();
+        test->frame().execute(Command::InfoWindow);
+    };
+    auto passed = [test, state](std::string& seen) {
+        MainFrame& frame = test->frame();
+        const InfoWindow* const info = frame.infoWindow();
+        if (info == nullptr) {
+            seen = std::format("no Info window (infoShown {})", frame.infoShown());
+            return false;
+        }
+        const wxRect requested = info->requestedRectForTest();
+        const wxRect expected = expectedInfoPlace(frame, *info);
+        const wxRect actual = info->GetScreenRect();
+        const bool focus_inside = focusInside(info);
+        const bool active = frame.IsActive();
+        std::string item;
+        const bool keyed = infoItemHasKey(frame, item);
+        seen = std::format(
+            "infoShown {}, window shown {}, requested {}, computed {}, on screen {}, focus inside "
+            "{}, frame active {} (before {}), {}",
+            frame.infoShown(), info->IsShown(), rectText(requested), rectText(expected),
+            rectText(actual), focus_inside, active, state->frameWasActive, item);
+        if (!keyed) {
+            return false;
+        }
+#if defined(_WIN32) || defined(__WXOSX__)
+        const bool placed = requested == expected && actual == requested;
+#else
+        const bool placed = requested == expected;  // X11: the window manager may move it
+#endif
+        return frame.infoShown() && info->IsShown() && placed && !focus_inside &&
+               (!state->frameWasActive || active);
+    };
+    return step("info window opens", std::move(start), std::move(passed));
+}
+
+// §11: the smoke stream's 8 rows; its size is remembered for the next step.
+SelfTestStep infoWindowRowsStep(SelfTest* test, const std::shared_ptr<InfoWindowState>& state) {
+    auto passed = [test, state](std::string& seen) {
+        const MainFrame& frame = test->frame();
+        const InfoWindow* const info = frame.infoWindow();
+        if (info == nullptr || frame.streams().empty()) {
+            seen = "no Info window or no stream";
+            return false;
+        }
+        const auto rows = info->rowsForTest();
+        const std::vector<InfoRow> expected = infoRows(frame.streams().front());
+        std::string text;
+        for (const auto& [label, value] : rows) {
+            text += std::format("{}{}: {}", text.empty() ? "" : "; ", label, value);
+        }
+        seen = std::format("{} rows: {}", rows.size(), text);
+        const bool ok = rows.size() == 8 && expected.size() == 8 && rows[0].first == "Resolution" &&
+                        rows[0].second == "64 \xC3\x97 48" && rows[2].first == "Format" &&
+                        rows[2].second == expected[2].value;
+        if (ok) {
+            state->size = info->GetSize();
+        }
+        return ok;
+    };
+    return step("info window rows", {}, std::move(passed));
+}
+
+// §11: "No stream" after File -> Close, at the same size; the smoke stream again, same size.
+SelfTestStep infoWindowAfterCloseStep(SelfTest* test,
+                                      const std::shared_ptr<InfoWindowState>& state) {
+    auto start = [test, state] {
+        state->phase = 0;
+        test->frame().execute(Command::CloseStreams);
+    };
+    auto passed = [test, state](std::string& seen) {
+        const MainFrame& frame = test->frame();
+        const InfoWindow* const info = frame.infoWindow();
+        if (info == nullptr) {
+            seen = "no Info window";
+            return false;
+        }
+        const std::size_t rows = info->rowsForTest().size();
+        const wxSize size = info->GetSize();
+        const std::size_t frames = test->frame().viewport().display()->snapshot().frames.count;
+        seen = std::format("phase {}: {} streams, {} rows, size {}x{} (was {}x{}), {} frames shown",
+                           state->phase, frame.streams().size(), rows, size.x, size.y,
+                           state->size.x, state->size.y, frames);
+        if (size != state->size || !info->IsShown()) {
+            return false;
+        }
+        if (state->phase == 0) {
+            if (frame.streams().empty() && rows == 0) {
+                state->phase = 1;
+                DVV_LOG_INFO("selftest: info window after close: {}", seen);
+                openSmokeStream(test);  // checked in a later turn
+            }
+            return false;
+        }
+        return frame.streams().size() == 1 && rows == 8 && frames == 1;
+    };
+    return step("info window after close", std::move(start), std::move(passed));
+}
+
+// §10 Life: the minimised main window hides the Info window; restored, it shows again without
+// taking the focus.
+SelfTestStep infoWindowMinimisedStep(SelfTest* test,
+                                     const std::shared_ptr<InfoWindowState>& state) {
+    auto start = [test, state] {
+        state->phase = 0;
+        const InfoWindow* const info = test->frame().infoWindow();
+        state->requestedBefore = info != nullptr ? info->requestedRectForTest() : wxRect();
+#if defined(_WIN32) || defined(__WXOSX__)
+        test->frame().Iconize(true);
+#else
+        test->frame().Hide();  // X11: no WM-independent iconify (as hideStep)
+#endif
+    };
+    auto passed = [test, state](std::string& seen) {
+        MainFrame& frame = test->frame();
+        const InfoWindow* const info = frame.infoWindow();
+        if (info == nullptr) {
+            seen = "no Info window";
+            return false;
+        }
+        const std::optional<dvv::gpu::PresenterStats> stats = statsOf(frame.viewport());
+        const bool presenting = stats && !stats->hidden;
+        const bool focus_inside = focusInside(info);
+        const wxRect requested = info->requestedRectForTest();
+        const wxRect actual = info->GetScreenRect();
+        seen = std::format(
+            "phase {}: frame iconized {} shown {}, infoShown {}, window shown {}, focus inside {}, "
+            "presenting {}, requested {} (before {}), on screen {}",
+            state->phase, frame.IsIconized(), frame.IsShown(), frame.infoShown(), info->IsShown(),
+            focus_inside, presenting, rectText(requested), rectText(state->requestedBefore),
+            rectText(actual));
+        if (state->phase == 0) {
+            if (!info->IsShown() && frame.infoShown()) {
+                state->phase = 1;
+                DVV_LOG_INFO("selftest: info window minimised: {}", seen);
+                // View -> Info off and on while minimised (the menu bar stays usable on macOS):
+                // shown again by the restore.
+                frame.setInfoShown(false);
+                frame.setInfoShown(true);
+#if defined(_WIN32) || defined(__WXOSX__)
+                frame.Iconize(false);
+#else
+                frame.Show();
+#endif
+            }
+            return false;
+        }
+#if defined(_WIN32) || defined(__WXOSX__)
+        const bool placed = requested == state->requestedBefore && actual == requested;
+#else
+        const bool placed = requested == state->requestedBefore;  // X11: the WM may move it
+#endif
+        return info->IsShown() && frame.infoShown() && !frame.IsIconized() && frame.IsShown() &&
+               !focus_inside && presenting && placed;
+    };
+    return step("info window with the main window minimised", std::move(start), std::move(passed));
+}
+
+// §10 Place: a first show while the main window is minimised (X11: hidden) waits for the restore,
+// which places the window beside the main window. The window starts hidden and never placed.
+SelfTestStep infoWindowFirstShownMinimisedStep(SelfTest* test,
+                                               const std::shared_ptr<InfoWindowState>& state) {
+    auto start = [test, state] {
+        state->phase = 0;
+        MainFrame& frame = test->frame();
+        frame.setInfoShown(false);
+        if (InfoWindow* const info = frame.infoWindow(); info != nullptr) {
+            info->forgetPlaceForTest();
+        }
+#if defined(_WIN32) || defined(__WXOSX__)
+        frame.Iconize(true);
+#else
+        frame.Hide();  // X11: no WM-independent iconify (as hideStep)
+#endif
+    };
+    auto passed = [test, state](std::string& seen) {
+        MainFrame& frame = test->frame();
+        InfoWindow* const info = frame.infoWindow();
+        if (info == nullptr) {
+            seen = "no Info window";
+            return false;
+        }
+#if defined(_WIN32) || defined(__WXOSX__)
+        const bool frame_down = frame.IsIconized();
+#else
+        const bool frame_down = !frame.IsShown();
+#endif
+        const std::optional<dvv::gpu::PresenterStats> stats = statsOf(frame.viewport());
+        const bool presenting = stats && !stats->hidden;
+        const bool focus_inside = focusInside(info);
+        const wxRect requested = info->requestedRectForTest();
+        const wxRect expected = expectedInfoPlace(frame, *info);
+        const wxRect actual = info->GetScreenRect();
+        seen = std::format(
+            "phase {}: frame down {}, infoShown {}, window shown {}, focus inside {}, presenting "
+            "{}, requested {}, computed {}, on screen {}",
+            state->phase, frame_down, frame.infoShown(), info->IsShown(), focus_inside, presenting,
+            rectText(requested), rectText(expected), rectText(actual));
+        switch (state->phase) {
+            case 0:  // minimised, the window hidden and never placed: View -> Info
+                if (frame_down && !info->IsShown() && !frame.infoShown()) {
+                    DVV_LOG_INFO("selftest: info window first shown minimised: {}", seen);
+                    state->phase = 1;
+                    frame.setInfoShown(true);
+                }
+                return false;
+            case 1:  // it waits for the restore
+                if (frame_down && !info->IsShown() && frame.infoShown()) {
+                    DVV_LOG_INFO("selftest: info window first shown minimised: {}", seen);
+                    state->phase = 2;
+#if defined(_WIN32) || defined(__WXOSX__)
+                    frame.Iconize(false);
+#else
+                    frame.Show();
+#endif
+                }
+                return false;
+            default: break;
+        }
+#if defined(_WIN32) || defined(__WXOSX__)
+        const bool placed = requested == expected && actual == requested;
+#else
+        const bool placed = requested == expected;  // X11: the window manager may move it
+#endif
+        return !frame_down && info->IsShown() && frame.infoShown() && !focus_inside && presenting &&
+               placed;
+    };
+    return step("info window first shown while minimised", std::move(start), std::move(passed));
+}
+
+// View -> Info again hides the window.
+SelfTestStep viewInfoClosesStep(SelfTest* test) {
+    auto start = [test] { test->frame().execute(Command::InfoWindow); };
+    auto passed = [test](std::string& seen) {
+        MainFrame& frame = test->frame();
+        const InfoWindow* const info = frame.infoWindow();
+        const bool shown = info != nullptr && info->IsShown();
+        std::string item;
+        const bool keyed = infoItemHasKey(frame, item);
+        seen = std::format("infoShown {}, window shown {}, {}", frame.infoShown(), shown, item);
+        return info != nullptr && !frame.infoShown() && !shown && keyed;
+    };
+    return step("view info closes", std::move(start), std::move(passed));
+}
+
+// A click on a bar button as the native control sends it (wxEVT_BUTTON or wxEVT_TOGGLEBUTTON).
+void clickBarButton(wxAnyButton& button, wxEventType type) {
+    wxCommandEvent click(type, button.GetId());
+    click.SetEventObject(&button);
+    button.ProcessWindowEvent(click);
+}
+
+#if defined(__WXOSX__)
+constexpr bool TOOLTIP_CMD_FOR_CTRL = true;  // as transport_bar.cpp: Cmd for Ctrl on macOS
+#else
+constexpr bool TOOLTIP_CMD_FOR_CTRL = false;
+#endif
+
+// Window title and Info design §12: Format opens the Format dialog and waits for a stream. The
+// hook's OK reopens the smoke stream with its own choice; File > Close, then the smoke stream
+// again.
+SelfTestStep formatButtonStep(SelfTest* test) {
+    struct State {
+        int phase = 0;
+        bool enabledWithStream = false;
+        bool hookRan = false;
+        std::uint64_t dialogs0 = 0;
+        std::uint64_t generation0 = 0;
+    };
+    auto state = std::make_shared<State>();
+    auto start = [test, state] {
+        MainFrame& frame = test->frame();
+        wxAnyButton& button = frame.transportBar().buttonForTest(Command::Format);
+        *state = State{};
+        state->enabledWithStream = !frame.streams().empty() && button.IsEnabled();
+        state->dialogs0 = frame.formatDialogsShown();
+        state->generation0 = frame.session().status().streamGeneration;
+        dialogHooks().format = [state](FormatDialog& /*dialog*/) { state->hookRan = true; };
+        clickBarButton(button, wxEVT_BUTTON);
+    };
+    auto passed = [test, state](std::string& seen) {
+        MainFrame& frame = test->frame();
+        const bool enabled = frame.transportBar().buttonForTest(Command::Format).IsEnabled();
+        const std::uint64_t generation = frame.session().status().streamGeneration;
+        seen = std::format(
+            "phase {}: enabled with a stream {}, hook ran {}, dialogs +{}, {} streams, generation "
+            "{} (was {}), enabled {}, message '{}'",
+            state->phase, state->enabledWithStream, state->hookRan,
+            frame.formatDialogsShown() - state->dialogs0, frame.streams().size(), generation,
+            state->generation0, enabled, frame.lastMessage().utf8_string());
+        switch (state->phase) {
+            case 0:
+                if (state->enabledWithStream && state->hookRan &&
+                    frame.formatDialogsShown() == state->dialogs0 + 1 &&
+                    generation > state->generation0 && frame.streams().size() == 1) {
+                    state->phase = 1;
+                    DVV_LOG_INFO("selftest: format button: {}", seen);
+                    frame.execute(Command::CloseStreams);  // checked in a later turn
+                }
+                return false;
+            case 1:
+                if (frame.streams().empty() && !enabled) {
+                    state->phase = 2;
+                    DVV_LOG_INFO("selftest: format button: {}", seen);
+                    openSmokeStream(test);  // checked in a later turn
+                }
+                return false;
+            default: return frame.streams().size() == 1 && enabled;
+        }
+    };
+    return step("format button", std::move(start), std::move(passed));
+}
+
+// §12: "i" is a toggle that shows and hides the Info window, always enabled; View > Info sets its
+// value too.
+SelfTestStep infoButtonStep(SelfTest* test) {
+    auto phase = std::make_shared<int>(0);
+    auto start = [test, phase] {
+        *phase = 0;
+        clickBarButton(test->frame().transportBar().buttonForTest(Command::InfoWindow),
+                       wxEVT_TOGGLEBUTTON);
+    };
+    auto passed = [test, phase](std::string& seen) {
+        MainFrame& frame = test->frame();
+        wxAnyButton& any = frame.transportBar().buttonForTest(Command::InfoWindow);
+        auto* const toggle = dynamic_cast<wxBitmapToggleButton*>(&any);
+        const InfoWindow* const info = frame.infoWindow();
+        const bool window = info != nullptr && info->IsShown();
+        const bool value = toggle != nullptr && toggle->GetValue();
+        seen = std::format(
+            "phase {}: toggle {}, enabled {}, value {}, infoShown {}, window shown {}", *phase,
+            toggle != nullptr, any.IsEnabled(), value, frame.infoShown(), window);
+        if (toggle == nullptr || !any.IsEnabled()) {
+            return false;
+        }
+        const bool want = *phase % 2 == 0;  // 0: shown by a click, 1: hidden by a click, ...
+        if (value != want || frame.infoShown() != want || window != want) {
+            return false;
+        }
+        DVV_LOG_INFO("selftest: info button: {}", seen);
+        switch (*phase) {
+            case 0: clickBarButton(any, wxEVT_TOGGLEBUTTON); break;
+            case 1:
+            case 2: frame.execute(Command::InfoWindow, CommandSource::Menu); break;
+            default: return true;  // 3: hidden again by View > Info
+        }
+        ++*phase;
+        return false;
+    };
+    return step("info button", std::move(start), std::move(passed));
+}
+
+// §13: the "i" tooltip is the command's tooltip, then the stream's summary; without a stream the
+// first line alone. File > Close, then the smoke stream again.
+SelfTestStep infoButtonTooltipStep(SelfTest* test) {
+    auto phase = std::make_shared<int>(0);
+    auto start = [phase] { *phase = 0; };
+    auto passed = [test, phase](std::string& seen) {
+        MainFrame& frame = test->frame();
+        const wxAnyButton& button = frame.transportBar().buttonForTest(Command::InfoWindow);
+        const std::string tip = button.GetToolTipText().utf8_string();
+        const std::string first = tooltipText(
+            commandTable()[static_cast<std::size_t>(Command::InfoWindow)], TOOLTIP_CMD_FOR_CTRL);
+        const std::string want =
+            frame.streams().empty() ? first : first + "\n" + infoHint(frame.streams().front());
+        seen = std::format("phase {}: {} streams, enabled {}, tooltip '{}' (want '{}')", *phase,
+                           frame.streams().size(), button.IsEnabled(), tip, want);
+        if (tip != want || !button.IsEnabled()) {
+            return false;
+        }
+        if (*phase == 0 && frame.streams().size() == 1) {
+            *phase = 1;
+            DVV_LOG_INFO("selftest: info button tooltip: {}", seen);
+            frame.execute(Command::CloseStreams);  // checked in a later turn
+        } else if (*phase == 1 && frame.streams().empty()) {
+            *phase = 2;
+            DVV_LOG_INFO("selftest: info button tooltip: {}", seen);
+            openSmokeStream(test);  // checked in a later turn
+        } else if (*phase == 2 && frame.streams().size() == 1) {
+            return true;
+        }
+        return false;
+    };
+    return step("info button tooltip", std::move(start), std::move(passed));
 }
 
 // App icon plan D8: the frame's window icons. Windows: the ten sizes of the rawreel ICO group;
@@ -802,10 +1344,12 @@ SelfTestStep logNoticeStep(SelfTest* test) {
     auto passed = [test](std::string& seen) {
         const wxString notice = test->frame().logNotice();
         seen = std::format("notice '{}', status field '{}', pane shown {}", notice.utf8_string(),
-                           test->frame().statusTexts()[4].utf8_string(), test->frame().logShown());
+                           test->frame().statusTexts()[MainFrame::LOG_NOTICE_FIELD].utf8_string(),
+                           test->frame().logShown());
         // Other threads may log warnings too: only the form is checked.
         return !test->frame().logShown() && notice.Contains("warning") &&
-               notice.EndsWith("in the log") && test->frame().statusTexts()[4] == notice;
+               notice.EndsWith("in the log") &&
+               test->frame().statusTexts()[MainFrame::LOG_NOTICE_FIELD] == notice;
     };
     return step("log notice", std::move(start), std::move(passed));
 }
@@ -1211,16 +1755,19 @@ void addLogListSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
 // --- the Edit menu, copy and save (Log pane and Settings design §4.1 to §4.4) ---
 
 // Through the frame's wxEVT_CHAR_HOOK handler, as a real key press reaches it first.
-// Returns whether a handler took it (one that called Skip() did not).
-bool sendKey(wxFrame& frame, int keycode, bool shift = false) {
+// Returns whether a handler took it (one that called Skip() did not). `target` is the window the
+// key event starts at (the focused window), from where it propagates up to its top-level window.
+// `ctrl`: ControlDown(), i.e. Cmd on macOS.
+bool sendKey(wxWindow& target, int keycode, bool shift = false, bool ctrl = false) {
     wxKeyEvent event(wxEVT_CHAR_HOOK);
-    event.SetEventObject(&frame);
+    event.SetEventObject(&target);
     event.m_keyCode = keycode;
     if (keycode > 0 && keycode < 128) {
         event.m_uniChar = static_cast<wxChar>(keycode);
     }
     event.SetShiftDown(shift);
-    return injectInput(*frame.GetEventHandler(), event);
+    event.SetControlDown(ctrl);
+    return injectInput(*target.GetEventHandler(), event);
 }
 
 // A menu item of the frame (the Edit items on Windows and Linux, or on macOS when the responder
@@ -1383,25 +1930,215 @@ SelfTestStep logCopyStep(SelfTest* test, const std::shared_ptr<EditState>& state
     return step("log copy", std::move(start), std::move(passed));
 }
 
-// Spec §4.2: Edit -> Select All and Copy in the read-only Info pane copy its text.
-SelfTestStep infoCopyStep(SelfTest* test, const std::shared_ptr<EditState>& state) {
+// --- The Info window's keys, Copy and ⌘W (window title and Info design §10) ---
+
+struct InfoKeysState {
+    int phase = 0;
+    bool consumed = false;       // the Info window's char hook took the key
+    bool consumedAgain = false;  // ... and the second key of a two-part step
+    bool available = false;      // macOS ⌘W: Close stream enabled with the focus in the window
+    bool availableAgain = false;
+    bool hiddenAgain = false;  // macOS ⌘W: the second ⌘W (no stream) closed the window
+    bool copyEnabled = false;  // macOS: Edit -> Copy enabled with the focus in the window
+    std::uint32_t streamsBefore = 0;
+};
+
+// The Info window's content panel (it takes the focus, §10), shown first; null without a window.
+wxWindow* shownInfoContent(MainFrame& frame) {
+    frame.setInfoShown(true);
+    InfoWindow* const info = frame.infoWindow();
+    return info != nullptr ? info->contentForTest() : nullptr;
+}
+
+// A char-hook key event at the Info window's panel, with the focus there: whether a handler took
+// it.
+bool sendInfoKey(MainFrame& frame, int keycode, bool ctrl = false) {
+    wxWindow* const panel = shownInfoContent(frame);
+    if (panel == nullptr) {
+        return false;
+    }
+    frame.setFocusForTest(panel);
+    const bool consumed = sendKey(*panel, keycode, false, ctrl);
+    frame.setFocusForTest(nullptr);
+    return consumed;
+}
+
+// §10 Keys: Space in the Info window plays, and again pauses, as in the main window.
+SelfTestStep infoWindowKeysStep(SelfTest* test, const std::shared_ptr<InfoKeysState>& state) {
+    auto start = [test, state] {
+        state->phase = 0;
+        state->consumedAgain = false;
+        state->consumed = sendInfoKey(test->frame(), WXK_SPACE);
+    };
+    auto passed = [test, state](std::string& seen) {
+        MainFrame& frame = test->frame();
+        const SessionStatus status = frame.session().status();
+        seen = std::format(
+            "phase {}: Space taken by the Info window {} (again {}), playing {}, position {}",
+            state->phase, state->consumed, state->consumedAgain, status.player.playing,
+            status.player.position);
+        if (state->phase == 0) {
+            if (state->consumed && status.player.playing) {
+                DVV_LOG_INFO("selftest: info window keys: {}", seen);
+                state->phase = 1;
+                state->consumedAgain = sendInfoKey(frame, WXK_SPACE);  // checked in a later turn
+            }
+            return false;
+        }
+        return state->consumedAgain && !status.player.playing && frame.infoShown();
+    };
+    return step("info window keys", std::move(start), std::move(passed));
+}
+
+// §10 Keys: Esc closes the Info window.
+SelfTestStep infoWindowEscStep(SelfTest* test, const std::shared_ptr<InfoKeysState>& state) {
+    auto start = [test, state] { state->consumed = sendInfoKey(test->frame(), WXK_ESCAPE); };
+    auto passed = [test, state](std::string& seen) {
+        const MainFrame& frame = test->frame();
+        const InfoWindow* const info = frame.infoWindow();
+        seen = std::format("Esc taken {}, infoShown {}, window shown {}", state->consumed,
+                           frame.infoShown(), info != nullptr && info->IsShown());
+        return state->consumed && !frame.infoShown() && info != nullptr && !info->IsShown();
+    };
+    return step("info window Esc", std::move(start), std::move(passed));
+}
+
+// §10 Keys: Ctrl+I (Cmd+I on macOS) in the Info window closes it. The key comes in the turn that
+// reopened the window: on X11 the map notification of that show arrives after the hide, which
+// must leave the window hidden (InfoWindow::onShow).
+SelfTestStep infoWindowCtrlIStep(SelfTest* test, const std::shared_ptr<InfoKeysState>& state) {
+    auto start = [test, state] {
+        state->consumed = sendInfoKey(test->frame(), 'I', true);  // reopens it first
+    };
+    auto passed = [test, state](std::string& seen) {
+        const MainFrame& frame = test->frame();
+        const InfoWindow* const info = frame.infoWindow();
+        seen = std::format("Ctrl+I taken {}, infoShown {}, window shown {}", state->consumed,
+                           frame.infoShown(), info != nullptr && info->IsShown());
+        return state->consumed && !frame.infoShown() && info != nullptr && !info->IsShown();
+    };
+    return step("info window Ctrl+I", std::move(start), std::move(passed));
+}
+
+// §15: the close box hides the Info window (the close is vetoed, the window is kept) and releases
+// "i".
+SelfTestStep infoWindowCloseBoxStep(SelfTest* test, const std::shared_ptr<InfoKeysState>& state) {
     auto start = [test, state] {
         MainFrame& frame = test->frame();
-        state->expected = frame.infoPanel().text().utf8_string();
-        state->copied.reset();
-        dialogHooks().clipboard = [state](std::string text) { state->copied = std::move(text); };
-        frame.setFocusForTest(&frame.infoPanel().textControl());
-        (void)sendMenu(frame, wxID_SELECTALL);
-        (void)sendMenu(frame, wxID_COPY);
-        frame.setFocusForTest(nullptr);
+        frame.setInfoShown(true);
+        InfoWindow* const info = frame.infoWindow();
+        state->consumed = info != nullptr && info->IsShown();  // shown before the close box
+        if (info != nullptr) {
+            info->Close();  // as the close box: the close can be vetoed
+        }
     };
-    auto passed = [state](std::string& seen) {
-        seen = std::format("copied '{}' (want '{}')", state->copied.value_or("nothing"),
-                           state->expected);
-        return !state->expected.empty() && state->copied == state->expected;
+    auto passed = [test, state](std::string& seen) {
+        MainFrame& frame = test->frame();
+        const InfoWindow* const info = frame.infoWindow();
+        auto* const toggle = dynamic_cast<wxBitmapToggleButton*>(
+            &frame.transportBar().buttonForTest(Command::InfoWindow));
+        const bool value = toggle != nullptr && toggle->GetValue();
+        seen = std::format(
+            "shown before {}, window kept {}, window shown {}, infoShown {}, "
+            "\"i\" toggle {}, value {}",
+            state->consumed, info != nullptr, info != nullptr && info->IsShown(), frame.infoShown(),
+            toggle != nullptr, value);
+        return state->consumed && info != nullptr && !info->IsShown() && !frame.infoShown() &&
+               toggle != nullptr && !value;
     };
-    return step("info copy", std::move(start), std::move(passed));
+    return step("info window close box", std::move(start), std::move(passed));
 }
+
+// §10 Copy: all rows as "Label: value" lines; macOS through Edit -> Copy, Windows and Linux
+// through Ctrl+C in the window. Leaves the window shown.
+SelfTestStep infoWindowCopyStep(SelfTest* test, const std::shared_ptr<EditState>& edit,
+                                const std::shared_ptr<InfoKeysState>& state) {
+    auto start = [test, edit, state] {
+        MainFrame& frame = test->frame();
+        edit->expected =
+            frame.streams().empty() ? std::string() : infoCopyText(&frame.streams().front());
+        edit->copied.reset();
+        dialogHooks().clipboard = [edit](std::string text) { edit->copied = std::move(text); };
+#if defined(__WXOSX__)
+        wxWindow* const panel = shownInfoContent(frame);
+        frame.setFocusForTest(panel);
+        wxUpdateUIEvent update(wxID_COPY);
+        update.SetEventObject(&frame);
+        (void)frame.ProcessWindowEvent(update);
+        state->copyEnabled = update.GetSetEnabled() && update.GetEnabled();
+        state->consumed = panel != nullptr && sendMenu(frame, wxID_COPY);
+        frame.setFocusForTest(nullptr);
+#else
+        state->copyEnabled = true;  // no Edit menu path here: the main window's menu activates it
+        state->consumed = sendInfoKey(frame, 'C', true);
+#endif
+    };
+    auto passed = [test, edit, state](std::string& seen) {
+        seen = std::format("Copy enabled {}, taken {}, infoShown {}, copied '{}' (want '{}')",
+                           state->copyEnabled, state->consumed, test->frame().infoShown(),
+                           edit->copied.value_or("nothing"), edit->expected);
+        return state->copyEnabled && state->consumed && test->frame().infoShown() &&
+               !edit->expected.empty() && edit->copied == edit->expected;
+    };
+    return step("info window copy", std::move(start), std::move(passed));
+}
+
+#if defined(__WXOSX__)
+// §10 Cmd+W: with the focus in the Info window, File -> Close stream (⌘W) closes the window, not
+// the stream; with no stream it is still available there and closes the window. Ends with the
+// smoke stream open again and the window shown.
+SelfTestStep infoWindowCloseKeyStep(SelfTest* test, const std::shared_ptr<InfoKeysState>& state) {
+    // ⌘W with the focus in the (shown) Info window: whether Close stream was available.
+    const auto close_key = [test] {
+        MainFrame& frame = test->frame();
+        frame.setFocusForTest(shownInfoContent(frame));
+        const bool available = frame.isAvailable(Command::CloseStreams);
+        frame.execute(Command::CloseStreams, CommandSource::Menu);
+        frame.setFocusForTest(nullptr);
+        return available;
+    };
+    auto start = [test, state, close_key] {
+        state->phase = 0;
+        state->availableAgain = false;
+        state->hiddenAgain = false;
+        state->streamsBefore = test->frame().session().status().streams;
+        state->available = close_key();
+    };
+    auto passed = [test, state, close_key](std::string& seen) {
+        MainFrame& frame = test->frame();
+        const std::uint32_t streams = frame.session().status().streams;
+        seen = std::format(
+            "phase {}: available {} (no stream {}), closed by the second ⌘W {}, infoShown {}, {} "
+            "session streams (was {}), {} frame streams",
+            state->phase, state->available, state->availableAgain, state->hiddenAgain,
+            frame.infoShown(), streams, state->streamsBefore, frame.streams().size());
+        switch (state->phase) {
+            case 0:
+                if (state->available && !frame.infoShown() && state->streamsBefore == 1 &&
+                    streams == 1 && frame.streams().size() == 1) {
+                    DVV_LOG_INFO("selftest: info window close key: {}", seen);
+                    state->phase = 1;
+                    frame.execute(Command::CloseStreams);  // the stream itself (no window in front)
+                }
+                return false;
+            case 1:
+                if (streams == 0 && frame.streams().empty()) {
+                    state->availableAgain = close_key();
+                    state->hiddenAgain = !frame.infoShown();
+                    DVV_LOG_INFO("selftest: info window close key: {}", seen);
+                    state->phase = 2;
+                    openSmokeStream(test);     // checked in a later turn
+                    frame.setInfoShown(true);  // the scenario's close covers quitting with it open
+                }
+                return false;
+            default:
+                return state->availableAgain && state->hiddenAgain && frame.infoShown() &&
+                       streams == 1 && frame.streams().size() == 1;
+        }
+    };
+    return step("⌘W closes the Info window", std::move(start), std::move(passed));
+}
+#endif
 
 // The selftest config folder (spec §7.1), where the save steps write.
 std::filesystem::path saveFolder(const SelfTest* test) {
@@ -1674,7 +2411,17 @@ void addEditSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     steps.push_back(logPanelKeysStep(test, state));
     steps.push_back(pauseAtFirstStep(test));
     steps.push_back(logCopyStep(test, state));
-    steps.push_back(infoCopyStep(test, state));
+    const auto info_keys = std::make_shared<InfoKeysState>();
+    steps.push_back(infoWindowKeysStep(test, info_keys));
+    steps.push_back(pauseAtFirstStep(test));
+    steps.push_back(infoWindowEscStep(test, info_keys));
+    steps.push_back(infoWindowCtrlIStep(test, info_keys));
+    steps.push_back(infoWindowCloseBoxStep(test, info_keys));
+    steps.push_back(infoWindowCopyStep(test, state, info_keys));
+#if defined(__WXOSX__)
+    steps.push_back(infoWindowCloseKeyStep(test, info_keys));
+#endif
+    // The Info window stays shown: the scenario's close covers quitting with it open.
     steps.push_back(saveLogStep(test, state));
     steps.push_back(saveLogFolderStep(test, state));
     steps.push_back(saveSelectedStep(test, state));
@@ -1712,12 +2459,17 @@ SelfTestStep pauseStep(SelfTest* test) {
 // D20: the position and rate fields.
 SelfTestStep statusBarStep(SelfTest* test) {
     auto passed = [test](std::string& seen) {
-        const std::array<wxString, 5> texts = test->frame().statusTexts();
-        seen = std::format("status bar '{}' '{}' '{}' '{}'", texts[0].utf8_string(),
-                           texts[1].utf8_string(), texts[2].utf8_string(), texts[3].utf8_string());
+        const std::array<wxString, MainFrame::STATUS_FIELD_COUNT> texts =
+            test->frame().statusTexts();
+        const wxString& position = texts[MainFrame::FIRST_TICK_FIELD];
+        const wxString& rate = texts[MainFrame::FIRST_TICK_FIELD + 1];
+        const wxString& bottleneck = texts[MainFrame::FIRST_TICK_FIELD + 2];
+        const wxString& mapping = texts[MainFrame::MAPPING_FIELD];
+        seen = std::format("status bar '{}' '{}' '{}' '{}'", position.utf8_string(),
+                           rate.utf8_string(), bottleneck.utf8_string(), mapping.utf8_string());
         // D5R §2.2: an SDR stream's mapping field.
-        return texts[0].StartsWith("frame ") && texts[1].EndsWith("fps") &&
-               texts[3] == "SDR, no tone mapping";
+        return position.StartsWith("frame ") && rate.EndsWith("fps") &&
+               mapping == "SDR, no tone mapping";
     };
     return step("status bar", {}, std::move(passed));
 }
@@ -3028,7 +3780,7 @@ SelfTestStep settingsCloseKeyStep(SelfTest* test, const std::shared_ptr<Settings
 }
 
 // Spec §5.1: only the Settings window takes ⌘W. With the focus in another top-level window of
-// the frame (a hidden stand-in for a floating Info or Log pane, a wxAuiFloatingFrame), the item
+// the frame (a hidden stand-in for a floating Log pane, a wxAuiFloatingFrame), the item
 // stays File -> Close stream: the stream closes and that window is not closed.
 SelfTestStep closeKeyOtherWindowStep(SelfTest* test, const std::shared_ptr<SettingsState>& state) {
     struct Seen {
@@ -3100,12 +3852,24 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
     steps.push_back(hideStep(t, state));
     steps.push_back(restoreStep(t, state));
     steps.push_back(openStreamStep(t, state));
+    steps.push_back(cutFieldTooltipStep(t));
     steps.push_back(resizeStep(t, state, "resize with a stream", wxSize(1024, 640)));
+    steps.push_back(titleAndFileFieldStep(t));  // at a size where the name fits on every OS
 #if defined(__WXOSX__)
     steps.push_back(backingScaleStep(t, state, false));
     steps.push_back(backingScaleStep(t, state, true));
 #endif
     steps.push_back(panesStep(t));
+    const auto info_window = std::make_shared<InfoWindowState>();
+    steps.push_back(infoWindowOpensStep(t, info_window));
+    steps.push_back(infoWindowRowsStep(t, info_window));
+    steps.push_back(infoWindowAfterCloseStep(t, info_window));
+    steps.push_back(infoWindowMinimisedStep(t, info_window));
+    steps.push_back(infoWindowFirstShownMinimisedStep(t, info_window));
+    steps.push_back(viewInfoClosesStep(t));
+    steps.push_back(formatButtonStep(t));
+    steps.push_back(infoButtonStep(t));
+    steps.push_back(infoButtonTooltipStep(t));
     steps.push_back(windowIconsStep(t));
     steps.push_back(logNoticeStep(t));
     steps.push_back(logPaneShowsStep(t));
@@ -3679,16 +4443,18 @@ bool consecutive(std::span<const ShownSet> shows, std::uint32_t count,
     return true;
 }
 
-// The Info line of a colour field with no origin tag right after it (D5R §4.5), e.g.
-// "matrix bt601,": neither " (default)" nor " (from file)" follows.
-bool infoHas(MainFrame& frame, std::string_view field) {
-    const std::string text = frame.infoPanel().text().utf8_string();
-    const std::size_t at = text.find(field);
-    if (at == std::string::npos) {
-        return false;
+// The Info window's value of the row `label` (infoRows) for the frame's first stream; "" with no
+// stream.
+std::string infoValue(const MainFrame& frame, std::string_view label) {
+    if (frame.streams().empty()) {
+        return {};
     }
-    const std::string_view rest = std::string_view(text).substr(at + field.size());
-    return !rest.starts_with(" (default)") && !rest.starts_with(" (from file)");
+    for (const InfoRow& row : infoRows(frame.streams().front())) {
+        if (row.label == label) {
+            return row.value;
+        }
+    }
+    return {};
 }
 
 }  // namespace
@@ -3714,6 +4480,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
         bool loopBefore = false;                  // loop wraps: the GUI's loop flag before the step
         std::uint64_t ignored0 = 0;  // real input is ignored: SelfTestInput's count before
         std::chrono::steady_clock::time_point at;  // real input is ignored: the step start
+        wxSize client0;  // the client size before "title of a file" widens it
         State() = default;
         State(const State&) = delete;
         State& operator=(const State&) = delete;
@@ -3860,13 +4627,13 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             "play updates the bar",
             [&frame, playing] {
                 playing->n0 = frame.statusNotificationsForTest();
-                playing->text0 = frame.statusTexts()[0];
+                playing->text0 = frame.statusTexts()[MainFrame::FIRST_TICK_FIELD];
                 frame.execute(Command::PlayPause);
             },
             [&frame, playing](std::string& seen) {
                 seen = std::format("notifications {} (from {})", frame.statusNotificationsForTest(),
                                    playing->n0);
-                return frame.statusTexts()[0] != playing->text0 &&
+                return frame.statusTexts()[MainFrame::FIRST_TICK_FIELD] != playing->text0 &&
                        frame.statusNotificationsForTest() > playing->n0;
             },
             std::chrono::seconds(2)));
@@ -4939,8 +5706,15 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             frame.execute(Command::Format);  // ShowModal; the hook fills and closes the dialog
         },
         [&frame, st, status, stream_uri](std::string& seen) {
-            const bool info = infoHas(frame, "matrix bt601,") && infoHas(frame, "range full,") &&
-                              infoHas(frame, "colour: BT.601 (PAL)");
+            // D5R §4.5 through the Info window's rows: the stream's colour and the shown values.
+            const dvv::media::ColourParams colour = frame.streams().empty()
+                                                        ? dvv::media::ColourParams{}
+                                                        : frame.streams().front().colour.params;
+            const bool info = colour.matrix == dvv::media::ColourMatrix::Bt601 &&
+                              colour.range == dvv::media::ColourRange::Full &&
+                              infoValue(frame, "Standard") == "BT.601 (PAL)" &&
+                              infoValue(frame, "Matrix") == "BT.601" &&
+                              infoValue(frame, "Range").starts_with("Full");
             const std::vector<std::string> expected{
                 "BT.709 (default)|BT.1886|Limited|1",
                 "BT.1886|Full (not standard)|1|Matrix BT.601, primaries BT.601-625 (not "
@@ -4980,10 +5754,14 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                               st->colourRead.range == dvv::media::ColourRange::Unspecified;
             const bool keys = uri.contains("colour=bt2100-pq") && !uri.contains("matrix=") &&
                               !uri.contains("range=") && !uri.contains("transfer=");
-            const bool info = infoHas(frame, "curve pq,") && infoHas(frame, "colour: BT.2100 PQ");
+            const bool info =
+                !frame.streams().empty() &&
+                frame.streams().front().colour.params.transfer == dvv::media::TransferFn::Pq &&
+                infoValue(frame, "Transfer") == "PQ" &&
+                infoValue(frame, "Standard") == "BT.2100 PQ";
             const std::string options = st->textsRead.empty() ? "" : st->textsRead.front();
             // D5R §2.2: the 4th status field names the PQ tone mapping.
-            const std::string mapping = frame.statusTexts()[3].utf8_string();
+            const std::string mapping = frame.statusTexts()[MainFrame::MAPPING_FIELD].utf8_string();
             seen = std::format(
                 "options '{}', read {}, URI keys {}, Info pq {}, mapping '{}', position {} (kept "
                 "{})",
@@ -5582,8 +6360,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
         [&frame, st, stream_is](std::string& seen) {
             const std::vector<std::string> expected{"BT.709 (default)|BT.1886|Limited|1",
                                                     "BT.709 (default)|BT.1886|Limited|1"};
-            const std::string info = frame.infoPanel().text().utf8_string();
-            const bool limited = info.contains("range limited");
+            const bool limited = infoValue(frame, "Range").starts_with("Limited");
             std::string texts;
             for (const std::string& text : st->textsRead) {
                 texts += std::format("'{}' ", text);
@@ -5608,6 +6385,111 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                 loggedSince(app, st->logNext).contains("1 files ignored: one stream at a time");
             seen = std::format("gray 32x16 {}, log line {}", stream_is(32, 16, "gray"), logged);
             return stream_is(32, 16, "gray") && logged;
+        }));
+    // Spec §5, §7, §8: a file stream's title and file field show its name, the file field's
+    // tooltip and (macOS) the represented filename its absolute path. The window is widened first
+    // until the name fits the field with the OS's status bar font (GTK's is wider than Cocoa's);
+    // "title after close" gives it its old size back.
+    const std::string first_name = "first_32x16_gray.yuv";
+    steps.push_back(step(
+        "title of a file",
+        [&frame, st, first_name] {
+            st->client0 = frame.GetClientSize();
+            wxStatusBar* const bar = frame.GetStatusBar();
+            wxRect rect;
+            if (bar == nullptr ||
+                !bar->GetFieldRect(static_cast<int>(MainFrame::FILE_FIELD), rect)) {
+                return;
+            }
+            wxClientDC dc(bar);
+            // The name, the 8 DIP MainFrame::cutFileField keeps free and 8 DIP to spare.
+            const int needed =
+                dc.GetTextExtent(wxString::FromUTF8(first_name)).GetWidth() + frame.FromDIP(16);
+            if (rect.width < needed) {
+                // The file field gets 3 of the 10 shares of a wider window (spec §7).
+                const int more = (((needed - rect.width) * 10) + 2) / 3;
+                frame.SetClientSize(st->client0.x + more, st->client0.y);
+            }
+        },
+        [&frame, st, first_name](std::string& seen) {
+            const wxString path =
+                wxString::FromUTF8(dvv::media::utf8FromPath(st->dir / first_name));
+            const wxString title = wxString::FromUTF8(windowTitle(first_name, NATIVE_TITLE_STYLE));
+            const wxString tip = fieldTooltip(frame, MainFrame::FILE_FIELD);
+#if defined(__WXOSX__)
+            const wxString represented = representedFilename(frame);
+#else
+            const wxString& represented = path;
+#endif
+            seen = std::format(
+                "title '{}', file field '{}', path '{}', tooltip '{}', represented '{}', client "
+                "width {} (was {})",
+                frame.GetTitle().utf8_string(),
+                frame.statusTexts()[MainFrame::FILE_FIELD].utf8_string(),
+                frame.streamPath().utf8_string(), tip.utf8_string(), represented.utf8_string(),
+                frame.GetClientSize().x, st->client0.x);
+            return frame.GetTitle() == title &&
+                   frame.statusTexts()[MainFrame::FILE_FIELD] == wxString::FromUTF8(first_name) &&
+                   frame.streamPath() == path && tip == path && represented == path;
+        }));
+    // Review focus 1: a long UTF-8 name at the minimum width is cut in the middle, keeps its
+    // extension, and the tooltip still gives the whole path.
+    const std::string long_name =
+        std::string(100, 'a') + "\xD0\xBA\xD0\xB0\xD0\xB4\xD1\x80_32x16_gray.yuv";
+    steps.push_back(step(
+        "long file name",
+        [&frame, st, long_name] {
+            const auto file = st->dir / dvv::media::pathFromUtf8(long_name);
+            writeFile(file, 1024, '\x40');
+            frame.openFiles({file});
+            frame.SetClientSize(frame.GetMinClientSize().x, frame.GetClientSize().y);
+        },
+        [&frame, st, long_name, stream_is](std::string& seen) {
+            const wxString path = wxString::FromUTF8(
+                dvv::media::utf8FromPath(st->dir / dvv::media::pathFromUtf8(long_name)));
+            seen = std::format("gray 32x16 {}, path '{}'", stream_is(32, 16, "gray"),
+                               frame.streamPath().utf8_string());
+            return stream_is(32, 16, "gray") && frame.streamPath() == path;
+        }));
+    steps.push_back(
+        step("long file name is cut in the middle", {}, [&frame, st, long_name](std::string& seen) {
+            const wxString name = wxString::FromUTF8(long_name);
+            const wxString path = wxString::FromUTF8(
+                dvv::media::utf8FromPath(st->dir / dvv::media::pathFromUtf8(long_name)));
+            const wxString field = frame.statusTexts()[MainFrame::FILE_FIELD];
+            const wxString tip = fieldTooltip(frame, MainFrame::FILE_FIELD);
+            // Review focus 1: the title is never cut, whatever the field shows.
+            const wxString title = wxString::FromUTF8(windowTitle(long_name, NATIVE_TITLE_STYLE));
+            seen = std::format(
+                "client width {} (minimum {}), file field '{}', tooltip '{}', title '{}'",
+                frame.GetClientSize().x, frame.GetMinClientSize().x, field.utf8_string(),
+                tip.utf8_string(), frame.GetTitle().utf8_string());
+            // wxControl::Ellipsize puts wx's "..." where it cuts; the extension stays (spec §7).
+            return frame.GetClientSize().x == frame.GetMinClientSize().x && field != name &&
+                   field.Contains("...") && field.StartsWith("a") && field.EndsWith(".yuv") &&
+                   tip == path && frame.GetTitle() == title;
+        }));
+    steps.push_back(step(
+        "title after close",
+        [&frame, st] {
+            frame.execute(Command::CloseStreams);
+            frame.SetClientSize(st->client0);
+        },
+        [&frame](std::string& seen) {
+            const wxString tip = fieldTooltip(frame, MainFrame::FILE_FIELD);
+            wxString represented;
+#if defined(__WXOSX__)
+            represented = representedFilename(frame);
+#endif
+            seen = std::format(
+                "streams {}, title '{}', file field '{}', tooltip '{}', "
+                "represented '{}'",
+                frame.streams().size(), frame.GetTitle().utf8_string(),
+                frame.statusTexts()[MainFrame::FILE_FIELD].utf8_string(), tip.utf8_string(),
+                represented.utf8_string());
+            return frame.streams().empty() && frame.GetTitle() == "rawreel" &&
+                   frame.statusTexts()[MainFrame::FILE_FIELD].empty() && tip.empty() &&
+                   represented.empty();
         }));
     // §8.5: an FFV1/MKV drop opens through the ffmpeg provider without a format dialog.
     wxString mkv_text;
@@ -5913,17 +6795,19 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             seen.clear();
             TransportBar& bar = frame.transportBar();
             bool centred = true;
-            for (const int width_dip : {400, 1000}) {
-                bar.SetSize(bar.FromDIP(width_dip), bar.GetSize().y);
+            // 400 DIP, or the bar's minimum when Open, Format, the group and "i" need more.
+            const int narrow = std::max(bar.FromDIP(400), bar.GetEffectiveMinSize().x);
+            for (const int set_width : {narrow, bar.FromDIP(1000)}) {
+                bar.SetSize(set_width, bar.GetSize().y);
                 bar.Layout();
                 const wxRect group = bar.groupRectForTest();
                 const int width = bar.GetClientSize().x;
                 const int centre = group.x + (group.width / 2);
                 // The buttons' sizer border is 2 DIP (transport_bar.cpp).
-                const int open_x = bar.openButtonForTest().GetPosition().x;
+                const int open_x = bar.buttonForTest(Command::Open).GetPosition().x;
                 const bool ok = std::abs((2 * centre) - width) <= 2 && open_x == bar.FromDIP(2);
-                seen += std::format("{} DIP: width {}, group {}+{}, Open x {}, centred {}; ",
-                                    width_dip, width, group.x, group.width, open_x, ok);
+                seen += std::format("width {} ({} DIP), group {}+{}, Open x {}, centred {}; ",
+                                    width, bar.ToDIP(width), group.x, group.width, open_x, ok);
                 centred = centred && ok;
             }
             frame.playerPanel().Layout();

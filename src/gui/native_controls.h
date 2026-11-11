@@ -64,6 +64,12 @@ void showSliderGhost(wxSlider& slider, std::optional<int> x);
 // name (wxUSE_ACCESSIBILITY; without it, nothing). Other toolkits: nothing.
 void setAccessibleName(wxWindow& window, const wxString& name);
 
+// A label in the OS's secondary text colour (window title and Info design §11): macOS
+// NSColor.secondaryLabelColor resolved for the window's effective appearance (call it again on
+// wxEVT_SYS_COLOUR_CHANGED); GTK the "dim-label" style class; Windows and other toolkits: nothing
+// (the normal window text).
+void setSecondaryText(wxWindow& label);
+
 // A Settings page icon (Log pane and Settings design §5.1): on macOS the SF Symbol `sf_symbol` (a
 // template image, so it follows the light and dark appearance), as wxOSX requires an icon for
 // every page; elsewhere an empty bundle (the tabs show no icon).
@@ -85,6 +91,8 @@ void revealInFileManager(const std::filesystem::path& file_or_folder);
 // whose window delegate would send it back to the main window as a menu event.
 [[nodiscard]] bool canUndoText(wxWindow& window, bool redo);
 bool undoText(wxWindow& window, bool redo);  // false when there was nothing to undo or redo
+// The NSWindow's representedFilename (spec §5, §8: what SetRepresentedFilename set); "" for none.
+[[nodiscard]] wxString representedFilename(wxTopLevelWindow& window);
 #endif
 
 #if defined(__WXGTK__)

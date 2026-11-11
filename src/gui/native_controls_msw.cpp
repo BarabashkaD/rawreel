@@ -102,6 +102,9 @@ std::optional<wxRect> sliderThumbRect(const wxSlider& slider) {
 // Not drawn yet on this toolkit (spec §6.4): skimming still previews and moves the number.
 void showSliderGhost(wxSlider& /*slider*/, std::optional<int> /*x*/) {}
 
+// Windows: labels keep the normal window text (as File Properties).
+void setSecondaryText(wxWindow& /*label*/) {}
+
 // No icons on the tabs of the Windows dialog.
 wxBitmapBundle settingsPageIcon(std::string_view /*sf_symbol*/) {
     return {};

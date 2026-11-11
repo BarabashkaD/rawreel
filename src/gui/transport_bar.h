@@ -2,8 +2,9 @@
 
 // The transport bar under the viewport (design M3 v2 §4.3, D17; video control panel spec §5, §7):
 // the timeline strip with the frame numbers, the seek slider, then a row of Lucide icon buttons:
-// Open on the left and First, StepBack, Play/Pause, Stop, StepForward, Last and the Loop toggle
-// centred on the bar. Buttons never take the focus, so Space and the arrows always reach the
+// Open and Format on the left, First, StepBack, Play/Pause, Stop, StepForward, Last and the Loop
+// toggle centred on the bar, and the "i" toggle (the Info window) at the right end (window title
+// and Info design §12). Buttons never take the focus, so Space and the arrows always reach the
 // frame's char hook.
 
 // clang-format off
@@ -14,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include <wx/bmpbndl.h>
@@ -68,6 +70,11 @@ public:
     void frameActivated(bool active);
     // The skim key's wxEVT_KEY_UP anywhere (SkimKeyRelease): returns from a skim.
     void skimKeyReleased();
+    // The "i" toggle's value: whether the Info window is shown (MainFrame::infoShown).
+    void setInfoShown(bool shown);
+    // The "i" tooltip: the command's tooltip, then "\n" + `hint` (design §13); "": the first line
+    // alone.
+    void setInfoHint(const std::string& hint);
     [[nodiscard]] wxSlider& slider() noexcept { return *slider_; }
     [[nodiscard]] ScrubState scrubState() const noexcept { return scrub_; }
     // Logs each state change at Info ("transport: scrub Idle -> Scrubbing"), every left-down on the
@@ -98,7 +105,8 @@ public:
     [[nodiscard]] int iconRebuildsForTest() const noexcept { return icon_rebuilds_; }
     // The union of the centred group's buttons (First ... Loop), in the bar's client coordinates.
     [[nodiscard]] wxRect groupRectForTest() const;
-    [[nodiscard]] wxWindow& openButtonForTest() noexcept { return *open_; }
+    // The button that runs `command` (one of the bar's: Open, Format, First ... Loop, InfoWindow).
+    [[nodiscard]] wxAnyButton& buttonForTest(Command command);
     [[nodiscard]] TimelineStrip& timelineStripForTest() noexcept { return *strip_; }
     // The ghost thumb's wx client x while Skimming (spec §6.4); nullopt: none shown.
     [[nodiscard]] std::optional<int> ghostForTest() const noexcept { return ghost_x_; }
@@ -149,13 +157,17 @@ private:
     dvv::MoveOnlyFunction<void(int)> update_observer_;
     dvv::MoveOnlyFunction<void(std::int64_t)> seek_observer_;
     dvv::MoveOnlyFunction<wxColour(wxSystemColour)> system_colour_;
-    // Child windows: wx owns them. `buttons_` in row order, Open first; the rest form the group.
+    // Child windows: wx owns them. `buttons_` in row order: Open, Format, the group, "i".
     std::vector<IconButton> buttons_;
     wxBitmapButton* open_ = nullptr;
+    wxBitmapButton* format_ = nullptr;
+    wxBitmapToggleButton* info_ = nullptr;
     wxBitmapButton* play_ = nullptr;
     wxBitmapToggleButton* loop_ = nullptr;
-    wxSizerItem* open_item_ = nullptr;                // Open in the transport row (its border)
-    wxSizerItem* spacer_ = nullptr;                   // Open's width at the row's right end
+    wxSizerItem* open_item_ = nullptr;    // Open in the transport row (its border)
+    wxSizerItem* format_item_ = nullptr;  // Format in the transport row
+    wxSizerItem* info_item_ = nullptr;    // "i" in the transport row
+    wxSizerItem* spacer_ = nullptr;       // left of "i": the two sides of the group equally wide
     std::array<wxBitmapBundle, ICON_COUNT> bundles_;  // in Icon order, tinted with `tint_`
     wxColour tint_;
     int icon_rebuilds_ = 0;

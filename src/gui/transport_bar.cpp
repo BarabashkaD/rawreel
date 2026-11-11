@@ -5,6 +5,7 @@
 #include "gui/transport_bar.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -69,8 +70,9 @@ wxString fromUtf8(std::string_view text) {
 
 }  // namespace
 
-// Spec §5.1: the slider row, then [Open] stretch [group] stretch [spacer]. The spacer is as wide
-// as Open with its border, so the group is centred on the whole bar.
+// Spec §5.1, window title and Info design §12: the slider row, then [Open][Format] stretch [group]
+// stretch [spacer]["i"]. The spacer makes the right side as wide as the left (syncSpacer), so the
+// group is centred on the whole bar.
 TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)> execute,
                            dvv::MoveOnlyFunction<void(std::int64_t)> seek,
                            dvv::MoveOnlyFunction<BarStatus()> read_status)
@@ -98,6 +100,8 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
     auto* row = new wxBoxSizer(wxHORIZONTAL);
     open_ = addButton(*row, Command::Open, Icon::FolderOpen);
     open_item_ = row->GetItem(open_);
+    format_ = addButton(*row, Command::Format, Icon::SlidersHorizontal);
+    format_item_ = row->GetItem(format_);
     row->AddStretchSpacer();
     auto* group = new wxBoxSizer(wxHORIZONTAL);
     addButton(*group, Command::First, Icon::SkipBack);
@@ -114,6 +118,12 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
     row->Add(group);
     row->AddStretchSpacer();
     spacer_ = row->Add(0, 0);
+    info_ =
+        new wxBitmapToggleButton(this, wxID_ANY, bundles_[static_cast<std::size_t>(Icon::Info)]);
+    info_->Bind(wxEVT_TOGGLEBUTTON,
+                [this](wxCommandEvent& /*event*/) { execute_(Command::InfoWindow); });
+    setUp(*info_, Command::InfoWindow, Icon::Info);
+    info_item_ = row->Add(info_, wxSizerFlags().Border(wxALL, border));
     syncSpacer();
 
     auto* sizer = new wxBoxSizer(wxVERTICAL);
@@ -142,7 +152,7 @@ wxBitmapButton* TransportBar::addButton(wxSizer& sizer, Command command, Icon ic
 }
 
 // No caption and no focus; the tooltip and the names come from the command table (spec §7). Every
-// button but Open waits for a stream (CP-D4).
+// button but Open and "i" waits for a stream (CP-D4, window title and Info design §12).
 void TransportBar::setUp(wxAnyButton& button, Command command, Icon icon) {
     const CommandInfo& info = commandInfo(command);
     button.SetCanFocus(false);
@@ -153,7 +163,7 @@ void TransportBar::setUp(wxAnyButton& button, Command command, Icon icon) {
         label.remove_suffix(std::string_view("...").size());
     }
     setAccessibleName(button, fromUtf8(label));
-    if (command != Command::Open) {
+    if (command != Command::Open && command != Command::InfoWindow) {
         button.Disable();
     }
     applyMinSize(button);
@@ -169,9 +179,28 @@ void TransportBar::applyMinSize(wxAnyButton& button) {
     button.SetMinSize(wxSize(std::max(native.x, least.x), std::max(native.y, least.y)));
 }
 
+// The right side (the spacer and "i") as wide as the left (Open and Format), with their borders.
 void TransportBar::syncSpacer() {
-    const int width = open_->GetEffectiveMinSize().x + (2 * open_item_->GetBorder());
-    spacer_->AssignSpacer(width, 0);
+    const auto side = [](const wxWindow& button, const wxSizerItem& item) {
+        return button.GetEffectiveMinSize().x + (2 * item.GetBorder());
+    };
+    const int width =
+        side(*open_, *open_item_) + side(*format_, *format_item_) - side(*info_, *info_item_);
+    spacer_->AssignSpacer(std::max(width, 0), 0);
+}
+
+void TransportBar::setInfoShown(bool shown) {
+    if (info_->GetValue() != shown) {
+        info_->SetValue(shown);
+    }
+}
+
+void TransportBar::setInfoHint(const std::string& hint) {
+    std::string tip = tooltipText(commandInfo(Command::InfoWindow), CMD_FOR_CTRL);
+    if (!hint.empty()) {
+        tip += "\n" + hint;
+    }
+    info_->SetToolTip(fromUtf8(tip));
 }
 
 wxColour TransportBar::systemColour(wxSystemColour index) {
@@ -212,11 +241,26 @@ void TransportBar::setSystemColourForTest(dvv::MoveOnlyFunction<wxColour(wxSyste
 }
 
 wxRect TransportBar::groupRectForTest() const {
-    wxRect rect;
-    for (std::size_t i = 1; i < buttons_.size(); ++i) {
-        rect = i == 1 ? buttons_[i].button->GetRect() : rect.Union(buttons_[i].button->GetRect());
+    static constexpr std::array<Command, 7> GROUP{
+        Command::First,       Command::StepBack, Command::PlayPause, Command::Stop,
+        Command::StepForward, Command::Last,     Command::Loop};
+    std::optional<wxRect> rect;
+    for (const IconButton& entry : buttons_) {
+        if (std::ranges::find(GROUP, entry.command) != GROUP.end()) {
+            const wxRect button = entry.button->GetRect();
+            rect = rect ? rect->Union(button) : button;
+        }
     }
-    return rect;
+    return rect.value_or(wxRect());
+}
+
+wxAnyButton& TransportBar::buttonForTest(Command command) {
+    const auto found = std::ranges::find(buttons_, command, &IconButton::command);
+    if (found == buttons_.end()) {
+        DVV_LOG_ERROR("transport: no button for command {}", commandInfo(command).id);
+        return *open_;
+    }
+    return *found->button;
 }
 
 void TransportBar::setLeftButtonProbeForTest(dvv::MoveOnlyFunction<bool()> probe) {
@@ -504,15 +548,15 @@ void TransportBar::applyIdleView(bool fresh) {
     showStrip();
 }
 
-// CP-D4, as MainFrame::isAvailable: every button but Open waits for a stream, Last also for a
-// known length. Enable states, bitmaps and values change only when they differ.
+// CP-D4, as MainFrame::isAvailable: every button but Open and "i" waits for a stream, Last also for
+// a known length. Enable states, bitmaps and values change only when they differ.
 void TransportBar::showStatus() {
     const PlayerStatus& status = last_status_.player;
     for (const IconButton& entry : buttons_) {
         bool enabled = true;
         if (entry.command == Command::Last) {
             enabled = last_status_.hasStream && status.length.has_value();
-        } else if (entry.command != Command::Open) {
+        } else if (entry.command != Command::Open && entry.command != Command::InfoWindow) {
             enabled = last_status_.hasStream;
         }
         if (entry.button->IsEnabled() != enabled) {

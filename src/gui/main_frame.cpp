@@ -27,6 +27,7 @@
 
 #include <wx/filedlg.h>
 #include <wx/textdlg.h>
+#include <wx/tooltip.h>
 
 #include "core/config.h"
 #include "core/config_writer.h"
@@ -40,6 +41,7 @@
 #include "core/session.h"
 #include "core/startup.h"
 #include "core/status_text.h"
+#include "core/stream_name.h"
 #include "core/version_text.h"
 #include "dvv/base/json.h"
 #include "dvv/base/log.h"
@@ -54,7 +56,6 @@
 #include "gui/drop_target.h"
 #include "gui/edit_dispatch.h"
 #include "gui/format_dialog.h"
-#include "gui/info_panel.h"
 #include "gui/log_panel.h"
 #include "gui/player_panel.h"
 #include "gui/selftest.h"
@@ -75,9 +76,8 @@ BarStatus barStatus(const SessionStatus& status) {
         .player = status.player, .hasStream = true, .streamGeneration = status.streamGeneration};
 }
 
-// The docks' smallest panes (M4 GUI D8), DIP: Info's width, Log's height without its caption
-// (about three lines of the log).
-constexpr int INFO_MIN_WIDTH_DIP = 160;
+// The Log pane's smallest height (M4 GUI D8), DIP, without its caption (about three lines of the
+// log).
 constexpr int LOG_MIN_HEIGHT_DIP = 60;
 // Added to the computed minimum client size: wxAUI's rows can come out 1 px short of it (two
 // bottom rows at 150 %), which must not put the viewport below 320x240 DIP.
@@ -89,11 +89,28 @@ constexpr std::string_view OPEN_URI_EXAMPLE =
     "synthetic:gradient?fmt=yuv420p&size=1920x1080&frames=250";  // X15
 // Spec §2: the notice field's width comes from this text.
 constexpr const char* LONG_LOG_NOTICE = "99 errors, 99 warnings in the log";
+// Spec §7: the variable status fields' shares of the width the fixed fields leave (file,
+// position, rate, bottleneck), and the file field's width at the main window's minimum.
+constexpr std::array<int, 4> VARIABLE_FIELD_SHARES{3, 3, 2, 2};
+constexpr int FILE_FIELD_MINIMUM_DIP = 120;
+// The four variable fields together at the minimum, so that the file field gets its 120 DIP.
+constexpr int VARIABLE_FIELDS_MINIMUM_DIP = FILE_FIELD_MINIMUM_DIP *
+                                            (VARIABLE_FIELD_SHARES[0] + VARIABLE_FIELD_SHARES[1] +
+                                             VARIABLE_FIELD_SHARES[2] + VARIABLE_FIELD_SHARES[3]) /
+                                            VARIABLE_FIELD_SHARES[0];
 
 #if defined(__WXOSX__)
 // View -> Show Log / Hide Log (spec §2): the macOS item's title.
 wxString logItemTitle(bool shown) {
     return shown ? "Hide Log" : "Show Log";
+}
+// View -> Show Info / Hide Info (window title and Info design §10), with "\t<key>": wxOSX builds
+// the key equivalent from the label at Append and at every SetText, so the title keeps the key.
+// (Show Log / Hide Log need no suffix: View -> Log has no key.)
+wxString infoItemTitle(bool shown) {
+    const CommandInfo& info = commandTable()[static_cast<std::size_t>(Command::InfoWindow)];
+    const wxString title = shown ? "Hide Info" : "Show Info";
+    return info.key ? title + "\t" + wxString::FromUTF8(keyText(*info.key)) : title;
 }
 #endif
 
@@ -117,15 +134,6 @@ std::string_view sourceName(CommandSource source) noexcept {
         case CommandSource::Button: return "button";
     }
     return "?";
-}
-
-// The file name of a file: URI (the infobar's short form); the URI itself otherwise.
-std::string fileName(const std::string& uri) {
-    const dvv::Result<dvv::Uri> parsed = dvv::parseUri(uri);
-    if (!parsed || parsed->scheme != "file" || parsed->path.empty()) {
-        return uri;
-    }
-    return dvv::media::utf8FromPath(dvv::media::pathFromUtf8(parsed->path).filename());
 }
 
 // A file dialog's start folder (M4 GUI D6); empty lets the system choose.
@@ -212,7 +220,24 @@ std::optional<std::string> writeTextFile(const std::filesystem::path& file,
     return std::nullopt;
 }
 
-// D5R §2.2: the 4th status field, the display mapping of the active (first) stream.
+// The widths of the status bar's two fixed fields at its font. D5R §2.2: the display mapping is
+// as wide as its longest text plus a margin. Spec §2 (Log pane): the Log notice is as wide as a
+// long notice plus the same margin.
+std::array<int, 2> fixedFieldWidths(wxStatusBar& bar) {
+    wxClientDC dc(&bar);
+    int mapping = 0;
+    for (const dvv::media::TransferFn curve :
+         {dvv::media::TransferFn::Pq, dvv::media::TransferFn::Hlg,
+          dvv::media::TransferFn::Bt1886}) {
+        dvv::media::ColourParams sample{};
+        sample.transfer = curve;
+        mapping = std::max(mapping, dc.GetTextExtent(wxString::FromUTF8(mappingText(&sample))).x);
+    }
+    const int margin = bar.FromDIP(24);
+    return {mapping + margin, dc.GetTextExtent(LONG_LOG_NOTICE).x + margin};
+}
+
+// D5R §2.2: the mapping status field, the display mapping of the active (first) stream.
 wxString mappingField(const std::vector<StreamInfo>& streams) {
     return wxString::FromUTF8(
         mappingText(streams.empty() ? nullptr : &streams.front().colour.params));
@@ -290,8 +315,6 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     viewport_->SetDropTarget(new DropTarget(open));
     // NOLINTNEXTLINE(cppcoreguidelines-owning-memory): wx takes ownership
     player_->SetDropTarget(new DropTarget(open));
-    info_ = new InfoPanel(this);
-    info_->setText(formatInfo({}));  // "No stream. ..." until the first streamsChanged
     log_ = new LogPanel(this, wxGetApp().config().log.source);
     log_->setSaveHandler([this](bool selected) {  // the list's context menu (spec §4.3)
         execute(selected ? Command::SaveSelectedLines : Command::SaveLog, CommandSource::Menu);
@@ -299,13 +322,6 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     // The centre pane never floats, so the viewport's native child window is never re-parented
     // (M1b F14); no border, so the presented extent equals the pane.
     aui_.AddPane(player_, wxAuiPaneInfo().Name("player").CenterPane().PaneBorder(false));
-    aui_.AddPane(info_, wxAuiPaneInfo()
-                            .Name("info")
-                            .Caption("Info")
-                            .Right()
-                            .BestSize(FromDIP(wxSize(320, 400)))
-                            .MinSize(FromDIP(wxSize(INFO_MIN_WIDTH_DIP, -1)))
-                            .CloseButton(false));
     // Spec §2: hidden unless the config says otherwise; a selftest always starts with it hidden.
     log_shown_at_start_ =
         wxGetApp().config().gui.showLogPane && App::arguments().selftest == Scenario::None;
@@ -450,6 +466,10 @@ void MainFrame::buildMenus() {
             menu->Append(menuId(info.command), logItemTitle(logShown()), help);
             continue;
         }
+        if (info.command == Command::InfoWindow) {
+            menu->Append(menuId(info.command), infoItemTitle(infoShown()), help);
+            continue;
+        }
         menu->Append(menuId(info.command), label, help);
 #else
         if (info.checkable) {
@@ -493,24 +513,51 @@ void MainFrame::buildMenus() {
 }
 
 void MainFrame::buildStatusBar() {
-    CreateStatusBar(static_cast<int>(status_texts_.size()));
-    // D5R §2.2: field 3 (the display mapping) is as wide as its longest text plus a margin.
-    wxClientDC dc(GetStatusBar());
-    int mapping = 0;
-    for (const dvv::media::TransferFn curve :
-         {dvv::media::TransferFn::Pq, dvv::media::TransferFn::Hlg,
-          dvv::media::TransferFn::Bt1886}) {
-        dvv::media::ColourParams sample{};
-        sample.transfer = curve;
-        mapping = std::max(mapping, dc.GetTextExtent(wxString::FromUTF8(mappingText(&sample))).x);
-    }
-    mapping += FromDIP(24);
-    // Spec §2: field 4, the Log notice, is as wide as a long notice plus the same margin; a left
-    // click inside it shows the pane.
-    const int notice = dc.GetTextExtent(LONG_LOG_NOTICE).x + FromDIP(24);
-    const std::array<int, 5> widths{-3, -2, -2, mapping, notice};
+    // Spec §7: without wxSTB_SHOW_TIPS, which shows only a cut field's own text and asserts on a
+    // tooltip set by hand; the bar keeps its size grip and its end cut.
+    CreateStatusBar(static_cast<int>(status_texts_.size()), wxSTB_DEFAULT_STYLE & ~wxSTB_SHOW_TIPS);
+    const std::array<int, 2> fixed = fixedFieldWidths(*GetStatusBar());
+    const std::array<int, STATUS_FIELD_COUNT> widths{-VARIABLE_FIELD_SHARES[0],
+                                                     -VARIABLE_FIELD_SHARES[1],
+                                                     -VARIABLE_FIELD_SHARES[2],
+                                                     -VARIABLE_FIELD_SHARES[3],
+                                                     fixed[0],
+                                                     fixed[1]};
     SetStatusWidths(static_cast<int>(widths.size()), widths.data());
-    GetStatusBar()->Bind(wxEVT_LEFT_UP, &MainFrame::onStatusBarLeftUp, this);
+#if defined(__WXMSW__)
+    // Spec §7: wxMSW caps a tooltip at min(400 px, half the display); a path stays on one line
+    // where it fits.
+    wxToolTip::SetMaxWidth(FromDIP(800));
+#endif
+    wxStatusBar* const bar = GetStatusBar();
+    bar->Bind(wxEVT_LEFT_UP, &MainFrame::onStatusBarLeftUp, this);
+    bar->Bind(wxEVT_MOTION, &MainFrame::onStatusBarMotion, this);
+    bar->Bind(wxEVT_LEAVE_WINDOW, [this](wxMouseEvent& event) {
+        event.Skip();
+        if (wxStatusBar* const status_bar = GetStatusBar(); status_bar != nullptr) {
+            status_bar->UnsetToolTip();
+        }
+        tip_field_.reset();
+        tip_text_.clear();
+    });
+    bar->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+        event.Skip();
+        // This handler runs before the bar's own: re-cut once wx has laid the fields out.
+        CallAfter([this] {
+            if (!closing_) {
+                cutFileField();
+            }
+        });
+    });
+}
+
+int MainFrame::statusFixedWidth() const {
+    wxStatusBar* const bar = GetStatusBar();
+    if (bar == nullptr) {
+        return 0;
+    }
+    const std::array<int, 2> fixed = fixedFieldWidths(*bar);
+    return fixed[0] + fixed[1];
 }
 
 Session& MainFrame::session() const noexcept {
@@ -536,11 +583,13 @@ bool MainFrame::isAvailable(Command command) const {
         case Command::Reopen:  // D25: also with a healthy stack (rebuilds it) or without a stream
         case Command::GpuInfo:
         case Command::LogPane:
+        case Command::InfoWindow:
         case Command::Diagnostics:
         case Command::Settings:
         case Command::About: return true;
 #if defined(__WXOSX__)
-        case Command::CloseStreams: return hasStream() || settingsInFront() != nullptr;
+        case Command::CloseStreams:
+            return hasStream() || settingsInFront() != nullptr || infoInFront() != nullptr;
 #else
         case Command::CloseStreams:
 #endif
@@ -582,6 +631,11 @@ void MainFrame::execute(Command command, CommandSource source) {
             settings->Close();
             return;
         }
+        // Window title and Info design §10: the Info window too, through setInfoShown.
+        if (infoInFront() != nullptr) {
+            setInfoShown(false);
+            return;
+        }
     }
 #endif
     if (!isAvailable(command)) {
@@ -614,6 +668,10 @@ void MainFrame::execute(Command command, CommandSource source) {
     }
     if (command == Command::LogPane) {
         setLogShown(!logShown());
+        return;
+    }
+    if (command == Command::InfoWindow) {
+        setInfoShown(!infoShown());
         return;
     }
     if (command == Command::Settings) {
@@ -668,6 +726,7 @@ void MainFrame::execute(Command command, CommandSource source) {
         case Command::SaveSelectedLines:
         case Command::Format:
         case Command::LogPane:
+        case Command::InfoWindow:
         case Command::Settings:
         case Command::About: return;
     }
@@ -695,6 +754,17 @@ wxWindow* MainFrame::settingsInFront() const {
                                                                                      : nullptr;
 }
 #endif
+
+wxWindow* MainFrame::infoInFront() const {
+    InfoWindow* const info = info_window_.get();
+    if (info == nullptr) {
+        return nullptr;
+    }
+    // As settingsInFront(): wxOSX FindFocus() can be null while the window is the key window.
+    wxWindow* const focus = focusedWindow();
+    const bool focused = focus != nullptr && wxGetTopLevelParent(focus) == info;
+    return focused || (info->IsShown() && info->IsActive()) ? info : nullptr;
+}
 
 void MainFrame::showGpuInfo() {
     std::string text = "no GPU device is in use";
@@ -920,7 +990,7 @@ void MainFrame::onCharHook(wxKeyEvent& event) {
     const KeyChord chord =
         normaliseKey(event.GetKeyCode(), event.ControlDown(), event.ShiftDown(), event.AltDown());
     // An editable text entry and the Log list keep bare keys (D17; Log pane and Settings design
-    // §4.1); the read-only Info pane does not.
+    // §4.1).
     const bool keeps_keys =
         focusKeepsKeys(focusedWindow(), log_ != nullptr ? log_->list().control() : nullptr);
     if (const std::optional<Command> command = commandForKey(chord, keeps_keys)) {
@@ -1000,7 +1070,7 @@ bool MainFrame::reopenShown() const {
     return reopen_offered_ && player_->infoBar().IsShown();
 }
 
-std::array<wxString, 5> MainFrame::statusTexts() const {
+std::array<wxString, MainFrame::STATUS_FIELD_COUNT> MainFrame::statusTexts() const {
     return status_texts_;
 }
 
@@ -1047,11 +1117,98 @@ void MainFrame::updateLogNotice() {
 
 void MainFrame::onStatusBarLeftUp(wxMouseEvent& event) {
     event.Skip();
-    wxRect field;
-    if (const wxStatusBar* bar = GetStatusBar();
-        bar != nullptr && bar->GetFieldRect(static_cast<int>(LOG_NOTICE_FIELD), field) &&
-        field.Contains(event.GetPosition())) {
+    if (statusFieldAt(event.GetPosition()) == static_cast<int>(LOG_NOTICE_FIELD)) {
         setLogShown(true);
+    }
+}
+
+std::optional<int> MainFrame::statusFieldAt(const wxPoint& point) const {
+    // As the Log notice click: wx's GetFieldFromPoint exists only in the generic bar.
+    const wxStatusBar* const bar = GetStatusBar();
+    if (bar == nullptr) {
+        return std::nullopt;
+    }
+    for (int n = 0; n < bar->GetFieldsCount(); ++n) {
+        wxRect rect;
+        if (bar->GetFieldRect(n, rect) && rect.Contains(point)) {
+            return n;
+        }
+    }
+    return std::nullopt;
+}
+
+wxString MainFrame::statusTooltipFor(std::optional<int> field) const {
+    const wxStatusBar* const bar = GetStatusBar();
+    if (!field || bar == nullptr || *field < 0 ||
+        static_cast<std::size_t>(*field) >= status_texts_.size()) {
+        return {};
+    }
+    if (static_cast<std::size_t>(*field) == FILE_FIELD) {
+        return stream_path_;
+    }
+    return bar->GetField(*field).IsEllipsized() ? status_texts_[static_cast<std::size_t>(*field)]
+                                                : wxString();
+}
+
+void MainFrame::onStatusBarMotion(wxMouseEvent& event) {
+    event.Skip();
+    wxStatusBar* const bar = GetStatusBar();
+    if (bar == nullptr) {
+        return;
+    }
+    const std::optional<int> field = statusFieldAt(event.GetPosition());
+    const wxString tip = statusTooltipFor(field);
+    if (field != tip_field_) {
+        // Unset first: the next field's tooltip waits for the OS's hover delay again.
+        bar->UnsetToolTip();
+        tip_text_.clear();
+    }
+    if (tip != tip_text_) {
+        if (tip.empty()) {
+            bar->UnsetToolTip();
+        } else {
+            bar->SetToolTip(tip);
+        }
+    }
+    tip_field_ = field;
+    tip_text_ = tip;
+}
+
+void MainFrame::showStreamName() {
+    const std::string uri = streams_.empty() ? std::string() : streams_.front().resolvedUri;
+    std::string path;
+    bool file = false;
+    if (!uri.empty()) {
+        std::error_code error;
+        const std::filesystem::path folder = std::filesystem::current_path(error);
+        path = streamFullPath(uri, error ? std::string() : dvv::media::utf8FromPath(folder),
+                              NATIVE_PATH_STYLE);
+        const dvv::Result<dvv::Uri> parsed = dvv::parseUri(uri);
+        file = parsed && parsed->scheme == "file";
+    }
+    const std::string name = uri.empty() ? std::string() : streamName(uri);
+    stream_name_ = wxString::FromUTF8(name);
+    stream_path_ = wxString::FromUTF8(path);
+    SetTitle(wxString::FromUTF8(windowTitle(name, NATIVE_TITLE_STYLE)));
+    // A no-op except on wxOSX (spec §5): the proxy icon and the path menu of the title.
+    SetRepresentedFilename(file ? stream_path_ : wxString());
+    cutFileField();
+}
+
+void MainFrame::cutFileField() {
+    wxStatusBar* const bar = GetStatusBar();
+    wxRect rect;
+    if (bar == nullptr || !bar->GetFieldRect(static_cast<int>(FILE_FIELD), rect)) {
+        return;
+    }
+    wxClientDC dc(bar);
+    const wxString shown =
+        stream_name_.empty()
+            ? wxString()
+            : wxControl::Ellipsize(stream_name_, dc, wxELLIPSIZE_MIDDLE, rect.width - FromDIP(8));
+    if (shown != status_texts_[FILE_FIELD]) {
+        status_texts_[FILE_FIELD] = shown;
+        SetStatusText(shown, static_cast<int>(FILE_FIELD));
     }
 }
 
@@ -1095,18 +1252,23 @@ void MainFrame::onStreamsChanged(const std::vector<StreamInfo>& streams) {
             DVV_LOG_INFO("stream {}: {}", stream.slot, note);
         }
     }
-    info_->setText(formatInfo(streams_));
     // D5R §2.2: the mapping field changes with the stream (open, reopen, Format, close), not on
     // the status tick.
-    status_texts_[3] = mappingField(streams_);
-    SetStatusText(status_texts_[3], 3);
+    status_texts_[MAPPING_FIELD] = mappingField(streams_);
+    SetStatusText(status_texts_[MAPPING_FIELD], static_cast<int>(MAPPING_FIELD));
+    showStreamName();  // spec §5, §7: the title and the file field change with it
+    if (info_window_) {
+        info_window_->showFor(streams_.empty() ? nullptr : &streams_.front());
+    }
+    // §13: the "i" tooltip's second line follows the stream.
+    transportBar().setInfoHint(streams_.empty() ? "" : infoHint(streams_.front()));
     const std::array<InfoButton, 1> format_button{
         {{.id = INFOBAR_FORMAT_ID, .label = "Format..."}}};
     for (const StreamInfo& stream : streams_) {
         for (const std::string& warning : stream.info.warnings) {
             if (warning.find("trailing bytes ignored") != std::string::npos) {
                 // §7: the size is probably wrong; the button opens View -> Format...
-                showMessage(wxString::FromUTF8(fileName(stream.resolvedUri) + ": " + warning),
+                showMessage(wxString::FromUTF8(streamName(stream.resolvedUri) + ": " + warning),
                             wxICON_INFORMATION, format_button);
             } else {
                 showMessage(wxString::FromUTF8(stream.resolvedUri + ": " + warning),
@@ -1195,16 +1357,35 @@ void MainFrame::onUpdateUi(wxUpdateUIEvent& event) {
         event.Check(logShown());
 #endif
     }
+    if (command == Command::InfoWindow) {  // §10: the item follows the window
+#if defined(__WXOSX__)
+        event.SetText(infoItemTitle(infoShown()));
+#else
+        event.Check(infoShown());
+#endif
+    }
 }
 
 void MainFrame::onEditMenu(wxCommandEvent& event) {
+    if (closing_) {
+        return;
+    }
+    // Window title and Info design §10: Copy with the Info window in front copies its rows.
+    if (event.GetId() == wxID_COPY && infoInFront() != nullptr) {
+        setClipboardText(infoCopyText(streams_.empty() ? nullptr : &streams_.front()));
+        return;
+    }
     // The action is called on the focused control; the event is never sent again (spec §4.2).
-    if (!closing_ && log_ != nullptr) {
+    if (log_ != nullptr) {
         (void)runEdit(event.GetId(), focusedWindow(), *log_);
     }
 }
 
 void MainFrame::onEditUpdateUi(wxUpdateUIEvent& event) {
+    if (!closing_ && event.GetId() == wxID_COPY && infoInFront() != nullptr) {
+        event.Enable(true);  // §10 Copy: always, "No stream" too
+        return;
+    }
     event.Enable(!closing_ && log_ != nullptr && canEdit(event.GetId(), focusedWindow(), *log_));
 }
 
@@ -1290,9 +1471,9 @@ void MainFrame::onStatusChanged() {
                                         wxString::FromUTF8(fields.fps),
                                         wxString::FromUTF8(fields.bottleneck)};
     for (std::size_t i = 0; i < texts.size(); ++i) {
-        if (texts[i] != status_texts_[i]) {
-            status_texts_[i] = texts[i];
-            SetStatusText(texts[i], static_cast<int>(i));
+        if (texts[i] != status_texts_[FIRST_TICK_FIELD + i]) {
+            status_texts_[FIRST_TICK_FIELD + i] = texts[i];
+            SetStatusText(texts[i], static_cast<int>(FIRST_TICK_FIELD + i));
         }
     }
 }
@@ -1301,6 +1482,7 @@ void MainFrame::onIconize(wxIconizeEvent& event) {
     if (viewport_ != nullptr) {
         viewport_->topLevelIconized(event.IsIconized());
     }
+    infoFollowsFrame(event.IsIconized());
     event.Skip();
 }
 
@@ -1310,7 +1492,10 @@ void MainFrame::applyLayoutLimits() {
     // plus a small margin for wxAUI's rounding.
     const wxSize computed = aui_.minimumClientSize();
     applied_minimum_ = computed;  // checkLayoutLimits() compares the computed value
-    const wxSize minimum = computed + FromDIP(wxSize(LAYOUT_MARGIN_DIP, LAYOUT_MARGIN_DIP));
+    wxSize minimum = computed + FromDIP(wxSize(LAYOUT_MARGIN_DIP, LAYOUT_MARGIN_DIP));
+    // Spec §7: the status bar's fixed fields plus room for the variable ones, so that the file
+    // field keeps 120 DIP and never shrinks to nothing.
+    minimum.x = std::max(minimum.x, statusFixedWidth() + FromDIP(VARIABLE_FIELDS_MINIMUM_DIP));
     SetMinClientSize(minimum);
     // A dock change can raise the minimum above the client size (a pane docked as a new row), and
     // Windows applies a minimum only on the next resize: grow to it now.
@@ -1339,8 +1524,8 @@ void MainFrame::checkLayoutLimits() {
         // the map, so the minimum client size can end up below the one applied: apply it again.
         // MSW and wxOSX know the decorations when the window is created (wxOSX's menu bar is not
         // in the window), so their minimum client size stays as applied.
-        const wxSize wanted =
-            applied_minimum_ + FromDIP(wxSize(LAYOUT_MARGIN_DIP, LAYOUT_MARGIN_DIP));
+        wxSize wanted = applied_minimum_ + FromDIP(wxSize(LAYOUT_MARGIN_DIP, LAYOUT_MARGIN_DIP));
+        wanted.x = std::max(wanted.x, statusFixedWidth() + FromDIP(VARIABLE_FIELDS_MINIMUM_DIP));
         const wxSize effective = GetMinClientSize();
         stale = stale || effective.x < wanted.x || effective.y < wanted.y;
 #endif
@@ -1368,12 +1553,62 @@ void MainFrame::onShow(wxShowEvent& event) {
     if (viewport_ != nullptr) {
         viewport_->topLevelShown(event.IsShown());
     }
+#if defined(__WXGTK__)
+    infoFollowsFrame(!event.IsShown());  // X11 has no WM-independent iconify: Hide and Show
+#endif
     if (event.IsShown() && !std::exchange(first_shown_, true)) {
         // wx gives the first focusable child the focus when the window appears, which can be a
         // panel of the Log pane (shown or hidden): after that, the player has it.
         CallAfter([this] { moveFocusOutOfLog(); });
     }
     event.Skip();
+}
+
+// Every show and hide of the Info window (the command, its close box, Esc, the keys) comes here;
+// the "i" toggle follows (window title and Info design §12).
+void MainFrame::setInfoShown(bool shown) {
+    if (closing_) {
+        return;
+    }
+    if (shown != infoShown()) {
+        info_hidden_by_iconize_ = false;
+        if (!shown) {
+            info_window_->hideKeepingPlace();
+        } else {
+            if (!info_window_) {
+                info_window_ = new InfoWindow(*this);  // a child top-level window: wx owns it
+            }
+            info_window_->showFor(streams_.empty() ? nullptr : &streams_.front());
+#if defined(__WXGTK__)
+            // X11: Hide stands for iconify (onShow).
+            const bool frame_hidden = IsIconized() || !IsShown();
+#else
+            const bool frame_hidden = IsIconized();
+#endif
+            if (frame_hidden) {
+                info_hidden_by_iconize_ = true;  // shown with the main window when restored
+            } else {
+                info_window_->showBesideOwner();
+            }
+        }
+    }
+    transportBar().setInfoShown(infoShown());
+}
+
+bool MainFrame::infoShown() const {
+    return info_window_ && (info_window_->IsShown() || info_hidden_by_iconize_);
+}
+
+void MainFrame::infoFollowsFrame(bool frame_hidden) {
+    if (closing_ || !info_window_) {
+        return;
+    }
+    if (frame_hidden && info_window_->IsShown()) {
+        info_hidden_by_iconize_ = true;
+        info_window_->hideKeepingPlace();
+    } else if (!frame_hidden && std::exchange(info_hidden_by_iconize_, false)) {
+        info_window_->restoreAfterIconize();
+    }
 }
 
 void MainFrame::moveFocusOutOfLog() {
@@ -1419,6 +1654,10 @@ void MainFrame::onClose(wxCloseEvent& event) {
     }
     if (settings_) {
         settings_->dismiss();  // spec §5.1: before the Session shuts down
+    }
+    if (info_window_) {
+        info_window_->Destroy();  // §10: it closes with the main window, before the Session goes
+        info_window_ = nullptr;
     }
     if (viewport_ != nullptr) {
         viewport_->detachStack();  // setOnChanged({}), presenter, renderer, context

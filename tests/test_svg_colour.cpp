@@ -35,10 +35,13 @@ TEST_SUITE("core") {
 
     TEST_CASE("svg colour: no Lucide icon keeps a currentColor") {
         namespace lucide = rawreel::lucide;
-        const std::array<std::string_view, 9> icons{
-            lucide::FOLDER_OPEN,  lucide::SKIP_BACK,    lucide::STEP_BACK,
-            lucide::PLAY,         lucide::PAUSE,        lucide::SQUARE,
-            lucide::STEP_FORWARD, lucide::SKIP_FORWARD, lucide::REPEAT};
+        const std::array<std::string_view, 11> icons{
+            lucide::FOLDER_OPEN,  lucide::SKIP_BACK,
+            lucide::STEP_BACK,    lucide::PLAY,
+            lucide::PAUSE,        lucide::SQUARE,
+            lucide::STEP_FORWARD, lucide::SKIP_FORWARD,
+            lucide::REPEAT,       lucide::SLIDERS_HORIZONTAL,
+            lucide::INFO};
         for (const std::string_view icon : icons) {
             REQUIRE(icon.contains("<svg"));
             CHECK(count(icon, "currentColor") > 0);

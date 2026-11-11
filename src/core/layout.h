@@ -48,4 +48,17 @@ struct DockFit {
 // docks give way in order, the first one first, never below their minimum.
 [[nodiscard]] std::vector<int> fitDocks(std::span<const DockFit> docks, int space);
 
+// A rectangle in screen coordinates (physical pixels on Windows, logical pixels on GTK and macOS).
+struct ScreenRect {
+    int x = 0, y = 0, width = 0, height = 0;
+    bool operator==(const ScreenRect&) const = default;
+};
+
+// The Info window's place (window title and Info design §10): right of `frame` (top level with
+// frame.y, left = frame right + gap) when that fits in `work_area`; else inside the frame's right
+// edge: x = min(frame right, work right) - gap - size.width, y = client.y + gap; clamped into
+// `work_area`. `client` is the frame's client area in screen coordinates.
+[[nodiscard]] ScreenRect infoWindowPlace(ScreenRect frame, ScreenRect client, LayoutSize size,
+                                         ScreenRect work_area, int gap) noexcept;
+
 }  // namespace rawreel

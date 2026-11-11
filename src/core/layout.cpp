@@ -35,4 +35,24 @@ std::vector<int> fitDocks(std::span<const DockFit> docks, int space) {
     return sizes;
 }
 
+ScreenRect infoWindowPlace(ScreenRect frame, ScreenRect client, LayoutSize size,
+                           ScreenRect work_area, int gap) noexcept {
+    const int work_right = work_area.x + work_area.width;
+    const int work_bottom = work_area.y + work_area.height;
+    const int frame_right = frame.x + frame.width;
+    ScreenRect place{
+        .x = frame_right + gap, .y = frame.y, .width = size.width, .height = size.height};
+    const bool fits = place.x >= work_area.x && place.y >= work_area.y &&
+                      place.x + place.width <= work_right && place.y + place.height <= work_bottom;
+    if (!fits) {
+        place.x = std::min(frame_right, work_right) - gap - size.width;
+        place.y = client.y + gap;
+    }
+    // Clamped: the right and bottom edges first, so a window larger than the work area keeps its
+    // top-left corner (and its caption) inside it.
+    place.x = std::max(std::min(place.x, work_right - place.width), work_area.x);
+    place.y = std::max(std::min(place.y, work_bottom - place.height), work_area.y);
+    return place;
+}
+
 }  // namespace rawreel

@@ -50,6 +50,7 @@ add_library(rawreel_core STATIC
     src/core/format_choice.cpp
     src/core/format_presets.cpp
     src/core/open_text.cpp
+    src/core/stream_name.cpp
     src/core/gui_arguments.cpp
     src/core/info_text.cpp
     src/core/layout.cpp
@@ -183,7 +184,7 @@ if(NOT DVV_SANITIZE)
         src/gui/drop_target.cpp
         src/gui/edit_dispatch.cpp
         src/gui/format_dialog.cpp
-        src/gui/info_panel.cpp
+        src/gui/info_window.cpp
         src/gui/log_list_dataview.cpp
         src/gui/log_list_listctrl.cpp
         src/gui/log_panel.cpp

@@ -170,6 +170,13 @@ bool undoText(wxWindow& window, bool redo) {
     return true;
 }
 
+wxString representedFilename(wxTopLevelWindow& window) {
+    NSWindow* const ns_window = window.GetWXWindow();
+    NSString* const name = ns_window != nil ? [ns_window representedFilename] : nil;
+    const char* const text = name != nil ? [name UTF8String] : nullptr;
+    return text != nullptr ? wxString::FromUTF8(text) : wxString();
+}
+
 wxBitmapBundle settingsPageIcon(std::string_view sf_symbol) {
     NSString* const name = [[NSString alloc] initWithBytes:sf_symbol.data()
                                                     length:sf_symbol.size()
@@ -200,6 +207,28 @@ void setAccessibleName(wxWindow& window, const wxString& name) {
         return;
     }
     [view setAccessibilityLabel:[NSString stringWithUTF8String:name.utf8_str().data()]];
+}
+
+// secondaryLabelColor is a dynamic colour; wx keeps a fixed one, so it is resolved here for the
+// appearance the label draws with.
+void setSecondaryText(wxWindow& label) {
+    NSView* const view = label.GetHandle();
+    NSAppearance* const appearance =
+        view != nil ? [view effectiveAppearance] : [NSApp effectiveAppearance];
+    __block NSColor* colour = nil;
+    [appearance performAsCurrentDrawingAppearance:^{
+      colour = [[NSColor secondaryLabelColor] colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    }];
+    if (colour == nil) {
+        return;
+    }
+    const auto channel = [](CGFloat value) {
+        return static_cast<unsigned char>(
+            std::lround(std::clamp(value, CGFloat{0}, CGFloat{1}) * 255));
+    };
+    label.SetForegroundColour(
+        wxColour(channel([colour redComponent]), channel([colour greenComponent]),
+                 channel([colour blueComponent]), channel([colour alphaComponent])));
 }
 
 }  // namespace rawreel

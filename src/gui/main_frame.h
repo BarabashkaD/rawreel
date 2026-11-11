@@ -1,9 +1,9 @@
 #pragma once
 
 // rawreel-gui's main window (design M1b §5.6, M3 v2 §5.3, §5.5, D17, D18, D20, D25): a wxAUI frame
-// with the fixed centre player panel (infobar + viewport), the Info and Log panes, menus and
-// accelerators from commandTable() plus the Edit menu (edit_dispatch.h), the status bar, and the
-// GUI-thread handlers of the Session's events.
+// with the fixed centre player panel (infobar + viewport), the Log pane, the Info window (window
+// title and Info design §10), menus and accelerators from commandTable() plus the Edit menu
+// (edit_dispatch.h), the status bar, and the GUI-thread handlers of the Session's events.
 
 // clang-format off
 #include <wx/wx.h>  // first (R11)
@@ -33,6 +33,7 @@
 #include "core/version_text.h"
 #include "dvv/base/error.h"
 #include "gui/dock_manager.h"
+#include "gui/info_window.h"
 #include "gui/skim_key.h"
 #include "render/display_state.h"
 
@@ -43,7 +44,6 @@ class ExecutionContext;
 namespace rawreel {
 
 class FormatDialog;
-class InfoPanel;
 class LogPanel;
 class PlayerPanel;
 class SelfTest;
@@ -96,14 +96,37 @@ public:
     void showMessage(const wxString& text, int icon, std::span<const InfoButton> buttons = {});
     void dismissMessage();
     [[nodiscard]] const wxString& lastMessage() const noexcept { return last_message_; }
-    // The five status fields: position, rate, bottleneck, display mapping and the Log notice.
-    [[nodiscard]] std::array<wxString, 5> statusTexts() const;
+    // The status bar's fields (spec §7): the stream's name, the status tick's three (position,
+    // rate, bottleneck), the display mapping and the Log notice.
+    static constexpr std::size_t FILE_FIELD = 0, FIRST_TICK_FIELD = 1, MAPPING_FIELD = 4,
+                                 LOG_NOTICE_FIELD = 5, STATUS_FIELD_COUNT = 6;
+    // The fields' texts; the file field's is the shown one (cut in the middle to its width).
+    [[nodiscard]] std::array<wxString, STATUS_FIELD_COUNT> statusTexts() const;
+    // The field whose rectangle contains `point` (status bar client coordinates); none outside.
+    [[nodiscard]] std::optional<int> statusFieldAt(const wxPoint& point) const;
+    // The tooltip of a field (spec §7): the file field gives the stream's full path, another
+    // field its full text when wx cut it; "" for none.
+    [[nodiscard]] wxString statusTooltipFor(std::optional<int> field) const;
+    // The stream's full path (spec §4: a file's absolute path, another URI as it is); "" with no
+    // stream.
+    [[nodiscard]] const wxString& streamPath() const noexcept { return stream_path_; }
     // View -> Log (Log pane and Settings design §2): shows or hides the Log pane. Showing it takes
     // the store's new records, rebuilds the list from the mirror and clears the notice. Nothing
     // when the pane is already so, or while closing.
     void setLogShown(bool shown);
     [[nodiscard]] bool logShown() const;
-    // The status bar's fifth field: the warnings and errors logged since the pane was last shown
+    // View -> Info (window title and Info design §10): every show and hide of the Info window goes
+    // through setInfoShown (the command, the window's close box). The window is created by the
+    // first show. Nothing while closing or when it is already so. infoShown() stays true while
+    // the minimised (or, on X11, hidden) main window hides it.
+    void setInfoShown(bool shown);
+    [[nodiscard]] bool infoShown() const;
+    // Null before the first show and once the frame has closed.
+    [[nodiscard]] InfoWindow* infoWindow() const noexcept { return info_window_.get(); }
+    // §10: the Info window when the focus (focusedWindow()) is inside it, or when it is shown and
+    // the active window; null otherwise. Its Cmd+W (macOS) and Edit -> Copy act on it.
+    [[nodiscard]] wxWindow* infoInFront() const;
+    // The status bar's last field: the warnings and errors logged since the pane was last shown
     // ("2 errors, 3 warnings in the log"); empty while it is shown.
     [[nodiscard]] wxString logNotice() const { return status_texts_[LOG_NOTICE_FIELD]; }
     // Follows the Session by notification (no timer): subscribes, and shows the snapshot already
@@ -130,7 +153,6 @@ public:
     // The child viewport; valid until the frame closes (onClose destroys it).
     [[nodiscard]] Viewport& viewport() const noexcept { return *viewport_; }
     [[nodiscard]] PlayerPanel& playerPanel() const noexcept { return *player_; }
-    [[nodiscard]] InfoPanel& infoPanel() const noexcept { return *info_; }
     [[nodiscard]] LogPanel& logPanel() const noexcept { return *log_; }
     [[nodiscard]] wxAuiManager& aui() noexcept { return aui_; }
     [[nodiscard]] TransportBar& transportBar() noexcept;
@@ -191,7 +213,16 @@ private:
     };
 
     void buildMenus();      // from commandTable() (D17)
-    void buildStatusBar();  // 5 fields (D20, D5R §2.2, Log pane and Settings design §2)
+    void buildStatusBar();  // 6 fields (D20, D5R §2.2, Log pane and Settings design §2, spec §7)
+    // The width of the two fixed fields (display mapping and Log notice) at the current font.
+    [[nodiscard]] int statusFixedWidth() const;
+    // Spec §7: the tooltip of the field under the pointer; unset when that field changes, so
+    // each field gets the OS's own hover delay.
+    void onStatusBarMotion(wxMouseEvent& event);
+    // Spec §5, §7: the title, the represented filename (wxOSX) and the file field from streams_.
+    void showStreamName();
+    // The file field: the name cut in the middle to the field's width (the extension stays).
+    void cutFileField();
     // The notice field from log_counts_ and seen_ (no logging: the refresh path calls it).
     void updateLogNotice();
     // A left click inside the notice field shows the pane (wx has no click event per field).
@@ -204,9 +235,9 @@ private:
     void showSettings();            // Command::Settings: creates the window once, then shows it
 #if defined(__WXOSX__)
     // Spec §5.1: the Settings window when it holds the focus (focusedWindow()) or is the active
-    // window, whose ⌘W closes it instead of the stream; null otherwise. Only that window: a
-    // floating AUI pane (Info, Log) is a top-level window too, and closing it would hide the pane
-    // for the session.
+    // window, whose ⌘W closes it instead of the stream; null otherwise. Only that window (and the
+    // Info window, infoInFront()): a floating AUI pane (Log) is a top-level window too, and closing
+    // it would hide the pane for the session.
     [[nodiscard]] wxWindow* settingsInFront() const;
 #endif
     // The infobar's Format... after an open error of a raw file (D4b): the dialog for that URI.
@@ -240,6 +271,9 @@ private:
     void onLogChanged();
     void onIconize(wxIconizeEvent& event);
     void onShow(wxShowEvent& event);
+    // §10 Life: the Info window hides while the main window is minimised (X11: hidden) and shows
+    // again, without activating, when it is restored.
+    void infoFollowsFrame(bool frame_hidden);
     // Spec §4.1: the native focus inside the Log pane (any of its windows) goes to the player
     // panel, so a hidden pane, or a wrapper panel with nothing visibly focused, does not hold it.
     // When the pane hides (View -> Log, the caption's close button) and once after the first show.
@@ -267,13 +301,15 @@ private:
     DockManager aui_;  // the docks give way so the viewport keeps its minimum (D8)
     // Child windows: wx owns them.
     PlayerPanel* player_ = nullptr;
-    InfoPanel* info_ = nullptr;
     LogPanel* log_ = nullptr;
     Viewport* viewport_ = nullptr;  // null once the frame has closed
     wxSize applied_minimum_;        // the last minimum client size applyLayoutLimits() set
     bool limits_check_pending_ = false;
-    static constexpr std::size_t LOG_NOTICE_FIELD = 4;
-    std::array<wxString, 5> status_texts_;
+    std::array<wxString, STATUS_FIELD_COUNT> status_texts_;
+    wxString stream_name_;                    // spec §4: the shown name; "" with no stream
+    wxString stream_path_;                    // spec §4: the full path; "" with no stream
+    std::optional<int> tip_field_;            // the field whose tooltip the status bar shows
+    wxString tip_text_;                       // that tooltip; "" for none
     LogCounts log_counts_;                    // the counts of the last take (onLogChanged)
     LogCounts seen_;                          // the counts when the pane was last shown (spec §2)
     bool log_shown_at_start_ = false;         // the pane's state when the frame was built (spec §2)
@@ -309,6 +345,8 @@ private:
     std::uint64_t about_shown_ = 0;             // About dialogs shown (noteAbout)
     std::string last_about_text_;               // the text of the last About dialog
     std::unique_ptr<SettingsWindow> settings_;  // Settings... (dismissed in onClose)
+    wxWeakRef<InfoWindow> info_window_;    // View -> Info; a child top-level window (wx owns it)
+    bool info_hidden_by_iconize_ = false;  // the minimised main window hid the shown Info window
     std::unique_ptr<SelfTest> selftest_;
     bool closing_ = false;
     wxWeakRef<wxWindow> focus_for_test_;  // setFocusForTest(); cleared when that window goes

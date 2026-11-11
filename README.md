@@ -199,7 +199,7 @@ program's folder as `<app>`, the variable's folder as `$DVV_FFMPEG_DIR` and the 
 ## rawreel-gui
 
 `rawreel-gui` plays one video stream. The window has the viewport with the control panel under it,
-an Info pane, a Log pane, a status bar (frame and length, target / actual fps, the pipeline's
+a Log pane, a status bar (the file name, frame and length, target / actual fps, the pipeline's
 bottleneck, and the colour mapping, e.g. "SDR, no tone mapping" or "PQ → SDR tone mapping (1000 →
 100 nits)") and an infobar for warnings and errors. The log also goes to log files
 (`rawreel-YYYYMMDD-HHMMSS.log`, see [Log files](#log-files)) in the user's data folder
@@ -220,13 +220,20 @@ the frame where skimming started. A click on the slider jumps to the clicked fra
 Without a click, releasing the key, moving off the slider or the window losing focus returns to
 the start frame.
 
-The Info pane shows the stream: URI, format, size, frame rate, frame count, colour and, for files,
-the read mode (e.g. "reads: unbuffered"). The colour names the standard ("no standard" when the
-file's colour fits none) and where it comes from: "(default)" for rawreel's defaults, "(from
-file)", "(from the file name)", "(from clip.yuv.json)" for a clip description, "(from the graph)"
-or "(auto)". A second line gives the matrix ("not used" for RGB and gray), range, curve and
-primaries; a `hint:` line flags a standard that does not fit the size. PQ and HLG streams add the
-line "tone-mapped (BT.2390, 1000 → 100 nits)". Notes from the source (e.g. how the file's colour
+The window title names the open stream: the file's name on macOS (with the file's proxy icon and
+path menu on the title), `clip.yuv - rawreel` on Windows and `clip.yuv — rawreel` on Linux;
+`rawreel` with no stream. The first field of the status bar shows the same name, cut in the middle
+when it does not fit, and its tooltip gives the full path (for a stream that is not a file, the
+URI). Another field that is cut shows its full text as its tooltip.
+
+The Info window shows the stream in two groups of rows. Picture: Resolution, Frame rate and Format
+(e.g. "YUV 4:2:2 10-bit (v210)"). Colour: Standard ("None" when the file's colour fits no
+standard), Matrix ("Not used" for RGB and gray), Range (with its code values, e.g. "Limited
+(64–940)"), Transfer and Tone mapping ("None (SDR)", or e.g. "BT.2390, 1000 → 100 nits" for PQ and
+HLG streams). View → Info (Ctrl+I, ⌘I on macOS) or the "i" button at the right end of the control
+panel shows and hides it. It opens beside the main window without taking the keyboard focus, stays
+open when the stream changes and shows "No stream" when there is none. The Format button, right of
+Open, opens the Format dialog for the stream. Notes from the source (e.g. how the file's colour
 tags were read) go to the Log pane when a stream opens.
 
 ```text
@@ -274,14 +281,15 @@ the format dialog, filled with the best guess, else the last choice, else 1920×
 - the size: a preset such as `1920x1080 (1080p)`, or Custom;
 - the frame rate: a preset from 23.976 to 120, or typed as `N` or `N/D` (29.97 and the other NTSC
   rates mean N×1000/1001);
-- the colour: one of five standards, BT.601 (NTSC), BT.601 (PAL), BT.709, BT.2020 and BT.2100
-  (with the curve PQ or HLG), marked "(default)" when nothing gives one (BT.709 at any size) or
-  with where it comes from, as in the Info pane; "From file (no standard)" when the file's colour
-  fits no standard. The range is Limited or Full on every standard; Full on BT.601, BT.709 or
-  BT.2020 is marked "(not standard)", and the range follows the format until you pick one. A line
-  below shows the matrix and primaries in use (with "From file (no standard)" also the range and
-  curve). RGB and gray formats use no matrix. Primaries are shown, not converted. A grey hint flags a standard that does not fit the size, e.g. "SD
-  size: BT.601 is common for SD".
+- the colour: one of five standards, BT.601 (NTSC), BT.601 (PAL), BT.709, BT.2020 and BT.2100 (with
+  the curve PQ or HLG), marked "(default)" when nothing gives one (BT.709 at any size) or with where
+  it comes from: "(from file)", "(from the file name)", "(from clip.yuv.json)" for a clip
+  description, "(from the graph)" or "(auto)"; "From file (no standard)" when the file's colour fits
+  no standard. The range is Limited or Full on every standard; Full on BT.601, BT.709 or BT.2020 is
+  marked "(not standard)", and the range follows the format until you pick one. A line below shows
+  the matrix and primaries in use (with "From file (no standard)" also the range and curve). RGB and
+  gray formats use no matrix. Primaries are shown, not converted. A grey hint flags a standard that
+  does not fit the size, e.g. "SD size: BT.601 is common for SD".
 - Auto detect (off by default, kept until rawreel-gui closes): an untagged clip gets a standard
   guessed from its height (up to 480 lines BT.601 (NTSC), up to 576 BT.601 (PAL), else BT.709),
   marked "(auto)".
@@ -358,7 +366,7 @@ selection); the playback keys work again once the focus is elsewhere.
 - **Remembered:** the choice is kept in `rawreel.json` as `gui.showLogPane` and is saved when the
   window closes, only if it differs from its value at start.
 - **Edit menu:** Undo, Redo, Cut, Copy, Paste, Delete and Select All act on the focused control:
-  a text field, the Info pane (Copy, Select All) or the Log list (Copy of the selected rows,
+  a text field, the Info window (Copy) or the Log list (Copy of the selected rows,
   Select All). Delete has no key.
 - **Copy and save:** File → Save Log… saves every record the pane holds; File → Save Selected
   Lines… saves the selected rows and is disabled without a selection. The Log list's context menu
@@ -697,7 +705,7 @@ key does not apply to them.
   unbuffered open and a first aligned read), else buffered for that file with one log line that
   says why.
 
-The mode in use shows as `reads:` in `rawreel-cli info` and in the GUI Info pane.
+The mode in use shows as `reads:` in `rawreel-cli info`.
 
 `rawreel-gui` writes the file when a setting changes (see [Settings window](#settings-window)),
 only the keys it sets: it keeps the other keys, the key order, a symbolic link and the file's
