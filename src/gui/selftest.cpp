@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <ios>
 #include <iterator>
 #include <memory>
@@ -40,10 +41,12 @@
 #include <wx/collpane.h>
 #include <wx/dirdlg.h>
 #include <wx/filedlg.h>
+#include <wx/filename.h>
 #include <wx/hyperlink.h>
 #include <wx/preferences.h>
 #include <wx/settings.h>
 #include <wx/slider.h>
+#include <wx/stdpaths.h>
 #include <wx/textdlg.h>
 
 #include "core/commands.h"
@@ -77,6 +80,7 @@
 #include "dvv/platform/native_window.h"
 #include "gui/about.h"
 #include "gui/app.h"
+#include "gui/app_icon.h"
 #include "gui/drop_target.h"
 #include "gui/format_dialog.h"
 #include "gui/icons.h"
@@ -371,9 +375,19 @@ struct SmokeState {
     wxSize aboutAtShow;             // about: its size when it was first shown
     wxSize aboutAtHook;             // about: its size 1 s later
     std::vector<std::string> aboutLinks;  // about: the URLs of its links
-    std::uint64_t presented0 = 0;         // lavfi: frames presented at the step start
-    std::string streamUri;                // Format... on lavfi: the stream's URI
-    std::uint64_t dialogs0 = 0;           // Format... on lavfi: format dialogs shown
+    int aboutBitmaps = 0;                 // about: its wxStaticBitmaps (1: the logo, no stock icon)
+    bool aboutLogoFound = false;          // about: a wxStaticBitmap named ABOUT_LOGO_NAME
+    wxSize aboutLogoSize;                 // about: the logo bitmap's logical size
+    wxSize aboutLogoWant;                 // about: FromDIP(ABOUT_LOGO_DIP x ABOUT_LOGO_DIP)
+    wxSize aboutLogoPixels;               // about: the logo bitmap's size
+    wxSize aboutBundlePixels;      // about: aboutLogo()'s bitmap for the logo's scale, its size
+    wxSize aboutBundleSize;        // about: aboutLogo()'s default size
+    int aboutCornerAlpha = -1;     // about: the shown bitmap's largest corner alpha (-1: none)
+    int aboutEdgeAlpha = -1;       // about: its largest alpha at the 4 edge middles
+    int aboutCentreAlpha = -1;     // about: the alpha at its centre
+    std::uint64_t presented0 = 0;  // lavfi: frames presented at the step start
+    std::string streamUri;         // Format... on lavfi: the stream's URI
+    std::uint64_t dialogs0 = 0;    // Format... on lavfi: format dialogs shown
 };
 
 // The store's next sequence: a step remembers it at its start (the store is capped, so steps
@@ -711,6 +725,42 @@ SelfTestStep panesStep(SelfTest* test) {
                centre && child;
     };
     return step("panes", {}, std::move(passed));
+}
+
+// App icon plan D8: the frame's window icons. Windows: the ten sizes of the rawreel ICO group;
+// Linux: the eleven embedded hicolor sizes; macOS: none, the bundle's rawreel.icns
+// (CFBundleIconFile) is the Dock's and the title's icon.
+SelfTestStep windowIconsStep(SelfTest* test) {
+    auto passed = [test](std::string& seen) {
+        const wxIconBundle icons = test->frame().GetIcons();
+        std::vector<int> widths;
+        widths.reserve(icons.GetIconCount());
+        for (std::size_t i = 0; i < icons.GetIconCount(); ++i) {
+            widths.push_back(icons.GetIconByIndex(i).GetWidth());
+        }
+        std::ranges::sort(widths);
+        std::string list;
+        for (const int width : widths) {
+            list += std::format("{}{}", list.empty() ? "" : " ", width);
+        }
+#if defined(__WXOSX__)
+        const std::string file = bundleIconFile();
+        const bool icns =
+            wxFileName::FileExists(wxStandardPaths::Get().GetResourcesDir() + wxS("/rawreel.icns"));
+        seen = std::format("icons [{}], CFBundleIconFile '{}', Resources/rawreel.icns {}", list,
+                           file, icns);
+        return widths.empty() && file == "rawreel" && icns;
+#else
+#if defined(__WXMSW__)
+        constexpr std::array<int, 10> WANTED{16, 20, 24, 32, 40, 48, 64, 96, 128, 256};
+#else
+        constexpr std::array<int, 11> WANTED{16, 22, 24, 32, 48, 64, 96, 128, 192, 256, 512};
+#endif
+        seen = std::format("icons [{}]", list);
+        return std::ranges::equal(widths, WANTED);
+#endif
+    };
+    return step("window icons", {}, std::move(passed));
 }
 
 // --- the Log pane: View -> Log, the close button and the notice (Log pane and Settings design §2)
@@ -2091,6 +2141,55 @@ void collectLinks(wxWindow& window, std::vector<std::string>& urls) {
     }
 }
 
+// The wxStaticBitmaps under `window` (depth first).
+void collectBitmaps(wxWindow& window, std::vector<wxStaticBitmap*>& bitmaps) {
+    for (wxWindow* child : window.GetChildren()) {
+        if (auto* bitmap = dynamic_cast<wxStaticBitmap*>(child)) {
+            bitmaps.push_back(bitmap);
+        }
+        collectBitmaps(*child, bitmaps);
+    }
+}
+
+// App icon plan D6, D8: About's logo, the only wxStaticBitmap (no stock icon), at ABOUT_LOGO_DIP
+// x ABOUT_LOGO_DIP DIP, aboutLogo()'s bitmap for its scale, and the transparent owl: alpha 0 at
+// the corners (opaque in the square tile) and at the edge middles (opaque in the rounded tile),
+// an opaque centre.
+void checkAboutLogo(wxGenericAboutDialog& dialog, SmokeState& state) {
+    std::vector<wxStaticBitmap*> bitmaps;
+    collectBitmaps(dialog, bitmaps);
+    state.aboutBitmaps = static_cast<int>(bitmaps.size());
+    state.aboutLogoWant = dialog.FromDIP(wxSize(ABOUT_LOGO_DIP, ABOUT_LOGO_DIP));
+    wxStaticBitmap* logo = nullptr;
+    for (wxStaticBitmap* bitmap : bitmaps) {
+        if (bitmap->GetName().utf8_string() == ABOUT_LOGO_NAME) {
+            logo = bitmap;
+        }
+    }
+    state.aboutLogoFound = logo != nullptr;
+    if (logo == nullptr) {
+        return;
+    }
+    const wxBitmap shown = logo->GetBitmap();
+    state.aboutLogoSize = shown.GetLogicalSize();
+    state.aboutLogoPixels = shown.GetSize();
+    const wxBitmapBundle bundle = aboutLogo();
+    state.aboutBundleSize = bundle.GetDefaultSize();
+    state.aboutBundlePixels = bundle.GetBitmapFor(logo).GetSize();
+    const wxImage image = shown.ConvertToImage();
+    if (image.IsOk() && image.HasAlpha()) {
+        const int right = image.GetWidth() - 1;
+        const int bottom = image.GetHeight() - 1;
+        state.aboutCornerAlpha =
+            std::max({image.GetAlpha(0, 0), image.GetAlpha(right, 0), image.GetAlpha(0, bottom),
+                      image.GetAlpha(right, bottom)});
+        state.aboutEdgeAlpha =
+            std::max({image.GetAlpha(0, bottom / 2), image.GetAlpha(right / 2, 0),
+                      image.GetAlpha(right, bottom / 2), image.GetAlpha(right / 2, bottom)});
+        state.aboutCentreAlpha = image.GetAlpha(right / 2, bottom / 2);
+    }
+}
+
 // D29: Help -> About through its hook (the hook closes the dialog).
 SelfTestStep aboutStep(SelfTest* test, const std::shared_ptr<SmokeState>& state) {
     auto start = [test, state] {
@@ -2135,6 +2234,7 @@ SelfTestStep aboutStep(SelfTest* test, const std::shared_ptr<SmokeState>& state)
                 state->aboutClosedEarly = log.closed;
                 state->aboutAtShow = log.atShow;
                 state->aboutAtHook = dialog.GetSize();
+                checkAboutLogo(dialog, *state);  // before the clicks
                 state->aboutWidth = dialog.GetSize().x;
                 click(true);
                 state->aboutWidthExpanded = std::max(dialog.GetSize().x, dialog.GetBestSize().x);
@@ -2201,6 +2301,23 @@ SelfTestStep aboutStep(SelfTest* test, const std::shared_ptr<SmokeState>& state)
             state->aboutListMin, state->aboutListShown, state->aboutShows, state->aboutClosedEarly,
             state->aboutAtShow.x, state->aboutAtShow.y, state->aboutAtHook.x, state->aboutAtHook.y,
             state->aboutSizeChanges);
+        seen += std::format(
+            "; bitmaps {}, logo found {}, {}x{} (want {}x{}), {}x{} px, bundle {}x{} px default "
+            "{}x{}, corner alpha {}, edge alpha {}, centre alpha {}",
+            state->aboutBitmaps, state->aboutLogoFound, state->aboutLogoSize.x,
+            state->aboutLogoSize.y, state->aboutLogoWant.x, state->aboutLogoWant.y,
+            state->aboutLogoPixels.x, state->aboutLogoPixels.y, state->aboutBundlePixels.x,
+            state->aboutBundlePixels.y, state->aboutBundleSize.x, state->aboutBundleSize.y,
+            state->aboutCornerAlpha, state->aboutEdgeAlpha, state->aboutCentreAlpha);
+        // App icon plan D6, D8: the logo only (no stock icon), at 128x128 DIP, the
+        // transparent-background owl bundle's bitmap for its scale, the transparent owl (corners
+        // and edge middles alpha 0, centre opaque); one image for light and dark.
+        const bool logo =
+            state->aboutBitmaps == 1 && state->aboutLogoFound && state->aboutLogoWant.x > 0 &&
+            state->aboutLogoSize == state->aboutLogoWant &&
+            state->aboutBundleSize == wxSize(ABOUT_LOGO_DIP, ABOUT_LOGO_DIP) &&
+            state->aboutLogoPixels == state->aboutBundlePixels && state->aboutCornerAlpha == 0 &&
+            state->aboutEdgeAlpha == 0 && state->aboutCentreAlpha > 0;
         // No flash at open: shown once, at its final size, and not resized or hidden after.
         const bool steady_open = state->aboutShows == 1 && !state->aboutClosedEarly &&
                                  state->aboutSizeChanges == 0 &&
@@ -2213,7 +2330,7 @@ SelfTestStep aboutStep(SelfTest* test, const std::shared_ptr<SmokeState>& state)
             state->aboutListReopen.y >= state->aboutListMin && state->aboutListShown;
         return state->aboutHookRan && state->aboutParentOk && state->aboutButtonsOk &&
                frame.aboutShown() > state->about0 && lines && links && width_kept && list_again &&
-               steady_open;
+               steady_open && logo;
     };
     return step("about", std::move(start), std::move(passed));
 }
@@ -2989,6 +3106,7 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
     steps.push_back(backingScaleStep(t, state, true));
 #endif
     steps.push_back(panesStep(t));
+    steps.push_back(windowIconsStep(t));
     steps.push_back(logNoticeStep(t));
     steps.push_back(logPaneShowsStep(t));
     const auto log_pane = std::make_shared<LogPaneState>();

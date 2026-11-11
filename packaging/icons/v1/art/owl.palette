@@ -1,0 +1,21 @@
+# key char colour (full natural RGB; the planes are computed from these with BT.709)
+sky    .  #78AEEE
+branch b  #5A3A22
+body   o  #8C5426
+wing   w  #6A3A1A
+bar    a  #C08A4E
+chest  c  #EBD3A6
+streak s  #7A4A24
+disc   d  #D39A5A
+rim    r  #4A2A16
+eye    e  #F5A623
+pupil  p  #141210
+hi     h  #FFFFFF
+beak   k  #2B2622
+feet   f  #D8C08C
+claw   t  #1E1A16
+handle n  #3A2414
+brass  m  #B07A1E
+glass  g  #E8F4FF
+leg    l  #C9A46A
+toe    q  #A8946A

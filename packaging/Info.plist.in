@@ -20,6 +20,8 @@
     <string>rawreel</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>rawreel</string>
     <key>CFBundleShortVersionString</key>
     <string>@rawreel_VERSION_STRING@</string>
     <!-- Numbers and dots only, so the version without a release-stage label. -->

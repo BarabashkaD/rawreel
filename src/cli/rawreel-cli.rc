@@ -1,0 +1,4 @@
+// rawreel-cli resources: the rawreel icon (owl-on-film-reel-square-background.ico in
+// packaging/icons/owl-on-film-reel/square-background/Windows, 10 sizes; found through the resource
+// compiler's /I), the exe's first and only RT_GROUP_ICON, which Explorer shows.
+rawreel ICON "owl-on-film-reel-square-background.ico"

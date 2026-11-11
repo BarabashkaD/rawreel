@@ -40,6 +40,7 @@ The zip holds one folder, `rawreel-<v>/`, with `rawreel-gui.exe`, `rawreel-cli.e
 `build-info.txt` and `SOURCE.txt`). The Linux tar.xz holds the same folder with `rawreel-gui` and
 `rawreel-cli` instead of the `.exe` files. Keep all files of a package together. It has no
 `rawreel.json`; the built-in defaults apply (see [Configuration](#configuration)).
+`rawreel-gui.exe` and `rawreel-cli.exe` carry the rawreel icon.
 
 **Requirements (Windows):** Windows 10 or newer, 64-bit, with a GPU driver that supports Vulkan
 1.4, and the Microsoft Visual C++ Redistributable (x64) 14.51 or newer, which the zip does not
@@ -71,7 +72,8 @@ The `.dmg` holds `rawreel.app`, `README.md`, `LICENSE`, `THIRD_PARTY_NOTICES.txt
 `SOURCE.txt` (about the bundled FFmpeg). In the app, `Contents/MacOS/` has `rawreel-gui` (the
 application) and `rawreel-cli`; `Contents/Frameworks/` has the Vulkan loader
 (`libvulkan.1.dylib`), the KosmicKrisp driver and `ffmpeg/` (the six FFmpeg libraries);
-`Contents/Resources/` has the driver's manifest and FFmpeg's `licenses/` and `build-info.txt`.
+`Contents/Resources/` has `rawreel.icns` (the app icon), the driver's manifest and FFmpeg's
+`licenses/` and `build-info.txt`.
 Open the `.dmg` and drag `rawreel.app` to `Applications` (or any folder); it also runs from the
 opened `.dmg`. Nothing else is installed. The app has no `rawreel.json`; it keeps its
 configuration and log in `~/Library/Application Support/rawreel/` (see
@@ -202,7 +204,9 @@ bottleneck, and the colour mapping, e.g. "SDR, no tone mapping" or "PQ → SDR t
 100 nits)") and an infobar for warnings and errors. The log also goes to log files
 (`rawreel-YYYYMMDD-HHMMSS.log`, see [Log files](#log-files)) in the user's data folder
 (`%APPDATA%\rawreel\` on Windows, `~/.local/share/rawreel/` on Linux, or `$XDG_DATA_HOME/rawreel/`
-when that is set, `~/Library/Application Support/rawreel/` on macOS).
+when that is set, `~/Library/Application Support/rawreel/` on macOS). Help → About shows the
+rawreel logo, the owl of the app icon on a transparent background, the same in light and dark
+appearance.
 
 The control panel has two rows. The upper row is a timeline strip over the slider: ticks, the first
 and last frame numbers, and above the thumb the number of the frame on screen. The lower row has
@@ -322,7 +326,7 @@ step with a 5 s deadline, closes the window and exits with 6 naming a failed ste
 
 - `smoke`: resizes, minimise and restore, the panes, menus, status fields, infobar and Help
   items, with no stream and then with one.
-- `about` (opt-in, not in CTest): Help → About, its layout and links; run it when About changes.
+- `about` (opt-in, not in CTest): Help → About, its layout, logo and links; run it when About changes.
 - `player` (needs a URI): play, pause, step, Home/End, the slider, loop, resize, View → Format…
   and file drops.
 - `lost` (needs a URI): an injected device loss, Reopen, play, a second loss.
@@ -917,6 +921,14 @@ all tests:
 ```sh
 cmake --workflow --preset ninja-macos
 ```
+
+The app icons and the About logo come from `packaging/icons/owl-on-film-reel/`, used as delivered:
+from `square-background/` the `.icns` on macOS, the `.ico` on Windows and the hicolor PNGs for the
+Linux window icons; `transparent-background/owl-on-film-reel-transparent-background-1024.png` for
+the About logo. Its other files, `packaging/icons/owl-with-film-frame/` and `packaging/icons/v1/`
+(the first design, with its Swift generators) are kept in the repository and not used by the build
+(`packaging/icons/README.md`). The test `rawreel.icons` checks the files of all six sets, the
+structure of the used ones and the v1 sources against `v1/sources.sha256`.
 
 The executables are `libs/_build/rawreel/ninja-macos/<Debug|Release>/rawreel-cli` and
 `rawreel-gui.app/Contents/MacOS/rawreel-gui`. As on Linux, point rawreel at the FFmpeg of the
