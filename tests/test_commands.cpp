@@ -40,7 +40,7 @@ constexpr std::string_view SETTINGS_LABEL = "Settings...";
 
 TEST_SUITE("core") {
     TEST_CASE("commands: the table lists every command once, in order") {
-        static_assert(COMMAND_COUNT == 22);
+        static_assert(COMMAND_COUNT == 23);
         const auto table = commandTable();
         REQUIRE(table.size() == COMMAND_COUNT);
         std::set<std::string_view> ids;
@@ -93,6 +93,20 @@ TEST_SUITE("core") {
         CHECK_FALSE(log.key);
         CHECK(log.route == KeyRoute::Accelerator);
         CHECK(rawreel::menuLabel(log) == "Log");
+    }
+
+    TEST_CASE("commands: View -> Info") {
+        static_assert(static_cast<std::size_t>(Command::InfoWindow) ==
+                      static_cast<std::size_t>(Command::LogPane) + 1);
+        const rawreel::CommandInfo& info_window = info(Command::InfoWindow);
+        CHECK(info_window.id == "info_window");
+        CHECK(info_window.menu == "View");
+        CHECK(info_window.label == "Info");  // "Show Info"/"Hide Info" on macOS, set by the GUI
+        CHECK(info_window.help == "Show or hide the Info window");
+        CHECK(info_window.key == letter('I', true));
+        CHECK(info_window.route == KeyRoute::Accelerator);
+        CHECK(info_window.checkable);
+        CHECK(rawreel::menuLabel(info_window) == "Info\tCtrl+I");
     }
 
     TEST_CASE("commands: File -> Save Log... and Save Selected Lines...") {
@@ -152,10 +166,11 @@ TEST_SUITE("core") {
         CHECK(rawreel::menuLabel(settings) == std::string(SETTINGS_LABEL) + "\tCtrl+,");
     }
 
-    TEST_CASE("commands: only View -> Log is checkable") {
+    TEST_CASE("commands: only View -> Log and View -> Info are checkable") {
         for (const rawreel::CommandInfo& entry : commandTable()) {
             CAPTURE(entry.id);
-            CHECK(entry.checkable == (entry.command == Command::LogPane));
+            CHECK(entry.checkable ==
+                  (entry.command == Command::LogPane || entry.command == Command::InfoWindow));
         }
     }
 

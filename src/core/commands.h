@@ -32,7 +32,8 @@ enum class Command : std::uint8_t {
     Loop,
     Format,
     Reopen,
-    LogPane,  // View -> Log (Log pane and Settings design §2)
+    LogPane,     // View -> Log (Log pane and Settings design §2)
+    InfoWindow,  // View -> Info (window title and Info design §10)
     GpuInfo,
     Diagnostics,
     About,

@@ -20,6 +20,7 @@
 #include <wx/statbmp.h>
 
 #include "core/format_presets.h"
+#include "core/stream_name.h"
 #include "dvv/base/error.h"
 #include "dvv/base/json.h"
 #include "dvv/base/uri.h"
@@ -165,14 +166,7 @@ dvv::Result<dvv::media::FormatId> pixelFormatFromFile(const std::string& utf8_pa
 }  // namespace
 
 wxString formatDialogTitle(const std::string& uri) {
-    const dvv::Result<dvv::Uri> parsed = dvv::parseUri(uri);
-    std::string name = uri;
-    if (parsed && parsed->scheme == "file" && !parsed->path.empty()) {
-        name = baseName(parsed->path);
-    } else if (parsed && !parsed->path.empty()) {
-        name = parsed->scheme + ":" + parsed->path;  // a non-file URI: the scheme plus the path
-    }
-    wxString shown = fromUtf8(name);
+    wxString shown = fromUtf8(streamName(uri));
     if (shown.length() > TITLE_MAX) {
         const std::size_t keep = TITLE_MAX - 3;
         shown = shown.Left(keep - keep / 2) + "..." + shown.Right(keep / 2);

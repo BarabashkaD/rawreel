@@ -181,5 +181,51 @@ inline constexpr std::string_view REPEAT = R"svg(<!-- @license lucide-static v1.
 </svg>
 )svg";
 
+// sliders-horizontal.svg
+inline constexpr std::string_view SLIDERS_HORIZONTAL = R"svg(<!-- @license lucide-static v1.70.0 - ISC -->
+<svg
+  class="lucide lucide-sliders-horizontal"
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="M10 5H3" />
+  <path d="M12 19H3" />
+  <path d="M14 3v4" />
+  <path d="M16 17v4" />
+  <path d="M21 12h-9" />
+  <path d="M21 19h-5" />
+  <path d="M21 5h-7" />
+  <path d="M8 10v4" />
+  <path d="M8 12H3" />
+</svg>
+)svg";
+
+// info.svg
+inline constexpr std::string_view INFO = R"svg(<!-- @license lucide-static v1.70.0 - ISC -->
+<svg
+  class="lucide lucide-info"
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <circle cx="12" cy="12" r="10" />
+  <path d="M12 16v-4" />
+  <path d="M12 8h.01" />
+</svg>
+)svg";
+
 }  // namespace rawreel::lucide
 // clang-format on

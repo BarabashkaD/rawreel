@@ -67,6 +67,8 @@ constexpr std::array<CommandInfo, COMMAND_COUNT> TABLE{{
      std::nullopt, ACC, false},
     {Command::LogPane, "log_pane", "View", "Log", "Show or hide the Log pane", std::nullopt, ACC,
      true},  // "Show Log"/"Hide Log" on macOS (the GUI sets the title)
+    {Command::InfoWindow, "info_window", "View", "Info", "Show or hide the Info window",
+     ctrlKey('I'), ACC, true},  // "Show Info"/"Hide Info" on macOS (the GUI sets the title)
     {Command::GpuInfo, "gpu_info", "Help", "GPU info", "Show the GPU and its driver", std::nullopt,
      ACC, false},
     {Command::Diagnostics, "diagnostics", "Help", "Diagnostics",

@@ -1,13 +1,14 @@
 #include "core/info_text.h"
 
+#include <array>
 #include <cstddef>
 #include <format>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "core/format_choice.h"
-#include "core/format_presets.h"
 #include "dvv/base/uri.h"
 #include "dvv/media/colour_preset.h"
 #include "dvv/media/display.h"
@@ -21,151 +22,211 @@ namespace {
 
 using dvv::media::ColourMatrix;
 using dvv::media::ColourRange;
-using dvv::media::Primaries;
 using dvv::media::TransferFn;
 
-// The names of rawreel-cli (M2).
-std::string matrixName(const dvv::media::ColourParams& colour) {
-    switch (colour.matrix) {
-        case ColourMatrix::Unspecified: return "unspecified";
-        case ColourMatrix::Bt601: return "bt601";
-        case ColourMatrix::Bt709: return "bt709";
-        case ColourMatrix::Bt2020Ncl: return "bt2020";
-        case ColourMatrix::Rgb: return "rgb";
-        case ColourMatrix::Custom:
-            return std::format("custom kr={:.4f} kb={:.4f}", colour.kr, colour.kb);
-    }
-    return "unspecified";
-}
+// The effective standard: the URI's colour= preset, else the stream's own (streamColourBase).
+struct StandardChoice {
+    dvv::media::ColourSpec keys{};  // the URI's colour keys
+    ColourBase base{};              // streamColourBase(); not in use when keys.preset is set
+    std::optional<dvv::media::ColourPreset> preset;  // nullopt: no standard matches
+};
 
-std::string_view rangeName(ColourRange range) noexcept {
-    switch (range) {
-        case ColourRange::Unspecified: return "unspecified";
-        case ColourRange::Limited: return "limited";
-        case ColourRange::Full: return "full";
-    }
-    return "unspecified";
-}
-
-std::string_view transferName(TransferFn transfer) noexcept {
-    switch (transfer) {
-        case TransferFn::Unspecified: return "unspecified";
-        case TransferFn::Srgb: return "srgb";
-        case TransferFn::Bt1886: return "bt1886";
-        case TransferFn::Pq: return "pq";
-        case TransferFn::Hlg: return "hlg";
-        case TransferFn::Linear: return "linear";
-    }
-    return "unspecified";
-}
-
-std::string_view primariesName(Primaries primaries) noexcept {
-    switch (primaries) {
-        case Primaries::Unspecified: return "unspecified";
-        case Primaries::Bt601_525: return "bt601-525";
-        case Primaries::Bt601_625: return "bt601-625";
-        case Primaries::Bt709: return "bt709";
-        case Primaries::Bt2020: return "bt2020";
-    }
-    return "unspecified";
-}
-
-std::string fpsText(dvv::media::Rational fps) {
-    if (fps.den == 1) {
-        return std::format("{}", fps.num);
-    }
-    return std::format("{:.3f}", static_cast<double>(fps.num) / static_cast<double>(fps.den));
-}
-
-// D5R §4.5: the two colour lines of a stream, and the size-mismatch hint.
-std::string colourLines(const StreamInfo& stream) {
-    const dvv::media::ColourParams& colour = stream.colour.params;
-    const dvv::media::ColourModel model = dvv::media::descriptor(stream.info.desc.format).model;
-    dvv::media::ColourSpec keys{};
+StandardChoice standardChoice(const StreamInfo& stream) {
+    StandardChoice choice;
     if (const auto uri = dvv::parseUri(stream.resolvedUri)) {
         if (auto spec = dvv::media::colourSpecFromQuery(*uri)) {
-            keys = *spec;
+            choice.keys = *spec;
         }
     }
-    const bool lavfi = stream.resolvedUri.starts_with("lavfi:");
-    const std::string_view file_tag = lavfi ? " (from the graph)" : " (from file)";
-    // Line 1: the standard and where it comes from (no tag for the URI's colour=).
-    std::string name;
-    std::string standard_tag;
-    bool standard_from_file = false;
-    const std::optional<dvv::media::ColourPreset> standard =
-        keys.preset ? keys.preset : stream.colour.standard;
-    if (keys.preset) {
-        name = dvv::media::colourPresetInfo(*keys.preset).label;
+    if (choice.keys.preset) {
+        choice.preset = choice.keys.preset;
     } else {
-        const ColourBase base = streamColourBase(stream);
-        name = base.standard ? std::string(dvv::media::colourPresetInfo(*base.standard).label)
-                             : std::string("no standard");
-        standard_tag = originSuffix(base);
-        standard_from_file = base.origin != ColourOrigin::Default;
+        choice.base = streamColourBase(stream);
+        choice.preset = choice.base.standard;
     }
-    // Line 2: the range is tagged only when its origin differs from line 1's.
-    std::string_view range_tag;
-    if (keys.range == ColourRange::Unspecified) {
-        range_tag =
-            (stream.colour.assumed & dvv::media::AssumedRange) != 0 ? " (default)" : file_tag;
-        // A clip description's range comes from the same file as its standard.
-        const bool clip = standard_tag.starts_with(" (from ") && standard_tag != file_tag &&
-                          standard_tag != " (from the file name)";
-        if (range_tag == standard_tag || (clip && range_tag == file_tag)) {
-            range_tag = {};
+    return choice;
+}
+
+// ---- The Info window (spec §11, §13). "\xC3\x97" is U+00D7, "\xE2\x80\x93" U+2013, "\xE2\x86\x92"
+// U+2192 and "\xC2\xB7" U+00B7 in UTF-8.
+
+std::string rateText(dvv::media::Rational fps) {
+    if (fps.den <= 0) {
+        return "Unspecified";
+    }
+    if (fps.num % fps.den == 0) {
+        return std::format("{} fps", fps.num / fps.den);
+    }
+    std::string text =
+        std::format("{:.3f}", static_cast<double>(fps.num) / static_cast<double>(fps.den));
+    while (text.ends_with('0')) {
+        text.pop_back();
+    }
+    if (text.ends_with('.')) {
+        text.pop_back();
+    }
+    return text + " fps";
+}
+
+std::string formatText(dvv::media::FormatId format) {
+    const dvv::media::PixelFormatDescriptor& desc = dvv::media::descriptor(format);
+    const std::string_view model = desc.model == dvv::media::ColourModel::Yuv   ? "YUV"
+                                   : desc.model == dvv::media::ColourModel::Rgb ? "RGB"
+                                                                                : "Gray";
+    std::string chroma;
+    bool has_alpha = false;
+    int depth = -1;
+    bool same_depth = true;
+    for (std::size_t i = 0; i < desc.componentCount; ++i) {
+        const dvv::media::ComponentDesc& component = desc.components[i];
+        if (component.kind == dvv::media::ComponentKind::A) {
+            has_alpha = true;
+            continue;
+        }
+        if (depth >= 0 && depth != component.bits) {
+            same_depth = false;
+        }
+        depth = component.bits;
+        if (component.kind == dvv::media::ComponentKind::U) {
+            if (component.log2SubX == 0 && component.log2SubY == 0) {
+                chroma = " 4:4:4";
+            } else if (component.log2SubX == 1 && component.log2SubY == 0) {
+                chroma = " 4:2:2";
+            } else if (component.log2SubX == 1 && component.log2SubY == 1) {
+                chroma = " 4:2:0";
+            } else {
+                return desc.name;  // any other subsampling: the name alone
+            }
         }
     }
-    std::string text = std::format("  colour: {}{}\n", name, standard_tag);
-    text += std::format(
-        "  matrix {}, range {}{}, curve {}, primaries {} (not converted)",
-        model == dvv::media::ColourModel::Yuv ? matrixName(colour) : std::string("not used"),
-        rangeName(colour.range), range_tag, transferName(colour.transfer),
-        primariesName(colour.primaries));
-    if (const std::string_view hint =
-            mismatchHint(standard, standard_from_file, stream.info.desc.height);
-        !hint.empty()) {
-        text += std::format("\n  hint: {}", hint);
+    if (!same_depth || depth < 0) {
+        return desc.name;
     }
-    return text;
+    return std::format("{}{} {}-bit{} ({})", model, chroma, depth, has_alpha ? " + alpha" : "",
+                       desc.name);
+}
+
+std::string_view matrixText(const dvv::media::ColourParams& colour,
+                            dvv::media::ColourModel model) noexcept {
+    if (model != dvv::media::ColourModel::Yuv) {
+        return "Not used";
+    }
+    switch (colour.matrix) {
+        case ColourMatrix::Unspecified: return "Unspecified";
+        case ColourMatrix::Bt601: return "BT.601";
+        case ColourMatrix::Bt709: return "BT.709";
+        case ColourMatrix::Bt2020Ncl: return "BT.2020";
+        case ColourMatrix::Rgb: return "Identity";
+        case ColourMatrix::Custom: return {};  // formatted by the caller (kr and kb)
+    }
+    return "Unspecified";
+}
+
+std::string rangeText(const dvv::media::ColourParams& colour,
+                      const dvv::media::PixelFormatDescriptor& desc) {
+    if (colour.range == ColourRange::Unspecified) {
+        return "Unspecified";
+    }
+    // The Y component's depth for YUV and gray, the first component's for RGB: component 0.
+    const unsigned bits = desc.componentCount > 0 ? desc.components[0].bits : 8U;
+    if (colour.range == ColourRange::Full) {
+        return std::format("Full (0\xE2\x80\x93{})", (1U << bits) - 1U);
+    }
+    return std::format("Limited ({}\xE2\x80\x93{})", (16U << bits) / 256U, (235U << bits) / 256U);
+}
+
+std::string_view transferText(TransferFn transfer) noexcept {
+    switch (transfer) {
+        case TransferFn::Unspecified: return "Unspecified";
+        case TransferFn::Srgb: return "sRGB";
+        case TransferFn::Bt1886: return "BT.1886";
+        case TransferFn::Pq: return "PQ";
+        case TransferFn::Hlg: return "HLG";
+        case TransferFn::Linear: return "Linear";
+    }
+    return "Unspecified";
+}
+
+std::string standardText(const StreamInfo& stream) {
+    const StandardChoice choice = standardChoice(stream);
+    return choice.preset ? std::string(dvv::media::colourPresetInfo(*choice.preset).label)
+                         : std::string("None");
+}
+
+constexpr std::string_view TONE_MAPPING = "BT.2390, 1000 \xE2\x86\x92 100 nits";
+
+constexpr std::array<std::string_view, 3> VALUE_SAMPLES = {
+    TONE_MAPPING, "YUV 4:2:2 10-bit (yuv422p10le)", "Custom (Kr 0.2990, Kb 0.1140)"};
+
+std::string resolutionText(const StreamInfo& stream) {
+    return std::format("{} \xC3\x97 {}", stream.info.desc.width, stream.info.desc.height);
 }
 
 }  // namespace
 
-std::string formatInfo(std::span<const StreamInfo> streams) {
-    if (streams.empty()) {
-        return "No stream. Open a file (Ctrl+O) or a URI (Ctrl+U), or drop a file here.";
+std::vector<InfoRow> infoRows(const StreamInfo& stream) {
+    const dvv::media::ColourParams& colour = stream.colour.params;
+    const dvv::media::PixelFormatDescriptor& desc = dvv::media::descriptor(stream.info.desc.format);
+    std::string matrix(matrixText(colour, desc.model));
+    if (matrix.empty()) {  // ColourMatrix::Custom
+        matrix = std::format("Custom (Kr {:.4f}, Kb {:.4f})", colour.kr, colour.kb);
+    }
+    const bool tone_mapped =
+        colour.transfer == TransferFn::Pq || colour.transfer == TransferFn::Hlg;
+    return {
+        {"Resolution", resolutionText(stream)},
+        {"Frame rate", rateText(stream.info.fps)},
+        {"Format", formatText(stream.info.desc.format)},
+        {"Standard", standardText(stream)},
+        {"Matrix", std::move(matrix)},
+        {"Range", rangeText(colour, desc)},
+        {"Transfer", std::string(transferText(colour.transfer))},
+        {"Tone mapping", tone_mapped ? std::string(TONE_MAPPING) : std::string("None (SDR)")},
+    };
+}
+
+std::string infoHint(const StreamInfo& stream) {
+    std::string text =
+        std::format("{} \xC2\xB7 {} \xC2\xB7 {}", resolutionText(stream), rateText(stream.info.fps),
+                    dvv::media::descriptor(stream.info.desc.format).name);
+    std::string tail = standardText(stream);
+    if (tail == "None") {
+        tail.clear();
+    }
+    const ColourRange range = stream.colour.params.range;
+    const std::string_view range_word = range == ColourRange::Limited ? "limited"
+                                        : range == ColourRange::Full  ? "full"
+                                                                      : "";
+    if (!tail.empty() && !range_word.empty()) {
+        tail += ' ';
+    }
+    tail += range_word;
+    if (!tail.empty()) {
+        text += " \xC2\xB7 " + tail;
+    }
+    return text;
+}
+
+std::string infoCopyText(const StreamInfo* stream) {
+    if (stream == nullptr) {
+        return "No stream";
     }
     std::string text;
-    for (const StreamInfo& stream : streams) {
+    for (const InfoRow& row : infoRows(*stream)) {
         if (!text.empty()) {
             text += '\n';
         }
-        const dvv::media::SourceInfo& info = stream.info;
-        const dvv::media::ColourParams& colour = stream.colour.params;
-        text += std::format("Stream {}: {}\n", stream.slot + 1, stream.resolvedUri);
-        text +=
-            std::format("  {}, {}x{}, {} fps, {}\n", dvv::media::descriptor(info.desc.format).name,
-                        info.desc.width, info.desc.height, fpsText(info.fps),
-                        info.frameCount ? std::format("{} frames", *info.frameCount)
-                                        : std::string("unbounded"));
-        text += colourLines(stream);
-        if (colour.transfer == TransferFn::Pq || colour.transfer == TransferFn::Hlg) {
-            text += "\n  tone-mapped (BT.2390, 1000 → 100 nits)";  // D4
-        }
-        if (!info.clipFile.empty()) {  // D5 design §5: clip=@ or the sidecar, by its file name
-            const std::size_t slash = info.clipFile.find_last_of("/\\");
-            text += "\n  clip description: " +
-                    (slash == std::string::npos ? info.clipFile : info.clipFile.substr(slash + 1));
-        }
-        if (!info.reader.empty()) {
-            text += "\n  reads: " + info.reader;  // the file read mode
-        }
-        for (const std::string& warning : info.warnings) {
-            text += "\n  warning: " + warning;
-        }
+        text += std::format("{}: {}", row.label, row.value);
     }
     return text;
+}
+
+std::vector<std::string> infoValueSamples() {
+    std::vector<std::string> samples(VALUE_SAMPLES.begin(), VALUE_SAMPLES.end());
+    for (const dvv::media::FormatId format : dvv::media::catalogue()) {
+        samples.push_back(formatText(format));
+    }
+    return samples;
 }
 
 }  // namespace rawreel

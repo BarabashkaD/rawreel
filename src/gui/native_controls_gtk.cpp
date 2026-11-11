@@ -103,6 +103,13 @@ void setAccessibleName(wxWindow& window, const wxString& name) {
     }
 }
 
+// GTK's own secondary text: the theme's "dim-label" style class (adding it again does nothing).
+void setSecondaryText(wxWindow& label) {
+    if (GtkWidget* const widget = label.GetHandle(); widget != nullptr) {
+        gtk_style_context_add_class(gtk_widget_get_style_context(widget), "dim-label");
+    }
+}
+
 // No icons on the tabs of the dialog.
 wxBitmapBundle settingsPageIcon(std::string_view /*sf_symbol*/) {
     return {};

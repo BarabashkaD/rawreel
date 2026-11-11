@@ -18,8 +18,12 @@ namespace {
 
 // In Icon order.
 constexpr std::array<std::string_view, ICON_COUNT> SVGS{
-    lucide::FOLDER_OPEN, lucide::SKIP_BACK,    lucide::STEP_BACK,    lucide::PLAY,   lucide::PAUSE,
-    lucide::SQUARE,      lucide::STEP_FORWARD, lucide::SKIP_FORWARD, lucide::REPEAT,
+    lucide::FOLDER_OPEN,  lucide::SKIP_BACK,
+    lucide::STEP_BACK,    lucide::PLAY,
+    lucide::PAUSE,        lucide::SQUARE,
+    lucide::STEP_FORWARD, lucide::SKIP_FORWARD,
+    lucide::REPEAT,       lucide::SLIDERS_HORIZONTAL,
+    lucide::INFO,
 };
 
 }  // namespace

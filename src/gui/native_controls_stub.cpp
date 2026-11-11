@@ -37,6 +37,9 @@ void showSliderGhost(wxSlider& /*slider*/, std::optional<int> /*x*/) {}
 // No accessible name for this toolkit: SetName only.
 void setAccessibleName(wxWindow& /*window*/, const wxString& /*name*/) {}
 
+// No secondary text colour for this toolkit.
+void setSecondaryText(wxWindow& /*label*/) {}
+
 // No icons on the tabs of the dialog.
 wxBitmapBundle settingsPageIcon(std::string_view /*sf_symbol*/) {
     return {};

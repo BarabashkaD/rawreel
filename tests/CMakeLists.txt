@@ -57,7 +57,7 @@ add_executable(rawreel_core_tests
     test_gui_arguments.cpp test_info_text.cpp test_layout.cpp test_log_file_switch.cpp test_log_level.cpp test_log_mirror.cpp test_log_store.cpp test_log_text.cpp test_perf_stats.cpp test_player.cpp test_session.cpp
     test_session_notify.cpp test_session_storm.cpp test_session_types.cpp test_settings_claim.cpp
     test_open_text.cpp test_source_provider.cpp test_startup.cpp test_vulkan_driver.cpp
-    test_status_text.cpp test_svg_colour.cpp test_timeline.cpp test_timer.cpp test_view.cpp)
+    test_status_text.cpp test_stream_name.cpp test_svg_colour.cpp test_timeline.cpp test_timer.cpp test_view.cpp)
 target_link_libraries(rawreel_core_tests PRIVATE rawreel_core doctest::doctest)
 dvv_link_components(rawreel_core_tests dvv::media_sources)
 # RAWREEL_VERSION: the version packageVersions() must report for rawreel.
