@@ -1,0 +1,250 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="100" viewBox="0 0 320 100">
+  <title>rawreel logo, About banner, macOS, plated tile, for light backgrounds</title>
+  <defs>
+    <linearGradient id="plate" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2A3248"/>
+      <stop offset="1" stop-color="#0F1219"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.06"/>
+    </linearGradient>
+    <linearGradient id="key" x1="0" y1="722" x2="0" y2="842" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#36405A"/>
+      <stop offset="1" stop-color="#262D3F"/>
+    </linearGradient>
+    <clipPath id="clipY"><rect x="212.0" y="172.0" width="600.0" height="332.0" rx="24.0"/></clipPath>
+    <clipPath id="clipU"><rect x="212.0" y="516.0" width="294.0" height="166.0" rx="18.0"/></clipPath>
+    <clipPath id="clipV"><rect x="518.0" y="516.0" width="294.0" height="166.0" rx="18.0"/></clipPath>  </defs>
+  <g transform="translate(4 4) scale(0.153846) translate(-168 -128)">
+  <rect x="168" y="128" width="688" height="598" rx="132" fill="url(#plate)"/>
+  <rect x="171" y="131" width="682" height="592" rx="129" fill="none" stroke="url(#rim)" stroke-width="6"/>
+  <g clip-path="url(#clipY)"><g transform="translate(212 172)">
+  <rect x="0" y="0" width="600" height="332" fill="#A7A7A7"/>
+  <defs><clipPath id="lensy"><circle cx="388" cy="128" r="38"/></clipPath></defs>
+  <g transform="translate(-40 0)">
+  <!-- tail, perch -->
+  <path fill="#424242" d="M262 250 L242 308 L292 308 L306 258 Z"/>
+  <rect x="-60" y="280" width="720" height="22" rx="11" fill="#3F3F3F"/>
+  <!-- body, chest, folded wing -->
+  <path fill="#5D5D5D" d="M262 140 C240 186 240 246 262 278 C284 304 344 304 364 278 C388 244 390 188 372 142 C354 108 282 106 262 140 Z"/>
+  <path fill="#D5D5D5" d="M342 146 C374 172 384 232 368 270 C356 290 330 296 316 286 C340 248 344 196 326 156 Z"/>
+  <g fill="#515151">
+    <ellipse cx="350" cy="184" rx="4" ry="10"/><ellipse cx="366" cy="210" rx="4" ry="10"/>
+    <ellipse cx="344" cy="222" rx="4" ry="10"/><ellipse cx="360" cy="246" rx="4" ry="10"/>
+    <ellipse cx="338" cy="262" rx="4" ry="9"/>
+  </g>
+  <path fill="#424242" d="M270 154 C244 202 242 256 262 296 C288 304 310 286 318 258 C330 216 322 176 300 148 Z"/>
+  <g fill="#919191">
+    <ellipse cx="286" cy="194" rx="11" ry="4.5" transform="rotate(-18 286 194)"/>
+    <ellipse cx="298" cy="222" rx="11" ry="4.5" transform="rotate(-18 298 222)"/>
+    <ellipse cx="282" cy="248" rx="11" ry="4.5" transform="rotate(-18 282 248)"/>
+    <ellipse cx="296" cy="274" rx="11" ry="4.5" transform="rotate(-18 296 274)"/>
+  </g>
+  <!-- standing foot gripping the perch -->
+  <path fill="#A8A8A8" d="M304 262 H332 V284 H304 Z"/>
+  <rect x="298" y="278" width="40" height="10" rx="5" fill="#959595"/>
+  <g fill="#1B1B1B">
+    <path d="M300 284 L308 284 L305 297 Z"/><path d="M314 285 L322 285 L319 299 Z"/><path d="M328 284 L336 284 L333 297 Z"/>
+  </g>
+  <!-- ear tufts (upright), head leaning forward and down -->
+  <path fill="#5D5D5D" d="M318 70 L306 26 L336 62 Z"/>
+  <path fill="#5D5D5D" d="M372 84 L394 40 L400 94 Z"/>
+  <g transform="rotate(20 330 132)">
+    <path fill="#5D5D5D" d="M330 64 C374 64 400 94 400 128 C400 158 380 176 348 180 C304 184 266 168 264 132 C262 96 290 64 330 64 Z"/>
+    <path fill="#A1A1A1" d="M356 82 C384 84 400 106 400 130 C400 154 386 170 362 172 C342 160 334 138 336 118 C338 100 344 88 356 82 Z"/>
+    <path fill="none" stroke="#2F2F2F" stroke-width="6" stroke-linecap="round" d="M354 84 C340 98 334 120 338 140 C342 156 350 166 362 172"/>
+    <circle cx="374" cy="118" r="14" fill="#ADADAD"/>
+    <circle cx="379" cy="124" r="7" fill="#121212"/>
+    <circle cx="382" cy="119" r="2.6" fill="#FFFFFF"/>
+    <path fill="#2F2F2F" d="M354 100 Q376 90 398 102 L396 109 Q376 99 356 107 Z"/>
+    <path fill="#272727" d="M388 130 C402 128 412 140 409 155 C407 163 402 165 400 162 C400 152 396 147 386 147 Z"/>
+  </g>
+  <!-- raised foot: leg up and forward, toes wrapped round the handle -->
+  <path d="M342 254 C358 250 366 242 368 228" fill="none" stroke="#A8A8A8" stroke-width="20" stroke-linecap="round"/>
+  <path d="M380 178 L370 246" fill="none" stroke="#282828" stroke-width="13" stroke-linecap="round"/>
+  <g fill="#959595">
+    <ellipse cx="368" cy="206" rx="11" ry="7"/><ellipse cx="368" cy="220" rx="11" ry="7"/><ellipse cx="366" cy="234" rx="11" ry="7"/>
+  </g>
+  <g fill="#1B1B1B">
+    <path d="M377 201 L386 206 L377 211 Z"/><path d="M377 215 L386 220 L377 225 Z"/><path d="M375 229 L384 234 L375 239 Z"/>
+  </g>
+  <!-- the lens, held in front of the eye: everything behind it is magnified x1.6 -->
+  <circle cx="388" cy="128" r="38" fill="#A7A7A7"/>
+  <g clip-path="url(#lensy)">
+    <g transform="translate(388 128) scale(1.6) translate(-376 -134)">
+    <path fill="#5D5D5D" d="M372 84 L394 40 L400 94 Z"/>
+    <g transform="rotate(20 330 132)">
+    <path fill="#5D5D5D" d="M330 64 C374 64 400 94 400 128 C400 158 380 176 348 180 C304 184 266 168 264 132 C262 96 290 64 330 64 Z"/>
+    <path fill="#A1A1A1" d="M356 82 C384 84 400 106 400 130 C400 154 386 170 362 172 C342 160 334 138 336 118 C338 100 344 88 356 82 Z"/>
+    <path fill="none" stroke="#2F2F2F" stroke-width="6" stroke-linecap="round" d="M354 84 C340 98 334 120 338 140 C342 156 350 166 362 172"/>
+    <circle cx="374" cy="118" r="14" fill="#ADADAD"/>
+    <circle cx="379" cy="124" r="7" fill="#121212"/>
+    <circle cx="382" cy="119" r="2.6" fill="#FFFFFF"/>
+    <path fill="#2F2F2F" d="M354 100 Q376 90 398 102 L396 109 Q376 99 356 107 Z"/>
+    <path fill="#272727" d="M388 130 C402 128 412 140 409 155 C407 163 402 165 400 162 C400 152 396 147 386 147 Z"/>
+    </g>
+    </g>
+  </g>
+  <circle cx="388" cy="128" r="38" fill="#F2F2F2" fill-opacity="0.25"/>
+  <path d="M364 110 A26 26 0 0 1 386 99" fill="none" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" stroke-opacity="0.8"/>
+  <circle cx="388" cy="128" r="38" fill="none" stroke="#282828" stroke-width="17"/>
+  <circle cx="388" cy="128" r="38" fill="none" stroke="#7F7F7F" stroke-width="9"/>
+  </g>
+  </g></g>
+  <g clip-path="url(#clipU)"><g transform="translate(209.0 516.0) scale(0.5)">
+  <rect x="0" y="0" width="600" height="332" fill="#8071FF"/>
+  <defs><clipPath id="lensu"><circle cx="388" cy="128" r="38"/></clipPath></defs>
+  <g transform="translate(-40 0)">
+  <!-- tail, perch -->
+  <path fill="#808830" d="M262 250 L242 308 L292 308 L306 258 Z"/>
+  <rect x="-60" y="280" width="720" height="22" rx="11" fill="#808545"/>
+  <!-- body, chest, folded wing -->
+  <path fill="#808B12" d="M262 140 C240 186 240 246 262 278 C284 304 344 304 364 278 C388 244 390 188 372 142 C354 108 282 106 262 140 Z"/>
+  <path fill="#808922" d="M342 146 C374 172 384 232 368 270 C356 290 330 296 316 286 C340 248 344 196 326 156 Z"/>
+  <g fill="#808925">
+    <ellipse cx="350" cy="184" rx="4" ry="10"/><ellipse cx="366" cy="210" rx="4" ry="10"/>
+    <ellipse cx="344" cy="222" rx="4" ry="10"/><ellipse cx="360" cy="246" rx="4" ry="10"/>
+    <ellipse cx="338" cy="262" rx="4" ry="9"/>
+  </g>
+  <path fill="#808830" d="M270 154 C244 202 242 256 262 296 C288 304 310 286 318 258 C330 216 322 176 300 148 Z"/>
+  <g fill="#808D00">
+    <ellipse cx="286" cy="194" rx="11" ry="4.5" transform="rotate(-18 286 194)"/>
+    <ellipse cx="298" cy="222" rx="11" ry="4.5" transform="rotate(-18 298 222)"/>
+    <ellipse cx="282" cy="248" rx="11" ry="4.5" transform="rotate(-18 282 248)"/>
+    <ellipse cx="296" cy="274" rx="11" ry="4.5" transform="rotate(-18 296 274)"/>
+  </g>
+  <!-- standing foot gripping the perch -->
+  <path fill="#808C04" d="M304 262 H332 V284 H304 Z"/>
+  <rect x="298" y="278" width="40" height="10" rx="5" fill="#808829"/>
+  <g fill="#808076">
+    <path d="M300 284 L308 284 L305 297 Z"/><path d="M314 285 L322 285 L319 299 Z"/><path d="M328 284 L336 284 L333 297 Z"/>
+  </g>
+  <!-- ear tufts (upright), head leaning forward and down -->
+  <path fill="#808B12" d="M318 70 L306 26 L336 62 Z"/>
+  <path fill="#808B12" d="M372 84 L394 40 L400 94 Z"/>
+  <g transform="rotate(20 330 132)">
+    <path fill="#808B12" d="M330 64 C374 64 400 94 400 128 C400 158 380 176 348 180 C304 184 266 168 264 132 C262 96 290 64 330 64 Z"/>
+    <path fill="#808E00" d="M356 82 C384 84 400 106 400 130 C400 154 386 170 362 172 C342 160 334 138 336 118 C338 100 344 88 356 82 Z"/>
+    <path fill="none" stroke="#80854D" stroke-width="6" stroke-linecap="round" d="M354 84 C340 98 334 120 338 140 C342 156 350 166 362 172"/>
+    <circle cx="374" cy="118" r="14" fill="#809700"/>
+    <circle cx="379" cy="124" r="7" fill="#80807B"/>
+    <circle cx="382" cy="119" r="2.6" fill="#808080"/>
+    <path fill="#80854D" d="M354 100 Q376 90 398 102 L396 109 Q376 99 356 107 Z"/>
+    <path fill="#808076" d="M388 130 C402 128 412 140 409 155 C407 163 402 165 400 162 C400 152 396 147 386 147 Z"/>
+  </g>
+  <!-- raised foot: leg up and forward, toes wrapped round the handle -->
+  <path d="M342 254 C358 250 366 242 368 228" fill="none" stroke="#808C04" stroke-width="20" stroke-linecap="round"/>
+  <path d="M380 178 L370 246" fill="none" stroke="#808358" stroke-width="13" stroke-linecap="round"/>
+  <g fill="#808829">
+    <ellipse cx="368" cy="206" rx="11" ry="7"/><ellipse cx="368" cy="220" rx="11" ry="7"/><ellipse cx="366" cy="234" rx="11" ry="7"/>
+  </g>
+  <g fill="#808076">
+    <path d="M377 201 L386 206 L377 211 Z"/><path d="M377 215 L386 220 L377 225 Z"/><path d="M375 229 L384 234 L375 239 Z"/>
+  </g>
+  <!-- the lens, held in front of the eye: everything behind it is magnified x1.6 -->
+  <circle cx="388" cy="128" r="38" fill="#8071FF"/>
+  <g clip-path="url(#lensu)">
+    <g transform="translate(388 128) scale(1.6) translate(-376 -134)">
+    <path fill="#808B12" d="M372 84 L394 40 L400 94 Z"/>
+    <g transform="rotate(20 330 132)">
+    <path fill="#808B12" d="M330 64 C374 64 400 94 400 128 C400 158 380 176 348 180 C304 184 266 168 264 132 C262 96 290 64 330 64 Z"/>
+    <path fill="#808E00" d="M356 82 C384 84 400 106 400 130 C400 154 386 170 362 172 C342 160 334 138 336 118 C338 100 344 88 356 82 Z"/>
+    <path fill="none" stroke="#80854D" stroke-width="6" stroke-linecap="round" d="M354 84 C340 98 334 120 338 140 C342 156 350 166 362 172"/>
+    <circle cx="374" cy="118" r="14" fill="#809700"/>
+    <circle cx="379" cy="124" r="7" fill="#80807B"/>
+    <circle cx="382" cy="119" r="2.6" fill="#808080"/>
+    <path fill="#80854D" d="M354 100 Q376 90 398 102 L396 109 Q376 99 356 107 Z"/>
+    <path fill="#808076" d="M388 130 C402 128 412 140 409 155 C407 163 402 165 400 162 C400 152 396 147 386 147 Z"/>
+    </g>
+    </g>
+  </g>
+  <circle cx="388" cy="128" r="38" fill="#807D99" fill-opacity="0.25"/>
+  <path d="M364 110 A26 26 0 0 1 386 99" fill="none" stroke="#808080" stroke-width="5" stroke-linecap="round" stroke-opacity="0.8"/>
+  <circle cx="388" cy="128" r="38" fill="none" stroke="#808358" stroke-width="17"/>
+  <circle cx="388" cy="128" r="38" fill="none" stroke="#809300" stroke-width="9"/>
+  </g>
+  </g></g>
+  <g clip-path="url(#clipV)"><g transform="translate(515.0 516.0) scale(0.5)">
+  <rect x="0" y="0" width="600" height="332" fill="#219C80"/>
+  <defs><clipPath id="lensv"><circle cx="388" cy="128" r="38"/></clipPath></defs>
+  <g transform="translate(-40 0)">
+  <!-- tail, perch -->
+  <path fill="#D06880" d="M262 250 L242 308 L292 308 L306 258 Z"/>
+  <rect x="-60" y="280" width="720" height="22" rx="11" fill="#B56F80"/>
+  <!-- body, chest, folded wing -->
+  <path fill="#DE6380" d="M262 140 C240 186 240 246 262 278 C284 304 344 304 364 278 C388 244 390 188 372 142 C354 108 282 106 262 140 Z"/>
+  <path fill="#AC7280" d="M342 146 C374 172 384 232 368 270 C356 290 330 296 316 286 C340 248 344 196 326 156 Z"/>
+  <g fill="#D16780">
+    <ellipse cx="350" cy="184" rx="4" ry="10"/><ellipse cx="366" cy="210" rx="4" ry="10"/>
+    <ellipse cx="344" cy="222" rx="4" ry="10"/><ellipse cx="360" cy="246" rx="4" ry="10"/>
+    <ellipse cx="338" cy="262" rx="4" ry="9"/>
+  </g>
+  <path fill="#D06880" d="M270 154 C244 202 242 256 262 296 C288 304 310 286 318 258 C330 216 322 176 300 148 Z"/>
+  <g fill="#DD6480">
+    <ellipse cx="286" cy="194" rx="11" ry="4.5" transform="rotate(-18 286 194)"/>
+    <ellipse cx="298" cy="222" rx="11" ry="4.5" transform="rotate(-18 298 222)"/>
+    <ellipse cx="282" cy="248" rx="11" ry="4.5" transform="rotate(-18 282 248)"/>
+    <ellipse cx="296" cy="274" rx="11" ry="4.5" transform="rotate(-18 296 274)"/>
+  </g>
+  <!-- standing foot gripping the perch -->
+  <path fill="#C26C80" d="M304 262 H332 V284 H304 Z"/>
+  <rect x="298" y="278" width="40" height="10" rx="5" fill="#A57480"/>
+  <g fill="#867D80">
+    <path d="M300 284 L308 284 L305 297 Z"/><path d="M314 285 L322 285 L319 299 Z"/><path d="M328 284 L336 284 L333 297 Z"/>
+  </g>
+  <!-- ear tufts (upright), head leaning forward and down -->
+  <path fill="#DE6380" d="M318 70 L306 26 L336 62 Z"/>
+  <path fill="#DE6380" d="M372 84 L394 40 L400 94 Z"/>
+  <g transform="rotate(20 330 132)">
+    <path fill="#DE6380" d="M330 64 C374 64 400 94 400 128 C400 158 380 176 348 180 C304 184 266 168 264 132 C262 96 290 64 330 64 Z"/>
+    <path fill="#E36280" d="M356 82 C384 84 400 106 400 130 C400 154 386 170 362 172 C342 160 334 138 336 118 C338 100 344 88 356 82 Z"/>
+    <path fill="none" stroke="#B57080" stroke-width="6" stroke-linecap="round" d="M354 84 C340 98 334 120 338 140 C342 156 350 166 362 172"/>
+    <circle cx="374" cy="118" r="14" fill="#FF5580"/>
+    <circle cx="379" cy="124" r="7" fill="#837E80"/>
+    <circle cx="382" cy="119" r="2.6" fill="#808080"/>
+    <path fill="#B57080" d="M354 100 Q376 90 398 102 L396 109 Q376 99 356 107 Z"/>
+    <path fill="#887D80" d="M388 130 C402 128 412 140 409 155 C407 163 402 165 400 162 C400 152 396 147 386 147 Z"/>
+  </g>
+  <!-- raised foot: leg up and forward, toes wrapped round the handle -->
+  <path d="M342 254 C358 250 366 242 368 228" fill="none" stroke="#C26C80" stroke-width="20" stroke-linecap="round"/>
+  <path d="M380 178 L370 246" fill="none" stroke="#A47580" stroke-width="13" stroke-linecap="round"/>
+  <g fill="#A57480">
+    <ellipse cx="368" cy="206" rx="11" ry="7"/><ellipse cx="368" cy="220" rx="11" ry="7"/><ellipse cx="366" cy="234" rx="11" ry="7"/>
+  </g>
+  <g fill="#867D80">
+    <path d="M377 201 L386 206 L377 211 Z"/><path d="M377 215 L386 220 L377 225 Z"/><path d="M375 229 L384 234 L375 239 Z"/>
+  </g>
+  <!-- the lens, held in front of the eye: everything behind it is magnified x1.6 -->
+  <circle cx="388" cy="128" r="38" fill="#219C80"/>
+  <g clip-path="url(#lensv)">
+    <g transform="translate(388 128) scale(1.6) translate(-376 -134)">
+    <path fill="#DE6380" d="M372 84 L394 40 L400 94 Z"/>
+    <g transform="rotate(20 330 132)">
+    <path fill="#DE6380" d="M330 64 C374 64 400 94 400 128 C400 158 380 176 348 180 C304 184 266 168 264 132 C262 96 290 64 330 64 Z"/>
+    <path fill="#E36280" d="M356 82 C384 84 400 106 400 130 C400 154 386 170 362 172 C342 160 334 138 336 118 C338 100 344 88 356 82 Z"/>
+    <path fill="none" stroke="#B57080" stroke-width="6" stroke-linecap="round" d="M354 84 C340 98 334 120 338 140 C342 156 350 166 362 172"/>
+    <circle cx="374" cy="118" r="14" fill="#FF5580"/>
+    <circle cx="379" cy="124" r="7" fill="#837E80"/>
+    <circle cx="382" cy="119" r="2.6" fill="#808080"/>
+    <path fill="#B57080" d="M354 100 Q376 90 398 102 L396 109 Q376 99 356 107 Z"/>
+    <path fill="#887D80" d="M388 130 C402 128 412 140 409 155 C407 163 402 165 400 162 C400 152 396 147 386 147 Z"/>
+    </g>
+    </g>
+  </g>
+  <circle cx="388" cy="128" r="38" fill="#6B8680" fill-opacity="0.25"/>
+  <path d="M364 110 A26 26 0 0 1 386 99" fill="none" stroke="#808080" stroke-width="5" stroke-linecap="round" stroke-opacity="0.8"/>
+  <circle cx="388" cy="128" r="38" fill="none" stroke="#A47580" stroke-width="17"/>
+  <circle cx="388" cy="128" r="38" fill="none" stroke="#E26280" stroke-width="9"/>
+  </g>
+  </g></g>  </g>  <g transform="translate(126 17.8) scale(0.46)">
+    <g fill="none" stroke="#141821" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 46V94M6 70C6 54 16 46 32 46"/>
+      <circle cx="78" cy="70" r="24"/><path d="M102 46V94"/>
+      <path d="M128 46L141 94L154 58L167 94L180 46"/>
+      <path d="M206 46V94M206 70C206 54 216 46 232 46"/>
+      <path d="M256 70H304A24 24 0 1 0 298.4 85.4"/>
+      <path d="M328 70H376A24 24 0 1 0 370.4 85.4"/>
+      <path d="M400 14V94"/>
+    </g>  </g>
+</svg>

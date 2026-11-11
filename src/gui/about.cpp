@@ -19,12 +19,14 @@
 #include <wx/generic/aboutdlgg.h>
 #include <wx/hyperlink.h>
 #include <wx/settings.h>
+#include <wx/statbmp.h>
 #include <wx/stdpaths.h>
 // clang-format on
 
 #include "core/startup.h"
 #include "core/version_text.h"
 #include "gui/app.h"
+#include "gui/app_icon.h"
 #include "gui/main_frame.h"
 #include "gui/selftest.h"
 
@@ -62,34 +64,20 @@ void copyToClipboard(const std::string& text) {
     }
 }
 
-// One line of texts and links in a row, on a panel with the background of `parent`.
-wxWindow* lineRow(wxWindow* parent, const TextLine& line) {
-    auto* row = new wxPanel(parent);
-    row->SetBackgroundColour(parent->GetBackgroundColour());
-    auto* sizer = new wxBoxSizer(wxHORIZONTAL);
-    for (const TextPart& part : line) {
-        wxWindow* control = nullptr;
-        if (part.url.empty()) {
-            control = new wxStaticText(row, wxID_ANY, fromUtf8(part.text));
-        } else {
-            control = new wxHyperlinkCtrl(row, wxID_ANY, fromUtf8(part.text), fromUtf8(part.url));
-        }
-        sizer->Add(control, wxSizerFlags().CentreVertical());
-    }
-    row->SetSizer(sizer);
-    return row;
-}
-
-// The About layout: the stock generic dialog with the heading only; below it the description,
-// the copyright line, the website, the FFmpeg and wxWidgets lines, the Components pane, and two
-// buttons in the OK row. Create() runs here so DoAddCustomControls is ours.
+// The About layout: the logo on top (app icon plan D6), then the stock generic dialog with
+// the heading only; below it the description, the copyright line, the website, the FFmpeg and
+// wxWidgets lines, the Components pane, and two buttons in the OK row. Create() runs here so
+// DoAddCustomControls is ours.
 class AboutDialog final : public wxGenericAboutDialog {
 public:
     AboutDialog(const wxAboutDialogInfo& info, wxWindow* parent, AboutContent content,
                 std::string text)
         : content_(std::move(content)), text_(std::move(text)) {
         if (Create(info, parent)) {
+            removeStockIcon();
+            addBanner();
             addButtons();
+            Bind(wxEVT_SYS_COLOUR_CHANGED, &AboutDialog::onSysColourChanged, this);
         }
     }
 
@@ -165,6 +153,92 @@ protected:
     }
 
 private:
+    // One line of texts and links in a row, on a panel with the background of `parent`; the rows
+    // are recorded for a colour change.
+    wxWindow* lineRow(wxWindow* parent, const TextLine& line) {
+        auto* row = new wxPanel(parent);
+        row->SetBackgroundColour(parent->GetBackgroundColour());
+        auto* sizer = new wxBoxSizer(wxHORIZONTAL);
+        for (const TextPart& part : line) {
+            wxWindow* control = nullptr;
+            if (part.url.empty()) {
+                control = new wxStaticText(row, wxID_ANY, fromUtf8(part.text));
+            } else {
+                control =
+                    new wxHyperlinkCtrl(row, wxID_ANY, fromUtf8(part.text), fromUtf8(part.url));
+            }
+            sizer->Add(control, wxSizerFlags().CentreVertical());
+        }
+        row->SetSizer(sizer);
+        rows_.push_back(row);
+        return row;
+    }
+
+    // wxAboutDialogInfo::GetIcon falls back to the main frame's icons (Windows, Linux), which wx
+    // puts left of the text at 16 px; the logo above replaces it. The contents row is [spacer,
+    // icon, spacer, text column, spacer] then; without the icon it is wx's own row without an icon:
+    // [spacer, text column, spacer of 2 borders]. macOS: the frame has no icons, nothing to do.
+    void removeStockIcon() {
+        wxSizer* const row = GetCustomControlParent()->GetSizer();
+        if (row == nullptr) {
+            return;
+        }
+        int index = 0;
+        wxWindow* icon = nullptr;
+        for (const wxSizerItem* item : row->GetChildren()) {
+            if (dynamic_cast<wxStaticBitmap*>(item->GetWindow()) != nullptr) {
+                icon = item->GetWindow();
+                break;
+            }
+            ++index;
+        }
+        if (icon == nullptr) {
+            return;
+        }
+        static_cast<void>(row->Detach(icon));
+        icon->Destroy();
+        static_cast<void>(row->Remove(index));  // the spacer after the icon
+        const std::size_t count = row->GetItemCount();
+        if (count > 0) {
+            wxSizerItem* const last = row->GetItem(count - 1);
+            if (last != nullptr && last->IsSpacer()) {
+                last->AssignSpacer(wxSize(2 * wxSizerFlags::GetDefaultBorder(), 0));
+            }
+        }
+    }
+
+    // The logo on top of the contents panel, above wx's row (kept: SetSizer(column, false)), with
+    // the default border on each side; the dialog widens to fit it if it must. Its name is
+    // ABOUT_LOGO_NAME (the selftest finds it by that).
+    void addBanner() {
+        wxWindow* const contents = GetCustomControlParent();
+        wxSizer* const row = contents->GetSizer();
+        if (row == nullptr) {
+            return;
+        }
+        auto* logo = new wxStaticBitmap(contents, wxID_ANY, aboutLogo());
+        logo->SetName(fromUtf8(ABOUT_LOGO_NAME));
+        logo->SetInitialSize();
+        auto* column = new wxBoxSizer(wxVERTICAL);
+        column->AddSpacer(2 * wxSizerFlags::GetDefaultBorder());  // DoubleBorder(wxTOP)
+        column->Add(logo, wxSizerFlags().CentreHorizontal().Border(wxLEFT | wxRIGHT));
+        column->Add(row, wxSizerFlags(1).Expand());
+        contents->SetSizer(column, false);
+    }
+
+    // A live appearance change: the panel's colour (as Create() set it) and the rows'. The logo is
+    // one image for light and dark. wx's separator above the buttons keeps its colour until the
+    // next opening.
+    void onSysColourChanged(wxSysColourChangedEvent& event) {
+        event.Skip();
+        const wxColour background = wxSystemSettings::GetColour(wxSYS_COLOUR_LISTBOX);
+        GetCustomControlParent()->SetBackgroundColour(background);
+        for (wxWindow* row : rows_) {
+            row->SetBackgroundColour(background);
+        }
+        Refresh();
+    }
+
     // "Third-party notices" and "Copy to clipboard" left of OK, in OK's sizer.
     void addButtons() {
         auto* notices = new wxButton(this, wxID_ANY, fromUtf8(ABOUT_NOTICES_LABEL));
@@ -208,6 +282,7 @@ private:
 
     AboutContent content_;
     std::string text_;
+    std::vector<wxWindow*> rows_;  // the lineRow panels
 };
 
 }  // namespace

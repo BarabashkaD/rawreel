@@ -110,6 +110,27 @@ target_sources(rawreel_core PRIVATE src/core/startup.cpp src/core/version_text.c
 # dvv::components: dvv/components/ffmpeg.h and loadFfmpeg (dvv::ffmpeg); no FFmpeg is linked.
 target_link_libraries(rawreel_core PUBLIC dvv::components PRIVATE dvv::platform)
 
+# rawreel_icon_resource(<target> <rc>), Windows: adds the resource script <rc>, which declares the
+# rawreel ICO group (app icon plan D4), to <target>. rc.exe finds
+# owl-on-film-reel-square-background.ico (packaging/icons/README.md) through
+# /I packaging/icons/owl-on-film-reel/square-background/Windows, given to the resource compiler
+# only. The Visual Studio generators pass no target compile options to
+# ResourceCompile (only CMAKE_RC_FLAGS, the defines and the include directories), so there the
+# folder is an include directory, which the C++ compiles see too (it holds no headers). A changed
+# .ico rebuilds the .res.
+function(rawreel_icon_resource target rc)
+    set(icons
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/icons/owl-on-film-reel/square-background/Windows")
+    target_sources(${target} PRIVATE ${rc})
+    if(CMAKE_GENERATOR MATCHES "^Visual Studio")
+        target_include_directories(${target} PRIVATE "${icons}")
+    else()
+        target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:RC>:/I${icons}>)
+    endif()
+    set_property(SOURCE ${rc} APPEND PROPERTY OBJECT_DEPENDS
+                 "${icons}/owl-on-film-reel-square-background.ico")
+endfunction()
+
 # rawreel-cli (spec §10.3): console, no wx; built under every preset including the sanitizers.
 add_executable(rawreel_cli src/cli/main.cpp)
 set_target_properties(rawreel_cli PROPERTIES OUTPUT_NAME rawreel-cli)
@@ -118,6 +139,10 @@ dvv_link_components(rawreel_cli dvv::media_sources)
 # The dvv-components libraries (the ffmpeg component: providers ffmpeg and lavfi).
 dvv_components_link(rawreel_cli)
 dvv_set_compiler_options(rawreel_cli)
+if(WIN32)
+    # The rawreel icon, the exe's only icon group (Explorer).
+    rawreel_icon_resource(rawreel_cli src/cli/rawreel-cli.rc)
+endif()
 
 # rawreel-gui (spec §10.2). Not built for sanitizer builds on any platform (design M1b F13): wx and
 # GTK are not instrumented, and MSVC ASan cannot link the non-ASan static wx. rawreel_render and its
@@ -176,8 +201,44 @@ if(NOT DVV_SANITIZE)
     # The source providers (file, synthetic) are components linked into the program.
     dvv_link_components(rawreel_gui dvv::media_sources)
     dvv_set_compiler_options(rawreel_gui)
+    # The embedded PNGs (app icon plan D7) from packaging/icons/owl-on-film-reel: About's logo,
+    # transparent-background's 1024 px PNG (scaled at run time), on every platform (so the table is
+    # never empty), plus square-background's hicolor PNGs as the window icons on Linux; Windows
+    # takes its window icons from the resource, macOS from the bundle. The hicolor files all have
+    # one name and embed-png.cmake keys the PNGs by their stem, so each is copied into the build
+    # tree as <name>-<N>.png (configure_file copies it again when it changes). embed-png.cmake
+    # writes them as C++ arrays at build time.
+    set(rawreel_icons "${CMAKE_CURRENT_SOURCE_DIR}/packaging/icons/owl-on-film-reel")
+    set(rawreel_icon_set "${rawreel_icons}/square-background")
+    set(rawreel_icon_name "owl-on-film-reel-square-background")
+    set(rawreel_embedded_pngs
+        "${rawreel_icons}/transparent-background/owl-on-film-reel-transparent-background-1024.png")
+    if(UNIX AND NOT APPLE)
+        foreach(size IN ITEMS 16 22 24 32 48 64 96 128 192 256 512)
+            set(rawreel_png
+                "${CMAKE_CURRENT_BINARY_DIR}/generated/icons/${rawreel_icon_name}-${size}.png")
+            configure_file(
+                "${rawreel_icon_set}/Linux/hicolor/${size}x${size}/apps/${rawreel_icon_name}.png"
+                "${rawreel_png}" COPYONLY)
+            list(APPEND rawreel_embedded_pngs "${rawreel_png}")
+        endforeach()
+    endif()
+    set(rawreel_embed_script "${CMAKE_CURRENT_SOURCE_DIR}/packaging/icons/embed-png.cmake")
+    set(rawreel_icon_data "${CMAKE_CURRENT_BINARY_DIR}/generated/app_icon_data.cpp")
+    # One -DFILES argument: the list separator as $<SEMICOLON>, which no shell splits on.
+    list(JOIN rawreel_embedded_pngs "$<SEMICOLON>" rawreel_embed_files)
+    add_custom_command(
+        OUTPUT "${rawreel_icon_data}"
+        COMMAND "${CMAKE_COMMAND}" "-DOUT=${rawreel_icon_data}"
+                "-DFILES=${rawreel_embed_files}" -P "${rawreel_embed_script}"
+        DEPENDS ${rawreel_embedded_pngs} "${rawreel_embed_script}"
+        COMMENT "Embedding the rawreel PNGs"
+        VERBATIM)
+    target_sources(rawreel_gui PRIVATE src/gui/app_icon.cpp "${rawreel_icon_data}")
     if(WIN32)
-        target_sources(rawreel_gui PRIVATE src/gui/viewport_msw.cpp src/gui/rawreel-gui.rc)
+        target_sources(rawreel_gui PRIVATE src/gui/viewport_msw.cpp)
+        # The rawreel icon as the first icon group (Explorer, taskbar), then wx.rc.
+        rawreel_icon_resource(rawreel_gui src/gui/rawreel-gui.rc)
         # wmain() in a GUI-subsystem program; the manifest comes from wx.rc (rawreel-gui.rc).
         target_link_options(rawreel_gui PRIVATE /ENTRY:wmainCRTStartup /MANIFEST:NO)
     elseif(UNIX AND NOT APPLE)
@@ -192,6 +253,14 @@ if(NOT DVV_SANITIZE)
         target_sources(rawreel_gui PRIVATE src/gui/viewport_cocoa.mm)
         set_source_files_properties(src/gui/viewport_cocoa.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
         target_link_libraries(rawreel_gui PRIVATE "-framework AppKit" "-framework QuartzCore")
+        # The app icon, square-background's .icns as delivered, copied into the build tree
+        # as rawreel.icns and from there to Contents/Resources; the plist names it as
+        # CFBundleIconFile (rawreel).
+        set(rawreel_icns "${CMAKE_CURRENT_BINARY_DIR}/generated/rawreel.icns")
+        configure_file("${rawreel_icon_set}/macOS/${rawreel_icon_name}.icns"
+                       "${rawreel_icns}" COPYONLY)
+        target_sources(rawreel_gui PRIVATE "${rawreel_icns}")
+        set_source_files_properties("${rawreel_icns}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
         set_target_properties(rawreel_gui PROPERTIES
             MACOSX_BUNDLE ON
             MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/packaging/Info.plist.in"

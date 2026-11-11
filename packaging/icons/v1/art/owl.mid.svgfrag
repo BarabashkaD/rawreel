@@ -1,0 +1,51 @@
+  <!-- owl v4 final, simplified for 40 to 64 px: no streaks, wing bars, claws or glass highlight; thicker lens rim and handle -->
+  <rect x="0" y="0" width="600" height="332" fill="{sky}"/>
+  <defs><clipPath id="lensm{v}"><circle cx="388" cy="128" r="38"/></clipPath></defs>
+  <g transform="translate(-40 0)">
+  <!-- tail, perch -->
+  <path fill="{wing}" d="M262 250 L242 308 L292 308 L306 258 Z"/>
+  <rect x="-60" y="280" width="720" height="22" rx="11" fill="{branch}"/>
+  <!-- body, chest, folded wing -->
+  <path fill="{body}" d="M262 140 C240 186 240 246 262 278 C284 304 344 304 364 278 C388 244 390 188 372 142 C354 108 282 106 262 140 Z"/>
+  <path fill="{chest}" d="M342 146 C374 172 384 232 368 270 C356 290 330 296 316 286 C340 248 344 196 326 156 Z"/>
+  <path fill="{wing}" d="M270 154 C244 202 242 256 262 296 C288 304 310 286 318 258 C330 216 322 176 300 148 Z"/>
+  <!-- standing foot gripping the perch -->
+  <path fill="{leg}" d="M304 262 H332 V284 H304 Z"/>
+  <rect x="298" y="278" width="40" height="10" rx="5" fill="{toe}"/>
+  <!-- ear tufts (upright), head leaning forward and down -->
+  <path fill="{body}" d="M318 70 L306 26 L336 62 Z"/>
+  <path fill="{body}" d="M372 84 L394 40 L400 94 Z"/>
+  <g transform="rotate(20 330 132)">
+    <path fill="{body}" d="M330 64 C374 64 400 94 400 128 C400 158 380 176 348 180 C304 184 266 168 264 132 C262 96 290 64 330 64 Z"/>
+    <path fill="{disc}" d="M356 82 C384 84 400 106 400 130 C400 154 386 170 362 172 C342 160 334 138 336 118 C338 100 344 88 356 82 Z"/>
+    <path fill="none" stroke="{rim}" stroke-width="9" stroke-linecap="round" d="M354 84 C340 98 334 120 338 140 C342 156 350 166 362 172"/>
+    <circle cx="374" cy="118" r="14" fill="{eye}"/>
+    <circle cx="379" cy="124" r="7" fill="{pupil}"/>
+    <path fill="{rim}" d="M354 100 Q376 90 398 102 L396 109 Q376 99 356 107 Z"/>
+    <path fill="{beak}" d="M388 130 C402 128 412 140 409 155 C407 163 402 165 400 162 C400 152 396 147 386 147 Z"/>
+  </g>
+  <!-- raised foot: leg up and forward, toes wrapped round the handle -->
+  <path d="M342 254 C358 250 366 242 368 228" fill="none" stroke="{leg}" stroke-width="20" stroke-linecap="round"/>
+  <path d="M380 178 L370 246" fill="none" stroke="{handle}" stroke-width="20" stroke-linecap="round"/>
+  <g fill="{toe}">
+    <ellipse cx="368" cy="206" rx="11" ry="7"/><ellipse cx="368" cy="220" rx="11" ry="7"/><ellipse cx="366" cy="234" rx="11" ry="7"/>
+  </g>
+  <!-- the lens, held in front of the eye: everything behind it is magnified x1.6 -->
+  <circle cx="388" cy="128" r="38" fill="{sky}"/>
+  <g clip-path="url(#lensm{v})">
+    <g transform="translate(388 128) scale(1.6) translate(-376 -134)">
+    <path fill="{body}" d="M372 84 L394 40 L400 94 Z"/>
+    <g transform="rotate(20 330 132)">
+    <path fill="{body}" d="M330 64 C374 64 400 94 400 128 C400 158 380 176 348 180 C304 184 266 168 264 132 C262 96 290 64 330 64 Z"/>
+    <path fill="{disc}" d="M356 82 C384 84 400 106 400 130 C400 154 386 170 362 172 C342 160 334 138 336 118 C338 100 344 88 356 82 Z"/>
+    <path fill="none" stroke="{rim}" stroke-width="9" stroke-linecap="round" d="M354 84 C340 98 334 120 338 140 C342 156 350 166 362 172"/>
+    <circle cx="374" cy="118" r="14" fill="{eye}"/>
+    <circle cx="379" cy="124" r="7" fill="{pupil}"/>
+    <path fill="{rim}" d="M354 100 Q376 90 398 102 L396 109 Q376 99 356 107 Z"/>
+    <path fill="{beak}" d="M388 130 C402 128 412 140 409 155 C407 163 402 165 400 162 C400 152 396 147 386 147 Z"/>
+    </g>
+    </g>
+  </g>
+  <circle cx="388" cy="128" r="38" fill="none" stroke="{handle}" stroke-width="24"/>
+  <circle cx="388" cy="128" r="38" fill="none" stroke="{brass}" stroke-width="12"/>
+  </g>

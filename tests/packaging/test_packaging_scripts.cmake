@@ -652,6 +652,7 @@ set(app_fixed
     "link|Applications" "ours|rawreel.app/Contents/Info.plist" "ours|rawreel.app/Contents/MacOS/rawreel-cli"
     "ours|rawreel.app/Contents/MacOS/rawreel-gui"
     "ours|rawreel.app/Contents/_CodeSignature/CodeResources"
+    "ours|rawreel.app/Contents/Resources/rawreel.icns"
     "ours|rawreel.app/Contents/Resources/vulkan/icd.d/libkosmickrisp_icd.json"
     "vulkan|rawreel.app/Contents/Frameworks/libvulkan.1.dylib"
     "vulkan|rawreel.app/Contents/Frameworks/libvulkan_kosmickrisp.dylib")
@@ -715,6 +716,7 @@ foreach(name IN ITEMS LICENSE README.md THIRD_PARTY_NOTICES.txt SOURCE.txt
                       rawreel.app/Contents/Info.plist rawreel.app/Contents/MacOS/rawreel-cli
                       rawreel.app/Contents/MacOS/rawreel-gui
                       rawreel.app/Contents/_CodeSignature/CodeResources
+                      rawreel.app/Contents/Resources/rawreel.icns
                       rawreel.app/Contents/Resources/vulkan/icd.d/libkosmickrisp_icd.json
                       rawreel.app/Contents/Frameworks/libvulkan.1.dylib
                       rawreel.app/Contents/Frameworks/libvulkan_kosmickrisp.dylib
