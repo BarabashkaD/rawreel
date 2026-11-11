@@ -5,11 +5,10 @@ manual scenarios of §9a are for the user to run. Revision 2 (second plan review
 notification of patches, target chosen under the lock, refused seeks; §6.6 slider details).
 Date 2026-11-08. Revision 2 replaces the GUI-side stale-snapshot filter of revision 1 with a `target`
 that already includes the requests the Session has accepted (U-EV6), after the plan reviews showed
-the filter cannot be exact (§10). Inputs: rawreel `main` at 280fc73, the rawreel spec
-(`2026-10-19-rawreel-design.md`, §4.3, §10.2, D10, D20) and the M3 plan
-(`docs/superpowers/plans/2026-10-23-m3-player.md`, Tasks 5, 6, 9 and 10). This is the
-prerequisite of the video control panel spec (the transport panel redesign), which is revised on
-top of it.
+the filter cannot be exact (§10). Inputs: rawreel `main` at 1b87601, the rawreel spec
+(`2026-10-19-rawreel-design.md`, §4.3, §10.2, D10, D20) and the M3 plan (Tasks 5, 6, 9 and 10).
+This is the prerequisite of the video control panel spec (the transport panel redesign), which is
+revised on top of it.
 
 ## 1. Intent
 

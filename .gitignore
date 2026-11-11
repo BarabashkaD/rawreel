@@ -1,4 +1,4 @@
-# Build output lives in libs/_build and libs/_third_party (the last two lines); the others guard
+# Build output lives in libs/_build and libs/_third_party; the other build and editor lines guard
 # against accidental in-tree builds and editor files.
 /build/
 /out/
@@ -9,3 +9,5 @@ CMakeUserPresets.json
 *.user
 /libs/_build/
 /libs/_third_party/
+# Implementation plans are kept locally and never published.
+/docs/superpowers/plans/

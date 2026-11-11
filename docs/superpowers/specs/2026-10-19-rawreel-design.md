@@ -2473,8 +2473,7 @@ comments cite as "M4 design D<n>"):
   GPU and reopen* (button Restart GPU); the clip view stays at least 320×240 DIP and the docks give
   way; the About layout as approved.
 
-Decisions taken for Linux in v1.0 (2026-10-27; the Linux milestone plan,
-`docs/superpowers/plans/2026-10-27-m4l-linux.md`):
+Decisions taken for Linux in v1.0 (2026-10-27; the Linux milestone plan, M4-L):
 - User decision **U-LNX1**: v1.0 gets full Linux support. It overrides U-WIN for Linux:
   `rawreel-gui` runs on Linux X11 and XWayland (GDK restricted to X11, the GTK native child
   viewport), the Linux tests run again (lavapipe; WSLg locally, Xvfb in CI; ASan and TSan in CI),
