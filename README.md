@@ -1,5 +1,7 @@
 # rawreel
 
+![rawreel-gui on macOS with a 1920x1080 Y4M clip from FFmpeg's testsrc2 generator](docs/images/rawreel-macos.png)
+
 rawreel is a raw video player. This repository holds two programs: `rawreel-gui`, the
 application, and `rawreel-cli`, a console tool that describes, dumps and benchmarks a source. They
 are built on the dvv libraries, which this repository pins as git submodules in `libs/`:
