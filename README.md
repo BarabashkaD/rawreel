@@ -18,7 +18,7 @@ are built on the dvv libraries, which this repository pins as git submodules in 
 
 ## Packages
 
-A release has these files (`<v>` is the version, e.g. `0.10.0`):
+A release has these files (`<v>` is the version, e.g. `0.10.1`):
 
 - `rawreel-<v>-windows-x64.zip`: the application. Unzip it anywhere and start `rawreel-gui.exe`;
   nothing is installed. The zip is not code-signed, so Windows SmartScreen may warn at the first
@@ -805,7 +805,7 @@ by UUID).
 `SHA256SUMS` lists the SHA256 of every release file. In PowerShell, in the download folder:
 
 ```powershell
-$f = 'rawreel-0.10.0-windows-x64.zip'
+$f = 'rawreel-0.10.1-windows-x64.zip'
 $want = (Select-String -Path SHA256SUMS -SimpleMatch $f).Line.Split(' ')[0]
 (Get-FileHash $f -Algorithm SHA256).Hash -eq $want    # True
 ```
@@ -815,12 +815,12 @@ On Linux (or wherever coreutils exist), and on macOS: `sha256sum -c --ignore-mis
 attestation from the release workflow; with the GitHub CLI:
 
 ```powershell
-gh attestation verify rawreel-0.10.0-windows-x64.zip --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.10.1-windows-x64.zip --repo BarabashkaD/rawreel
 ```
 
 ```sh
-gh attestation verify rawreel-0.10.0-linux-x64.tar.xz --repo BarabashkaD/rawreel
-gh attestation verify rawreel-0.10.0-macos-arm64.dmg --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.10.1-linux-x64.tar.xz --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.10.1-macos-arm64.dmg --repo BarabashkaD/rawreel
 ```
 
 ## Getting the source
