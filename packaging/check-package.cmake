@@ -122,7 +122,11 @@
 # file with its SHA256 that applies to both variants, bundled or not; the macOS app's Vulkan loader
 # and driver). Lines that do not apply to the variant are ignored, so their files count as
 # unexpected.
+#
+# Also brings RAWREEL_RELEASE_BUNDLE_ID, RAWREEL_DEV_BUNDLE_ID and rawreel_set_release_bundle_id
+# (packaging/bundle-id.cmake).
 include_guard(GLOBAL)
+include("${CMAKE_CURRENT_LIST_DIR}/bundle-id.cmake")
 
 # Lines of a text file as a list whose items cannot break CMake's list handling: '\', ';', '[' and
 # ']' are replaced by control characters (_rawreel_line_decode restores them).

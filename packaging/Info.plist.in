@@ -11,7 +11,9 @@
     <key>CFBundleExecutable</key>
     <string>@MACOSX_BUNDLE_EXECUTABLE_NAME@</string>
     <key>CFBundleIdentifier</key>
-    <string>io.github.barabashkad.rawreel</string>
+    <!-- RAWREEL_DEV_BUNDLE_ID in the build tree; make-packages.cmake writes the release's
+         (packaging/bundle-id.cmake). -->
+    <string>@MACOSX_BUNDLE_GUI_IDENTIFIER@</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>

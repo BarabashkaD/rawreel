@@ -324,6 +324,17 @@ add_test(NAME rawreel.packaging_scripts
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/packaging/test_packaging_scripts.cmake)
 set_tests_properties(rawreel.packaging_scripts PROPERTIES LABELS unit)
 
+# The built rawreel-gui.app has the dev bundle identifier, and make-packages.cmake's step writes
+# the release's (packaging/bundle-id.cmake): Spotlight started a build tree's app, which has no
+# Vulkan driver of its own, for the installed release.
+if(APPLE AND TARGET rawreel_gui)
+    add_test(NAME rawreel.bundle_id
+             COMMAND ${CMAKE_COMMAND} "-DAPP=$<TARGET_BUNDLE_DIR:rawreel_gui>"
+                     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/bundle-id-test
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/packaging/test_bundle_id.cmake)
+    set_tests_properties(rawreel.bundle_id PROPERTIES LABELS unit)
+endif()
+
 # The committed icon files of packaging/icons: both delivered sets complete, the structure of the
 # used set (owl-on-film-reel/square-background), v1's sources.sha256 and the privacy of the
 # binaries (app-icon plan D1, D8).

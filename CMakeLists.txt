@@ -263,9 +263,13 @@ if(NOT DVV_SANITIZE)
                        "${rawreel_icns}" COPYONLY)
         target_sources(rawreel_gui PRIVATE "${rawreel_icns}")
         set_source_files_properties("${rawreel_icns}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+        # The build tree's app has the dev identifier, never the release's: it has no Vulkan driver
+        # of its own, and Spotlight would start it for the release (packaging/bundle-id.cmake).
+        include(packaging/bundle-id.cmake)
         set_target_properties(rawreel_gui PROPERTIES
             MACOSX_BUNDLE ON
             MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/packaging/Info.plist.in"
+            MACOSX_BUNDLE_GUI_IDENTIFIER "${RAWREEL_DEV_BUNDLE_ID}"
             INSTALL_RPATH "@executable_path/../Frameworks")
     else()
         # Other toolkits: no native viewport yet (the viewport reports a failure).
