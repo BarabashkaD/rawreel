@@ -227,7 +227,11 @@ the bundle; every shipped Mach-O file refers to its dependencies only through `@
 - **C11 Driver isolation:** the `VK_DRIVER_FILES` rule of §6.2, so "no MoltenVK" (U-MAC2) holds
   even on a Mac with the Vulkan SDK installed, and test results are always about KosmicKrisp.
 - **C12 Bundle identifier:** `io.github.barabashkad.rawreel` (the GitHub handle, which the privacy
-  rules allow). Settings and macOS permissions hang on it, so it does not change later.
+  rules allow). Settings and macOS permissions hang on it, so it does not change later. It is the
+  release's alone: a build tree's `rawreel-gui.app` has `io.github.barabashkad.rawreel.dev` and no
+  Vulkan driver of its own, and with a shared identifier Spotlight started a build tree's app for
+  the installed release. make-packages.cmake writes the release's identifier before signing
+  (packaging/bundle-id.cmake).
 
 ## 8. Done means
 

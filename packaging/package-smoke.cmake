@@ -414,8 +414,10 @@ if(PLATFORM STREQUAL "macos")
             list(APPEND errors "Info.plist: ${key} is '${value}', expected '${expected}'")
         endif()
     endforeach()
-    if(NOT bundle_id STREQUAL "io.github.barabashkad.rawreel")
-        list(APPEND errors "Info.plist: CFBundleIdentifier is '${bundle_id}'")
+    # The release's own identifier, never a build tree's (packaging/bundle-id.cmake).
+    if(NOT bundle_id STREQUAL RAWREEL_RELEASE_BUNDLE_ID)
+        list(APPEND errors "Info.plist: CFBundleIdentifier is '${bundle_id}', expected "
+                           "'${RAWREEL_RELEASE_BUNDLE_ID}'")
     endif()
     # The one driver manifest, its library in Frameworks (plan Global Constraints).
     file(GLOB icd_files LIST_DIRECTORIES false "${contents}/Resources/vulkan/icd.d/*.json")

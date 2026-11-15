@@ -117,9 +117,15 @@ if(RAWREEL_PLATFORM STREQUAL "macos")
     # is an unchanged vendor file and keeps it; that signature must verify. Identifiers: a
     # library's file name without .dylib, the app's bundle id for the app and its main exe, and
     # <bundle id>.cli for rawreel-cli (codesign would otherwise derive a name with a hash).
-    run("plist" bundle_id "${plutil_path}" -extract CFBundleIdentifier raw
-        "${app}/Contents/Info.plist")
-    string(STRIP "${bundle_id}" bundle_id)
+    # The installed app has the build tree's dev identifier; the package has the release's
+    # (packaging/bundle-id.cmake), written before the seal covers Info.plist.
+    rawreel_set_release_bundle_id(PLUTIL "${plutil_path}" PLIST "${app}/Contents/Info.plist"
+                                  ERRORS errors)
+    if(errors)
+        list(JOIN errors "\n" errors)
+        fail("plist" "${errors}")
+    endif()
+    set(bundle_id "${RAWREEL_RELEASE_BUNDLE_ID}")
     file(GLOB_RECURSE libraries LIST_DIRECTORIES false "${app}/Contents/Frameworks/*.dylib")
     list(SORT libraries)
     foreach(file IN LISTS libraries)
