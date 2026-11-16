@@ -96,12 +96,6 @@ if(DVV_SANITIZE STREQUAL "thread")
     list(APPEND gpu_test_environment
          "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan.supp")
 endif()
-# The Vulkan loader and what it loads are not instrumented either; see lsan.supp. print_suppressions
-# keeps the count of suppressed leaks in the test output.
-if("address" IN_LIST DVV_SANITIZE AND NOT MSVC)
-    list(APPEND gpu_test_environment
-         "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp:print_suppressions=1")
-endif()
 
 # The Session cases (gpu_test_session.cpp) reuse the headless suite's fixture and test sources.
 add_executable(rawreel_gpu_tests
