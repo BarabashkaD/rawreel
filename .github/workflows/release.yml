@@ -293,6 +293,14 @@ jobs:
             echo "::error::an Apple Silicon runner with macOS 27 or newer and Xcode 27 is required"
             exit 1
           fi
+      # The selected Xcode's own macOS SDK for every later step, as in dvv-ci.yml's macOS jobs
+      # (dvv-build 0.4.1): a plain xcrun can pick the Command Line Tools' SDK, which an image may
+      # update past the selected Xcode (xcode-27 20261112: CLT MacOSX27.2.sdk with Xcode 27.1).
+      - name: Select the SDK of the selected Xcode
+        run: |
+          sdk=$(xcrun --sdk macosx --show-sdk-path)
+          echo "SDKROOT=$sdk" >> "$GITHUB_ENV"
+          echo "Xcode $(xcode-select -p), SDK $sdk ($(SDKROOT=$sdk xcrun --show-sdk-version))"
       # No cache restore: bootstrap builds the prefix from the pinned, SHA256-checked archives
       # (libs/dvv-build/deps/versions.cmake), so no CI cache entry reaches a release.
       - name: Bootstrap
