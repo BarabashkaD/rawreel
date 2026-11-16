@@ -1,21 +1,56 @@
 # ThreadSanitizer suppressions for the GPU tests and the FFmpeg tests (used by the thread-sanitizer
-# preset only). A race: entry suppresses a report when any of its stacks (a racing access, the
-# allocation of the memory or the creation of a thread) has a frame inside the library: a race
-# between dvv code and the library is hidden, and so is a race between two dvv accesses on memory
-# the library allocated or on a thread it created.
+# preset only). Most entries are called_from_lib: entries (one deadlock: entry, see below). A
+# called_from_lib: entry makes ThreadSanitizer skip every intercepted
+# call made from code inside the named library (a substring of the loaded file's path, e.g.
+# /usr/lib/x86_64-linux-gnu/libvulkan_lvp.so): its memory accesses (malloc, free, memcpy, memcmp,
+# ...) and its synchronization (mutexes, condition variables, semaphores). Thread creation and join
+# stay visible. Unlike race:, it does not hide races in dvv code on memory the library allocated or
+# on threads it created, so dvv code that the library calls back stays checked.
+# - A race between dvv code and an access made by the library stays hidden.
+# - The library's locks are invisible: a callback that the library's threads run must synchronize
+#   with dvv threads through dvv primitives (atomics or dvv mutexes), or it is reported as a race.
+# - The library's own mutexes and condition variables are invisible too: a hand-over between dvv
+#   threads through a Vulkan wait (fence, queue, timeline) must also go through a dvv primitive, or
+#   it is reported as a race.
+# - The ignore can create lock-order reports through libraries the ignored one calls (libLLVM,
+#   libstdc++, later libX11/libxcb): such a library seems to keep or lose a lock. Suppress each with
+#   a narrow named deadlock: entry on that library's frame, never on a dvv frame.
+# - ThreadSanitizer aborts the process when a matched library is unloaded or one entry matches two
+#   loaded files (see the unload notes below).
 #
 # Vulkan drivers (here Mesa lavapipe) are not instrumented: they synchronize their own objects with
-# primitives ThreadSanitizer cannot see (futex-based locks), so concurrent, valid calls such as
-# creating and destroying buffers from several threads are reported as races between the driver's
-# malloc and free.
-race:libvulkan_lvp.so
+# primitives ThreadSanitizer cannot see (futex-based locks), so concurrent, valid calls are reported
+# as races inside the driver. Seen without this entry (rawreel.gpu; the cli_e2e GPU tests report
+# nothing): a data race, memcmp against calloc, both called from libvulkan_lvp.so on two dvv
+# ThreadPool threads that record conversions at once (dvv::media ToDisplay::run, resumed by
+# Submitter::complete); the number of reports depends on timing (1 in the last check). With this
+# entry no race is reported, so no race: entry is needed.
+# The ignore hides an unlock. Inferred, NOT VERIFIED (perhaps a tail call to pthread_mutex_unlock
+# that ThreadSanitizer attributes to lavapipe): with this entry ThreadSanitizer sees
+# llvm::MCJIT::RegisterJITEventListener (libLLVM, called by lavapipe when dvv creates a device)
+# take a mutex but never sees it released, so the main thread seems to hold it until exit, and a later
+# Vulkan loader lock (seen: vkDestroyDevice) closes a lock-order cycle through it. Without the
+# deadlock: entry: 7 lock-order-inversion reports (3 in rawreel.gpu, 1 each in cli_e2e.gpu, .bench,
+# .oversize and .ffmpeg_gpu), each with that frame. A deadlock: entry matches a substring of the
+# function, file or module of any frame in any recorded lock-acquisition stack
+# (second_deadlock_stack=0) or thread creation stack; it can mask a real dvv cycle only if that
+# cycle goes through a lock taken inside RegisterJITEventListener. A Mesa that renames the frame
+# (ORC JIT) makes CI fail visibly.
+# Unload: the ICD manifest names libvulkan_lvp.so, so the loader opens it through the library
+# search path (/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so on Ubuntu 24.04, where /lib links to
+# /usr/lib); the entry matches either form. The tests create and destroy Vulkan instances, and the
+# runs report no "is unloaded" abort: no abort was seen (lavapipe has no NODELETE flag and the
+# loader may dlclose ICDs; why it stays mapped is not known). A newer Mesa or loader that really
+# unmaps it aborts these tests; then go back to race:libvulkan_lvp.so.
+called_from_lib:libvulkan_lvp.so
+deadlock:llvm::MCJIT::RegisterJITEventListener
 # FFmpeg's shared libraries are not instrumented: libavcodec's slice and frame threads synchronize
 # their own buffers with primitives ThreadSanitizer cannot see (atomics and progress flags in the
 # uninstrumented code), so the only accesses it sees from them are the intercepted calls (memset,
 # memcpy, malloc and free inside libavcodec and libavutil), and valid decoding is reported as races
 # between FFmpeg's threads and with the dvv code that reads a decoded frame after FFmpeg has handed
-# it over. called_from_lib: skips every intercepted call made from the named library, its
-# synchronization included, and aborts the process if a matched library is unloaded; see
+# it over. Unload: the tests that use this file must not reach the loader's paths that close FFmpeg
+# libraries again (a partial, refused or lavfi-incomplete FFmpeg build); see
 # libs/dvv-components/tests/tsan.supp for what stays checked and what stays hidden. Same list.
 called_from_lib:libavutil.so
 called_from_lib:libavcodec.so
