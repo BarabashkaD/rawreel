@@ -92,7 +92,11 @@ on Apple Silicon.
   `./rawreel-gui` in the extracted folder.
 - `rawreel-0.10.1-linux-x64-symbols.tar.xz`: debug symbols for core dumps.
 - `rawreel-0.10.1-macos-arm64.dmg`: the application for Macs with Apple Silicon. Open it, drag
-  `rawreel.app` to Applications (or any folder) and open it.
+  `rawreel.app` to Applications (or any folder) and open it. The app is not notarized, so the
+  first start shows "Apple could not verify "rawreel" is free of malware…". To allow it, choose
+  **Done**, then System Settings → Privacy & Security → **Open Anyway** (next to "rawreel was
+  blocked…") and confirm; macOS remembers the choice for that copy. Or, in Terminal:
+  `xattr -dr com.apple.quarantine /Applications/rawreel.app`.
 - `rawreel-0.10.1-macos-arm64-symbols.zip`: debug symbols (`.dSYM`) for macOS crash reports.
 - `SHA256SUMS`: the checksums.
 
