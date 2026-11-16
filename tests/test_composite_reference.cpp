@@ -32,6 +32,8 @@ using rawreel::compositeConstants;
 using rawreel::compositePixel;
 using rawreel::compositeReference;
 using rawreel::HostDisplayImage;
+using rawreel::resolveView;
+using rawreel::ViewMode;
 using rawreel::ViewTransform;
 
 namespace {
@@ -123,7 +125,8 @@ TEST_CASE("composite shader: the push block matches CompositeConstants") {
 }
 
 TEST_CASE("composite constants: mapping") {
-    const CompositeConstants c = compositeConstants(DARK, {211, 97}, {37, 23}, false);
+    const CompositeConstants c =
+        compositeConstants(DARK, ViewTransform::fit({211, 97}, {37, 23}), false);
     CHECK(c.viewportW == 211);
     CHECK(c.viewportH == 97);
     CHECK(c.imageW == 37);
@@ -133,15 +136,47 @@ TEST_CASE("composite constants: mapping") {
     CHECK(c.originY == 0.0F);
     CHECK(std::abs((-static_cast<double>(c.originX) * static_cast<double>(c.zoom)) - 27.0) < 1e-4);
     CHECK(c.flags == COMPOSITE_DARK);
-    CHECK(compositeConstants(DARK, {211, 97}, {37, 23}, true).flags ==
+    CHECK(compositeConstants(DARK, ViewTransform::fit({211, 97}, {37, 23}), true).flags ==
           (COMPOSITE_DARK | COMPOSITE_SKIP_ENCODE));
-    CHECK(compositeConstants(LIGHT, {211, 97}, {37, 23}, false).flags == 0);
-    const CompositeConstants empty = compositeConstants(DARK, {211, 97}, {0, 0}, false);
+    CHECK(compositeConstants(LIGHT, ViewTransform::fit({211, 97}, {37, 23}), false).flags == 0);
+    const CompositeConstants empty =
+        compositeConstants(DARK, ViewTransform::fit({211, 97}, {0, 0}), false);
     CHECK(empty.imageW == 0);
     CHECK(empty.imageH == 0);
     CHECK(empty.zoom == 0.0F);
     CHECK(empty.viewportW == 211);
     CHECK(empty.viewportH == 97);
+}
+
+TEST_CASE("composite constants: from a zoomed view") {
+    const auto view = resolveView({ViewMode::Zoom, 2, {10, 8}, {37, 23}}, {30, 19}, {37, 23});
+    const CompositeConstants c = compositeConstants({.dark = true}, view, false);
+    CHECK(c.zoom == 2.0F);
+    CHECK(c.originX == static_cast<float>(view.origin().x));
+    CHECK(c.originY == static_cast<float>(view.origin().y));
+    CHECK(c.viewportW == 30);
+    CHECK(c.viewportH == 19);
+    CHECK(c.imageW == 37);
+    CHECK(c.imageH == 23);
+    CHECK(c.flags == COMPOSITE_DARK);
+    CHECK(compositeConstants({.dark = true}, view, true).flags ==
+          (COMPOSITE_DARK | COMPOSITE_SKIP_ENCODE));
+    CHECK(compositeConstants({.dark = false}, view, false).flags == 0);
+}
+
+TEST_CASE("composite reference: a request for another frame size draws the fit") {
+    const std::vector<std::uint16_t> texels = white(37, 23);
+    const HostDisplayImage image = hostImage(37, 23, texels);
+    const rawreel::CompositeParams other{.dark = true,
+                                         .view = {ViewMode::Zoom, 2, {10, 8}, {36, 23}}};
+    for (std::uint32_t y = 0; y < 19; ++y) {
+        for (std::uint32_t x = 0; x < 30; ++x) {
+            CAPTURE(x);
+            CAPTURE(y);
+            CHECK(compositeReference(x, y, {30, 19}, other, image) ==
+                  compositeReference(x, y, {30, 19}, DARK, image));
+        }
+    }
 }
 
 TEST_CASE("composite reference: background") {
@@ -154,8 +189,8 @@ TEST_CASE("composite reference: background") {
         CHECK(compositeReference(210, 96, {211, 97}, params, std::nullopt) == bg(dark));
     }
     const auto linear = static_cast<std::uint8_t>(std::lround(255.0F * srgbDecode(0.12F)));
-    CHECK(compositePixel(compositeConstants(DARK, {4, 4}, {0, 0}, true), 0, 0, std::nullopt) ==
-          grey8(linear));
+    CHECK(compositePixel(compositeConstants(DARK, ViewTransform::fit({4, 4}, {0, 0}), true), 0, 0,
+                         std::nullopt) == grey8(linear));
 }
 
 TEST_CASE("composite reference: fit placement") {
@@ -229,8 +264,8 @@ TEST_CASE("composite reference: skip encode") {
     const std::vector<std::uint16_t> texels =
         filled(1, 1, [](std::uint32_t, std::uint32_t, std::uint32_t) { return 0.25F; });
     const std::optional<HostDisplayImage> image = hostImage(1, 1, texels);
-    CHECK(compositePixel(compositeConstants(LIGHT, {1, 1}, {1, 1}, true), 0, 0, image) ==
-          Rgba8{64, 64, 64, 255});
+    CHECK(compositePixel(compositeConstants(LIGHT, ViewTransform::fit({1, 1}, {1, 1}), true), 0, 0,
+                         image) == Rgba8{64, 64, 64, 255});
 }
 
 TEST_CASE("isSrgbFormat") {

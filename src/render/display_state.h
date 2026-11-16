@@ -8,14 +8,14 @@
 #include <mutex>
 
 #include "core/session_types.h"
+#include "core/view.h"
 #include "dvv/base/move_only_function.h"
 
 namespace rawreel {
 
-// Fit to window only (D23): the renderer computes the fit itself from the presenter extent and
-// the display image size. This struct is where v1.x zoom/pan state returns.
 struct CompositeParams {
-    bool dark = false;  // background: dark (0.12) or light (0.85) sRGB-encoded grey
+    bool dark = false;   // background: dark (0.12) or light (0.85) sRGB-encoded grey
+    ViewRequest view{};  // resolved by the renderer against its extent and the frame size
     bool operator==(const CompositeParams&) const = default;
 };
 struct DisplaySnapshot {  // one consistent read, taken under one lock

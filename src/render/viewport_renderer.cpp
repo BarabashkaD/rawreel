@@ -90,14 +90,16 @@ dvv::gpu::RecordFunction ViewportRenderer::recordComposite(
     const dvv::platform::PixelSize image_size =
         image ? dvv::platform::PixelSize{image->width(), image->height()}
               : dvv::platform::PixelSize{};
-    const CompositeConstants constants =
-        compositeConstants(params, extent, image_size, skip_encode);
+    const ViewTransform view = resolveView(params.view, extent, image_size);
+    const CompositeConstants constants = compositeConstants(params, view, skip_encode);
     {
         std::lock_guard lock(recorded_mutex_);
         recorded_ = RecordedInfo{.epoch = epoch_,
                                  .index = image ? frames.index : -1,
                                  .extent = extent,
-                                 .zoom = ViewTransform::fit(extent, image_size).zoom()};
+                                 .zoom = view.zoom(),
+                                 .origin = view.origin(),
+                                 .mode = view.mode()};
     }
     const std::uint32_t groups_x = (extent.width + 7) / 8;
     const std::uint32_t groups_y = (extent.height + 7) / 8;

@@ -21,7 +21,9 @@ struct RecordedInfo {
     std::uint64_t epoch = 0;            // the renderer's epoch; 0 before the first record
     std::int64_t index = -1;            // the composited FrameSet's index; -1: background only
     dvv::platform::PixelSize extent{};  // the output extent of that record
-    double zoom = 0.0;  // ViewTransform::fit(extent, image size).zoom(); 0: no image
+    double zoom = 0.0;                  // the resolved view's zoom; 0: no image
+    PointD origin{};                    // the resolved view's origin
+    ViewMode mode = ViewMode::Fit;      // the resolved view's mode
     bool operator==(const RecordedInfo&) const = default;
 };
 
@@ -45,8 +47,8 @@ public:
                      std::shared_ptr<dvv::gpu::GpuImage> dummy) noexcept;
 
     // The PresentFrame for the presenter: records the composite of snapshot.frames.views[0] with
-    // ViewTransform::fit(info.extent, display image size) and snapshot.params. Records again only
-    // when the snapshot version, the extent or the sRGB rule changed, or
+    // resolveView(snapshot.params.view, info.extent, display image size) and snapshot.params.
+    // Records again only when the snapshot version, the extent or the sRGB rule changed, or
     // !info.previousFrameCompleted; otherwise the same image and no commands. FrameSets of another
     // epoch (or without a usable display view) draw the background only. The record function holds
     // the FrameSet's leases until the submission has completed.

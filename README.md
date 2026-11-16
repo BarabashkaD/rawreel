@@ -205,14 +205,14 @@ program's folder as `<app>`, the variable's folder as `$DVV_FFMPEG_DIR` and the 
 ## rawreel-gui
 
 `rawreel-gui` plays one video stream. The window has the viewport with the control panel under it,
-a Log pane, a status bar (the file name, frame and length, target / actual fps, the pipeline's
-bottleneck, and the colour mapping, e.g. "SDR, no tone mapping" or "PQ → SDR tone mapping (1000 →
-100 nits)") and an infobar for warnings and errors. The log also goes to log files
-(`rawreel-YYYYMMDD-HHMMSS.log`, see [Log files](#log-files)) in the user's data folder
-(`%APPDATA%\rawreel\` on Windows, `~/.local/share/rawreel/` on Linux, or `$XDG_DATA_HOME/rawreel/`
-when that is set, `~/Library/Application Support/rawreel/` on macOS). Help → About shows the
-rawreel logo, the owl of the app icon on a transparent background, the same in light and dark
-appearance.
+a Log pane, a status bar (the file name, frame and length, target / actual fps, the zoom, e.g.
+"Fit (47 %)" or "200 %", the pipeline's bottleneck, and the colour mapping, e.g. "SDR, no tone
+mapping" or "PQ → SDR tone mapping (1000 → 100 nits)") and an infobar for warnings and errors. The
+log also goes to log files (`rawreel-YYYYMMDD-HHMMSS.log`, see [Log files](#log-files)) in the
+user's data folder (`%APPDATA%\rawreel\` on Windows, `~/.local/share/rawreel/` on Linux, or
+`$XDG_DATA_HOME/rawreel/` when that is set, `~/Library/Application Support/rawreel/` on macOS).
+Help → About shows the rawreel logo, the owl of the app icon on a transparent background, the same
+in light and dark appearance.
 
 The control panel has two rows. The upper row is a timeline strip over the slider: ticks, the first
 and last frame numbers, and above the thumb the number of the frame on screen. The lower row has
@@ -316,7 +316,11 @@ characters on Windows and for every URI, numbered `1`–`10` on Windows and Linu
 shows in the status bar.
 
 **Playback** shows every frame in order (it waits for a slow frame instead of skipping it) and
-always fits the frame to the viewport: scaled up or down, centred, aspect ratio kept.
+a new clip opens at 100 % (one clip pixel per screen pixel) with the window sized to it, or in Fit
+in the largest window of its shape that fits the screen. Fit scales the frame up or down, centred,
+aspect ratio kept. View → Fit to window, Actual size, Zoom in and Zoom out (12.5–3200 %) and Resize
+window to actual size change the view (on macOS: Zoom to Fit, Actual Size, Zoom In, Zoom Out and
+Resize Window to Actual Size).
 
 **4K at 60 fps.** Uncompressed 4K 10-bit 4:2:0 (`yuv420p10le`) at 60 fps is about 1.5 GB/s. The
 file must sit on a drive that sustains that, i.e. an NVMe SSD, read unbuffered (the default); a
@@ -332,6 +336,13 @@ then stalls; it never skips a frame.
 | Ctrl+W | File → Close stream | Shift+Left / Shift+Right | 10 frames back / forward |
 | Ctrl+Q | File → Quit | Home / End | First / last frame |
 | | | L | Loop on or off |
+
+View keys:
+
+| | Fit | Actual size | Zoom in | Zoom out | Resize window to actual size |
+| --- | --- | --- | --- | --- | --- |
+| macOS | ⌘9 | ⌘0 | ⌘+ | ⌘− | ⌘1 |
+| Windows, Linux | Ctrl+0 | Ctrl+1 | Ctrl++ | Ctrl+− | Alt+1 |
 
 Playback → Stop, View → Format…, View → Restart GPU and reopen, Help → GPU info and Help →
 Diagnostics have no key.
@@ -349,8 +360,8 @@ step with a 5 s deadline, closes the window and exits with 6 naming a failed ste
 - `smoke`: resizes, minimise and restore, the panes, menus, status fields, infobar and Help
   items, with no stream and then with one.
 - `about` (opt-in, not in CTest): Help → About, its layout, logo and links; run it when About changes.
-- `player` (needs a URI): play, pause, step, Home/End, the slider, loop, resize, View → Format…
-  and file drops.
+- `player` (needs a URI): play, pause, step, Home/End, the slider, loop, resize, the view commands
+  and window sizing, View → Format… and file drops.
 - `lost` (needs a URI): an injected device loss, Reopen, play, a second loss.
 - `perf` (needs a URI; manual): maximises the window, plays 600 frames, seeks to 20 random frames
   and prints one JSON line with `targetFps`, `actualFps`, `stalls`, `bottleneck`, `frames`,
@@ -757,10 +768,11 @@ another file:
 - A decoder output format outside the pixel-format catalogue is `Unsupported`; the message names
   the format ("decoder output <format> is not in the catalogue"; for a `lavfi:` graph, append
   `,format=<a catalogue format>`).
-- The sample aspect ratio is ignored, so anamorphic files show stretched in the fit view.
+- The sample aspect ratio is ignored, so anamorphic files show stretched.
 - A step or seek backwards on a `Sequential` stream decodes again from the start of the file.
 - MKV and NUT files are scanned when they open, so large ones open more slowly.
-- Below 1:8 the fit view undersamples, so very small views of very large frames can alias.
+- A clip smaller than the minimum window shows at 100 % with background around it.
+- Views below 12.5 % undersample, so very small views of very large frames can alias.
 - FFV1 decoding is CPU-bound, so 4K FFV1 does not reach 60 fps: about 50 fps on a typical 8-core
   desktop CPU for easy content, far less for noisy content. Raw and Y4M files play 4K at 60 fps.
 - The Windows zip is not code-signed.

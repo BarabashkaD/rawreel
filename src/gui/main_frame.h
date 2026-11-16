@@ -28,6 +28,7 @@
 #include "core/commands.h"
 #include "core/format_choice.h"
 #include "core/gui_arguments.h"
+#include "core/layout.h"
 #include "core/log_store.h"
 #include "core/recent.h"
 #include "core/session.h"
@@ -105,9 +106,9 @@ public:
     void dismissMessage();
     [[nodiscard]] const wxString& lastMessage() const noexcept { return last_message_; }
     // The status bar's fields (spec §7): the stream's name, the status tick's three (position,
-    // rate, bottleneck), the display mapping and the Log notice.
-    static constexpr std::size_t FILE_FIELD = 0, FIRST_TICK_FIELD = 1, MAPPING_FIELD = 4,
-                                 LOG_NOTICE_FIELD = 5, STATUS_FIELD_COUNT = 6;
+    // rate, bottleneck), the zoom (view zoom design), the display mapping and the Log notice.
+    static constexpr std::size_t FILE_FIELD = 0, FIRST_TICK_FIELD = 1, ZOOM_FIELD = 4,
+                                 MAPPING_FIELD = 5, LOG_NOTICE_FIELD = 6, STATUS_FIELD_COUNT = 7;
     // The fields' texts; the file field's is the shown one (cut in the middle to its width).
     [[nodiscard]] std::array<wxString, STATUS_FIELD_COUNT> statusTexts() const;
     // The field whose rectangle contains `point` (status bar client coordinates); none outside.
@@ -170,6 +171,9 @@ public:
     [[nodiscard]] wxWindow* focusedWindow() const;
     // Selftests: focusedWindow() returns `window` (null: the real focus again).
     void setFocusForTest(wxWindow* window);
+    // Selftests: the window sizing (view zoom design §3, §4) uses `area` as the work area while
+    // it is set.
+    void setWorkAreaForTest(std::optional<wxRect> area) { work_area_for_test_ = area; }
     // The App's Session; valid until onClose (closing_ guards the rest).
     [[nodiscard]] Session& session() const noexcept;
     // A drop or File -> Open (D21): the first file replaces the stream at frame 0; the others are
@@ -234,10 +238,28 @@ private:
         std::optional<std::string> entry;  // the Open Recent entry of the open that asked
     };
 
-    void buildMenus();      // from commandTable() (D17)
-    void buildStatusBar();  // 6 fields (D20, D5R §2.2, Log pane and Settings design §2, spec §7)
-    // The width of the two fixed fields (display mapping and Log notice) at the current font.
+    void buildMenus();  // from commandTable() (D17)
+    // 7 fields (D20, D5R §2.2, Log pane and Settings design §2, spec §7, view zoom design)
+    void buildStatusBar();
+    // The width of the three fixed fields (zoom, display mapping and Log notice) at the current
+    // font.
     [[nodiscard]] int statusFixedWidth() const;
+    // The zoom field: zoomText of the viewport's shownView(); "" without an image.
+    void showZoom();
+    // FitToWindow, ActualSize, ZoomIn and ZoomOut, around the viewport's centre.
+    void applyViewCommand(Command command);
+    // View zoom design §3.2: the work area of the window's display (or setWorkAreaForTest's).
+    [[nodiscard]] wxRect workArea() const;
+    // The window, its client, the viewport and the minimum client size, as they are now.
+    [[nodiscard]] WindowNow windowNow() const;
+    // §3.2: a window the sizing leaves as it is: full screen, and on Windows and Linux maximised.
+    [[nodiscard]] bool windowIsFixed() const;
+    // §3.1: after an open, the window shows the clip at 100 % or, too large for the work area,
+    // is the largest window of the clip's shape, in Fit. A fixed window keeps its size.
+    void sizeWindowForOpen();
+    // §4: Resize window to actual size; each axis clamped to the work area. A fixed window: as
+    // Actual size.
+    void resizeWindowToActualSize();
     // Spec §7: the tooltip of the field under the pointer; unset when that field changes, so
     // each field gets the OS's own hover delay.
     void onStatusBarMotion(wxMouseEvent& event);
@@ -384,6 +406,9 @@ private:
     bool closing_ = false;
     wxWeakRef<wxWindow> focus_for_test_;  // setFocusForTest(); cleared when that window goes
     bool first_shown_ = false;            // the frame has been shown (onShow)
+    // View zoom design §3.3: dvv::formatUri of the open whose stream sizes the window; empty: none.
+    std::string sizing_uri_;
+    std::optional<wxRect> work_area_for_test_;  // setWorkAreaForTest()
     // Removed before wx destroys the children (members go first).
     SkimKeyRelease skim_key_release_{[this] { onSkimKeyUp(); }};
 };

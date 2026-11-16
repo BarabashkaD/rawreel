@@ -40,7 +40,6 @@
 #include <wx/clipbrd.h>
 #include <wx/collpane.h>
 #include <wx/dirdlg.h>
-#include <wx/display.h>
 #include <wx/filedlg.h>
 #include <wx/filename.h>
 #include <wx/hyperlink.h>
@@ -774,8 +773,9 @@ SelfTestStep cutFieldTooltipStep(SelfTest* test) {
             ok = ok && (ellipsized ? tip == texts[n] : tip.empty());
         }
         seen += std::format(
-            "client width {} (minimum {}, fixed fields {} + {} DIP){}", frame.GetClientSize().x,
-            frame.GetMinClientSize().x,
+            "client width {} (minimum {}, fixed fields {} + {} + {} DIP){}",
+            frame.GetClientSize().x, frame.GetMinClientSize().x,
+            frame.ToDIP(bar->GetStatusWidth(static_cast<int>(MainFrame::ZOOM_FIELD))),
             frame.ToDIP(bar->GetStatusWidth(static_cast<int>(MainFrame::MAPPING_FIELD))),
             frame.ToDIP(bar->GetStatusWidth(static_cast<int>(MainFrame::LOG_NOTICE_FIELD))),
             cut == 0 ? "; no cut field" : "");
@@ -855,9 +855,7 @@ bool focusInside(const wxWindow* window) {
 
 // §10 Place, computed again from the frame as InfoWindow::showBesideOwner does.
 wxRect expectedInfoPlace(MainFrame& frame, const InfoWindow& info) {
-    const int display = wxDisplay::GetFromWindow(&frame);
-    const wxRect work =
-        wxDisplay(display == wxNOT_FOUND ? 0U : static_cast<unsigned>(display)).GetClientArea();
+    const wxRect work = workAreaOf(frame);
     const wxRect outer = frame.GetScreenRect();
     const wxPoint client_origin = frame.ClientToScreen(wxPoint(0, 0));
     const wxSize client = frame.GetClientSize();
@@ -874,18 +872,37 @@ std::string rectText(const wxRect& rect) {
     return std::format("({}, {}, {}x{})", rect.x, rect.y, rect.width, rect.height);
 }
 
+// `command`'s menu item after an update-UI pass; null without a menu bar or an item.
+const wxMenuItem* updatedMenuItem(MainFrame& frame, Command command) {
+    wxMenuBar* const bar = frame.GetMenuBar();
+    if (bar == nullptr) {
+        return nullptr;
+    }
+    bar->UpdateMenus();
+    return bar->FindItem(menuId(command));
+}
+
+// The key of a menu item; null without an item or a key.
+std::unique_ptr<wxAcceleratorEntry> keyOf(const wxMenuItem* item) {
+    // GetAccel() returns a new copy, or null without a key.
+    return std::unique_ptr<wxAcceleratorEntry>(item != nullptr ? item->GetAccel() : nullptr);
+}
+
+// The key of `command`'s menu item after an update-UI pass; null without a menu bar, an item or a
+// key.
+std::unique_ptr<wxAcceleratorEntry> menuKeyOf(MainFrame& frame, Command command) {
+    return keyOf(updatedMenuItem(frame, command));
+}
+
 // macOS: after an update-UI pass, View -> Show/Hide Info still carries its key (wxOSX rebuilds the
 // key equivalent from the title at every SetText). Elsewhere the check item keeps menuLabel's key.
 bool infoItemHasKey(MainFrame& frame, std::string& text) {
-    wxMenuBar* const bar = frame.GetMenuBar();
-    if (bar == nullptr) {
+    if (frame.GetMenuBar() == nullptr) {
         text = "no menu bar";
         return false;
     }
-    bar->UpdateMenus();
-    const wxMenuItem* const item = bar->FindItem(menuId(Command::InfoWindow));
-    // GetAccel() returns a new copy, or null without a key.
-    const std::unique_ptr<wxAcceleratorEntry> key(item != nullptr ? item->GetAccel() : nullptr);
+    const wxMenuItem* const item = updatedMenuItem(frame, Command::InfoWindow);
+    const std::unique_ptr<wxAcceleratorEntry> key = keyOf(item);
     text = item != nullptr ? std::format("item '{}', key {}", item->GetItemLabel().utf8_string(),
                                          key ? key->ToString().utf8_string() : "none")
                            : "no View -> Info item";
@@ -1769,8 +1786,9 @@ void addLogListSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
 // Through the frame's wxEVT_CHAR_HOOK handler, as a real key press reaches it first.
 // Returns whether a handler took it (one that called Skip() did not). `target` is the window the
 // key event starts at (the focused window), from where it propagates up to its top-level window.
-// `ctrl`: ControlDown(), i.e. Cmd on macOS.
-bool sendKey(wxWindow& target, int keycode, bool shift = false, bool ctrl = false) {
+// `ctrl`: ControlDown(), i.e. Cmd on macOS. `alt`: AltDown().
+bool sendKey(wxWindow& target, int keycode, bool shift = false, bool ctrl = false,
+             bool alt = false) {
     wxKeyEvent event(wxEVT_CHAR_HOOK);
     event.SetEventObject(&target);
     event.m_keyCode = keycode;
@@ -1779,6 +1797,7 @@ bool sendKey(wxWindow& target, int keycode, bool shift = false, bool ctrl = fals
     }
     event.SetShiftDown(shift);
     event.SetControlDown(ctrl);
+    event.SetAltDown(alt);
     return injectInput(*target.GetEventHandler(), event);
 }
 
@@ -2476,11 +2495,15 @@ SelfTestStep statusBarStep(SelfTest* test) {
         const wxString& position = texts[MainFrame::FIRST_TICK_FIELD];
         const wxString& rate = texts[MainFrame::FIRST_TICK_FIELD + 1];
         const wxString& bottleneck = texts[MainFrame::FIRST_TICK_FIELD + 2];
+        const wxString& zoom = texts[MainFrame::ZOOM_FIELD];
         const wxString& mapping = texts[MainFrame::MAPPING_FIELD];
-        seen = std::format("status bar '{}' '{}' '{}' '{}'", position.utf8_string(),
-                           rate.utf8_string(), bottleneck.utf8_string(), mapping.utf8_string());
+        const ViewTransform view = test->frame().viewport().shownView();
+        const wxString zoom_wanted = wxString::FromUTF8(zoomText(view.mode(), view.zoom()));
+        seen = std::format("status bar '{}' '{}' '{}' '{}' (wanted '{}') '{}'",
+                           position.utf8_string(), rate.utf8_string(), bottleneck.utf8_string(),
+                           zoom.utf8_string(), zoom_wanted.utf8_string(), mapping.utf8_string());
         // D5R §2.2: an SDR stream's mapping field.
-        return position.StartsWith("frame ") && rate.EndsWith("fps") &&
+        return position.StartsWith("frame ") && rate.EndsWith("fps") && zoom == zoom_wanted &&
                mapping == "SDR, no tone mapping";
     };
     return step("status bar", {}, std::move(passed));
@@ -3863,6 +3886,11 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
     steps.push_back(movedPaneStep(t, state, true));
     steps.push_back(hideStep(t, state));
     steps.push_back(restoreStep(t, state));
+    steps.push_back(step("zoom field empty without a stream", {}, [t](std::string& seen) {
+        const wxString field = t->frame().statusTexts()[MainFrame::ZOOM_FIELD];
+        seen = std::format("zoom field '{}'", field.utf8_string());
+        return field.empty();
+    }));
     steps.push_back(openStreamStep(t, state));
     steps.push_back(cutFieldTooltipStep(t));
     steps.push_back(resizeStep(t, state, "resize with a stream", wxSize(1024, 640)));
@@ -4542,6 +4570,536 @@ bool streamIs(const MainFrame& frame, std::uint32_t w, std::uint32_t h, std::str
     return streams.size() == 1 && streams[0].info.desc.width == w &&
            streams[0].info.desc.height == h &&
            dvv::media::descriptor(streams[0].info.desc.format).name == format;
+}
+
+// --- View zoom (view zoom design): Fit, Actual size, Zoom in and out, the zoom field ---
+
+const char* viewModeName(ViewMode mode) {
+    return mode == ViewMode::Fit ? "Fit" : "Zoom";
+}
+
+// The last record shows the viewport's view request resolved against the viewport's extent and
+// the clip, and the zoom field shows its text.
+bool viewMatches(const MainFrame& frame, std::string& seen) {
+    const Viewport& viewport = frame.viewport();
+    const dvv::platform::PixelSize extent = viewport.physicalClientSize();
+    const std::optional<RecordedInfo> recorded = viewport.lastRecorded();
+    const wxString field = frame.statusTexts()[MainFrame::ZOOM_FIELD];
+    if (!recorded) {
+        seen = std::format("extent {}x{}, no record, zoom field '{}'", extent.width, extent.height,
+                           field.utf8_string());
+        return false;
+    }
+    const ViewTransform resolved =
+        resolveView(viewport.view(), recorded->extent, viewport.imageSize());
+    const wxString text = wxString::FromUTF8(zoomText(resolved.mode(), resolved.zoom()));
+    seen = std::format(
+        "extent {}x{}, recorded {}x{} zoom {} origin ({}, {}) {}, resolved zoom {} origin ({}, {}) "
+        "{}, zoom field '{}' (wanted '{}')",
+        extent.width, extent.height, recorded->extent.width, recorded->extent.height,
+        recorded->zoom, recorded->origin.x, recorded->origin.y, viewModeName(recorded->mode),
+        resolved.zoom(), resolved.origin().x, resolved.origin().y, viewModeName(resolved.mode()),
+        field.utf8_string(), text.utf8_string());
+    return recorded->extent == extent && recorded->zoom == resolved.zoom() &&
+           recorded->origin == resolved.origin() && recorded->mode == resolved.mode() &&
+           field == text;
+}
+
+// The viewport's client size at the frame's minimum client size (window units).
+wxSize minViewport(const MainFrame& frame) {
+    return frame.GetMinClientSize() - (frame.GetClientSize() - frame.viewport().GetClientSize());
+}
+
+// The frame's outer size at its minimum client size.
+wxSize minOuter(const MainFrame& frame) {
+    return frame.GetMinClientSize() + (frame.GetSize() - frame.GetClientSize());
+}
+
+// A Zoom request at `zoom` centred on the viewport's clip.
+ViewRequest centredView(const Viewport& viewport, double zoom) {
+    const dvv::platform::PixelSize image = viewport.imageSize();
+    return {.mode = ViewMode::Zoom,
+            .zoom = zoom,
+            .centre = {.x = image.width / 2.0, .y = image.height / 2.0},
+            .image = image};
+}
+
+// View zoom design §3, §4: every open sizes the window to the clip; Resize window to actual size.
+// The first step sets a work area (MainFrame::setWorkAreaForTest) that "view: Close stream shows
+// Fit" drops again.
+void addOpenSizingSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
+    struct State {
+        wxRect area;                       // the work area the steps size against
+        dvv::platform::PixelSize fits{};   // shown at 100 % in a window inside the area
+        dvv::platform::PixelSize half{};   // between the minimum viewport and `fits`
+        dvv::platform::PixelSize large{};  // larger than the area
+        int phase = 0;                     // the steps of several parts: the part reached
+        ViewRequest kept{};                // Reopen: the view before it
+        wxSize keptClient;                 // Reopen: the client size before it
+        std::uint64_t generation0 = 0;     // Reopen: the stream generation before it
+    };
+    auto st = std::make_shared<State>();
+    auto even = [](double value) {
+        const auto n = static_cast<std::uint32_t>(std::ceil(value));
+        return n + (n % 2);
+    };
+    auto open_gray = [&frame](dvv::platform::PixelSize size) {
+        frame.openUri(
+            0,
+            std::format("synthetic:gradient?w={}&h={}&fmt=gray&frames=1", size.width, size.height),
+            std::nullopt);
+    };
+    // The frame size of the one stream; empty without exactly one.
+    auto stream_size = [&frame] {
+        if (frame.streams().size() != 1) {
+            return dvv::platform::PixelSize{};
+        }
+        const dvv::media::FrameDesc& desc = frame.streams().front().info.desc;
+        return dvv::platform::PixelSize{.width = desc.width, .height = desc.height};
+    };
+    // The viewport size (window units) that shows `clip` at 100 %.
+    auto viewport_for = [&frame](dvv::platform::PixelSize clip) {
+        const LayoutSize size =
+            viewportForClip(layoutSizeOf(clip), frame.viewport().contentScale());
+        return wxSize(size.width, size.height);
+    };
+    auto at_actual_size = [&frame] {
+        const ViewRequest& view = frame.viewport().view();
+        return view.mode == ViewMode::Zoom && view.zoom == 1 &&
+               frame.statusTexts()[MainFrame::ZOOM_FIELD] == "100 %";
+    };
+    // The window, the viewport and the view.
+    auto described = [&frame, stream_size] {
+        const dvv::platform::PixelSize stream = stream_size();
+        const wxSize client = frame.GetClientSize();
+        const wxSize viewport = frame.viewport().GetClientSize();
+        const ViewRequest& view = frame.viewport().view();
+        return std::format(
+            "stream {}x{}, outer {}, client {}x{}, viewport {}x{}, view {} {}, zoom field '{}'",
+            stream.width, stream.height, rectText(frame.GetScreenRect()), client.x, client.y,
+            viewport.x, viewport.y, viewModeName(view.mode), view.zoom,
+            frame.statusTexts()[MainFrame::ZOOM_FIELD].utf8_string());
+    };
+
+    steps.push_back(step(
+        "open: a clip that fits opens at 100 %",
+        [&frame, st, even, open_gray] {
+            const wxRect work = workAreaOf(frame);
+            const wxSize outer = minOuter(frame);
+            st->area = wxRect(work.GetTopLeft(), wxSize(std::min(work.width, outer.x + 480),
+                                                        std::min(work.height, outer.y + 360)));
+            frame.setWorkAreaForTest(st->area);
+            const wxSize extra(std::max(0, (st->area.width - outer.x) / 2),
+                               std::max(0, (st->area.height - outer.y) / 2));
+            const wxSize least = minViewport(frame);
+            const double scale = frame.viewport().contentScale();
+            st->fits = {.width = even((least.x + extra.x) * scale),
+                        .height = even((least.y + extra.y) * scale)};
+            st->half = {.width = even((least.x + (extra.x / 2.0)) * scale),
+                        .height = even((least.y + (extra.y / 2.0)) * scale)};
+            st->large = {.width = even(std::ceil(st->area.width * scale) + 64),
+                         .height = even(std::ceil(st->area.height * scale) + 64)};
+            // From the smallest window, so the step itself shows the window grew to the clip.
+            frame.SetClientSize(frame.GetMinClientSize());
+            open_gray(st->fits);
+        },
+        [&frame, st, stream_size, viewport_for, at_actual_size, described](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const wxSize wanted = viewport_for(st->fits);
+            seen = std::format("{} (wanted {}x{}, viewport {}x{}), area {}; {}", described(),
+                               st->fits.width, st->fits.height, wanted.x, wanted.y,
+                               rectText(st->area), seen);
+            return stream_size() == st->fits && frame.viewport().GetClientSize() == wanted &&
+                   at_actual_size() && matches && st->area.Contains(frame.GetScreenRect());
+        }));
+    steps.push_back(step(
+        "open: a clip larger than the work area opens in Fit",
+        [st, open_gray] { open_gray(st->large); },
+        [&frame, st, stream_size, described](std::string& seen) {
+            const wxRect outer = frame.GetScreenRect();
+            const int left = outer.x - st->area.x;
+            const int right = (st->area.x + st->area.width) - (outer.x + outer.width);
+            const wxSize viewport = frame.viewport().GetClientSize();
+            const std::int64_t width = st->large.width;
+            const std::int64_t height = st->large.height;
+            const std::int64_t skew = std::abs((viewport.x * height) - (viewport.y * width));
+            seen = std::format("{} (wanted {}x{}), area {}, gaps {} and {}, shape skew {}",
+                               described(), st->large.width, st->large.height, rectText(st->area),
+                               left, right, skew);
+            return stream_size() == st->large && frame.viewport().view().mode == ViewMode::Fit &&
+                   frame.statusTexts()[MainFrame::ZOOM_FIELD].StartsWith("Fit (") &&
+                   st->area.Contains(outer) && std::abs(left - right) <= 1 &&
+                   skew <= std::max(width, height);
+        }));
+    steps.push_back(step(
+        "open: two opens in quick succession size for the second",
+        [st, open_gray] {
+            open_gray(st->fits);
+            open_gray(st->half);
+        },
+        [&frame, st, stream_size, viewport_for, described](std::string& seen) {
+            const wxSize wanted = viewport_for(st->half);
+            seen = std::format("{} (wanted {}x{}, viewport {}x{})", described(), st->half.width,
+                               st->half.height, wanted.x, wanted.y);
+            const ViewRequest& view = frame.viewport().view();
+            return stream_size() == st->half && frame.viewport().GetClientSize() == wanted &&
+                   view.mode == ViewMode::Zoom && view.zoom == 1;
+        }));
+    steps.push_back(step(
+        "open: a clip smaller than the minimum window",
+        [open_gray] { open_gray({.width = 64, .height = 48}); },
+        [&frame, stream_size, described](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const wxSize minimum = frame.GetMinClientSize();
+            seen = std::format("{} (minimum client {}x{}); {}", described(), minimum.x, minimum.y,
+                               seen);
+            const ViewRequest& view = frame.viewport().view();
+            return stream_size() == dvv::platform::PixelSize{.width = 64, .height = 48} &&
+                   frame.GetClientSize() == minimum && view.mode == ViewMode::Zoom &&
+                   view.zoom == 1 && matches;
+        }));
+    steps.push_back(step(
+        "open: Reopen keeps the window and the view",
+        [st, open_gray] {
+            st->phase = 0;
+            open_gray(st->fits);
+        },
+        [&frame, st, stream_size, described](std::string& seen) {
+            Viewport& viewport = frame.viewport();
+            const SessionStatus status = frame.session().status();
+            const std::optional<RecordedInfo> recorded = viewport.lastRecorded();
+            seen = std::format("phase {}: {}, generation {} (was {}), recorded zoom {}", st->phase,
+                               described(), status.streamGeneration, st->generation0,
+                               recorded ? recorded->zoom : 0.0);
+            if (st->phase == 0) {
+                if (stream_size() == st->fits && status.streams == 1) {
+                    viewport.setView(centredView(viewport, 2));
+                    st->kept = viewport.view();
+                    st->keptClient = frame.GetClientSize();
+                    st->generation0 = status.streamGeneration;
+                    frame.execute(Command::Reopen);
+                    st->phase = 1;
+                }
+                return false;
+            }
+            return stream_size() == st->fits && status.streamGeneration > st->generation0 &&
+                   viewport.view() == st->kept && frame.GetClientSize() == st->keptClient &&
+                   recorded && recorded->zoom == 2;
+        },
+        std::chrono::seconds(10)));
+    steps.push_back(step(
+        "resize window: a clip that fits",
+        [st, open_gray] {
+            st->phase = 0;
+            open_gray(st->fits);
+        },
+        [&frame, st, stream_size, viewport_for, at_actual_size, described](std::string& seen) {
+            const wxSize wanted = viewport_for(st->fits);
+            seen = std::format("phase {}: {} (wanted viewport {}x{})", st->phase, described(),
+                               wanted.x, wanted.y);
+            if (st->phase == 0) {
+                if (stream_size() == st->fits) {
+                    frame.SetClientSize(frame.GetMinClientSize());
+                    frame.execute(Command::FitToWindow);
+                    st->phase = 1;
+                }
+                return false;
+            }
+            if (st->phase == 1) {
+                if (frame.GetClientSize() == frame.GetMinClientSize() &&
+                    frame.viewport().view().mode == ViewMode::Fit) {
+#if defined(__WXOSX__)
+                    sendMenu(frame, menuId(Command::ResizeWindowToActualSize));
+#else
+                    sendKey(frame, '1', false, false, true);
+#endif
+                    st->phase = 2;
+                }
+                return false;
+            }
+            return frame.viewport().GetClientSize() == wanted && at_actual_size();
+        }));
+    steps.push_back(step(
+        "resize window: a clip larger than the work area",
+        [st, open_gray] {
+            st->phase = 0;
+            open_gray(st->large);
+        },
+        [&frame, st, stream_size, described](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            seen = std::format("phase {}: {}, area {}; {}", st->phase, described(),
+                               rectText(st->area), seen);
+            const ViewRequest& view = frame.viewport().view();
+            if (st->phase == 0) {
+                if (stream_size() == st->large && view.mode == ViewMode::Fit) {
+#if defined(__WXOSX__)
+                    sendMenu(frame, menuId(Command::ResizeWindowToActualSize));
+#else
+                    sendKey(frame, '1', false, false, true);
+#endif
+                    st->phase = 1;
+                }
+                return false;
+            }
+            const PointD centre{.x = st->large.width / 2.0, .y = st->large.height / 2.0};
+            return frame.GetScreenRect() == st->area && view.mode == ViewMode::Zoom &&
+                   view.zoom == 1 && view.centre == centre && matches;
+        }));
+}
+
+// Right before the Open Recent steps, with no stream open; the last step closes the clip.
+void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
+    MainFrame& frame = test.frame();
+    struct State {
+        wxSize target;  // T: the viewport's client size for the zoom steps
+        dvv::platform::PixelSize image{};
+        wxSize client;                      // the frame's client size before the resize
+        dvv::platform::PixelSize extent{};  // the viewport's extent before the resize
+        ViewRequest request{};              // the view before the resize
+        wxSize clientAtClose;               // the client size before Close stream
+    };
+    auto st = std::make_shared<State>();
+    // The view as the frame shows it (mode, zoom and the zoom field).
+    auto shown = [&frame] {
+        const ViewTransform view = frame.viewport().shownView();
+        return std::format("view {} {}, shown {} {}", viewModeName(frame.viewport().view().mode),
+                           frame.viewport().view().zoom, viewModeName(view.mode()), view.zoom());
+    };
+    // `command` from the menu, starting from `from`; then the view is Zoom at `zoom` with `text`.
+    auto menu_zoom = [&frame, shown](std::string name, std::function<ViewRequest()> from,
+                                     Command command, double zoom, std::string text) {
+        return step(
+            std::move(name),
+            [&frame, from = std::move(from), command] {
+                frame.viewport().setView(from());
+                sendMenu(frame, menuId(command));
+            },
+            [&frame, shown, zoom, text = std::move(text)](std::string& seen) {
+                const bool matches = viewMatches(frame, seen);
+                seen = shown() + "; " + seen;
+                const ViewRequest& view = frame.viewport().view();
+                return matches && view.mode == ViewMode::Zoom && view.zoom == zoom &&
+                       frame.statusTexts()[MainFrame::ZOOM_FIELD] == wxString::FromUTF8(text);
+            });
+    };
+    auto centred = [&frame](double zoom) {
+        return [&frame, zoom] { return centredView(frame.viewport(), zoom); };
+    };
+
+    steps.push_back(step(
+        "view: open a clip",
+        [&frame, st] {
+            const wxSize room =
+                workAreaOf(frame).GetSize() - minOuter(frame) - frame.FromDIP(wxSize(80, 60));
+            st->target = minViewport(frame) + wxSize(std::min(240, std::max(0, room.x)),
+                                                     std::min(180, std::max(0, room.y)));
+            const double scale = frame.viewport().contentScale();
+            const auto even = [](double value) {
+                const auto n = static_cast<std::uint32_t>(std::ceil(value));
+                return n + (n % 2);
+            };
+            st->image = {.width = even(st->target.x * scale * 1.2),
+                         .height = even(st->target.y * scale * 1.2)};
+            frame.openUri(0,
+                          std::format("synthetic:gradient?w={}&h={}&fmt=yuv420p&frames=40",
+                                      st->image.width, st->image.height),
+                          std::nullopt);
+        },
+        [&frame, st](std::string& seen) {
+            const dvv::platform::PixelSize image = frame.viewport().imageSize();
+            dvv::platform::PixelSize stream{};
+            if (frame.streams().size() == 1) {
+                const dvv::media::FrameDesc& desc = frame.streams().front().info.desc;
+                stream = {.width = desc.width, .height = desc.height};
+            }
+            seen = std::format("target {}x{}, wanted {}x{}, stream {}x{}, image size {}x{}",
+                               st->target.x, st->target.y, st->image.width, st->image.height,
+                               stream.width, stream.height, image.width, image.height);
+            return stream == st->image && image == st->image;
+        }));
+    steps.push_back(step(
+        "view: Fit to window at about 83 %",
+        [&frame, st] {
+            frame.SetClientSize(frame.GetClientSize() +
+                                (st->target - frame.viewport().GetClientSize()));
+            sendMenu(frame, menuId(Command::FitToWindow));
+        },
+        [&frame, st, shown](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const wxSize client = frame.viewport().GetClientSize();
+            const double zoom = frame.viewport().shownView().zoom();
+            seen = std::format("viewport {}x{} (target {}x{}); {}; {}", client.x, client.y,
+                               st->target.x, st->target.y, shown(), seen);
+            // The clip is 1.2 x T in backing pixels: the fit is about 1/1.2.
+            return matches && client == st->target && zoom >= 0.80 && zoom <= 0.86 &&
+                   frame.viewport().view().mode == ViewMode::Fit &&
+                   frame.statusTexts()[MainFrame::ZOOM_FIELD].StartsWith("Fit (");
+        }));
+    steps.push_back(menu_zoom(
+        "view: Actual size from the menu", [] { return ViewRequest{}; }, Command::ActualSize, 1,
+        "100 %"));
+    steps.push_back(
+        menu_zoom("view: Zoom in from the menu", centred(1), Command::ZoomIn, 2, "200 %"));
+    steps.push_back(
+        menu_zoom("view: Zoom out from the menu", centred(2), Command::ZoomOut, 1, "100 %"));
+    steps.push_back(step(
+        "view: Zoom out from 100 % stops at Fit",
+        [&frame] {
+            frame.viewport().setView(centredView(frame.viewport(), 1));
+            sendMenu(frame, menuId(Command::ZoomOut));
+        },
+        [&frame, shown](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const Viewport& viewport = frame.viewport();
+            const double fit = viewport.fitZoom();
+            const std::optional<RecordedInfo> recorded = viewport.lastRecorded();
+            seen = std::format("{} (fit {}); {}", shown(), fit, seen);
+            return matches && viewport.view().mode == ViewMode::Fit && recorded &&
+                   recorded->mode == ViewMode::Fit && recorded->zoom == fit;
+        }));
+    steps.push_back(step(
+        "view: Zoom in stops at 3200 %",
+        [&frame] {
+            frame.viewport().setView(centredView(frame.viewport(), 1));
+            for (int n = 0; n < 20 && frame.isAvailable(Command::ZoomIn); ++n) {
+                frame.execute(Command::ZoomIn);
+            }
+        },
+        [&frame, shown](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const bool zoom_in = frame.isAvailable(Command::ZoomIn);
+            const bool zoom_out = frame.isAvailable(Command::ZoomOut);
+            seen = std::format("{}, Zoom in available {}, Zoom out available {}; {}", shown(),
+                               zoom_in, zoom_out, seen);
+            return matches && frame.viewport().view().zoom == 32 &&
+                   frame.statusTexts()[MainFrame::ZOOM_FIELD] == "3200 %" && !zoom_in && zoom_out;
+        }));
+    steps.push_back(step(
+        "view: a resize keeps the zoom and the centre",
+        [&frame, st] {
+            st->request = centredView(frame.viewport(), 2);
+            frame.viewport().setView(st->request);
+            st->client = frame.GetClientSize();
+            st->extent = frame.viewport().physicalClientSize();
+            frame.SetClientSize(st->client + frame.FromDIP(wxSize(80, 60)));
+        },
+        [&frame, st, shown](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const Viewport& viewport = frame.viewport();
+            const dvv::platform::PixelSize extent = viewport.physicalClientSize();
+            const ViewTransform view = viewport.shownView();
+            const PointD centre =
+                imagePointAt(view, {.x = extent.width / 2.0, .y = extent.height / 2.0});
+            const double tolerance = 0.5 / view.zoom();
+            seen = std::format(
+                "extent {}x{} (was {}x{}), centre ({}, {}) (wanted ({}, {})); {}; {}", extent.width,
+                extent.height, st->extent.width, st->extent.height, centre.x, centre.y,
+                st->request.centre.x, st->request.centre.y, shown(), seen);
+            return matches && !(extent == st->extent) && viewport.view() == st->request &&
+                   std::abs(centre.x - st->request.centre.x) <= tolerance &&
+                   std::abs(centre.y - st->request.centre.y) <= tolerance;
+        }));
+    steps.push_back(step(
+        "view: back to the earlier size", [&frame, st] { frame.SetClientSize(st->client); },
+        [&frame, st](std::string& seen) {
+            const wxSize client = frame.GetClientSize();
+            const dvv::platform::PixelSize extent = frame.viewport().physicalClientSize();
+            seen = std::format("client {}x{} (wanted {}x{}), extent {}x{} (wanted {}x{})", client.x,
+                               client.y, st->client.x, st->client.y, extent.width, extent.height,
+                               st->extent.width, st->extent.height);
+            return client == st->client && extent == st->extent;
+        }));
+    steps.push_back(step("view: menu keys", {}, [&frame](std::string& seen) {
+        struct Wanted {
+            Command command;
+            int flags;
+            int key;
+        };
+#if defined(__WXOSX__)
+        const std::array<Wanted, 5> wanted{
+            {{Command::FitToWindow, wxACCEL_CTRL, '9'},
+             {Command::ActualSize, wxACCEL_CTRL, '0'},
+             {Command::ZoomIn, wxACCEL_CTRL, '+'},
+             {Command::ZoomOut, wxACCEL_CTRL, '-'},
+             {Command::ResizeWindowToActualSize, wxACCEL_CTRL, '1'}}};
+#else
+        const std::array<Wanted, 5> wanted{{{Command::FitToWindow, wxACCEL_CTRL, '0'},
+                                            {Command::ActualSize, wxACCEL_CTRL, '1'},
+                                            {Command::ZoomIn, wxACCEL_CTRL, '+'},
+                                            {Command::ZoomOut, wxACCEL_CTRL, '-'},
+                                            {Command::ResizeWindowToActualSize, wxACCEL_ALT, '1'}}};
+#endif
+        bool ok = true;
+        seen.clear();
+        for (const Wanted& item : wanted) {
+            const std::unique_ptr<wxAcceleratorEntry> key = menuKeyOf(frame, item.command);
+            seen +=
+                std::format("{}: {}; ", commandTable()[static_cast<std::size_t>(item.command)].id,
+                            key ? std::format("flags {} key {}", key->GetFlags(), key->GetKeyCode())
+                                : std::string("none"));
+            ok = ok && key && key->GetFlags() == item.flags && key->GetKeyCode() == item.key;
+        }
+        return ok;
+    }));
+#if !defined(__WXOSX__)
+    // Windows and Linux: the char hook also dispatches the view keys (normaliseKey).
+    steps.push_back(step(
+        "view: Ctrl+Shift+= zooms in",
+        [&frame] {
+            frame.viewport().setView(centredView(frame.viewport(), 1));
+            sendKey(frame, '=', true, true);
+        },
+        [&frame, shown](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            seen = shown() + "; " + seen;
+            return matches && frame.viewport().view().mode == ViewMode::Zoom &&
+                   frame.viewport().view().zoom == 2;
+        }));
+    steps.push_back(step(
+        "view: Ctrl+0 fits",
+        [&frame] {
+            frame.viewport().setView(centredView(frame.viewport(), 2));
+            sendKey(frame, '0', false, true);
+        },
+        [&frame, shown](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            seen = shown() + "; " + seen;
+            return matches && frame.viewport().view().mode == ViewMode::Fit;
+        }));
+    steps.push_back(step(
+        "view: keypad Ctrl+1 shows 100 %",
+        [&frame] {
+            frame.viewport().setView({});
+            sendKey(frame, WXK_NUMPAD1, false, true);
+        },
+        [&frame, shown](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            seen = shown() + "; " + seen;
+            return matches && frame.viewport().view().mode == ViewMode::Zoom &&
+                   frame.viewport().view().zoom == 1;
+        }));
+#endif
+    addOpenSizingSteps(steps, frame);
+    // Later view steps go before this one.
+    steps.push_back(step(
+        "view: Close stream shows Fit",
+        [&frame, st] {
+            frame.viewport().setView(centredView(frame.viewport(), 2));
+            st->clientAtClose = frame.GetClientSize();
+            frame.execute(Command::CloseStreams);
+            frame.setWorkAreaForTest(std::nullopt);  // set by "open: a clip that fits..."
+        },
+        [&frame, st](std::string& seen) {
+            const wxString field = frame.statusTexts()[MainFrame::ZOOM_FIELD];
+            const ViewRequest& view = frame.viewport().view();
+            const wxSize client = frame.GetClientSize();
+            seen = std::format("streams {}, view {} {}, zoom field '{}', client {}x{} (was {}x{})",
+                               frame.streams().size(), viewModeName(view.mode), view.zoom,
+                               field.utf8_string(), client.x, client.y, st->clientAtClose.x,
+                               st->clientAtClose.y);
+            return frame.streams().empty() && view == ViewRequest{} && field.empty() &&
+                   client == st->clientAtClose;
+        }));
 }
 
 // Spec §11: the scenario's earlier opens, then routes, failures, Format dialogs and the history
@@ -6240,6 +6798,8 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
     steps.push_back(step(
         "resize keeps the fit",
         [&frame, st] {
+            // The open showed the small clip at 100 % (view zoom design §3.2).
+            frame.execute(Command::FitToWindow);
             st->extent0 = frame.viewport().physicalClientSize();
             st->presented0 = presented(frame.viewport());
             // DIP-scaled and large enough that the centre pane stays non-empty next to the Info
@@ -7661,6 +8221,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             seen = std::format("idle {}, streams {}", idle, frame.streams().size());
             return idle && frame.streams().empty();
         }));
+    addViewSteps(steps, test);
     addRecentSteps(steps, test, [st] { return st->dir; });
     steps.push_back(step(
         "close stream and clean up", [&frame] { frame.execute(Command::CloseStreams); },
