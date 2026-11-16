@@ -82,6 +82,10 @@ configuration and log in `~/Library/Application Support/rawreel/` (see
 [Configuration](#configuration)).
 
 The app is signed ad hoc only: it has no Apple Developer ID signature and is not notarized.
+So the first start of a downloaded copy shows "Apple could not verify "rawreel" is free of
+malware…". To allow it, choose **Done**, then System Settings → Privacy & Security → **Open
+Anyway** (next to "rawreel was blocked…") and confirm; macOS remembers the choice for that copy.
+Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/rawreel.app`.
 
 **rawreel-cli** is inside the app, `rawreel.app/Contents/MacOS/rawreel-cli`. A symbolic link to it
 works: it resolves its own path, so it uses the app's FFmpeg, Vulkan loader and driver. A copy
