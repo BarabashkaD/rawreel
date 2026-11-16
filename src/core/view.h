@@ -4,7 +4,10 @@
 // image pixels; pixel (i, j) covers [i, i+1) x [j, j+1). The compositor maps output pixel (px, py)
 // to the image point (originX + (px + 0.5) / zoom, originY + (py + 0.5) / zoom) (design §4.4).
 
+#include <array>
 #include <cstdint>
+#include <optional>
+#include <string>
 
 #include "dvv/platform/native_window.h"
 
@@ -25,6 +28,19 @@ struct PointD {
 [[nodiscard]] dvv::platform::PixelSize physicalPixelSize(double width_points, double height_points,
                                                          double scale) noexcept;
 
+// What the user asked to see; the renderer resolves it against the viewport and frame size.
+// Fit: the whole frame, centred. Zoom: `zoom` backing pixels per clip pixel with clip point
+// `centre` at the viewport's centre, for frames of size `image`; a request for another frame
+// size resolves as Fit.
+enum class ViewMode : std::uint8_t { Fit, Zoom };
+struct ViewRequest {
+    ViewMode mode = ViewMode::Fit;
+    double zoom = 1.0;                 // Zoom: backing pixels per clip pixel
+    PointD centre{};                   // Zoom: the clip point wanted at the viewport's centre
+    dvv::platform::PixelSize image{};  // Zoom: the frame size the request was made for
+    bool operator==(const ViewRequest&) const = default;
+};
+
 class ViewTransform {  // value type
 public:
     ViewTransform() = default;  // viewport 0x0, image 0x0, zoom 0, origin (0, 0)
@@ -37,10 +53,20 @@ public:
     [[nodiscard]] static ViewTransform fit(dvv::platform::PixelSize viewport,
                                            dvv::platform::PixelSize image);
 
+    // Per axis, with W the viewport and s = image x zoom: s > W -> offset = round(W/2 - centre x
+    // zoom) clamped to [ceil(W - s), 0]; else floor((W - s) / 2). origin = -offset / zoom.
+    // An empty viewport or image, or a zoom <= 0 (or NaN) -> zoom 0, origin (0, 0), mode Fit (only
+    // the background is drawn), so a record without a frame is always Fit.
+    [[nodiscard]] static ViewTransform zoomed(dvv::platform::PixelSize viewport,
+                                              dvv::platform::PixelSize image, double zoom,
+                                              PointD centre);
+
     [[nodiscard]] double zoom() const noexcept;
     [[nodiscard]] PointD origin() const noexcept;  // the image point at the viewport's (0, 0)
     [[nodiscard]] dvv::platform::PixelSize viewport() const noexcept;
     [[nodiscard]] dvv::platform::PixelSize image() const noexcept;
+    // Fit from fit() and the default; Zoom from zoomed() with a zoom > 0 (else Fit).
+    [[nodiscard]] ViewMode mode() const noexcept;
 
     bool operator==(const ViewTransform&) const = default;
 
@@ -49,6 +75,53 @@ private:
     dvv::platform::PixelSize image_{};
     double zoom_ = 0;
     PointD origin_{};
+    ViewMode mode_ = ViewMode::Fit;
 };
+
+// Fit, or Zoom with `request.image != image` -> ViewTransform::fit; else ViewTransform::zoomed.
+[[nodiscard]] ViewTransform resolveView(const ViewRequest& request,
+                                        dvv::platform::PixelSize viewport,
+                                        dvv::platform::PixelSize image);
+
+// The image point under a viewport point: origin + point / zoom.
+[[nodiscard]] PointD imagePointAt(const ViewTransform& view, PointD viewport_point) noexcept;
+
+// Starts from resolveView (a Fit request works): the clip point under `anchor` stays under it at
+// the new zoom. The stored centre is clamped, not rounded: on an axis where image x zoom exceeds
+// the viewport to [W/(2 zoom), image - W/(2 zoom)], else image/2. Mode Zoom, `image` set; the
+// zoom itself is not clamped. When the resolved zoom is 0 (an empty viewport or image) or `zoom`
+// <= 0, the centre is the request's own, unclamped.
+[[nodiscard]] ViewRequest zoomAround(const ViewRequest& request, dvv::platform::PixelSize viewport,
+                                     dvv::platform::PixelSize image, double zoom, PointD anchor);
+
+// Moves the picture by (dx, dy) backing pixels (positive: right, down): centre -= d / zoom,
+// clamped as in zoomAround. A Fit request, or one for another frame size, is returned unchanged.
+[[nodiscard]] ViewRequest panBy(const ViewRequest& request, dvv::platform::PixelSize viewport,
+                                dvv::platform::PixelSize image, double dx, double dy);
+
+inline constexpr std::array<double, 9> ZOOM_STEPS{0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32};
+
+struct ZoomStep {
+    double zoom = 0;
+    bool fit = false;  // the fit stop: the caller sets Fit
+    bool operator==(const ZoomStep&) const = default;
+};
+
+// s* is the step with |s - fit| <= 0.01 s, if any. The stops are ZOOM_STEPS plus `fit` when there
+// is no s*. A `zoom` within 1e-6 (relative) of `fit` counts as s* when there is one. In: the
+// smallest stop > zoom (1 + 1e-6); Out: the largest stop < zoom (1 - 1e-6). `.fit` is set only
+// for the `fit` stop. nullopt: at the limit.
+[[nodiscard]] std::optional<ZoomStep> nextZoomIn(double zoom, double fit) noexcept;
+[[nodiscard]] std::optional<ZoomStep> nextZoomOut(double zoom, double fit) noexcept;
+
+struct ZoomLimits {
+    double minimum = 0, maximum = 0;
+    bool operator==(const ZoomLimits&) const = default;
+};
+[[nodiscard]] ZoomLimits zoomLimits(double fit) noexcept;  // {min(fit, 1/8), max(fit, 32)}
+
+// The zoom as a percentage with one decimal, a trailing ".0" dropped: "200 %", "33.3 %"; Fit
+// wraps it: "Fit (47.3 %)".
+[[nodiscard]] std::string zoomText(ViewMode mode, double zoom);
 
 }  // namespace rawreel

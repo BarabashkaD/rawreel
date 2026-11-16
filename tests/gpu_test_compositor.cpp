@@ -46,6 +46,8 @@ using rawreel::DisplaySnapshot;
 using rawreel::FrameSet;
 using rawreel::HostDisplayImage;
 using rawreel::RecordedInfo;
+using rawreel::resolveView;
+using rawreel::ViewMode;
 using rawreel::ViewportRenderer;
 using rawreel::ViewTransform;
 
@@ -256,7 +258,9 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: matches the CPU reference") {
             const std::vector<std::byte> bytes =
                 renderAndRead(*renderer, viewport, frameSet(*frame, 0, 1), DARK);
             const std::size_t wrong = mismatches(
-                bytes, rawreel::compositeConstants(DARK, viewport, IMAGE, false), frame->image());
+                bytes,
+                rawreel::compositeConstants(DARK, ViewTransform::fit(viewport, IMAGE), false),
+                frame->image());
             CHECK(wrong <= allowance(viewport));
             if (viewport == IMAGE) {
                 CHECK(wrong == 0);
@@ -267,8 +271,10 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: matches the CPU reference") {
         INFO("image N, viewport ", describe(viewport), ", light background");
         const std::vector<std::byte> bytes =
             renderAndRead(*renderer, viewport, frameSet(n, 0, 1), LIGHT);
-        CHECK(mismatches(bytes, rawreel::compositeConstants(LIGHT, viewport, IMAGE, false),
-                         n.image()) <= allowance(viewport));
+        CHECK(mismatches(
+                  bytes,
+                  rawreel::compositeConstants(LIGHT, ViewTransform::fit(viewport, IMAGE), false),
+                  n.image()) <= allowance(viewport));
     }
     for (const bool dark : {true, false}) {
         INFO("no frame, viewport 211x97, ", dark ? "dark" : "light", " background");
@@ -326,6 +332,46 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: matches the CPU reference") {
     }
 }
 
+TEST_CASE_FIXTURE(CompositorTest, "compositor: 200 % panned matches the CPU reference") {
+    const auto renderer = makeRenderer(context(), 1);
+    const DisplayFrame g = displayFrame(G);
+    const PixelSize viewport{30, 19};
+    const CompositeParams params{.dark = true, .view = {ViewMode::Zoom, 2, {12, 8}, IMAGE}};
+    const std::vector<std::byte> bytes =
+        renderAndRead(*renderer, viewport, frameSet(g, 0, 1), params);
+    const auto view = resolveView(params.view, viewport, IMAGE);
+    CHECK(mismatches(bytes, rawreel::compositeConstants(params, view, false), g.image()) == 0);
+    const RecordedInfo info = renderer->lastRecorded();
+    CHECK(info.zoom == 2.0);
+    CHECK(info.mode == ViewMode::Zoom);
+    CHECK(info.origin == view.origin());
+
+    // Through frame(): a setParams that changes only the view records again, at the new view.
+    rawreel::DisplayState state;
+    state.show(frameSet(g, 0, 1));
+    state.setParams(params);
+    auto panned =
+        renderer->frame(frameInfo(viewport, VK_FORMAT_B8G8R8A8_UNORM, 0, false), state.snapshot());
+    REQUIRE_MESSAGE(panned, (panned ? std::string() : panned.error().describe()));
+    REQUIRE(static_cast<bool>(panned->record));
+    CHECK(renderer->lastRecorded().origin == view.origin());
+    submit(std::move(panned->record));
+    const CompositeParams moved{.dark = true, .view = {ViewMode::Zoom, 4, {20, 14}, IMAGE}};
+    state.setParams(moved);
+    auto next =
+        renderer->frame(frameInfo(viewport, VK_FORMAT_B8G8R8A8_UNORM, 1, true), state.snapshot());
+    REQUIRE_MESSAGE(next, (next ? std::string() : next.error().describe()));
+    REQUIRE(static_cast<bool>(next->record));
+    const auto moved_view = resolveView(moved.view, viewport, IMAGE);
+    REQUIRE(moved_view.origin() != view.origin());
+    const RecordedInfo moved_info = renderer->lastRecorded();
+    CHECK(moved_info.zoom == 4.0);
+    CHECK(moved_info.mode == ViewMode::Zoom);
+    CHECK(moved_info.origin == moved_view.origin());
+    CHECK(moved_info.index == 0);
+    submit(std::move(next->record));
+}
+
 TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when something changed") {
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame g = displayFrame(G);
@@ -339,8 +385,11 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
     REQUIRE_MESSAGE(first, (first ? std::string() : first.error().describe()));
     REQUIRE(static_cast<bool>(first->record));
     REQUIRE(first->image != nullptr);
-    const RecordedInfo first_info{
-        .epoch = 1, .index = 0, .extent = wide, .zoom = ViewTransform::fit(wide, IMAGE).zoom()};
+    const RecordedInfo first_info{.epoch = 1,
+                                  .index = 0,
+                                  .extent = wide,
+                                  .zoom = ViewTransform::fit(wide, IMAGE).zoom(),
+                                  .origin = ViewTransform::fit(wide, IMAGE).origin()};
     CHECK(renderer->lastRecorded() == first_info);
     submit(std::move(first->record));
 
@@ -419,8 +468,9 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: an sRGB swapchain skips the encod
     REQUIRE(static_cast<bool>(frame->record));
     submit(std::move(frame->record));
     const std::vector<std::byte> bytes = read(frame->image);
-    CHECK(mismatches(bytes, rawreel::compositeConstants(DARK, viewport, IMAGE, true), n.image()) <=
-          allowance(viewport));
+    CHECK(mismatches(bytes,
+                     rawreel::compositeConstants(DARK, ViewTransform::fit(viewport, IMAGE), true),
+                     n.image()) <= allowance(viewport));
 }
 
 TEST_CASE_FIXTURE(CompositorTest, "compositor: lastRecorded() may be read while frame() records") {
@@ -429,15 +479,17 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: lastRecorded() may be read while 
     const DisplayFrame g = displayFrame(G);
     const PixelSize viewport{211, 97};
     const double zoom = ViewTransform::fit(viewport, IMAGE).zoom();
+    const auto origin = ViewTransform::fit(viewport, IMAGE).origin();
     std::atomic<std::uint64_t> reads{0};
     std::atomic<std::uint64_t> violations{0};
     {
         std::jthread reader([&](const std::stop_token& stop) {
             while (!stop.stop_requested()) {
                 const RecordedInfo info = renderer->lastRecorded();
-                const bool valid = info == RecordedInfo{} ||
-                                   (info.epoch == 1 && info.extent == viewport &&
-                                    (info.index == 0 || info.index == 1) && info.zoom == zoom);
+                const bool valid =
+                    info == RecordedInfo{} || (info.epoch == 1 && info.extent == viewport &&
+                                               (info.index == 0 || info.index == 1) &&
+                                               info.zoom == zoom && info.origin == origin);
                 violations.fetch_add(valid ? 0 : 1, std::memory_order_relaxed);
                 reads.fetch_add(1, std::memory_order_relaxed);
             }

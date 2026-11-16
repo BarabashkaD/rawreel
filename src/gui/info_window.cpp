@@ -38,11 +38,20 @@ constexpr long LABEL_ALIGN = wxALIGN_RIGHT;
 constexpr long LABEL_ALIGN = wxALIGN_LEFT;
 #endif
 
+}  // namespace
+
 ScreenRect screenRect(const wxRect& rect) {
     return {.x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height};
 }
 
-}  // namespace
+wxRect wxRectOf(ScreenRect rect) {
+    return {rect.x, rect.y, rect.width, rect.height};
+}
+
+wxRect workAreaOf(const wxWindow& window) {
+    const int display = wxDisplay::GetFromWindow(&window);
+    return wxDisplay(display == wxNOT_FOUND ? 0U : static_cast<unsigned>(display)).GetClientArea();
+}
 
 InfoWindow::InfoWindow(MainFrame& owner)
     : wxFrame(&owner, wxID_ANY, "Info", wxDefaultPosition, wxDefaultSize,
@@ -180,16 +189,14 @@ void InfoWindow::showBesideOwner() {
         requested_ = wxRect(*place_, GetSize());
     } else {
         // §10: beside the main window on its display, else inside its right edge.
-        const int display = wxDisplay::GetFromWindow(&owner_);
-        const wxRect work =
-            wxDisplay(display == wxNOT_FOUND ? 0U : static_cast<unsigned>(display)).GetClientArea();
+        const wxRect work = workAreaOf(owner_);
         const wxRect client(owner_.ClientToScreen(wxPoint(0, 0)), owner_.GetClientSize());
         const wxSize size = GetSize();
         const ScreenRect place =
             infoWindowPlace(screenRect(owner_.GetScreenRect()), screenRect(client),
                             LayoutSize{.width = size.x, .height = size.y}, screenRect(work),
                             FromDIP(PLACE_GAP_DIP));
-        requested_ = wxRect(place.x, place.y, place.width, place.height);
+        requested_ = wxRectOf(place);
     }
     SetPosition(requested_.GetTopLeft());
 #if defined(__WXGTK__)
@@ -217,10 +224,7 @@ void InfoWindow::restoreAfterIconize() {
 void InfoWindow::forgetPlaceForTest() {
     place_.reset();
     requested_ = wxRect();
-    const int display = wxDisplay::GetFromWindow(&owner_);
-    Move(wxDisplay(display == wxNOT_FOUND ? 0U : static_cast<unsigned>(display))
-             .GetClientArea()
-             .GetTopLeft());
+    Move(workAreaOf(owner_).GetTopLeft());
 }
 
 std::vector<std::pair<std::string, std::string>> InfoWindow::rowsForTest() const {

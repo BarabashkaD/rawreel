@@ -90,6 +90,8 @@ constexpr std::string_view OPEN_URI_EXAMPLE =
     "synthetic:gradient?fmt=yuv420p&size=1920x1080&frames=250";  // X15
 // Spec §2: the notice field's width comes from this text.
 constexpr const char* LONG_LOG_NOTICE = "99 errors, 99 warnings in the log";
+// View zoom design: the zoom field's width comes from this text.
+constexpr const char* LONG_ZOOM_TEXT = "Fit (88888.8 %)";
 // Spec §7: the variable status fields' shares of the width the fixed fields leave (file,
 // position, rate, bottleneck), and the file field's width at the main window's minimum.
 constexpr std::array<int, 4> VARIABLE_FIELD_SHARES{3, 3, 2, 2};
@@ -221,10 +223,11 @@ std::optional<std::string> writeTextFile(const std::filesystem::path& file,
     return std::nullopt;
 }
 
-// The widths of the status bar's two fixed fields at its font. D5R §2.2: the display mapping is
-// as wide as its longest text plus a margin. Spec §2 (Log pane): the Log notice is as wide as a
-// long notice plus the same margin.
-std::array<int, 2> fixedFieldWidths(wxStatusBar& bar) {
+// The widths of the status bar's three fixed fields at its font. View zoom design: the zoom field
+// is as wide as a long zoom text plus a margin. D5R §2.2: the display mapping is as wide as its
+// longest text plus the same margin. Spec §2 (Log pane): the Log notice is as wide as a long
+// notice plus the same margin.
+std::array<int, 3> fixedFieldWidths(wxStatusBar& bar) {
     wxClientDC dc(&bar);
     int mapping = 0;
     for (const dvv::media::TransferFn curve :
@@ -235,13 +238,22 @@ std::array<int, 2> fixedFieldWidths(wxStatusBar& bar) {
         mapping = std::max(mapping, dc.GetTextExtent(wxString::FromUTF8(mappingText(&sample))).x);
     }
     const int margin = bar.FromDIP(24);
-    return {mapping + margin, dc.GetTextExtent(LONG_LOG_NOTICE).x + margin};
+    return {dc.GetTextExtent(LONG_ZOOM_TEXT).x + margin, mapping + margin,
+            dc.GetTextExtent(LONG_LOG_NOTICE).x + margin};
 }
 
 // D5R §2.2: the mapping status field, the display mapping of the active (first) stream.
 wxString mappingField(const std::vector<StreamInfo>& streams) {
     return wxString::FromUTF8(
         mappingText(streams.empty() ? nullptr : &streams.front().colour.params));
+}
+
+// View zoom design §3.1, §4: `image` at 100 %, its centre at the viewport's centre.
+ViewRequest actualSizeView(dvv::platform::PixelSize image) {
+    return {.mode = ViewMode::Zoom,
+            .zoom = 1,
+            .centre = {.x = image.width / 2.0, .y = image.height / 2.0},
+            .image = image};
 }
 
 }  // namespace
@@ -363,6 +375,8 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     aui_.Update();
     buildMenus();
     buildStatusBar();
+    // The zoom field follows every view change and every resize (once the status bar exists).
+    viewport_->setViewChangedHandler([this] { showZoom(); });
     SetClientSize(FromDIP(wxSize(1280, 720)));
     applyLayoutLimits();
     Bind(wxEVT_DPI_CHANGED, [this](wxDPIChangedEvent& event) {
@@ -490,6 +504,9 @@ void MainFrame::buildMenus() {
             menu->Append(menuId(info.command), label, help);
         }
 #endif
+        if (info.command == Command::ResizeWindowToActualSize) {
+            menu->AppendSeparator();
+        }
         if (info.command == Command::OpenUri) {
             // Open Recent spec §3: right after Open URI... on every OS, no key, no mnemonic; its
             // items come from recentChanged().
@@ -583,13 +600,14 @@ void MainFrame::buildStatusBar() {
     // Spec §7: without wxSTB_SHOW_TIPS, which shows only a cut field's own text and asserts on a
     // tooltip set by hand; the bar keeps its size grip and its end cut.
     CreateStatusBar(static_cast<int>(status_texts_.size()), wxSTB_DEFAULT_STYLE & ~wxSTB_SHOW_TIPS);
-    const std::array<int, 2> fixed = fixedFieldWidths(*GetStatusBar());
+    const std::array<int, 3> fixed = fixedFieldWidths(*GetStatusBar());
     const std::array<int, STATUS_FIELD_COUNT> widths{-VARIABLE_FIELD_SHARES[0],
                                                      -VARIABLE_FIELD_SHARES[1],
                                                      -VARIABLE_FIELD_SHARES[2],
                                                      -VARIABLE_FIELD_SHARES[3],
                                                      fixed[0],
-                                                     fixed[1]};
+                                                     fixed[1],
+                                                     fixed[2]};
     SetStatusWidths(static_cast<int>(widths.size()), widths.data());
 #if defined(__WXMSW__)
     // Spec §7: wxMSW caps a tooltip at min(400 px, half the display); a path stays on one line
@@ -623,8 +641,114 @@ int MainFrame::statusFixedWidth() const {
     if (bar == nullptr) {
         return 0;
     }
-    const std::array<int, 2> fixed = fixedFieldWidths(*bar);
-    return fixed[0] + fixed[1];
+    const std::array<int, 3> fixed = fixedFieldWidths(*bar);
+    return fixed[0] + fixed[1] + fixed[2];
+}
+
+void MainFrame::showZoom() {
+    if (closing_ || viewport_ == nullptr) {
+        return;
+    }
+    wxString text;
+    if (!viewport_->imageSize().empty()) {
+        const ViewTransform view = viewport_->shownView();
+        text = wxString::FromUTF8(zoomText(view.mode(), view.zoom()));
+    }
+    if (text != status_texts_[ZOOM_FIELD]) {
+        status_texts_[ZOOM_FIELD] = text;
+        SetStatusText(text, static_cast<int>(ZOOM_FIELD));
+    }
+}
+
+void MainFrame::applyViewCommand(Command command) {
+    const dvv::platform::PixelSize extent = viewport_->physicalClientSize();
+    const dvv::platform::PixelSize image = viewport_->imageSize();
+    const ViewTransform shown = viewport_->shownView();
+    const double fit = viewport_->fitZoom();
+    std::optional<ZoomStep> next = ZoomStep{.fit = true};  // FitToWindow
+    if (command == Command::ActualSize) {
+        next = ZoomStep{.zoom = 1};
+    } else if (command == Command::ZoomIn) {
+        next = nextZoomIn(shown.zoom(), fit);
+    } else if (command == Command::ZoomOut) {
+        next = nextZoomOut(shown.zoom(), fit);
+    }
+    if (!next) {
+        return;  // at the limit (isAvailable said so)
+    }
+    if (next->fit) {
+        viewport_->setView({});
+        return;
+    }
+    // Backing pixels: the viewport's centre stays on its clip point.
+    const PointD anchor{.x = extent.width / 2.0, .y = extent.height / 2.0};
+    viewport_->setView(zoomAround(viewport_->view(), extent, image, next->zoom, anchor));
+}
+
+wxRect MainFrame::workArea() const {
+    return work_area_for_test_ ? *work_area_for_test_ : workAreaOf(*this);
+}
+
+WindowNow MainFrame::windowNow() const {
+    const wxSize client = GetClientSize();
+    const wxSize viewport = viewport_->GetClientSize();
+    const wxSize minimum = GetMinClientSize();
+    return {.outer = screenRect(GetScreenRect()),
+            .client = {.width = client.x, .height = client.y},
+            .viewport = {.width = viewport.x, .height = viewport.y},
+            .minimumClient = {.width = minimum.x, .height = minimum.y}};
+}
+
+bool MainFrame::windowIsFixed() const {
+#if defined(__WXOSX__)
+    return IsFullScreen();
+#else
+    return IsMaximized() || IsFullScreen();
+#endif
+}
+
+void MainFrame::sizeWindowForOpen() {
+    const dvv::platform::PixelSize image = viewport_->imageSize();
+    // A minimised window reports no usable size (wxMSW: position -32000, client 0x0); the view
+    // stays Fit.
+    if (image.empty() || IsIconized()) {
+        return;
+    }
+    if (windowIsFixed()) {
+        // §3.2: the window stays; 100 % when the clip fits the viewport, else Fit.
+        const dvv::platform::PixelSize extent = viewport_->physicalClientSize();
+        if (image.width <= extent.width && image.height <= extent.height) {
+            viewport_->setView(actualSizeView(image));
+        }
+        return;
+    }
+    const LayoutSize wanted = viewportForClip(layoutSizeOf(image), viewport_->contentScale());
+    const WindowNow now = windowNow();
+    const ScreenRect work = screenRect(workArea());
+    if (const std::optional<ScreenRect> rect =
+            windowForViewport(now, wanted, work, WindowSizing::Exact)) {
+        SetSize(wxRectOf(*rect));
+        viewport_->setView(actualSizeView(image));
+    } else if (const std::optional<ScreenRect> shape =
+                   windowForViewport(now, wanted, work, WindowSizing::KeepShape)) {
+        SetSize(wxRectOf(*shape));  // the view stays Fit (openUri set it)
+    }
+}
+
+void MainFrame::resizeWindowToActualSize() {
+    if (windowIsFixed()) {
+        applyViewCommand(Command::ActualSize);
+        return;
+    }
+    const dvv::platform::PixelSize image = viewport_->imageSize();
+    const LayoutSize wanted = viewportForClip(layoutSizeOf(image), viewport_->contentScale());
+    const std::optional<ScreenRect> rect =
+        windowForViewport(windowNow(), wanted, screenRect(workArea()), WindowSizing::Clamped);
+    if (!rect) {
+        return;  // no image or no work area
+    }
+    SetSize(wxRectOf(*rect));
+    viewport_->setView(actualSizeView(image));  // at 100 %, panned to the clip's centre
 }
 
 Session& MainFrame::session() const noexcept {
@@ -668,6 +792,25 @@ bool MainFrame::isAvailable(Command command) const {
         case Command::StepForward10:
         case Command::First:
         case Command::Loop: return hasStream();
+        case Command::FitToWindow:
+        case Command::ActualSize:
+        case Command::ZoomIn:
+        case Command::ZoomOut:
+        case Command::ResizeWindowToActualSize: {
+            if (!hasStream() || viewport_ == nullptr || viewport_->imageSize().empty()) {
+                return false;
+            }
+            // Zoom in and out: a next step from the shown zoom (none at the limits).
+            const double zoom = viewport_->shownView().zoom();
+            const double fit = viewport_->fitZoom();
+            if (command == Command::ZoomIn) {
+                return nextZoomIn(zoom, fit).has_value();
+            }
+            if (command == Command::ZoomOut) {
+                return nextZoomOut(zoom, fit).has_value();
+            }
+            return true;
+        }
         case Command::Last: {
             const Session* session = wxGetApp().session();
             if (session == nullptr) {
@@ -749,6 +892,15 @@ void MainFrame::execute(Command command, CommandSource source) {
         saveLog(command == Command::SaveSelectedLines);
         return;
     }
+    if (command == Command::FitToWindow || command == Command::ActualSize ||
+        command == Command::ZoomIn || command == Command::ZoomOut) {
+        applyViewCommand(command);
+        return;
+    }
+    if (command == Command::ResizeWindowToActualSize) {
+        resizeWindowToActualSize();
+        return;
+    }
     Session* session = wxGetApp().session();
     if (session == nullptr) {
         return;
@@ -756,6 +908,8 @@ void MainFrame::execute(Command command, CommandSource source) {
     switch (command) {
         case Command::CloseStreams:
             recent_pending_.closed();  // Open Recent spec §5
+            sizing_uri_.clear();       // view zoom design §3.3
+            viewport_->setView({});    // the next stream starts at Fit
             session->closeStreams();
             return;
         case Command::PlayPause: session->togglePlay(); return;
@@ -788,6 +942,11 @@ void MainFrame::execute(Command command, CommandSource source) {
             session->logDiagnostics();
             setLogShown(true);
             return;
+        case Command::FitToWindow:  // the five: above
+        case Command::ActualSize:
+        case Command::ZoomIn:
+        case Command::ZoomOut:
+        case Command::ResizeWindowToActualSize:
         case Command::Quit:
         case Command::GpuInfo:
         case Command::Open:
@@ -935,6 +1094,9 @@ void MainFrame::showStreamFormat() {
         const std::int64_t position = session().status().player.position;
         openWithChoice(stream.slot, stream.resolvedUri, dialog.choice(),
                        position >= 0 ? std::optional(position) : std::nullopt);
+    } else {
+        // View zoom design §3.3: a cancelled (or closing) dialog sizes nothing.
+        sizing_uri_.clear();
     }
     showFormatDialogs();  // formatNeeded events that arrived meanwhile
 }
@@ -957,8 +1119,12 @@ void MainFrame::showErrorFormat() {
         // The raw dialog's choice goes to the raw provider (no Y4M or container
         // provider wins the reopen again).
         openWithChoice(0, withRawImpl(uri), choice, std::nullopt, std::move(entry));
-    } else if (!closing_) {
-        DVV_LOG_INFO("open of {} cancelled", uri);
+    } else {
+        // View zoom design §3.3: a cancelled (or closing) dialog sizes nothing.
+        sizing_uri_.clear();
+        if (!closing_) {
+            DVV_LOG_INFO("open of {} cancelled", uri);
+        }
     }
     showFormatDialogs();
 }
@@ -990,6 +1156,8 @@ void MainFrame::showFormatDialogs() {
             openContext(uri, openDetection(uri, pending.candidates.candidates, pending.reason),
                         auto_detect_));
         if (runFormatDialog(dialog) != wxID_OK) {
+            // View zoom design §3.3: a cancelled (or closing) dialog sizes nothing.
+            sizing_uri_.clear();
             if (!closing_) {
                 DVV_LOG_INFO("open of {} cancelled", uri);
             }
@@ -1028,6 +1196,10 @@ void MainFrame::openUri(std::uint32_t slot, const std::string& text,
     if (Session* session = closing_ ? nullptr : wxGetApp().session(); session != nullptr) {
         // Open Recent spec §5: this open's entry is the pending one until its stream shows.
         recent_pending_.opened(std::move(entry), dvv::formatUri(*uri));
+        // View zoom design §3.3: this open's stream sizes the window; it starts at Fit, so a new
+        // clip of the old size never shows the old zoom.
+        sizing_uri_ = dvv::formatUri(*uri);
+        viewport_->setView({});
         session->closeStreams();
         last_open_uri_ = text;
         // M4 GUI D6: File -> Open starts in the folder of the last opened file.
@@ -1318,8 +1490,15 @@ void MainFrame::onStreamsChanged(const std::vector<StreamInfo>& streams) {
     if (!reopenShown() && player_->infoBar().IsShown()) {
         dismissMessage();
     }
-    // No viewport call: the renderer fits from the display image (D23).
     streams_ = streams;
+    // The view's frame size; the renderer resolves the view against the frame it shows.
+    if (streams_.empty()) {
+        viewport_->setImageSize({});
+    } else {
+        const dvv::media::FrameDesc& desc = streams_.front().info.desc;
+        viewport_->setImageSize({.width = desc.width, .height = desc.height});
+    }
+    showZoom();
     for (const StreamInfo& stream : streams_) {
         file_colours_.remember(stream);  // the file's colour for View > Format
         DVV_LOG_INFO("stream {}: {}", stream.slot, stream.resolvedUri);
@@ -1356,6 +1535,13 @@ void MainFrame::onStreamsChanged(const std::vector<StreamInfo>& streams) {
                             wxICON_INFORMATION);
             }
         }
+    }
+    // View zoom design §3.3: the stream of the pending open sizes the window, last, so the window
+    // is measured with the infobar as it stays. An empty list (before every open's and every
+    // Reopen's streams) leaves the pending open.
+    if (!streams_.empty() && !sizing_uri_.empty() && streams_.front().requestedUri == sizing_uri_) {
+        sizing_uri_.clear();
+        sizeWindowForOpen();
     }
 }
 
@@ -1396,6 +1582,9 @@ void MainFrame::onError(const dvv::Error& error) {
     // The hint and the Format... button are for open errors only; an open closes the
     // stream first (D3), so an error while a stream is shown is a playback error.
     const bool open_error = streams_.empty();
+    if (open_error) {
+        sizing_uri_.clear();  // view zoom design §3.3: the failed open sizes nothing
+    }
     const std::string_view typed = open_error ? std::string_view(last_open_uri_) : "";
     DVV_LOG_TEXT(dvv::LogLevel::Warn,
                  withSchemeHint(openErrorText(error, last_open_uri_, ffmpeg), typed, error));

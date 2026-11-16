@@ -79,16 +79,14 @@ std::uint8_t unorm8(float x) {
 
 }  // namespace
 
-CompositeConstants compositeConstants(const CompositeParams& params,
-                                      dvv::platform::PixelSize viewport,
-                                      dvv::platform::PixelSize image, bool skip_encode) {
-    const ViewTransform view = ViewTransform::fit(viewport, image);
+CompositeConstants compositeConstants(const CompositeParams& params, const ViewTransform& view,
+                                      bool skip_encode) {
     const bool drawn = view.zoom() > 0.0;
     return CompositeConstants{
-        .viewportW = viewport.width,
-        .viewportH = viewport.height,
-        .imageW = drawn ? image.width : 0,
-        .imageH = drawn ? image.height : 0,
+        .viewportW = view.viewport().width,
+        .viewportH = view.viewport().height,
+        .imageW = drawn ? view.image().width : 0,
+        .imageH = drawn ? view.image().height : 0,
         .zoom = static_cast<float>(view.zoom()),
         .originX = static_cast<float>(view.origin().x),
         .originY = static_cast<float>(view.origin().y),
@@ -121,7 +119,8 @@ std::array<std::uint8_t, 4> compositeReference(std::uint32_t px, std::uint32_t p
                                                std::optional<HostDisplayImage> image) {
     const dvv::platform::PixelSize size =
         image ? dvv::platform::PixelSize{image->width, image->height} : dvv::platform::PixelSize{};
-    return compositePixel(compositeConstants(params, viewport, size, false), px, py, image);
+    return compositePixel(
+        compositeConstants(params, resolveView(params.view, viewport, size), false), px, py, image);
 }
 
 }  // namespace rawreel

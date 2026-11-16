@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 
+#include "core/view.h"
 #include "dvv/base/error.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/presenter.h"
@@ -23,8 +24,9 @@ namespace rawreel {
 // runs on the GUI thread; the GUI thread only calls the presenter's non-blocking members.
 class Viewport final : public wxWindow {
 public:
-    // Sets display->setParams(CompositeParams{.dark = wxSystemSettings::GetAppearance().IsDark()})
-    // once (D23: the renderer fits; the GUI never refits).
+    // Sets display->setParams(CompositeParams{.dark = wxSystemSettings::GetAppearance().IsDark()}):
+    // the Fit view. Only setView() changes the params later; the renderer resolves the view
+    // against its extent and the frame size, so a resize sets nothing.
     Viewport(wxWindow* parent, std::shared_ptr<DisplayState> display);
     Viewport(const Viewport&) = delete;
     Viewport& operator=(const Viewport&) = delete;
@@ -81,6 +83,24 @@ public:
     // The renderer's last recorded composite; nullopt without a renderer (no stack). GUI thread.
     [[nodiscard]] std::optional<RecordedInfo> lastRecorded() const;
 
+    // The view request (view zoom design; values in backing and clip pixels). Stores the request;
+    // when it changed, display->setParams({.dark, .view = request}), then the view handler.
+    void setView(const ViewRequest& request);
+    [[nodiscard]] const ViewRequest& view() const noexcept { return view_; }
+    // The stream's frame size; {} without a stream (MainFrame::onStreamsChanged).
+    void setImageSize(dvv::platform::PixelSize image) noexcept { image_ = image; }
+    [[nodiscard]] dvv::platform::PixelSize imageSize() const noexcept { return image_; }
+    // The view as shown: resolveView(view(), physicalClientSize(), imageSize()).
+    [[nodiscard]] ViewTransform shownView() const;
+    // The fit's zoom: ViewTransform::fit(physicalClientSize(), imageSize()).zoom(); 0 without an
+    // image.
+    [[nodiscard]] double fitZoom() const;
+    // Backing pixels per window unit: GetContentScaleFactor() (1 on Windows, where window units
+    // are physical pixels).
+    [[nodiscard]] double contentScale() const;
+    // Called after setView() changed the request and at the end of every resizePresenter().
+    void setViewChangedHandler(std::function<void()> handler);
+
 private:
     void startPresenting();
     // Creation errors: DeviceLost goes to the device-lost handler, anything else to the failure
@@ -114,7 +134,10 @@ private:
     std::unique_ptr<dvv::gpu::Presenter> presenter_;
     std::function<void(std::uint64_t)> device_lost_;
     std::function<void(const dvv::Error&)> failure_;
+    std::function<void()> view_changed_;  // setViewChangedHandler()
     std::optional<dvv::Error> last_failure_;
+    ViewRequest view_{};                // view()
+    dvv::platform::PixelSize image_{};  // imageSize()
 };
 
 }  // namespace rawreel

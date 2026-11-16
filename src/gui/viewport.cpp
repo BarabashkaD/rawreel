@@ -29,7 +29,8 @@ wxColour backgroundColour(bool dark) {
 
 Viewport::Viewport(wxWindow* parent, std::shared_ptr<DisplayState> display)
     : display_(std::move(display)), dark_(wxSystemSettings::GetAppearance().IsDark()) {
-    // D23: set once; the renderer fits from the presenter's extent, so the GUI never refits.
+    // The Fit view; the renderer resolves the view against the presenter's extent, so only
+    // setView() sets the params again.
     display_->setParams(CompositeParams{.dark = dark_});
     // wx never erases the background, so nothing paints over the presented image.
     SetBackgroundStyle(wxBG_STYLE_PAINT);
@@ -276,11 +277,41 @@ void Viewport::onMouseDown(wxMouseEvent& event) {
 }
 
 void Viewport::resizePresenter() {
-    // Only the presenter is resized: the renderer fits from the presenter's extent (D23).
+    // Only the presenter is resized: the renderer resolves the view against its extent.
     if (presenter_) {
         syncNativeWindow(*this);
         presenter_->resize(physicalClientSize());
     }
+    if (view_changed_) {
+        view_changed_();  // the shown zoom follows the extent (a Fit view, a clamped centre)
+    }
+}
+
+void Viewport::setView(const ViewRequest& request) {
+    if (request == view_) {
+        return;
+    }
+    view_ = request;
+    display_->setParams(CompositeParams{.dark = dark_, .view = view_});
+    if (view_changed_) {
+        view_changed_();
+    }
+}
+
+ViewTransform Viewport::shownView() const {
+    return resolveView(view_, physicalClientSize(), image_);
+}
+
+double Viewport::fitZoom() const {
+    return ViewTransform::fit(physicalClientSize(), image_).zoom();
+}
+
+double Viewport::contentScale() const {
+    return GetContentScaleFactor();
+}
+
+void Viewport::setViewChangedHandler(std::function<void()> handler) {
+    view_changed_ = std::move(handler);
 }
 
 void Viewport::onSize(wxSizeEvent& event) {

@@ -30,6 +30,11 @@ enum class Command : std::uint8_t {
     First,
     Last,
     Loop,
+    FitToWindow,  // View -> Fit, Actual size, Zoom in, Zoom out, Resize window (view zoom)
+    ActualSize,
+    ZoomIn,
+    ZoomOut,
+    ResizeWindowToActualSize,
     Format,
     Reopen,
     LogPane,     // View -> Log (Log pane and Settings design §2)
@@ -65,7 +70,10 @@ struct KeyChord {
     return {static_cast<std::int32_t>(key), ctrl, shift, false};
 }
 
-enum class KeyRoute : std::uint8_t { Accelerator, CharHook };
+// AcceleratorAndCharHook: the menu registers and shows the key as an accelerator and commandForKey
+// matches it too, so the char hook dispatches it first (through normaliseKey, which folds '=', '+'
+// and the keypad keys).
+enum class KeyRoute : std::uint8_t { Accelerator, CharHook, AcceleratorAndCharHook };
 
 struct CommandInfo {
     Command command;
@@ -77,15 +85,17 @@ struct CommandInfo {
 };
 
 [[nodiscard]] std::span<const CommandInfo> commandTable() noexcept;  // in Command order
-// CharHook commands only; nullopt when `focus_keeps_keys` (the focus is an editable wxTextEntry or
-// inside the Log pane, Log pane and Settings design §4.1) or when no command matches.
+// CharHook and AcceleratorAndCharHook commands only; nullopt when `focus_keeps_keys` (the focus is
+// an editable wxTextEntry or inside the Log pane, Log pane and Settings design §4.1) or when no
+// command matches.
 [[nodiscard]] std::optional<Command> commandForKey(const KeyChord& chord,
                                                    bool focus_keeps_keys) noexcept;
 // wx 3.3 key code + modifiers -> KeyChord. Unknown codes keep their value.
 [[nodiscard]] KeyChord normaliseKey(std::int32_t keycode, bool ctrl, bool shift, bool alt) noexcept;
 // "Ctrl+O", "Ctrl+Shift+O", "F11", "Space", "Shift+Left", "+", "Esc", "1", "L".
 [[nodiscard]] std::string keyText(const KeyChord& chord);
-// Accelerator with a key: "<label>\t<keyText>"; CharHook: "<label> (<keyText>)"; no key: "<label>".
+// Accelerator or AcceleratorAndCharHook with a key: "<label>\t<keyText>"; CharHook: "<label>
+// (<keyText>)"; no key: "<label>".
 [[nodiscard]] std::string menuLabel(const CommandInfo& info);
 // A button's tooltip (video control panel spec §7): "<help> (<keyText>)", or the help alone for
 // a command without a key. With `cmd_for_ctrl` (macOS) an Accelerator chord's "Ctrl+" reads "Cmd+",

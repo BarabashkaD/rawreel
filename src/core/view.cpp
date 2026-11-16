@@ -1,9 +1,14 @@
 #include "core/view.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <format>
 #include <limits>
+#include <optional>
+#include <string>
 
 namespace rawreel {
 
@@ -14,6 +19,69 @@ std::uint32_t toPixels(double points, double scale) noexcept {
     const double pixels = std::round(points * scale);
     constexpr double MAX = std::numeric_limits<std::uint32_t>::max();
     return static_cast<std::uint32_t>(std::clamp(pixels, 1.0, MAX));
+}
+
+// The clamp of the centre on one axis: W viewport, I image, both in pixels.
+double clampCentre(double centre, double viewport, double image, double zoom) noexcept {
+    if (image * zoom > viewport) {
+        const double half = viewport / (2 * zoom);
+        return std::clamp(centre, half, image - half);
+    }
+    return image / 2;
+}
+
+PointD clampCentre(PointD centre, dvv::platform::PixelSize viewport, dvv::platform::PixelSize image,
+                   double zoom) noexcept {
+    return {clampCentre(centre.x, viewport.width, image.width, zoom),
+            clampCentre(centre.y, viewport.height, image.height, zoom)};
+}
+
+// The viewport offset of the picture on one axis, in whole viewport pixels.
+double axisOffset(double centre, double viewport, double image, double zoom) noexcept {
+    const double size = image * zoom;
+    if (size > viewport) {
+        return std::clamp(std::round(viewport / 2 - centre * zoom), std::ceil(viewport - size),
+                          0.0);
+    }
+    return std::floor((viewport - size) / 2);
+}
+
+struct Stop {
+    double zoom;
+    bool fit;
+};
+
+// The stops in increasing order, and `zoom` snapped to s* when it is within 1e-6 of `fit`.
+struct Stops {
+    std::array<Stop, ZOOM_STEPS.size() + 1> stops{};
+    std::size_t count = 0;
+    double zoom = 0;
+};
+
+Stops makeStops(double zoom, double fit) noexcept {
+    Stops result;
+    result.zoom = zoom;
+    bool has_step = false;
+    for (const double s : ZOOM_STEPS) {
+        if (std::abs(s - fit) <= 0.01 * s) {
+            has_step = true;
+            if (std::abs(zoom - fit) <= 1e-6 * fit) {
+                result.zoom = s;
+            }
+        }
+    }
+    bool fit_placed = has_step;
+    for (const double s : ZOOM_STEPS) {
+        if (!fit_placed && fit < s) {
+            result.stops[result.count++] = {fit, true};
+            fit_placed = true;
+        }
+        result.stops[result.count++] = {s, false};
+    }
+    if (!fit_placed) {
+        result.stops[result.count++] = {fit, true};
+    }
+    return result;
 }
 
 }  // namespace
@@ -65,6 +133,99 @@ dvv::platform::PixelSize ViewTransform::viewport() const noexcept {
 }
 dvv::platform::PixelSize ViewTransform::image() const noexcept {
     return image_;
+}
+
+ViewTransform ViewTransform::zoomed(dvv::platform::PixelSize viewport,
+                                    dvv::platform::PixelSize image, double zoom, PointD centre) {
+    ViewTransform t;
+    t.viewport_ = viewport;
+    t.image_ = image;
+    if (viewport.empty() || image.empty() || !(zoom > 0)) {
+        return t;  // mode Fit, zoom 0: only the background is drawn
+    }
+    t.mode_ = ViewMode::Zoom;
+    t.zoom_ = zoom;
+    const double offset_x = axisOffset(centre.x, viewport.width, image.width, zoom);
+    const double offset_y = axisOffset(centre.y, viewport.height, image.height, zoom);
+    t.origin_ = {-offset_x / zoom, -offset_y / zoom};
+    return t;
+}
+
+ViewMode ViewTransform::mode() const noexcept {
+    return mode_;
+}
+
+ViewTransform resolveView(const ViewRequest& request, dvv::platform::PixelSize viewport,
+                          dvv::platform::PixelSize image) {
+    if (request.mode == ViewMode::Fit || request.image != image) {
+        return ViewTransform::fit(viewport, image);
+    }
+    return ViewTransform::zoomed(viewport, image, request.zoom, request.centre);
+}
+
+PointD imagePointAt(const ViewTransform& view, PointD viewport_point) noexcept {
+    return {view.origin().x + viewport_point.x / view.zoom(),
+            view.origin().y + viewport_point.y / view.zoom()};
+}
+
+ViewRequest zoomAround(const ViewRequest& request, dvv::platform::PixelSize viewport,
+                       dvv::platform::PixelSize image, double zoom, PointD anchor) {
+    const ViewTransform view = resolveView(request, viewport, image);
+    ViewRequest result{
+        .mode = ViewMode::Zoom, .zoom = zoom, .centre = request.centre, .image = image};
+    if (!(view.zoom() > 0) || !(zoom > 0)) {
+        return result;
+    }
+    const PointD point = imagePointAt(view, anchor);
+    const PointD centre{point.x - anchor.x / zoom + viewport.width / (2 * zoom),
+                        point.y - anchor.y / zoom + viewport.height / (2 * zoom)};
+    result.centre = clampCentre(centre, viewport, image, zoom);
+    return result;
+}
+
+ViewRequest panBy(const ViewRequest& request, dvv::platform::PixelSize viewport,
+                  dvv::platform::PixelSize image, double dx, double dy) {
+    if (request.mode == ViewMode::Fit || request.image != image || !(request.zoom > 0)) {
+        return request;
+    }
+    ViewRequest result = request;
+    result.centre =
+        clampCentre({request.centre.x - dx / request.zoom, request.centre.y - dy / request.zoom},
+                    viewport, image, request.zoom);
+    return result;
+}
+
+std::optional<ZoomStep> nextZoomIn(double zoom, double fit) noexcept {
+    const Stops s = makeStops(zoom, fit);
+    for (std::size_t i = 0; i < s.count; ++i) {
+        if (s.stops[i].zoom > s.zoom * (1 + 1e-6)) {
+            return ZoomStep{s.stops[i].zoom, s.stops[i].fit};
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<ZoomStep> nextZoomOut(double zoom, double fit) noexcept {
+    const Stops s = makeStops(zoom, fit);
+    for (std::size_t i = s.count; i-- > 0;) {
+        if (s.stops[i].zoom < s.zoom * (1 - 1e-6)) {
+            return ZoomStep{s.stops[i].zoom, s.stops[i].fit};
+        }
+    }
+    return std::nullopt;
+}
+
+ZoomLimits zoomLimits(double fit) noexcept {
+    return {.minimum = std::min(fit, ZOOM_STEPS.front()),
+            .maximum = std::max(fit, ZOOM_STEPS.back())};
+}
+
+std::string zoomText(ViewMode mode, double zoom) {
+    std::string percent = std::format("{:.1f}", zoom * 100);
+    if (percent.ends_with(".0")) {
+        percent.resize(percent.size() - 2);
+    }
+    return mode == ViewMode::Fit ? "Fit (" + percent + " %)" : percent + " %";
 }
 
 }  // namespace rawreel

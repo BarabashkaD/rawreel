@@ -40,7 +40,7 @@ constexpr std::string_view SETTINGS_LABEL = "Settings...";
 
 TEST_SUITE("core") {
     TEST_CASE("commands: the table lists every command once, in order") {
-        static_assert(COMMAND_COUNT == 23);
+        static_assert(COMMAND_COUNT == 28);
         const auto table = commandTable();
         REQUIRE(table.size() == COMMAND_COUNT);
         std::set<std::string_view> ids;
@@ -67,10 +67,11 @@ TEST_SUITE("core") {
                 }
             }
             if (key) {
-                if (table[i].route == KeyRoute::Accelerator) {
-                    CHECK(key->ctrl);
-                } else {
+                if (table[i].route == KeyRoute::CharHook) {
                     CHECK_FALSE(key->ctrl);
+                    CHECK_FALSE(key->alt);
+                } else {
+                    CHECK((key->ctrl || key->alt));
                 }
             }
         }
@@ -190,6 +191,91 @@ TEST_SUITE("core") {
         CHECK_FALSE(commandForKey(chord(Key::Space), true));
         CHECK_FALSE(commandForKey(letter('O', true), false));
         CHECK_FALSE(commandForKey(letter('Q'), false));
+    }
+
+    TEST_CASE("commands: the view commands") {
+        static_assert(static_cast<std::size_t>(Command::FitToWindow) ==
+                      static_cast<std::size_t>(Command::Loop) + 1);
+        static_assert(static_cast<std::size_t>(Command::Format) ==
+                      static_cast<std::size_t>(Command::ResizeWindowToActualSize) + 1);
+#if defined(__APPLE__)
+        constexpr KeyRoute ROUTE = KeyRoute::Accelerator;
+        const std::string_view labels[5] = {"Zoom to Fit", "Actual Size", "Zoom In", "Zoom Out",
+                                            "Resize Window to Actual Size"};
+        const KeyChord keys[5] = {letter('9', true), letter('0', true), chord(Key::Plus, true),
+                                  chord(Key::Minus, true), letter('1', true)};
+#else
+        constexpr KeyRoute ROUTE = KeyRoute::AcceleratorAndCharHook;
+        const std::string_view labels[5] = {"Fit to window", "Actual size", "Zoom in", "Zoom out",
+                                            "Resize window to actual size"};
+        const KeyChord keys[5] = {letter('0', true), letter('1', true), chord(Key::Plus, true),
+                                  chord(Key::Minus, true), KeyChord{'1', false, false, true}};
+#endif
+        const std::string_view ids[5] = {"fit_to_window", "actual_size", "zoom_in", "zoom_out",
+                                         "resize_window_to_actual_size"};
+        const std::string_view helps[5] = {
+            "Fit the clip to the window", "Show one clip pixel per screen pixel", "Zoom in",
+            "Zoom out", "Resize the window to the clip at actual size"};
+        const Command commands[5] = {Command::FitToWindow, Command::ActualSize, Command::ZoomIn,
+                                     Command::ZoomOut, Command::ResizeWindowToActualSize};
+        for (std::size_t i = 0; i < 5; ++i) {
+            CAPTURE(ids[i]);
+            const rawreel::CommandInfo& row = info(commands[i]);
+            CHECK(row.id == ids[i]);
+            CHECK(row.menu == "View");
+            CHECK(row.label == labels[i]);
+            CHECK(row.help == helps[i]);
+            CHECK(row.key == keys[i]);
+            CHECK(row.route == ROUTE);
+            CHECK_FALSE(row.checkable);
+        }
+    }
+
+    TEST_CASE("commands: menu labels of the view commands") {
+        using rawreel::menuLabel;
+#if defined(__APPLE__)
+        CHECK(menuLabel(info(Command::FitToWindow)) == "Zoom to Fit\tCtrl+9");
+        CHECK(menuLabel(info(Command::ActualSize)) == "Actual Size\tCtrl+0");
+        CHECK(menuLabel(info(Command::ZoomIn)) == "Zoom In\tCtrl++");
+        CHECK(menuLabel(info(Command::ZoomOut)) == "Zoom Out\tCtrl+-");
+        CHECK(menuLabel(info(Command::ResizeWindowToActualSize)) ==
+              "Resize Window to Actual Size\tCtrl+1");
+#else
+        CHECK(menuLabel(info(Command::FitToWindow)) == "Fit to window\tCtrl+0");
+        CHECK(menuLabel(info(Command::ActualSize)) == "Actual size\tCtrl+1");
+        CHECK(menuLabel(info(Command::ZoomIn)) == "Zoom in\tCtrl++");
+        CHECK(menuLabel(info(Command::ZoomOut)) == "Zoom out\tCtrl+-");
+        CHECK(menuLabel(info(Command::ResizeWindowToActualSize)) ==
+              "Resize window to actual size\tAlt+1");
+#endif
+    }
+
+    TEST_CASE("commands: view keys through the char hook") {
+        using rawreel::normaliseKey;
+#if defined(__APPLE__)
+        CHECK_FALSE(commandForKey(letter('0', true), false));
+        CHECK_FALSE(commandForKey(normaliseKey('0', true, false, false), false));
+#else
+        const auto hook = [](std::int32_t code, bool ctrl, bool shift, bool alt) {
+            return commandForKey(normaliseKey(code, ctrl, shift, alt), false);
+        };
+        CHECK(hook('=', true, true, false) == Command::ZoomIn);
+        CHECK(hook('+', true, false, false) == Command::ZoomIn);
+        CHECK(hook(388, true, false, false) == Command::ZoomIn);
+        CHECK(hook('-', true, false, false) == Command::ZoomOut);
+        CHECK(hook(390, true, false, false) == Command::ZoomOut);
+        CHECK(hook('0', true, false, false) == Command::FitToWindow);
+        CHECK(hook(324, true, false, false) == Command::FitToWindow);
+        CHECK(hook('1', true, false, false) == Command::ActualSize);
+        CHECK(hook(325, true, false, false) == Command::ActualSize);
+        CHECK(hook('1', false, false, true) == Command::ResizeWindowToActualSize);
+        CHECK_FALSE(hook('0', true, true, false));  // German Ctrl+= is Ctrl+Shift+0
+        for (const KeyChord& key :
+             {chord(Key::Plus, true), chord(Key::Minus, true), letter('0', true), letter('1', true),
+              KeyChord{'1', false, false, true}}) {
+            CHECK_FALSE(commandForKey(key, true));
+        }
+#endif
     }
 
     TEST_CASE("commands: normaliseKey") {

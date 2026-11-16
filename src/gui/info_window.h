@@ -15,10 +15,18 @@
 
 #include <wx/simplebook.h>
 
+#include "core/layout.h"
+
 namespace rawreel {
 
 class MainFrame;
 struct StreamInfo;
+
+// A wx rectangle as the layout's screen rectangle, and back.
+[[nodiscard]] ScreenRect screenRect(const wxRect& rect);
+[[nodiscard]] wxRect wxRectOf(ScreenRect rect);
+// The work area (GetClientArea) of the display `window` is on, else of display 0.
+[[nodiscard]] wxRect workAreaOf(const wxWindow& window);
 
 class InfoWindow final : public wxFrame {
 public:
