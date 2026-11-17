@@ -7,16 +7,18 @@
 #   exit     an access violation in a static destructor after main() (the handler's state must
 #            still be valid)
 #
-# dvv::paths::userDataDir() uses the known-folder API (FOLDERID_RoamingAppData), so the dump goes to
-# the real user profile: the script reads its path from the stderr line, deletes it in every case and
-# removes the "crashes" folder and its "rawreel" parent when it created them and they are empty
-# (rmdir, which never removes a folder another test has just written to), so the run leaves nothing
-# behind.
+# dvv::paths::userDataDir() reads %APPDATA%, which the test points into the build tree's test home
+# (DVV_TEST_ENVIRONMENT), so the dump must go there (a dump elsewhere is a problem). The script
+# reads its path from the stderr line, deletes it in every case and removes the "crashes" folder and
+# its "rawreel" parent when it created them and they are empty (rmdir, which never removes a folder
+# another test has just written to), so the run leaves nothing behind.
 include("${CMAKE_CURRENT_LIST_DIR}/cli_common.cmake")
 
 # The folders the dump may create, and whether they existed before the run.
 set(candidates "")
-if(NOT "$ENV{APPDATA}" STREQUAL "")
+if("$ENV{APPDATA}" STREQUAL "")
+    message(FATAL_ERROR "APPDATA is not set (the test environment points it into the test home)")
+else()
     cmake_path(CONVERT "$ENV{APPDATA}" TO_CMAKE_PATH_LIST base NORMALIZE)
     foreach(folder IN ITEMS "${base}/rawreel/crashes" "${base}/rawreel")
         list(APPEND candidates "${folder}")
@@ -50,9 +52,13 @@ function(crash_run mode code_regex)
     elseif(NOT EXISTS "${dump}")
         set(problem "the dump ${dump} does not exist")
     else()
+        # A plain prefix test: APPDATA as the test sets it (no trailing separator, 8.3 or junction).
+        cmake_path(IS_PREFIX base "${dump}" NORMALIZE in_appdata)
         file(SIZE "${dump}" size)
         cmake_path(GET dump FILENAME name)
-        if(NOT size GREATER 0)
+        if(NOT in_appdata)
+            set(problem "the dump ${dump} is not in %APPDATA% (${base}), not in the test home")
+        elseif(NOT size GREATER 0)
             set(problem "the dump ${dump} is empty")
         elseif(NOT name MATCHES "^rawreel-cli-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9]+\\.dmp$")
             set(problem "unexpected dump name ${name}")

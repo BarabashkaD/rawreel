@@ -1,10 +1,15 @@
 find_package(doctest 2.5 REQUIRED CONFIG)
-# Every test runs with its user data folder inside the build tree (never the developer's own):
-# macOS reads $HOME, Linux $XDG_DATA_HOME (then $HOME); on Windows the known folder ignores these.
+# Every test runs with its user data and cache folders inside the build tree (never the
+# developer's own), sibling folders as in a real profile. macOS: $HOME/Library/Application Support
+# and $HOME/Library/Caches. Linux: $XDG_DATA_HOME (.local/share) and $XDG_CACHE_HOME (.cache).
+# Windows: %APPDATA% (Roaming) and %LOCALAPPDATA% (Local; e.g. dvv-gpu's pipeline cache).
 set(DVV_TEST_HOME ${CMAKE_BINARY_DIR}/test-home)
-file(MAKE_DIRECTORY ${DVV_TEST_HOME})
+file(MAKE_DIRECTORY ${DVV_TEST_HOME}/Roaming ${DVV_TEST_HOME}/Local ${DVV_TEST_HOME}/.local/share
+                    ${DVV_TEST_HOME}/.cache)
 list(APPEND DVV_TEST_ENVIRONMENT
-    "HOME=set:${DVV_TEST_HOME}" "XDG_DATA_HOME=set:${DVV_TEST_HOME}" "APPDATA=set:${DVV_TEST_HOME}")
+    "HOME=set:${DVV_TEST_HOME}" "XDG_DATA_HOME=set:${DVV_TEST_HOME}/.local/share"
+    "XDG_CACHE_HOME=set:${DVV_TEST_HOME}/.cache" "APPDATA=set:${DVV_TEST_HOME}/Roaming"
+    "LOCALAPPDATA=set:${DVV_TEST_HOME}/Local")
 
 # The FFmpeg of the third-party prefix (M4 Task 1): DVV_FFMPEG_PROGRAM makes the CLI fixtures,
 # DVV_FFMPEG_RUNTIME_DIR is the DVV_FFMPEG_DIR of the FFmpeg tests. dvv-components' own
