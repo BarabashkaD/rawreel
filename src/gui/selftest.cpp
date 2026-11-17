@@ -7962,6 +7962,36 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             frame.playerPanel().Layout();
             return centred;
         }));
+    // The icon buttons are equally wide, and so are the Loop and "i" toggles (on MSW a toggle
+    // without wxBU_EXACTFIT gets the standard push-button width). On Windows a toggle is as wide as
+    // a button; the native toggles of macOS (NSButton) and GTK are wider.
+    steps.push_back(step(
+        "the buttons are equally wide", [] {},
+        [&frame](std::string& seen) {
+            seen.clear();
+            TransportBar& bar = frame.transportBar();
+            auto width = [&bar, &seen](Command command) {
+                const int x = bar.buttonForTest(command).GetSize().x;
+                seen +=
+                    std::format("{} {}; ", commandTable()[static_cast<std::size_t>(command)].id, x);
+                return x;
+            };
+            const int button = width(Command::Open);
+            bool equal = true;
+            for (const Command command :
+                 {Command::Format, Command::First, Command::StepBack, Command::PlayPause,
+                  Command::Stop, Command::StepForward, Command::Last}) {
+                const int other = width(command);
+                equal = equal && other == button;
+            }
+            const int toggle = width(Command::Loop);
+            const int info = width(Command::InfoWindow);
+            equal = equal && info == toggle;
+#if defined(__WXMSW__)
+            equal = equal && toggle == button;
+#endif
+            return equal;
+        }));
     steps.push_back(step(
         "the icons follow a colour change", [] {},
         [&frame, bar_button](std::string& seen) {

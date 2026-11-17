@@ -110,16 +110,18 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
     addButton(*group, Command::Stop, Icon::Square);
     addButton(*group, Command::StepForward, Icon::StepForward);
     addButton(*group, Command::Last, Icon::SkipForward);
+    // wxBU_EXACTFIT: on MSW a toggle button otherwise gets the standard push-button width.
     loop_ =
-        new wxBitmapToggleButton(this, wxID_ANY, bundles_[static_cast<std::size_t>(Icon::Repeat)]);
+        new wxBitmapToggleButton(this, wxID_ANY, bundles_[static_cast<std::size_t>(Icon::Repeat)],
+                                 wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
     loop_->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent& /*event*/) { execute_(Command::Loop); });
     setUp(*loop_, Command::Loop, Icon::Repeat);
     group->Add(loop_, wxSizerFlags().Border(wxALL, border));
     row->Add(group);
     row->AddStretchSpacer();
     spacer_ = row->Add(0, 0);
-    info_ =
-        new wxBitmapToggleButton(this, wxID_ANY, bundles_[static_cast<std::size_t>(Icon::Info)]);
+    info_ = new wxBitmapToggleButton(this, wxID_ANY, bundles_[static_cast<std::size_t>(Icon::Info)],
+                                     wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
     info_->Bind(wxEVT_TOGGLEBUTTON,
                 [this](wxCommandEvent& /*event*/) { execute_(Command::InfoWindow); });
     setUp(*info_, Command::InfoWindow, Icon::Info);
