@@ -195,6 +195,35 @@ ViewRequest panBy(const ViewRequest& request, dvv::platform::PixelSize viewport,
     return result;
 }
 
+bool canPan(const ViewRequest& request, dvv::platform::PixelSize viewport,
+            dvv::platform::PixelSize image) noexcept {
+    return request.mode == ViewMode::Zoom && request.image == image &&
+           (image.width * request.zoom > viewport.width ||
+            image.height * request.zoom > viewport.height);
+}
+
+int takeWheelNotches(double& accumulated, int rotation, int wheel_delta) noexcept {
+    if (wheel_delta <= 0) {
+        return 0;
+    }
+    if ((accumulated > 0 && rotation < 0) || (accumulated < 0 && rotation > 0)) {
+        accumulated = 0;
+    }
+    accumulated += rotation;
+    const double notches = std::trunc(accumulated / wheel_delta);
+    accumulated -= notches * wheel_delta;
+    return static_cast<int>(notches);
+}
+
+double wheelPanDip(int rotation, int wheel_delta, int lines, double line_dip,
+                   double page_dip) noexcept {
+    if (wheel_delta <= 0) {
+        return 0;
+    }
+    const double notches = static_cast<double>(rotation) / wheel_delta;
+    return lines < 0 ? notches * page_dip : notches * lines * line_dip;
+}
+
 std::optional<ZoomStep> nextZoomIn(double zoom, double fit) noexcept {
     const Stops s = makeStops(zoom, fit);
     for (std::size_t i = 0; i < s.count; ++i) {
@@ -213,6 +242,20 @@ std::optional<ZoomStep> nextZoomOut(double zoom, double fit) noexcept {
         }
     }
     return std::nullopt;
+}
+
+std::optional<ViewRequest> stepZoom(const ViewRequest& request, dvv::platform::PixelSize viewport,
+                                    dvv::platform::PixelSize image, bool in, PointD anchor) {
+    const double zoom = resolveView(request, viewport, image).zoom();
+    const double fit = ViewTransform::fit(viewport, image).zoom();
+    const std::optional<ZoomStep> next = in ? nextZoomIn(zoom, fit) : nextZoomOut(zoom, fit);
+    if (!next) {
+        return std::nullopt;
+    }
+    if (next->fit) {
+        return ViewRequest{};
+    }
+    return zoomAround(request, viewport, image, next->zoom, anchor);
 }
 
 ZoomLimits zoomLimits(double fit) noexcept {

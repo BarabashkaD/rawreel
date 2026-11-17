@@ -16,6 +16,7 @@
 #include <functional>
 #include <ios>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <random>
@@ -135,16 +136,17 @@ bool& injecting() {
     return flag;
 }
 
-// Keyboard, mouse-button, pointer-motion, wheel, menu and activation events: what a person at the
-// machine sends.
+// Keyboard, mouse-button, pointer-motion, wheel, pinch, menu and activation events: what a person
+// at the machine sends.
 bool isRealInput(wxEventType type) {
-    static const std::array<wxEventType, 24> REAL_INPUT_TYPES{
-        wxEVT_KEY_DOWN,      wxEVT_KEY_UP,       wxEVT_CHAR,         wxEVT_CHAR_HOOK,
-        wxEVT_LEFT_DOWN,     wxEVT_LEFT_UP,      wxEVT_LEFT_DCLICK,  wxEVT_RIGHT_DOWN,
-        wxEVT_RIGHT_UP,      wxEVT_RIGHT_DCLICK, wxEVT_MIDDLE_DOWN,  wxEVT_MIDDLE_UP,
-        wxEVT_MIDDLE_DCLICK, wxEVT_AUX1_DOWN,    wxEVT_AUX1_UP,      wxEVT_AUX2_DOWN,
-        wxEVT_AUX2_UP,       wxEVT_MOUSEWHEEL,   wxEVT_CONTEXT_MENU, wxEVT_MENU,
-        wxEVT_ACTIVATE,      wxEVT_MOTION,       wxEVT_ENTER_WINDOW, wxEVT_LEAVE_WINDOW};
+    static const auto REAL_INPUT_TYPES = std::to_array<wxEventType>(
+        {wxEVT_KEY_DOWN,      wxEVT_KEY_UP,       wxEVT_CHAR,         wxEVT_CHAR_HOOK,
+         wxEVT_LEFT_DOWN,     wxEVT_LEFT_UP,      wxEVT_LEFT_DCLICK,  wxEVT_RIGHT_DOWN,
+         wxEVT_RIGHT_UP,      wxEVT_RIGHT_DCLICK, wxEVT_MIDDLE_DOWN,  wxEVT_MIDDLE_UP,
+         wxEVT_MIDDLE_DCLICK, wxEVT_AUX1_DOWN,    wxEVT_AUX1_UP,      wxEVT_AUX2_DOWN,
+         wxEVT_AUX2_UP,       wxEVT_MOUSEWHEEL,   wxEVT_CONTEXT_MENU, wxEVT_MENU,
+         wxEVT_ACTIVATE,      wxEVT_MOTION,       wxEVT_ENTER_WINDOW, wxEVT_LEAVE_WINDOW,
+         wxEVT_GESTURE_ZOOM});
     return std::ranges::find(REAL_INPUT_TYPES, type) != REAL_INPUT_TYPES.end();
 }
 
@@ -4877,6 +4879,532 @@ void addOpenSizingSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
         }));
 }
 
+// A mouse event of `type` on the viewport at the client point `at` (window units), with the
+// button states given.
+void sendViewportMouse(Viewport& viewport, wxEventType type, wxPoint at, bool left_down,
+                       bool middle_down) {
+    wxMouseEvent event(type);
+    event.SetEventObject(&viewport);
+    event.SetId(viewport.GetId());
+    event.SetPosition(at);
+    event.m_leftDown = left_down;
+    event.m_middleDown = middle_down;
+    injectInput(*viewport.GetEventHandler(), event);
+}
+
+// The viewport's client centre (window units).
+wxPoint viewportCentre(const Viewport& viewport) {
+    const wxSize size = viewport.GetClientSize();
+    return {size.x / 2, size.y / 2};
+}
+
+// View zoom design §5: a left- or middle-button drag pans, on the clip of "view: open a clip".
+// Each pair starts from the Zoom view at 200 % centred on the clip, which overflows the viewport.
+void addDragSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
+    struct State {
+        ViewRequest from{};       // the view the drag started from
+        bool captured = false;    // HasCapture() after the button press
+        bool dragging = false;    // draggingForTest() after the button press
+        bool afterLost = false;   // draggingForTest() after the capture-lost event
+        bool afterOther = false;  // draggingForTest() after the other button's press and release
+    };
+    auto st = std::make_shared<State>();
+    const wxPoint move(-50, -30);  // the pointer's move during a drag (window units)
+
+    steps.push_back(step(
+        "drag: in Fit does nothing",
+        [&frame, st] {
+            Viewport& viewport = frame.viewport();
+            viewport.setView(centredView(viewport, 2));
+            sendMenu(frame, menuId(Command::FitToWindow));
+            const wxPoint at = viewportCentre(viewport);
+            sendViewportMouse(viewport, wxEVT_LEFT_DOWN, at, true, false);
+            st->captured = viewport.HasCapture();
+            st->dragging = viewport.draggingForTest();
+            sendViewportMouse(viewport, wxEVT_LEFT_UP, at, false, false);
+        },
+        [&frame, st](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const Viewport& viewport = frame.viewport();
+            seen = std::format("captured {}, dragging {}, view {}; {}", st->captured, st->dragging,
+                               viewModeName(viewport.view().mode), seen);
+            return matches && !st->captured && !st->dragging &&
+                   viewport.view().mode == ViewMode::Fit && !viewport.HasCapture() &&
+                   !viewport.draggingForTest();
+        }));
+
+    const auto drag_pair = [&steps, &frame, st, move](const std::string& button, wxEventType down,
+                                                      wxEventType up, bool left) {
+        steps.push_back(step(
+            std::format("drag: {} button down and move", button),
+            [&frame, st, down, move, left] {
+                Viewport& viewport = frame.viewport();
+                st->from = centredView(viewport, 2);
+                viewport.setView(st->from);
+                const wxPoint at = viewportCentre(viewport);
+                sendViewportMouse(viewport, down, at, left, !left);
+                sendViewportMouse(viewport, wxEVT_MOTION, at + move, left, !left);
+            },
+            [&frame](std::string& seen) {
+                const Viewport& viewport = frame.viewport();
+                seen = std::format("captured {}, dragging {}", viewport.HasCapture(),
+                                   viewport.draggingForTest());
+                return viewport.HasCapture() && viewport.draggingForTest();
+            }));
+        steps.push_back(step(
+            std::format("drag: {} button up", button),
+            [&frame, up, move] {
+                Viewport& viewport = frame.viewport();
+                sendViewportMouse(viewport, up, viewportCentre(viewport) + move, false, false);
+            },
+            [&frame, st, move](std::string& seen) {
+                const bool matches = viewMatches(frame, seen);
+                const Viewport& viewport = frame.viewport();
+                const ViewRequest& view = viewport.view();
+                // The picture moved with the pointer: the centre moved the other way, by the move
+                // in backing pixels over the zoom.
+                const double scale = viewport.contentScale();
+                const PointD wanted{.x = st->from.centre.x - (move.x * scale / st->from.zoom),
+                                    .y = st->from.centre.y - (move.y * scale / st->from.zoom)};
+                seen = std::format(
+                    "view {} {} centre ({}, {}) (wanted ({}, {})), captured {}, dragging {}; {}",
+                    viewModeName(view.mode), view.zoom, view.centre.x, view.centre.y, wanted.x,
+                    wanted.y, viewport.HasCapture(), viewport.draggingForTest(), seen);
+                return matches && view.mode == ViewMode::Zoom && view.zoom == st->from.zoom &&
+                       std::abs(view.centre.x - wanted.x) <= 1e-9 &&
+                       std::abs(view.centre.y - wanted.y) <= 1e-9 && !viewport.HasCapture() &&
+                       !viewport.draggingForTest();
+            }));
+    };
+    drag_pair("left", wxEVT_LEFT_DOWN, wxEVT_LEFT_UP, true);
+    drag_pair("middle", wxEVT_MIDDLE_DOWN, wxEVT_MIDDLE_UP, false);
+
+    steps.push_back(step(
+        "drag: a lost capture ends it",
+        [&frame, st] {
+            Viewport& viewport = frame.viewport();
+            viewport.setView(centredView(viewport, 2));
+            sendViewportMouse(viewport, wxEVT_LEFT_DOWN, viewportCentre(viewport), true, false);
+            st->dragging = viewport.draggingForTest();
+            wxMouseCaptureLostEvent lost(viewport.GetId());
+            lost.SetEventObject(&viewport);
+            injectInput(*viewport.GetEventHandler(), lost);
+            st->afterLost = viewport.draggingForTest();
+            // The synthetic event leaves wx's capture in place: release it here.
+            if (viewport.HasCapture()) {
+                viewport.ReleaseMouse();
+            }
+        },
+        [&frame, st](std::string& seen) {
+            const Viewport& viewport = frame.viewport();
+            seen = std::format("dragging before {}, after {}, captured {}", st->dragging,
+                               st->afterLost, viewport.HasCapture());
+            return st->dragging && !st->afterLost && !viewport.draggingForTest() &&
+                   !viewport.HasCapture();
+        }));
+
+    // wxGTK sends a double-click's second press as LEFT_DOWN and then LEFT_DCLICK.
+    steps.push_back(step(
+        "drag: a double-click and another button take no second capture",
+        [&frame, st] {
+            Viewport& viewport = frame.viewport();
+            viewport.setView(centredView(viewport, 2));
+            const wxPoint at = viewportCentre(viewport);
+            sendViewportMouse(viewport, wxEVT_LEFT_DOWN, at, true, false);
+            sendViewportMouse(viewport, wxEVT_LEFT_DCLICK, at, true, false);
+            sendViewportMouse(viewport, wxEVT_MIDDLE_DOWN, at, true, true);
+            st->captured = wxWindow::GetCapture() == &viewport;
+            st->dragging = viewport.draggingForTest();
+            sendViewportMouse(viewport, wxEVT_MIDDLE_UP, at, true, false);
+            st->afterOther = viewport.draggingForTest() && viewport.HasCapture();
+            // One capture: one release leaves none.
+            sendViewportMouse(viewport, wxEVT_LEFT_UP, at, false, false);
+        },
+        [&frame, st](std::string& seen) {
+            const Viewport& viewport = frame.viewport();
+            seen = std::format(
+                "after the presses: captured {}, dragging {}; after the middle up: dragging and "
+                "captured {}; after the left up: captured {}, dragging {}",
+                st->captured, st->dragging, st->afterOther, viewport.HasCapture(),
+                viewport.draggingForTest());
+            return st->captured && st->dragging && st->afterOther && !viewport.HasCapture() &&
+                   !viewport.draggingForTest();
+        }));
+
+    // wxOSX may swallow the button's release (a menu or a modal loop): the next motion ends it.
+    steps.push_back(step(
+        "drag: a motion without the button ends it",
+        [&frame, st, move] {
+            Viewport& viewport = frame.viewport();
+            st->from = centredView(viewport, 2);
+            viewport.setView(st->from);
+            const wxPoint at = viewportCentre(viewport);
+            sendViewportMouse(viewport, wxEVT_MIDDLE_DOWN, at, false, true);
+            st->dragging = viewport.draggingForTest();
+            sendViewportMouse(viewport, wxEVT_MOTION, at + move, false, false);
+        },
+        [&frame, st](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const Viewport& viewport = frame.viewport();
+            const ViewRequest& view = viewport.view();
+            seen = std::format(
+                "dragging before {}; view {} {} centre ({}, {}) (wanted ({}, {})), captured {}, "
+                "dragging {}; {}",
+                st->dragging, viewModeName(view.mode), view.zoom, view.centre.x, view.centre.y,
+                st->from.centre.x, st->from.centre.y, viewport.HasCapture(),
+                viewport.draggingForTest(), seen);
+            return matches && st->dragging && view == st->from && !viewport.HasCapture() &&
+                   !viewport.draggingForTest();
+        }));
+}
+
+// One wheel notch as each toolkit reports it: wxOSX delta 10 and one line, wxMSW and wxGTK delta
+// 120 and three lines.
+#if defined(__WXOSX__)
+constexpr int TEST_WHEEL_DELTA = 10;
+constexpr int TEST_WHEEL_LINES = 1;
+#else
+constexpr int TEST_WHEEL_DELTA = 120;
+constexpr int TEST_WHEEL_LINES = 3;
+#endif
+
+// A wheel event of `rotation` on `axis` on the viewport at the client point `at` (window units),
+// with Ctrl (Cmd on macOS) down when `control`.
+void sendViewportWheel(Viewport& viewport, wxPoint at, int rotation, bool control,
+                       wxMouseWheelAxis axis = wxMOUSE_WHEEL_VERTICAL) {
+    wxMouseEvent event(wxEVT_MOUSEWHEEL);
+    event.SetEventObject(&viewport);
+    event.SetId(viewport.GetId());
+    event.SetPosition(at);
+    event.m_wheelRotation = rotation;
+    event.m_wheelDelta = TEST_WHEEL_DELTA;
+    event.m_linesPerAction = TEST_WHEEL_LINES;
+    event.m_columnsPerAction = TEST_WHEEL_LINES;
+    event.m_wheelAxis = axis;
+    event.m_controlDown = control;
+    injectInput(*viewport.GetEventHandler(), event);
+}
+
+// View zoom design §5: the wheel pans; Ctrl+wheel zooms at the pointer on Windows and Linux; on
+// macOS Cmd+wheel pans too. On the clip of "view: open a clip".
+void addWheelSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
+    struct State {
+        ViewRequest from{};    // the view the wheel started from
+        wxPoint at;            // the pointer (window units)
+        PointD before{};       // the clip point under the pointer before the wheel
+        double firstZoom = 0;  // the zoom after the first half notch
+    };
+    auto st = std::make_shared<State>();
+
+    // One notch down the vertical axis panned the picture: the centre fell by the move in backing
+    // pixels over the zoom; zoom and centre x unchanged.
+    const auto panned = [&frame, st](std::string& seen) {
+        const bool matches = viewMatches(frame, seen);
+        const Viewport& viewport = frame.viewport();
+        const ViewRequest& view = viewport.view();
+        const double per_dip = viewport.backingPerDip();
+        const double page_dip = viewport.physicalClientSize().height / per_dip;
+        const double move = wheelPanDip(TEST_WHEEL_DELTA, TEST_WHEEL_DELTA, TEST_WHEEL_LINES,
+                                        WHEEL_LINE_DIP, page_dip) *
+                            per_dip;
+        const double wanted = st->from.centre.y - (move / st->from.zoom);
+        seen =
+            std::format("view {} {} centre ({}, {}) (wanted ({}, {})); {}", viewModeName(view.mode),
+                        view.zoom, view.centre.x, view.centre.y, st->from.centre.x, wanted, seen);
+        return matches && view.mode == ViewMode::Zoom && view.zoom == st->from.zoom &&
+               view.centre.x == st->from.centre.x && std::abs(view.centre.y - wanted) <= 1e-9;
+    };
+
+    steps.push_back(step(
+        "wheel: pans",
+        [&frame, st] {
+            Viewport& viewport = frame.viewport();
+            st->from = centredView(viewport, 2);
+            viewport.setView(st->from);
+            sendViewportWheel(viewport, viewportCentre(viewport), TEST_WHEEL_DELTA, false);
+        },
+        panned));
+
+    steps.push_back(step(
+        "wheel: in Fit does nothing",
+        [&frame] {
+            Viewport& viewport = frame.viewport();
+            viewport.setView(centredView(viewport, 2));
+            sendMenu(frame, menuId(Command::FitToWindow));
+            sendViewportWheel(viewport, viewportCentre(viewport), TEST_WHEEL_DELTA, false);
+        },
+        [&frame](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const ViewRequest& view = frame.viewport().view();
+            seen = std::format("view {} {}; {}", viewModeName(view.mode), view.zoom, seen);
+            return matches && view == ViewRequest{};
+        }));
+
+    steps.push_back(step(
+        "wheel: a horizontal notch pans",
+        [&frame, st] {
+            Viewport& viewport = frame.viewport();
+            st->from = centredView(viewport, 2);
+            viewport.setView(st->from);
+            sendViewportWheel(viewport, viewportCentre(viewport), TEST_WHEEL_DELTA, false,
+                              wxMOUSE_WHEEL_HORIZONTAL);
+        },
+        [&frame, st](std::string& seen) {
+            // The picture moved left: the centre moved right by the move in backing pixels over
+            // the zoom; zoom and centre y unchanged.
+            const bool matches = viewMatches(frame, seen);
+            const Viewport& viewport = frame.viewport();
+            const ViewRequest& view = viewport.view();
+            const double per_dip = viewport.backingPerDip();
+            const double page_dip = viewport.physicalClientSize().width / per_dip;
+            const double move = wheelPanDip(TEST_WHEEL_DELTA, TEST_WHEEL_DELTA, TEST_WHEEL_LINES,
+                                            WHEEL_LINE_DIP, page_dip) *
+                                per_dip;
+            const double wanted = st->from.centre.x + (move / st->from.zoom);
+            seen = std::format("view {} {} centre ({}, {}) (wanted ({}, {})); {}",
+                               viewModeName(view.mode), view.zoom, view.centre.x, view.centre.y,
+                               wanted, st->from.centre.y, seen);
+            return matches && view.mode == ViewMode::Zoom && view.zoom == st->from.zoom &&
+                   move > 0 && std::abs(view.centre.x - wanted) <= 1e-9 &&
+                   view.centre.y == st->from.centre.y;
+        }));
+
+#if defined(__WXOSX__)
+    steps.push_back(step(
+        "wheel: Cmd+wheel pans",
+        [&frame, st] {
+            Viewport& viewport = frame.viewport();
+            st->from = centredView(viewport, 2);
+            viewport.setView(st->from);
+            sendViewportWheel(viewport, viewportCentre(viewport), TEST_WHEEL_DELTA, true);
+        },
+        panned));
+#else
+    // The Ctrl+wheel steps start from 400 % centred, with no Ctrl+wheel rotation left from an
+    // earlier step: a wheel without Ctrl drops it.
+    const auto ctrl_start = [](Viewport& viewport) {
+        viewport.setView(centredView(viewport, 4));
+        sendViewportWheel(viewport, viewportCentre(viewport), 0, false);
+    };
+    // After two Ctrl+wheel half notches with `between` sent between them.
+    const auto halves = [&frame, st, ctrl_start](
+                            std::string name, std::function<void(Viewport&)> between, double zoom) {
+        return step(
+            std::move(name),
+            [&frame, st, ctrl_start, between = std::move(between)] {
+                Viewport& viewport = frame.viewport();
+                ctrl_start(viewport);
+                const wxPoint at = viewportCentre(viewport);
+                sendViewportWheel(viewport, at, TEST_WHEEL_DELTA / 2, true);
+                st->firstZoom = viewport.view().zoom;
+                if (between) {
+                    between(viewport);
+                }
+                sendViewportWheel(viewport, at, TEST_WHEEL_DELTA / 2, true);
+            },
+            [&frame, st, zoom](std::string& seen) {
+                const bool matches = viewMatches(frame, seen);
+                const ViewRequest& view = frame.viewport().view();
+                seen = std::format("zoom after one half {}, after two {} {} (wanted {}); {}",
+                                   st->firstZoom, viewModeName(view.mode), view.zoom, zoom, seen);
+                return matches && st->firstZoom == 4 && view.mode == ViewMode::Zoom &&
+                       view.zoom == zoom;
+            });
+    };
+
+    steps.push_back(step(
+        "wheel: Ctrl+wheel zooms one step at the pointer",
+        [&frame, st, ctrl_start] {
+            Viewport& viewport = frame.viewport();
+            ctrl_start(viewport);
+            const wxSize client = viewport.GetClientSize();
+            st->at = wxPoint(client.x / 4, client.y / 4);
+            const double scale = viewport.contentScale();
+            st->before =
+                imagePointAt(viewport.shownView(), {.x = st->at.x * scale, .y = st->at.y * scale});
+            sendViewportWheel(viewport, st->at, TEST_WHEEL_DELTA, true);
+        },
+        [&frame, st](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const Viewport& viewport = frame.viewport();
+            const ViewRequest& view = viewport.view();
+            const double scale = viewport.contentScale();
+            const PointD after =
+                imagePointAt(viewport.shownView(), {.x = st->at.x * scale, .y = st->at.y * scale});
+            // Offsets are whole backing pixels: the clip point may move by half a pixel.
+            const double tolerance = (0.5 / view.zoom) + 1e-9;
+            seen = std::format("view {} {}, clip point under q ({}, {}) (before ({}, {})); {}",
+                               viewModeName(view.mode), view.zoom, after.x, after.y, st->before.x,
+                               st->before.y, seen);
+            return matches && view.mode == ViewMode::Zoom && view.zoom == 8 &&
+                   std::abs(after.x - st->before.x) <= tolerance &&
+                   std::abs(after.y - st->before.y) <= tolerance;
+        }));
+    steps.push_back(halves("wheel: two half notches make one step", {}, 8));
+    steps.push_back(halves(
+        "wheel: a wheel without Ctrl drops a half notch",
+        [](Viewport& viewport) {
+            sendViewportWheel(viewport, viewportCentre(viewport), TEST_WHEEL_DELTA, false);
+        },
+        4));
+    // A new clip of another size: the frame size changes and changes back at once.
+    steps.push_back(halves(
+        "wheel: a new frame size drops a half notch",
+        [](Viewport& viewport) {
+            const dvv::platform::PixelSize image = viewport.imageSize();
+            viewport.setImageSize({.width = image.width + 2, .height = image.height});
+            viewport.setImageSize(image);
+        },
+        4));
+#endif
+}
+
+// A zoom gesture event of `factor` on the viewport at the client point `at` (window units).
+void sendViewportPinch(Viewport& viewport, wxPoint at, double factor, bool start, bool end) {
+    wxZoomGestureEvent event(viewport.GetId());
+    event.SetEventObject(&viewport);
+    event.SetPosition(at);
+    event.SetZoomFactor(factor);
+    event.SetGestureStart(start);
+    event.SetGestureEnd(end);
+    injectInput(*viewport.GetEventHandler(), event);
+}
+
+// A whole pinch: start (factor 1), one update and the end at `factor`.
+void sendViewportPinchGesture(Viewport& viewport, wxPoint at, double factor) {
+    sendViewportPinch(viewport, at, 1, true, false);
+    sendViewportPinch(viewport, at, factor, false, false);
+    sendViewportPinch(viewport, at, factor, false, true);
+}
+
+// View zoom design §5: a pinch zooms smoothly at the gesture position, up to the zoom limit. On
+// the clip of "view: open a clip".
+void addPinchSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
+    struct State {
+        wxPoint at;              // the gesture position (window units)
+        PointD before{};         // the clip point under it before the pinch
+        PointD after{};          // the clip point under it after the pinch to 2.5
+        ViewRequest pinched{};   // the view after the pinch to 2.5 (or the first update)
+        ViewRequest from{};      // the view the updates without a start began from
+        ViewRequest updated{};   // the view after their second update
+        ViewRequest afterBad{};  // the view after the events with a bad factor
+        double maximum = 0;      // zoomLimits(fit).maximum
+    };
+    auto st = std::make_shared<State>();
+
+    steps.push_back(step(
+        "pinch: zooms at the fingers",
+        [&frame, st] {
+            Viewport& viewport = frame.viewport();
+            viewport.setView(centredView(viewport, 1));
+            st->at = viewportCentre(viewport) + wxPoint(40, 20);
+            const double scale = viewport.contentScale();
+            const PointD p{.x = st->at.x * scale, .y = st->at.y * scale};
+            st->before = imagePointAt(viewport.shownView(), p);
+            sendViewportPinchGesture(viewport, st->at, 2.5);
+            st->pinched = viewport.view();
+            st->after = imagePointAt(viewport.shownView(), p);
+            st->maximum = zoomLimits(viewport.fitZoom()).maximum;
+            sendViewportPinchGesture(viewport, st->at, 1000);
+        },
+        [&frame, st](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const ViewRequest& view = frame.viewport().view();
+            // Offsets are whole backing pixels: the clip point may move by half a pixel (an exact
+            // tie on a pixel boundary too).
+            const double tolerance = (0.5 / st->pinched.zoom) + 1e-9;
+            seen = std::format(
+                "after the pinch to 2.5: view {} {}, clip point under p ({}, {}) (before ({}, "
+                "{})); after the pinch to 1000: view {} {} (maximum {}); {}",
+                viewModeName(st->pinched.mode), st->pinched.zoom, st->after.x, st->after.y,
+                st->before.x, st->before.y, viewModeName(view.mode), view.zoom, st->maximum, seen);
+            return matches && st->pinched.mode == ViewMode::Zoom && st->pinched.zoom == 2.5 &&
+                   std::abs(st->after.x - st->before.x) <= tolerance &&
+                   std::abs(st->after.y - st->before.y) <= tolerance &&
+                   view.mode == ViewMode::Zoom && view.zoom == st->maximum;
+        }));
+
+    steps.push_back(step(
+        "pinch: a start alone keeps Fit",
+        [&frame] {
+            Viewport& viewport = frame.viewport();
+            viewport.setView({});
+            const wxPoint at = viewportCentre(viewport) + wxPoint(40, 20);
+            sendViewportPinch(viewport, at, 1, true, false);
+            sendViewportPinch(viewport, at, 1, false, true);
+        },
+        [&frame](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const ViewRequest& view = frame.viewport().view();
+            const wxString field = frame.statusTexts()[MainFrame::ZOOM_FIELD];
+            seen = std::format("view {} {}, zoom field '{}'; {}", viewModeName(view.mode),
+                               view.zoom, field.utf8_string(), seen);
+            return matches && view == ViewRequest{} && field.StartsWith("Fit (");
+        }));
+
+    // A gesture whose start the viewport did not see zooms from the zoom shown at its first
+    // update; an event with a factor that is not finite or not > 0 is ignored.
+    steps.push_back(step(
+        "pinch: updates without a start zoom from the shown zoom",
+        [&frame, st] {
+            Viewport& viewport = frame.viewport();
+            const wxPoint at = viewportCentre(viewport) + wxPoint(40, 20);
+            // A whole gesture from 300 % first: it has ended, its start zoom is not used again.
+            viewport.setView(centredView(viewport, 3));
+            sendViewportPinchGesture(viewport, at, 1.5);
+            st->from = centredView(viewport, 2);
+            viewport.setView(st->from);
+            sendViewportPinch(viewport, at, 2, false, false);
+            st->pinched = viewport.view();  // unchanged: 2 is the factor at the shown zoom
+            sendViewportPinch(viewport, at, 4, false, false);
+            st->updated = viewport.view();
+            for (const double factor : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
+                                        std::numeric_limits<double>::infinity()}) {
+                sendViewportPinch(viewport, at, factor, false, false);
+            }
+            st->afterBad = viewport.view();
+            sendViewportPinch(viewport, at, 4, false, true);
+        },
+        [&frame, st](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const ViewRequest& view = frame.viewport().view();
+            seen = std::format(
+                "after the first update: view {} {} (unchanged {}); after the second: view {} {}; "
+                "after the bad factors: view {} {}; at the end: view {} {}; {}",
+                viewModeName(st->pinched.mode), st->pinched.zoom, st->pinched == st->from,
+                viewModeName(st->updated.mode), st->updated.zoom, viewModeName(st->afterBad.mode),
+                st->afterBad.zoom, viewModeName(view.mode), view.zoom, seen);
+            return matches && st->pinched == st->from && st->updated.mode == ViewMode::Zoom &&
+                   st->updated.zoom == 4 && st->afterBad == st->updated && view == st->updated;
+        }));
+
+    // A clip closing mid-pinch: the gesture ends without an image; the next gesture, whose start
+    // is not seen, zooms from the shown zoom, not from the start zoom of the interrupted one.
+    steps.push_back(step(
+        "pinch: an end without a clip clears the start zoom",
+        [&frame, st] {
+            Viewport& viewport = frame.viewport();
+            const wxPoint at = viewportCentre(viewport) + wxPoint(40, 20);
+            const dvv::platform::PixelSize image = viewport.imageSize();
+            viewport.setView(centredView(viewport, 3));
+            sendViewportPinch(viewport, at, 1, true, false);  // start zoom 3
+            viewport.setImageSize({});
+            sendViewportPinch(viewport, at, 1, false, true);
+            viewport.setImageSize(image);
+            st->from = centredView(viewport, 2);
+            viewport.setView(st->from);
+            sendViewportPinch(viewport, at, 2, false, false);  // unchanged from the shown zoom
+            st->pinched = viewport.view();
+            sendViewportPinch(viewport, at, 2, false, true);
+        },
+        [&frame, st](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            seen = std::format("view {} {} (expected {}); {}", viewModeName(st->pinched.mode),
+                               st->pinched.zoom, st->from.zoom, seen);
+            return matches && st->pinched == st->from;
+        }));
+}
+
 // Right before the Open Recent steps, with no stream open; the last step closes the clip.
 void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
     MainFrame& frame = test.frame();
@@ -4916,6 +5444,27 @@ void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
         return [&frame, zoom] { return centredView(frame.viewport(), zoom); };
     };
 
+    steps.push_back(step(
+        "view: without a clip the wheel and a pinch do nothing",
+        [&frame] {
+            Viewport& viewport = frame.viewport();
+            viewport.setView({});
+            const wxPoint at = viewportCentre(viewport);
+            sendViewportWheel(viewport, at, TEST_WHEEL_DELTA, false);
+            sendViewportWheel(viewport, at, TEST_WHEEL_DELTA, true);
+            sendViewportPinchGesture(viewport, at, 2.5);
+        },
+        [&frame](std::string& seen) {
+            const Viewport& viewport = frame.viewport();
+            const ViewRequest& view = viewport.view();
+            const dvv::platform::PixelSize image = viewport.imageSize();
+            const wxString field = frame.statusTexts()[MainFrame::ZOOM_FIELD];
+            seen = std::format("streams {}, image size {}x{}, view {} {}, zoom field '{}'",
+                               frame.streams().size(), image.width, image.height,
+                               viewModeName(view.mode), view.zoom, field.utf8_string());
+            return frame.streams().empty() && image.empty() && view == ViewRequest{} &&
+                   field.empty();
+        }));
     steps.push_back(step(
         "view: open a clip",
         [&frame, st] {
@@ -5020,7 +5569,7 @@ void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
             const ViewTransform view = viewport.shownView();
             const PointD centre =
                 imagePointAt(view, {.x = extent.width / 2.0, .y = extent.height / 2.0});
-            const double tolerance = 0.5 / view.zoom();
+            const double tolerance = (0.5 / view.zoom()) + 1e-9;
             seen = std::format(
                 "extent {}x{} (was {}x{}), centre ({}, {}) (wanted ({}, {})); {}; {}", extent.width,
                 extent.height, st->extent.width, st->extent.height, centre.x, centre.y,
@@ -5109,6 +5658,9 @@ void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
                    frame.viewport().view().zoom == 1;
         }));
 #endif
+    addDragSteps(steps, frame);
+    addWheelSteps(steps, frame);
+    addPinchSteps(steps, frame);
     addOpenSizingSteps(steps, frame);
     // Later view steps go before this one.
     steps.push_back(step(

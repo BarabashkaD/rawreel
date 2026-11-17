@@ -10,6 +10,7 @@
 #include "core/view.h"
 
 using dvv::platform::PixelSize;
+using rawreel::canPan;
 using rawreel::imagePointAt;
 using rawreel::MAX_STREAMS;
 using rawreel::nextZoomIn;
@@ -18,9 +19,12 @@ using rawreel::panBy;
 using rawreel::physicalPixelSize;
 using rawreel::PointD;
 using rawreel::resolveView;
+using rawreel::stepZoom;
+using rawreel::takeWheelNotches;
 using rawreel::ViewMode;
 using rawreel::ViewRequest;
 using rawreel::ViewTransform;
+using rawreel::wheelPanDip;
 using rawreel::ZOOM_STEPS;
 using rawreel::zoomAround;
 using rawreel::ZoomLimits;
@@ -286,6 +290,40 @@ TEST_SUITE("core") {
         CHECK(panBy(ViewRequest{}, VP, IMG, 30, 0) == ViewRequest{});
     }
 
+    TEST_CASE("canPan") {
+        CHECK_FALSE(canPan(ViewRequest{}, VP, IMG));
+        CHECK(canPan({ViewMode::Zoom, 1, {200, 150}, IMG}, VP, IMG));
+        const PixelSize small{50, 40};
+        CHECK_FALSE(canPan({ViewMode::Zoom, 2, {25, 20}, small}, VP, small));
+        CHECK_FALSE(canPan({ViewMode::Zoom, 1, {200, 150}, {401, 300}}, VP, IMG));
+    }
+
+    TEST_CASE("takeWheelNotches") {
+        double acc = 0;
+        CHECK(takeWheelNotches(acc, 120, 120) == 1);
+        CHECK(acc == 0);
+        CHECK(takeWheelNotches(acc, 60, 120) == 0);
+        CHECK(acc == 60);
+        CHECK(takeWheelNotches(acc, 60, 120) == 1);
+        CHECK(acc == 0);
+        CHECK(takeWheelNotches(acc, -240, 120) == -2);
+        CHECK(acc == 0);
+        acc = 60;
+        CHECK(takeWheelNotches(acc, -30, 120) == 0);
+        CHECK(acc == -30);
+        acc = 0;
+        CHECK(takeWheelNotches(acc, 120, 0) == 0);
+    }
+
+    TEST_CASE("wheelPanDip") {
+        CHECK(wheelPanDip(120, 120, 3, 16, 500) == doctest::Approx(48));
+        CHECK(wheelPanDip(-240, 120, 3, 16, 500) == doctest::Approx(-96));
+        CHECK(wheelPanDip(60, 120, 3, 16, 500) == doctest::Approx(24));
+        CHECK(wheelPanDip(120, 120, -1, 16, 500) == doctest::Approx(500));
+        CHECK(wheelPanDip(10, 10, 1, 10, 500) == doctest::Approx(10));
+        CHECK(wheelPanDip(120, 0, 3, 16, 500) == 0);
+    }
+
     TEST_CASE("zoom steps: every step") {
         for (std::size_t i = 0; i + 1 < ZOOM_STEPS.size(); ++i) {
             CHECK(nextZoomIn(ZOOM_STEPS[i], 0.01) == ZoomStep{ZOOM_STEPS[i + 1], false});
@@ -322,6 +360,26 @@ TEST_SUITE("core") {
         CHECK(nextZoomIn(32, 45) == ZoomStep{45, true});
         CHECK(nextZoomIn(45, 45) == std::nullopt);
         CHECK(nextZoomOut(45, 45) == ZoomStep{32, false});
+    }
+
+    TEST_CASE("stepZoom") {
+        // VP and IMG: the fit is 1/3, a stop between 0.25 and 0.5.
+        const PointD q{50, 25};
+        const ViewRequest one{ViewMode::Zoom, 1, {200, 150}, IMG};
+        CHECK(stepZoom(one, VP, IMG, true, q) == zoomAround(one, VP, IMG, 2, q));
+        CHECK(stepZoom(one, VP, IMG, false, q) == zoomAround(one, VP, IMG, 0.5, q));
+        const ViewRequest half{ViewMode::Zoom, 0.5, {200, 150}, IMG};
+        CHECK(stepZoom(half, VP, IMG, false, q) == ViewRequest{});
+        CHECK(stepZoom(ViewRequest{}, VP, IMG, true, q) ==
+              zoomAround(ViewRequest{}, VP, IMG, 0.5, q));
+        CHECK(stepZoom(ViewRequest{}, VP, IMG, false, q) ==
+              zoomAround(ViewRequest{}, VP, IMG, 0.25, q));
+        // A request for another frame size resolves as Fit.
+        const ViewRequest other{ViewMode::Zoom, 4, {10, 10}, {401, 300}};
+        CHECK(stepZoom(other, VP, IMG, true, q) == zoomAround(ViewRequest{}, VP, IMG, 0.5, q));
+        CHECK(stepZoom({ViewMode::Zoom, 32, {200, 150}, IMG}, VP, IMG, true, q) == std::nullopt);
+        CHECK(stepZoom({ViewMode::Zoom, 0.125, {200, 150}, IMG}, VP, IMG, false, q) ==
+              std::nullopt);
     }
 
     TEST_CASE("zoom limits") {
