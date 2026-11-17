@@ -34,6 +34,7 @@
 #include "core/session.h"
 #include "core/session_types.h"
 #include "core/version_text.h"
+#include "core/view.h"
 #include "dvv/base/error.h"
 #include "gui/dock_manager.h"
 #include "gui/info_window.h"
@@ -61,6 +62,11 @@ struct InfoButton {
 };
 inline constexpr int INFOBAR_REOPEN_ID = wxID_HIGHEST + 60;  // below COMMAND_ID_BASE (+100)
 inline constexpr int INFOBAR_FORMAT_ID = wxID_HIGHEST + 61;  // "Format..." (§7 trailing bytes)
+// The zoom button menu's percentages (zoom buttons design §2.2): ZOOM_MENU_STEPS[i] has
+// ZOOM_MENU_ID_BASE + i, up to +67 (the log panel's ids start at +70).
+inline constexpr int ZOOM_MENU_ID_BASE = wxID_HIGHEST + 62;
+// The log panel's first context menu id is wxID_HIGHEST + 70 (log_panel.cpp CONTEXT_COPY_ID).
+static_assert(ZOOM_MENU_ID_BASE + 5 < wxID_HIGHEST + 70, "zoom menu ids overlap the log panel's");
 // File > Open Recent's items (Open Recent spec §3): entry i has RECENT_ID_BASE + i, up to +89.
 inline constexpr int RECENT_ID_BASE = wxID_HIGHEST + 80;
 inline constexpr int COMMAND_ID_BASE = wxID_HIGHEST + 100;  // menu id = base + int(command)
@@ -76,6 +82,13 @@ inline constexpr int COMMAND_ID_BASE = wxID_HIGHEST + 100;  // menu id = base + 
 [[nodiscard]] int menuId(Command command) noexcept;
 // The command of a menu item id; nullopt for an id of no command.
 [[nodiscard]] std::optional<Command> commandOfMenuId(int id) noexcept;
+
+// The zoom button's menu for a view shown at `zoom` in `mode` (zoom buttons design §2.2): Fit to
+// window and Actual size, a separator, the ZOOM_MENU_STEPS percentages (zoomText), a separator,
+// Resize window to actual size. Fit, Actual size and Resize carry menuId and menuLabel (their
+// keys), the percentages ZOOM_MENU_ID_BASE + i. All but Resize are check items; the one
+// zoomMenuChecked names is checked.
+[[nodiscard]] std::unique_ptr<wxMenu> zoomMenu(ViewMode mode, double zoom);
 
 // Where an execute() call came from (the Loop log line names it).
 enum class CommandSource : std::uint8_t {
@@ -106,11 +119,14 @@ public:
     void dismissMessage();
     [[nodiscard]] const wxString& lastMessage() const noexcept { return last_message_; }
     // The status bar's fields (spec §7): the stream's name, the status tick's three (position,
-    // rate, bottleneck), the zoom (view zoom design), the display mapping and the Log notice.
-    static constexpr std::size_t FILE_FIELD = 0, FIRST_TICK_FIELD = 1, ZOOM_FIELD = 4,
-                                 MAPPING_FIELD = 5, LOG_NOTICE_FIELD = 6, STATUS_FIELD_COUNT = 7;
+    // rate, bottleneck), the display mapping and the Log notice (the zoom is on the control bar).
+    static constexpr std::size_t FILE_FIELD = 0, FIRST_TICK_FIELD = 1, MAPPING_FIELD = 4,
+                                 LOG_NOTICE_FIELD = 5, STATUS_FIELD_COUNT = 6;
     // The fields' texts; the file field's is the shown one (cut in the middle to its width).
     [[nodiscard]] std::array<wxString, STATUS_FIELD_COUNT> statusTexts() const;
+    // The narrowest client width the status bar allows: the fixed fields plus room for the variable
+    // ones (spec §7).
+    [[nodiscard]] int statusMinimumWidth() const;
     // The field whose rectangle contains `point` (status bar client coordinates); none outside.
     [[nodiscard]] std::optional<int> statusFieldAt(const wxPoint& point) const;
     // The tooltip of a field (spec §7): the file field gives the stream's full path, another
@@ -164,7 +180,7 @@ public:
     [[nodiscard]] PlayerPanel& playerPanel() const noexcept { return *player_; }
     [[nodiscard]] LogPanel& logPanel() const noexcept { return *log_; }
     [[nodiscard]] wxAuiManager& aui() noexcept { return aui_; }
-    [[nodiscard]] TransportBar& transportBar() noexcept;
+    [[nodiscard]] TransportBar& transportBar() const noexcept;
     // The window that has the keyboard focus (wxWindow::FindFocus()), or the one a selftest set
     // with setFocusForTest(). Every focus decision of the frame (the char hook, the Edit menu) uses
     // it.
@@ -239,15 +255,20 @@ private:
     };
 
     void buildMenus();  // from commandTable() (D17)
-    // 7 fields (D20, D5R §2.2, Log pane and Settings design §2, spec §7, view zoom design)
+    // 6 fields (D20, D5R §2.2, Log pane and Settings design §2, spec §7)
     void buildStatusBar();
-    // The width of the three fixed fields (zoom, display mapping and Log notice) at the current
-    // font.
+    // The width of the two fixed fields (display mapping and Log notice) at the current font.
     [[nodiscard]] int statusFixedWidth() const;
-    // The zoom field: zoomText of the viewport's shownView(); "" without an image.
+    // The bar's zoom controls: zoomText of the viewport's shownView(); "" without an image
+    // (TransportBar::showZoom, from isAvailable).
     void showZoom();
     // FitToWindow, ActualSize, ZoomIn and ZoomOut, around the viewport's centre.
     void applyViewCommand(Command command);
+    // zoomAround the viewport's centre at `zoom` (Actual size, a zoom menu percentage).
+    void zoomAtCentre(double zoom);
+    // A percentage of the zoom button's menu (zoom buttons design §2.2): zoomAtCentre at its
+    // ZOOM_MENU_STEPS value; nothing unless isAvailable(Command::FitToWindow).
+    void onZoomMenu(wxCommandEvent& event);
     // View zoom design §3.2: the work area of the window's display (or setWorkAreaForTest's).
     [[nodiscard]] wxRect workArea() const;
     // The window, its client, the viewport and the minimum client size, as they are now.

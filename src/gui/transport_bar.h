@@ -3,9 +3,9 @@
 // The transport bar under the viewport (design M3 v2 §4.3, D17; video control panel spec §5, §7):
 // the timeline strip with the frame numbers, the seek slider, then a row of Lucide icon buttons:
 // Open and Format on the left, First, StepBack, Play/Pause, Stop, StepForward, Last and the Loop
-// toggle centred on the bar, and the "i" toggle (the Info window) at the right end (window title
-// and Info design §12). Buttons never take the focus, so Space and the arrows always reach the
-// frame's char hook.
+// toggle centred on the bar, then Zoom out, the zoom button and Zoom in, and the "i" toggle (the
+// Info window) at the right end (window title and Info design §12, zoom buttons design §2). Buttons
+// never take the focus, so Space and the arrows always reach the frame's char hook.
 
 // clang-format off
 #include <wx/wx.h>  // first (R11)
@@ -14,12 +14,15 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <wx/bmpbndl.h>
 #include <wx/bmpbuttn.h>
+#include <wx/button.h>
 #include <wx/settings.h>
 #include <wx/slider.h>
 #include <wx/tglbtn.h>
@@ -43,6 +46,24 @@ struct BarStatus {
     PlayerStatus player;
     bool hasStream = false;
     std::uint64_t streamGeneration = 0;
+};
+
+// The zoom button's drop-down mark after the zoom text, and its text without a clip (zoom buttons
+// design §2). UTF-8. Windows draws "▼" (U+25BC, in WGL4); "▾" (U+25BE) is not.
+#if defined(__WXMSW__)
+inline constexpr std::string_view ZOOM_BUTTON_MARK = " \xE2\x96\xBC";  // " ▼"
+#else
+inline constexpr std::string_view ZOOM_BUTTON_MARK = " \xE2\x96\xBE";  // " ▾"
+#endif
+inline constexpr std::string_view NO_ZOOM_TEXT = "\xE2\x80\x94";  // "—"
+
+// What the three zoom controls show (zoom buttons design §4).
+struct ZoomControls {
+    std::string text;         // zoomText of the shown view (UTF-8)
+    bool available = false;   // MainFrame::isAvailable(Command::FitToWindow)
+    bool canZoomOut = false;  // isAvailable(Command::ZoomOut)
+    bool canZoomIn = false;   // isAvailable(Command::ZoomIn)
+    bool operator==(const ZoomControls&) const = default;
 };
 
 class TransportBar final : public wxPanel {
@@ -75,6 +96,15 @@ public:
     // The "i" tooltip: the command's tooltip, then "\n" + `hint` (design §13); "": the first line
     // alone.
     void setInfoHint(const std::string& hint);
+    // Zoom buttons design §4: the zoom button reads `zoom.text` (NO_ZOOM_TEXT unless available)
+    // and ZOOM_BUTTON_MARK, a text wider than "Fit (8888.8 %)" cut with "…"; the zoom button is
+    // enabled when available, Zoom out and Zoom in when they can. Nothing when `zoom` equals the
+    // last one.
+    void showZoom(const ZoomControls& zoom);
+    // Zoom buttons design §2.2: a click on the zoom button pops up `menu()` under it (alive until
+    // PopupMenu returns); the chosen item's wxEVT_MENU goes from the bar up to the frame. Empty:
+    // a click does nothing.
+    void setZoomMenu(dvv::MoveOnlyFunction<std::unique_ptr<wxMenu>()> menu);
     [[nodiscard]] wxSlider& slider() noexcept { return *slider_; }
     [[nodiscard]] ScrubState scrubState() const noexcept { return scrub_; }
     // Logs each state change at Info ("transport: scrub Idle -> Scrubbing"), every left-down on the
@@ -105,8 +135,10 @@ public:
     [[nodiscard]] int iconRebuildsForTest() const noexcept { return icon_rebuilds_; }
     // The union of the centred group's buttons (First ... Loop), in the bar's client coordinates.
     [[nodiscard]] wxRect groupRectForTest() const;
-    // The button that runs `command` (one of the bar's: Open, Format, First ... Loop, InfoWindow).
-    [[nodiscard]] wxAnyButton& buttonForTest(Command command);
+    // The button that runs `command` (one of the bar's: Open, Format, First ... Loop, ZoomOut,
+    // ZoomIn, InfoWindow).
+    [[nodiscard]] wxAnyButton& buttonForTest(Command command) const;
+    [[nodiscard]] wxButton& zoomButtonForTest() const noexcept { return *zoom_; }
     [[nodiscard]] TimelineStrip& timelineStripForTest() noexcept { return *strip_; }
     // The ghost thumb's wx client x while Skimming (spec §6.4); nullopt: none shown.
     [[nodiscard]] std::optional<int> ghostForTest() const noexcept { return ghost_x_; }
@@ -121,6 +153,11 @@ private:
     wxBitmapButton* addButton(wxSizer& sizer, Command command, Icon icon);
     void setUp(wxAnyButton& button, Command command, Icon icon);
     void applyMinSize(wxAnyButton& button);
+    // The zoom button's minimum size and zoom_room_ from its font (the constructor and a DPI
+    // change), then applyZoomLabel().
+    void applyZoomMinSize();
+    void applyZoomLabel();  // the zoom button's label for zoom_shown_
+    void popUpZoomMenu();   // the zoom button's wxEVT_BUTTON
     void syncSpacer();
     void rebuildIcons();
     [[nodiscard]] wxColour systemColour(wxSystemColour index);
@@ -153,21 +190,30 @@ private:
     dvv::MoveOnlyFunction<void(Command)> execute_;
     dvv::MoveOnlyFunction<void(std::int64_t)> seek_;
     dvv::MoveOnlyFunction<BarStatus()> read_status_;
+    dvv::MoveOnlyFunction<std::unique_ptr<wxMenu>()> zoom_menu_;
     dvv::MoveOnlyFunction<bool()> left_button_probe_;
     dvv::MoveOnlyFunction<void(int)> update_observer_;
     dvv::MoveOnlyFunction<void(std::int64_t)> seek_observer_;
     dvv::MoveOnlyFunction<wxColour(wxSystemColour)> system_colour_;
-    // Child windows: wx owns them. `buttons_` in row order: Open, Format, the group, "i".
+    // Child windows: wx owns them. `buttons_` in row order: Open, Format, the group, Zoom out,
+    // Zoom in, "i".
     std::vector<IconButton> buttons_;
     wxBitmapButton* open_ = nullptr;
     wxBitmapButton* format_ = nullptr;
     wxBitmapToggleButton* info_ = nullptr;
     wxBitmapButton* play_ = nullptr;
     wxBitmapToggleButton* loop_ = nullptr;
-    wxSizerItem* open_item_ = nullptr;    // Open in the transport row (its border)
-    wxSizerItem* format_item_ = nullptr;  // Format in the transport row
-    wxSizerItem* info_item_ = nullptr;    // "i" in the transport row
-    wxSizerItem* spacer_ = nullptr;       // left of "i": the two sides of the group equally wide
+    wxBitmapButton* zoom_out_ = nullptr;
+    wxButton* zoom_ = nullptr;  // the zoom button: no command, not in `buttons_`
+    wxBitmapButton* zoom_in_ = nullptr;
+    // The transport row's items left of the group (Open, Format) and right of it (Zoom out, the
+    // zoom button, Zoom in, "i"); the pads make the two sides equally wide (syncSpacer).
+    std::vector<wxSizerItem*> left_items_;
+    std::vector<wxSizerItem*> right_items_;
+    wxSizerItem* left_pad_ = nullptr;   // after Format
+    wxSizerItem* right_pad_ = nullptr;  // before Zoom out
+    ZoomControls zoom_shown_;           // the last showZoom()
+    int zoom_room_ = 0;  // the zoom text's room: "Fit (8888.8 %)" in the zoom button's font
     std::array<wxBitmapBundle, ICON_COUNT> bundles_;  // in Icon order, tinted with `tint_`
     wxColour tint_;
     int icon_rebuilds_ = 0;

@@ -5,6 +5,7 @@
 // to the image point (originX + (px + 0.5) / zoom, originY + (py + 0.5) / zoom) (design §4.4).
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -134,6 +135,18 @@ struct ZoomStep {
                                                   dvv::platform::PixelSize viewport,
                                                   dvv::platform::PixelSize image, bool in,
                                                   PointD anchor);
+
+// Zoom buttons design §3: ZOOM_STEPS from 25 % to 1600 % without 100 %.
+inline constexpr std::array<double, 6> ZOOM_MENU_STEPS{0.25, 0.5, 2, 4, 8, 16};
+enum class ZoomMenuCheck : std::uint8_t { None, Fit, ActualSize, Step };
+struct ZoomMenuEntry {
+    ZoomMenuCheck check = ZoomMenuCheck::None;
+    std::size_t step = 0;  // Step: the index in ZOOM_MENU_STEPS
+    bool operator==(const ZoomMenuEntry&) const = default;
+};
+// §2.2: Fit in Fit mode; ActualSize at a zoom within 1e-6 (relative) of 1; Step at one within
+// 1e-6 of a ZOOM_MENU_STEPS value; None otherwise.
+[[nodiscard]] ZoomMenuEntry zoomMenuChecked(ViewMode mode, double zoom) noexcept;
 
 struct ZoomLimits {
     double minimum = 0, maximum = 0;

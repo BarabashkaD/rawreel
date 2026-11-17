@@ -8,11 +8,14 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <ios>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -90,8 +93,6 @@ constexpr std::string_view OPEN_URI_EXAMPLE =
     "synthetic:gradient?fmt=yuv420p&size=1920x1080&frames=250";  // X15
 // Spec §2: the notice field's width comes from this text.
 constexpr const char* LONG_LOG_NOTICE = "99 errors, 99 warnings in the log";
-// View zoom design: the zoom field's width comes from this text.
-constexpr const char* LONG_ZOOM_TEXT = "Fit (88888.8 %)";
 // Spec §7: the variable status fields' shares of the width the fixed fields leave (file,
 // position, rate, bottleneck), and the file field's width at the main window's minimum.
 constexpr std::array<int, 4> VARIABLE_FIELD_SHARES{3, 3, 2, 2};
@@ -223,11 +224,10 @@ std::optional<std::string> writeTextFile(const std::filesystem::path& file,
     return std::nullopt;
 }
 
-// The widths of the status bar's three fixed fields at its font. View zoom design: the zoom field
-// is as wide as a long zoom text plus a margin. D5R §2.2: the display mapping is as wide as its
-// longest text plus the same margin. Spec §2 (Log pane): the Log notice is as wide as a long
+// The widths of the status bar's two fixed fields at its font. D5R §2.2: the display mapping is as
+// wide as its longest text plus a margin. Spec §2 (Log pane): the Log notice is as wide as a long
 // notice plus the same margin.
-std::array<int, 3> fixedFieldWidths(wxStatusBar& bar) {
+std::array<int, 2> fixedFieldWidths(wxStatusBar& bar) {
     wxClientDC dc(&bar);
     int mapping = 0;
     for (const dvv::media::TransferFn curve :
@@ -238,8 +238,7 @@ std::array<int, 3> fixedFieldWidths(wxStatusBar& bar) {
         mapping = std::max(mapping, dc.GetTextExtent(wxString::FromUTF8(mappingText(&sample))).x);
     }
     const int margin = bar.FromDIP(24);
-    return {dc.GetTextExtent(LONG_ZOOM_TEXT).x + margin, mapping + margin,
-            dc.GetTextExtent(LONG_LOG_NOTICE).x + margin};
+    return {mapping + margin, dc.GetTextExtent(LONG_LOG_NOTICE).x + margin};
 }
 
 // D5R §2.2: the mapping status field, the display mapping of the active (first) stream.
@@ -375,8 +374,16 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     aui_.Update();
     buildMenus();
     buildStatusBar();
-    // The zoom field follows every view change and every resize (once the status bar exists).
+    // The zoom button follows every view change and every resize.
     viewport_->setViewChangedHandler([this] { showZoom(); });
+    // Zoom buttons design §2.2: the zoom button's menu for the shown view. Its Fit, Actual size
+    // and Resize items reach onMenu; its percentages onZoomMenu.
+    transportBar().setZoomMenu([this] {
+        const ViewTransform view = viewport_->shownView();
+        return zoomMenu(view.mode(), view.zoom());
+    });
+    Bind(wxEVT_MENU, &MainFrame::onZoomMenu, this, ZOOM_MENU_ID_BASE,
+         ZOOM_MENU_ID_BASE + static_cast<int>(ZOOM_MENU_STEPS.size()) - 1);
     SetClientSize(FromDIP(wxSize(1280, 720)));
     applyLayoutLimits();
     Bind(wxEVT_DPI_CHANGED, [this](wxDPIChangedEvent& event) {
@@ -600,14 +607,13 @@ void MainFrame::buildStatusBar() {
     // Spec §7: without wxSTB_SHOW_TIPS, which shows only a cut field's own text and asserts on a
     // tooltip set by hand; the bar keeps its size grip and its end cut.
     CreateStatusBar(static_cast<int>(status_texts_.size()), wxSTB_DEFAULT_STYLE & ~wxSTB_SHOW_TIPS);
-    const std::array<int, 3> fixed = fixedFieldWidths(*GetStatusBar());
+    const std::array<int, 2> fixed = fixedFieldWidths(*GetStatusBar());
     const std::array<int, STATUS_FIELD_COUNT> widths{-VARIABLE_FIELD_SHARES[0],
                                                      -VARIABLE_FIELD_SHARES[1],
                                                      -VARIABLE_FIELD_SHARES[2],
                                                      -VARIABLE_FIELD_SHARES[3],
                                                      fixed[0],
-                                                     fixed[1],
-                                                     fixed[2]};
+                                                     fixed[1]};
     SetStatusWidths(static_cast<int>(widths.size()), widths.data());
 #if defined(__WXMSW__)
     // Spec §7: wxMSW caps a tooltip at min(400 px, half the display); a path stays on one line
@@ -641,23 +647,28 @@ int MainFrame::statusFixedWidth() const {
     if (bar == nullptr) {
         return 0;
     }
-    const std::array<int, 3> fixed = fixedFieldWidths(*bar);
-    return fixed[0] + fixed[1] + fixed[2];
+    const std::array<int, 2> fixed = fixedFieldWidths(*bar);
+    return fixed[0] + fixed[1];
+}
+
+int MainFrame::statusMinimumWidth() const {
+    return statusFixedWidth() + FromDIP(VARIABLE_FIELDS_MINIMUM_DIP);
 }
 
 void MainFrame::showZoom() {
     if (closing_ || viewport_ == nullptr) {
         return;
     }
-    wxString text;
+    std::string zoom;
     if (!viewport_->imageSize().empty()) {
         const ViewTransform view = viewport_->shownView();
-        text = wxString::FromUTF8(zoomText(view.mode(), view.zoom()));
+        zoom = zoomText(view.mode(), view.zoom());
     }
-    if (text != status_texts_[ZOOM_FIELD]) {
-        status_texts_[ZOOM_FIELD] = text;
-        SetStatusText(text, static_cast<int>(ZOOM_FIELD));
-    }
+    // Zoom buttons design §4: the bar's zoom controls, enabled as the View menu's items.
+    transportBar().showZoom({.text = std::move(zoom),
+                             .available = isAvailable(Command::FitToWindow),
+                             .canZoomOut = isAvailable(Command::ZoomOut),
+                             .canZoomIn = isAvailable(Command::ZoomIn)});
 }
 
 void MainFrame::applyViewCommand(Command command) {
@@ -667,17 +678,59 @@ void MainFrame::applyViewCommand(Command command) {
         viewport_->setView({});
         return;
     }
-    // Backing pixels: the viewport's centre stays on its clip point.
-    const PointD anchor{.x = extent.width / 2.0, .y = extent.height / 2.0};
     if (command == Command::ActualSize) {
-        viewport_->setView(zoomAround(viewport_->view(), extent, image, 1, anchor));
+        zoomAtCentre(1);
         return;
     }
+    // Backing pixels: the viewport's centre stays on its clip point.
+    const PointD anchor{.x = extent.width / 2.0, .y = extent.height / 2.0};
     const std::optional<ViewRequest> next =
         stepZoom(viewport_->view(), extent, image, command == Command::ZoomIn, anchor);
     if (next) {  // none at the limit (isAvailable said so)
         viewport_->setView(*next);
     }
+}
+
+void MainFrame::zoomAtCentre(double zoom) {
+    const dvv::platform::PixelSize extent = viewport_->physicalClientSize();
+    // Backing pixels: the viewport's centre stays on its clip point.
+    const PointD anchor{.x = extent.width / 2.0, .y = extent.height / 2.0};
+    viewport_->setView(zoomAround(viewport_->view(), extent, viewport_->imageSize(), zoom, anchor));
+}
+
+void MainFrame::onZoomMenu(wxCommandEvent& event) {
+    if (closing_ || !isAvailable(Command::FitToWindow)) {
+        return;
+    }
+    const int index = event.GetId() - ZOOM_MENU_ID_BASE;
+    if (index >= 0 && std::cmp_less(index, ZOOM_MENU_STEPS.size())) {
+        zoomAtCentre(ZOOM_MENU_STEPS[static_cast<std::size_t>(index)]);
+    }
+}
+
+std::unique_ptr<wxMenu> zoomMenu(ViewMode mode, double zoom) {
+    const ZoomMenuEntry checked = zoomMenuChecked(mode, zoom);
+    auto menu = std::make_unique<wxMenu>();
+    const auto command_item = [&menu, &checked](Command command, ZoomMenuCheck check) {
+        const CommandInfo& info = commandTable()[static_cast<std::size_t>(command)];
+        const wxString label = wxString::FromUTF8(menuLabel(info));
+        if (check == ZoomMenuCheck::None) {
+            menu->Append(menuId(command), label);
+        } else {
+            menu->AppendCheckItem(menuId(command), label)->Check(checked.check == check);
+        }
+    };
+    command_item(Command::FitToWindow, ZoomMenuCheck::Fit);
+    command_item(Command::ActualSize, ZoomMenuCheck::ActualSize);
+    menu->AppendSeparator();
+    for (std::size_t i = 0; i < ZOOM_MENU_STEPS.size(); ++i) {
+        menu->AppendCheckItem(ZOOM_MENU_ID_BASE + static_cast<int>(i),
+                              wxString::FromUTF8(zoomText(ViewMode::Zoom, ZOOM_MENU_STEPS[i])))
+            ->Check(checked.check == ZoomMenuCheck::Step && checked.step == i);
+    }
+    menu->AppendSeparator();
+    command_item(Command::ResizeWindowToActualSize, ZoomMenuCheck::None);
+    return menu;
 }
 
 wxRect MainFrame::workArea() const {
@@ -702,6 +755,18 @@ bool MainFrame::windowIsFixed() const {
 #endif
 }
 
+namespace {
+
+// View zoom design §3.1, §3.2 (rev 6): after the open sizing the view is Fit, so the picture
+// follows the window, unless Fit would show the clip above 100 % in a viewport of `extent`
+// backing pixels (fit zoom > 1.002; the allowance covers viewportForClip's 1-pixel round-up on a
+// 2x display): then Zoom 100 %.
+bool opensAtActualSize(dvv::platform::PixelSize image, dvv::platform::PixelSize extent) {
+    return ViewTransform::fit(extent, image).zoom() > 1.002;
+}
+
+}  // namespace
+
 void MainFrame::sizeWindowForOpen() {
     const dvv::platform::PixelSize image = viewport_->imageSize();
     // A minimised window reports no usable size (wxMSW: position -32000, client 0x0); the view
@@ -710,20 +775,30 @@ void MainFrame::sizeWindowForOpen() {
         return;
     }
     if (windowIsFixed()) {
-        // §3.2: the window stays; 100 % when the clip fits the viewport, else Fit.
-        const dvv::platform::PixelSize extent = viewport_->physicalClientSize();
-        if (image.width <= extent.width && image.height <= extent.height) {
+        // §3.2: the window stays; 100 % when Fit would show the clip above 100 %, else Fit.
+        if (opensAtActualSize(image, viewport_->physicalClientSize())) {
             viewport_->setView(actualSizeView(image));
         }
         return;
     }
-    const LayoutSize wanted = viewportForClip(layoutSizeOf(image), viewport_->contentScale());
+    const double scale = viewport_->contentScale();
+    const LayoutSize wanted = viewportForClip(layoutSizeOf(image), scale);
     const WindowNow now = windowNow();
     const ScreenRect work = screenRect(workArea());
     if (const std::optional<ScreenRect> rect =
             windowForViewport(now, wanted, work, WindowSizing::Exact)) {
         SetSize(wxRectOf(*rect));
-        viewport_->setView(actualSizeView(image));
+        // The viewport the window gets, in backing pixels: wanted, or larger at the minimum
+        // window. Computed, as the size may arrive later (wxGTK).
+        const auto backing = [scale](int window_units) {
+            return static_cast<std::uint32_t>(std::lround(std::max(0, window_units) * scale));
+        };
+        const dvv::platform::PixelSize extent{
+            .width = backing(rect->width - (now.outer.width - now.viewport.width)),
+            .height = backing(rect->height - (now.outer.height - now.viewport.height))};
+        if (opensAtActualSize(image, extent)) {
+            viewport_->setView(actualSizeView(image));
+        }  // else the view stays Fit (openUri set it)
     } else if (const std::optional<ScreenRect> shape =
                    windowForViewport(now, wanted, work, WindowSizing::KeepShape)) {
         SetSize(wxRectOf(*shape));  // the view stays Fit (openUri set it)
@@ -1256,7 +1331,7 @@ void MainFrame::onSkimKeyUp() {
     }
 }
 
-TransportBar& MainFrame::transportBar() noexcept {
+TransportBar& MainFrame::transportBar() const noexcept {
     return player_->transportBar();
 }
 
@@ -1774,6 +1849,9 @@ void MainFrame::onStatusChanged() {
                      status.player.playing ? 1 : 0);
     }
     player_->transportBar().update(barStatus(status));
+    // isAvailable depends on the session's stream state: the zoom controls follow every status
+    // notification too (three isAvailable calls per notification).
+    showZoom();
     const StatusFields fields = statusFields(status);
     const std::array<wxString, 3> texts{wxString::FromUTF8(fields.position),
                                         wxString::FromUTF8(fields.fps),
@@ -1803,7 +1881,7 @@ void MainFrame::applyLayoutLimits() {
     wxSize minimum = computed + FromDIP(wxSize(LAYOUT_MARGIN_DIP, LAYOUT_MARGIN_DIP));
     // Spec §7: the status bar's fixed fields plus room for the variable ones, so that the file
     // field keeps 120 DIP and never shrinks to nothing.
-    minimum.x = std::max(minimum.x, statusFixedWidth() + FromDIP(VARIABLE_FIELDS_MINIMUM_DIP));
+    minimum.x = std::max(minimum.x, statusMinimumWidth());
     SetMinClientSize(minimum);
     // A dock change can raise the minimum above the client size (a pane docked as a new row), and
     // Windows applies a minimum only on the next resize: grow to it now.
@@ -1833,7 +1911,7 @@ void MainFrame::checkLayoutLimits() {
         // MSW and wxOSX know the decorations when the window is created (wxOSX's menu bar is not
         // in the window), so their minimum client size stays as applied.
         wxSize wanted = applied_minimum_ + FromDIP(wxSize(LAYOUT_MARGIN_DIP, LAYOUT_MARGIN_DIP));
-        wanted.x = std::max(wanted.x, statusFixedWidth() + FromDIP(VARIABLE_FIELDS_MINIMUM_DIP));
+        wanted.x = std::max(wanted.x, statusMinimumWidth());
         const wxSize effective = GetMinClientSize();
         stale = stale || effective.x < wanted.x || effective.y < wanted.y;
 #endif

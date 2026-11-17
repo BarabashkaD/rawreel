@@ -258,6 +258,22 @@ std::optional<ViewRequest> stepZoom(const ViewRequest& request, dvv::platform::P
     return zoomAround(request, viewport, image, next->zoom, anchor);
 }
 
+ZoomMenuEntry zoomMenuChecked(ViewMode mode, double zoom) noexcept {
+    if (mode == ViewMode::Fit) {
+        return {.check = ZoomMenuCheck::Fit};
+    }
+    const auto near = [zoom](double value) { return std::abs(zoom - value) <= 1e-6 * value; };
+    if (near(1)) {
+        return {.check = ZoomMenuCheck::ActualSize};
+    }
+    for (std::size_t i = 0; i < ZOOM_MENU_STEPS.size(); ++i) {
+        if (near(ZOOM_MENU_STEPS[i])) {
+            return {.check = ZoomMenuCheck::Step, .step = i};
+        }
+    }
+    return {};
+}
+
 ZoomLimits zoomLimits(double fit) noexcept {
     return {.minimum = std::min(fit, ZOOM_STEPS.front()),
             .maximum = std::max(fit, ZOOM_STEPS.back())};
