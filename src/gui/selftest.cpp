@@ -4668,6 +4668,13 @@ void addOpenSizingSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
         return view.mode == ViewMode::Zoom && view.zoom == 1 &&
                frame.statusTexts()[MainFrame::ZOOM_FIELD] == "100 %";
     };
+    // Whether the area holds a viewport at least as wide as the minimum and clearly taller than
+    // it, so `large` opens width-limited and its keep-shape viewport keeps the clip's shape.
+    auto shape_room = [&frame, st] {
+        const wxSize least = minViewport(frame);
+        const wxSize avail = st->area.GetSize() - (minOuter(frame) - least);
+        return avail.x >= least.x && avail.y - least.y >= 8;
+    };
     // The window, the viewport and the view.
     auto described = [&frame, stream_size] {
         const dvv::platform::PixelSize stream = stream_size();
@@ -4697,8 +4704,17 @@ void addOpenSizingSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
                         .height = even((least.y + extra.y) * scale)};
             st->half = {.width = even((least.x + (extra.x / 2.0)) * scale),
                         .height = even((least.y + (extra.y / 2.0)) * scale)};
-            st->large = {.width = even(std::ceil(st->area.width * scale) + 64),
-                         .height = even(std::ceil(st->area.height * scale) + 64)};
+            // `large` exceeds the area on both axes. Its shape is wider than the largest viewport
+            // inside the area, with the keep-shape viewport's height midway between the minimum
+            // viewport's and that viewport's, so neither the area's height nor the minimum window
+            // decides the shape (at 150 % on Windows the minimum viewport is 1436 px wide). Where
+            // the area holds less than the minimum viewport, the minimum stands in for it.
+            const wxSize avail = st->area.GetSize() - (outer - least);
+            const double aspect =
+                std::max(avail.x, least.x) / ((least.y + std::max(avail.y, least.y)) / 2.0);
+            const double large_height = std::max(std::ceil(st->area.height * scale) + 64,
+                                                 (std::ceil(st->area.width * scale) + 64) / aspect);
+            st->large = {.width = even(large_height * aspect), .height = even(large_height)};
             // From the smallest window, so the step itself shows the window grew to the clip.
             frame.SetClientSize(frame.GetMinClientSize());
             open_gray(st->fits);
@@ -4714,8 +4730,19 @@ void addOpenSizingSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
         }));
     steps.push_back(step(
         "open: a clip larger than the work area opens in Fit",
-        [st, open_gray] { open_gray(st->large); },
-        [&frame, st, stream_size, described](std::string& seen) {
+        [&frame, st, open_gray, shape_room] {
+            if (!shape_room()) {
+                const wxSize least = minViewport(frame);
+                const wxSize avail = st->area.GetSize() - (minOuter(frame) - least);
+                DVV_LOG_WARN(
+                    "rawreel-gui --selftest: the work area leaves a viewport of at most "
+                    "{}x{} for a minimum of {}x{}; the large clip's shape is not checked",
+                    avail.x, avail.y, least.x, least.y);
+            }
+            open_gray(st->large);
+        },
+        [&frame, st, stream_size, described, shape_room](std::string& seen) {
+            const bool shaped = shape_room();
             const wxRect outer = frame.GetScreenRect();
             const int left = outer.x - st->area.x;
             const int right = (st->area.x + st->area.width) - (outer.x + outer.width);
@@ -4723,13 +4750,16 @@ void addOpenSizingSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
             const std::int64_t width = st->large.width;
             const std::int64_t height = st->large.height;
             const std::int64_t skew = std::abs((viewport.x * height) - (viewport.y * width));
-            seen = std::format("{} (wanted {}x{}), area {}, gaps {} and {}, shape skew {}",
+            seen = std::format("{} (wanted {}x{}), area {}, gaps {} and {}, shape skew {}{}",
                                described(), st->large.width, st->large.height, rectText(st->area),
-                               left, right, skew);
+                               left, right, skew,
+                               shaped ? ""
+                                      : " (shape not checked: the area leaves no viewport "
+                                        "between the minimum and its own height)");
             return stream_size() == st->large && frame.viewport().view().mode == ViewMode::Fit &&
                    frame.statusTexts()[MainFrame::ZOOM_FIELD].StartsWith("Fit (") &&
                    st->area.Contains(outer) && std::abs(left - right) <= 1 &&
-                   skew <= std::max(width, height);
+                   (!shaped || skew <= std::max(width, height));
         }));
     steps.push_back(step(
         "open: two opens in quick succession size for the second",
