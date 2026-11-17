@@ -166,6 +166,8 @@ if(NOT DVV_SANITIZE)
     target_link_libraries(rawreel_panel PUBLIC rawreel_core wx::core dvv::base)
     if(WIN32)
         target_sources(rawreel_panel PRIVATE src/gui/native_controls_msw.cpp)
+        # native_controls_msw.cpp calls ShellExecuteW; dvv-base no longer links shell32.
+        target_link_libraries(rawreel_panel PRIVATE shell32)
     elseif(UNIX AND NOT APPLE)
         target_sources(rawreel_panel PRIVATE src/gui/native_controls_gtk.cpp)
         target_link_libraries(rawreel_panel PRIVATE PkgConfig::GTK3)
