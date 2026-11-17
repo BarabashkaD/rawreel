@@ -37,6 +37,10 @@ constexpr std::size_t kFolderCapacity = 1024;  // a longer crash folder path: cr
 constexpr std::size_t kPathCapacity = kFolderCapacity + 128;
 // How long the crashing thread waits for the dump thread before it ends the process anyway.
 constexpr DWORD kDumpTimeoutMs = 120'000;
+// Stack that install() reserves on its calling thread for the stack-overflow path.
+constexpr ULONG kOverflowStackGuarantee = 64 * 1024;
+// Exit code of RAWREEL_TEST_CRASH=stack when that guarantee is missing (no rawreel-cli exit code).
+constexpr UINT kGuaranteeMissingExitCode = 99;
 
 // Process infrastructure, set once by install(). Trivially destructible at namespace scope, so it
 // is never destroyed: a crash in a static destructor or at DLL detach still finds valid paths. The
@@ -109,6 +113,9 @@ DWORD WINAPI dumpThread(void* /*unused*/) {
     WaitForSingleObject(state.request, INFINITE);
     writeCrashDump();
     SetEvent(state.done);
+    // Never returns: a thread exit (DLL_THREAD_DETACH) could fault while the crashing thread ends
+    // the process and replace its exit code. TerminateProcess ends this thread.
+    Sleep(INFINITE);
     return 0;
 }
 
@@ -136,7 +143,10 @@ LONG WINAPI onUnhandledException(EXCEPTION_POINTERS* pointers) {
         // ExitProcess ends every other thread before the DLL detach: dump on this thread.
         writeCrashDump();
     }
-    return EXCEPTION_EXECUTE_HANDLER;  // ends the process with the exception code, no WER dialog
+    // End the process here with the exception code as its exit code: no unwind (on a stack that
+    // may be exhausted), no DLL detach, no WER dialog.
+    TerminateProcess(GetCurrentProcess(), pointers->ExceptionRecord->ExceptionCode);
+    return EXCEPTION_EXECUTE_HANDLER;  // fallback: the OS ends the process with the exception code
 }
 
 // Test hooks (RAWREEL_TEST_CRASH, design D22).
@@ -232,6 +242,13 @@ std::string CrashHandler::install(std::string_view exe) {
         return "crash dumps are off: CreateThread failed (error " + std::to_string(GetLastError()) +
                ")";
     }
+    // A stack overflow is dispatched, filtered (onUnhandledException) and unwound on the
+    // overflowing thread's last pages, which by default leave only a few KB; without more, that
+    // path can fault again and the process ends with an access violation instead. This covers the
+    // calling thread (the main thread) only: other threads would need their own call. A failure
+    // keeps the default guarantee, and crash dumps stay on.
+    ULONG guarantee = kOverflowStackGuarantee;
+    static_cast<void>(SetThreadStackGuarantee(&guarantee));
     library->keepLoaded();
     state.writeDump = writeDump;
     SetUnhandledExceptionFilter(&onUnhandledException);
@@ -248,6 +265,15 @@ void CrashHandler::crashIfRequested() {
     if (mode == L"1") {
         RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
     } else if (mode == L"stack") {
+        // install()'s guarantee must be in effect: without it this test passes most of the time
+        // and a stack overflow can still end with an access violation.
+        ULONG guarantee = 0;  // 0: the call only reports the current guarantee
+        if (SetThreadStackGuarantee(&guarantee) == FALSE || guarantee < kOverflowStackGuarantee) {
+            static constexpr char kMissing[] = "rawreel: stack guarantee missing\n";
+            DWORD out = 0;
+            WriteFile(GetStdHandle(STD_ERROR_HANDLE), kMissing, sizeof kMissing - 1, &out, nullptr);
+            ExitProcess(kGuaranteeMissingExitCode);
+        }
         static_cast<void>(overflowStack(0));
     } else if (mode == L"threads") {
         crashOnThreads();
