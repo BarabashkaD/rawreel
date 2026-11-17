@@ -663,26 +663,21 @@ void MainFrame::showZoom() {
 void MainFrame::applyViewCommand(Command command) {
     const dvv::platform::PixelSize extent = viewport_->physicalClientSize();
     const dvv::platform::PixelSize image = viewport_->imageSize();
-    const ViewTransform shown = viewport_->shownView();
-    const double fit = viewport_->fitZoom();
-    std::optional<ZoomStep> next = ZoomStep{.fit = true};  // FitToWindow
-    if (command == Command::ActualSize) {
-        next = ZoomStep{.zoom = 1};
-    } else if (command == Command::ZoomIn) {
-        next = nextZoomIn(shown.zoom(), fit);
-    } else if (command == Command::ZoomOut) {
-        next = nextZoomOut(shown.zoom(), fit);
-    }
-    if (!next) {
-        return;  // at the limit (isAvailable said so)
-    }
-    if (next->fit) {
+    if (command == Command::FitToWindow) {
         viewport_->setView({});
         return;
     }
     // Backing pixels: the viewport's centre stays on its clip point.
     const PointD anchor{.x = extent.width / 2.0, .y = extent.height / 2.0};
-    viewport_->setView(zoomAround(viewport_->view(), extent, image, next->zoom, anchor));
+    if (command == Command::ActualSize) {
+        viewport_->setView(zoomAround(viewport_->view(), extent, image, 1, anchor));
+        return;
+    }
+    const std::optional<ViewRequest> next =
+        stepZoom(viewport_->view(), extent, image, command == Command::ZoomIn, anchor);
+    if (next) {  // none at the limit (isAvailable said so)
+        viewport_->setView(*next);
+    }
 }
 
 wxRect MainFrame::workArea() const {

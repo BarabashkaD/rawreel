@@ -99,6 +99,19 @@ private:
 [[nodiscard]] ViewRequest panBy(const ViewRequest& request, dvv::platform::PixelSize viewport,
                                 dvv::platform::PixelSize image, double dx, double dy);
 
+// A pan can move the picture: mode Zoom, `request.image == image`, and image x zoom exceeds the
+// viewport on at least one axis.
+[[nodiscard]] bool canPan(const ViewRequest& request, dvv::platform::PixelSize viewport,
+                          dvv::platform::PixelSize image) noexcept;
+
+// Adds `rotation` to `accumulated` (reset to 0 first when the signs differ) and returns the whole
+// wheel_delta notches in it (signed), leaving the remainder. wheel_delta <= 0: 0.
+[[nodiscard]] int takeWheelNotches(double& accumulated, int rotation, int wheel_delta) noexcept;
+// The picture's move in DIP on one axis: rotation / wheel_delta × lines × line_dip; lines < 0 (a
+// page scroll) gives page_dip per wheel_delta. wheel_delta <= 0: 0.
+[[nodiscard]] double wheelPanDip(int rotation, int wheel_delta, int lines, double line_dip,
+                                 double page_dip) noexcept;
+
 inline constexpr std::array<double, 9> ZOOM_STEPS{0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32};
 
 struct ZoomStep {
@@ -113,6 +126,14 @@ struct ZoomStep {
 // for the `fit` stop. nullopt: at the limit.
 [[nodiscard]] std::optional<ZoomStep> nextZoomIn(double zoom, double fit) noexcept;
 [[nodiscard]] std::optional<ZoomStep> nextZoomOut(double zoom, double fit) noexcept;
+
+// One zoom step in (`in`) or out from the zoom shown for `request`, with the fit of `viewport`
+// and `image` as the fit stop: nextZoomIn or nextZoomOut; the fit stop gives ViewRequest{} (Fit),
+// any other stop zoomAround(request, viewport, image, stop, anchor). nullopt: at the limit.
+[[nodiscard]] std::optional<ViewRequest> stepZoom(const ViewRequest& request,
+                                                  dvv::platform::PixelSize viewport,
+                                                  dvv::platform::PixelSize image, bool in,
+                                                  PointD anchor);
 
 struct ZoomLimits {
     double minimum = 0, maximum = 0;

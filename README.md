@@ -344,6 +344,9 @@ View keys:
 | macOS | ⌘9 | ⌘0 | ⌘+ | ⌘− | ⌘1 |
 | Windows, Linux | Ctrl+0 | Ctrl+1 | Ctrl++ | Ctrl+− | Alt+1 |
 
+Mouse and trackpad: drag or scroll to pan a picture larger than the window; pinch to zoom;
+Ctrl+scroll zooms on Windows and Linux. On macOS scrolling always pans.
+
 Playback → Stop, View → Format…, View → Restart GPU and reopen, Help → GPU info and Help →
 Diagnostics have no key.
 
@@ -360,8 +363,8 @@ step with a 5 s deadline, closes the window and exits with 6 naming a failed ste
 - `smoke`: resizes, minimise and restore, the panes, menus, status fields, infobar and Help
   items, with no stream and then with one.
 - `about` (opt-in, not in CTest): Help → About, its layout, logo and links; run it when About changes.
-- `player` (needs a URI): play, pause, step, Home/End, the slider, loop, resize, the view commands
-  and window sizing, View → Format… and file drops.
+- `player` (needs a URI): play, pause, step, Home/End, the slider, loop, resize, the view commands,
+  drag, wheel and pinch, and window sizing, View → Format… and file drops.
 - `lost` (needs a URI): an injected device loss, Reopen, play, a second loss.
 - `perf` (needs a URI; manual): maximises the window, plays 600 frames, seeks to 20 random frames
   and prints one JSON line with `targetFps`, `actualFps`, `stalls`, `bottleneck`, `frames`,

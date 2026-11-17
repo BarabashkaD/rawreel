@@ -5,8 +5,10 @@
 #include "gui/viewport.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -42,19 +44,36 @@ Viewport::Viewport(wxWindow* parent, std::shared_ptr<DisplayState> display)
     // Create(): before it the widget does not exist and wx asserts.
     SetDoubleBuffered(false);
 #endif
+    // View zoom design §5: a pinch zooms. wxOSX attaches its gesture recognizer only here;
+    // wxEVT_MAGNIFY is not bound.
+    EnableTouchEvents(wxTOUCH_ZOOM_GESTURE);
     // wxOSX needs nothing here: the presenter draws to a child NSView above this window's view
     // (viewport_cocoa.mm), which wx's drawing does not reach.
     Bind(wxEVT_PAINT, &Viewport::onPaint, this);
     Bind(wxEVT_SIZE, &Viewport::onSize, this);
-    // R5: a click gives the viewport the keyboard focus (no other mouse handling in v1.0).
-    Bind(wxEVT_LEFT_DOWN, &Viewport::onMouseDown, this);
-    Bind(wxEVT_MIDDLE_DOWN, &Viewport::onMouseDown, this);
+    // R5: a click gives the viewport the keyboard focus. View zoom design §5: a left- or
+    // middle-button drag pans.
+    Bind(wxEVT_LEFT_DOWN, &Viewport::onButtonDown, this);
+    Bind(wxEVT_LEFT_DCLICK, &Viewport::onButtonDown, this);
+    Bind(wxEVT_MIDDLE_DOWN, &Viewport::onButtonDown, this);
+    Bind(wxEVT_MIDDLE_DCLICK, &Viewport::onButtonDown, this);
+    Bind(wxEVT_MOTION, &Viewport::onMotion, this);
+    Bind(wxEVT_LEFT_UP, &Viewport::onButtonUp, this);
+    Bind(wxEVT_MIDDLE_UP, &Viewport::onButtonUp, this);
+    Bind(wxEVT_MOUSE_CAPTURE_LOST, &Viewport::onCaptureLost, this);
+    Bind(wxEVT_MOUSEWHEEL, &Viewport::onWheel, this);
+    Bind(wxEVT_GESTURE_ZOOM, &Viewport::onZoomGesture, this);
     Bind(wxEVT_RIGHT_DOWN, &Viewport::onMouseDown, this);
     Bind(wxEVT_AUX1_DOWN, &Viewport::onMouseDown, this);
     Bind(wxEVT_AUX2_DOWN, &Viewport::onMouseDown, this);
 }
 
 Viewport::~Viewport() {
+    // A close during a drag: wx must not destroy a window holding the capture. HasCapture(), the
+    // public test: wx's capture stack (IsInCaptureStack) is not public API.
+    if (HasCapture()) {
+        ReleaseMouse();
+    }
     detachStack();  // the presenter thread is joined while the native window still exists
 }
 
@@ -276,6 +295,148 @@ void Viewport::onMouseDown(wxMouseEvent& event) {
     event.Skip();
 }
 
+void Viewport::onButtonDown(wxMouseEvent& event) {
+    SetFocus();
+    event.Skip();
+    // A second button during a drag starts no second capture.
+    if (drag_ || !canPan(view_, physicalClientSize(), image_)) {
+        return;
+    }
+    CaptureMouse();
+    // The standard wx cursors: the closed hand (macOS), the move cursor (Windows), fleur (wxGTK
+    // maps wxCURSOR_SIZENWSE to it).
+#if defined(__WXOSX__)
+    SetCursor(wxCursor(wxCURSOR_CLOSED_HAND));
+#elif defined(__WXMSW__)
+    SetCursor(wxCursor(wxCURSOR_SIZING));
+#elif defined(__WXGTK__)
+    SetCursor(wxCursor(wxCURSOR_SIZENWSE));
+#endif
+    // Bound to left and middle presses and double-clicks only.
+    const wxMouseButton button =
+        event.Button(wxMOUSE_BTN_LEFT) ? wxMOUSE_BTN_LEFT : wxMOUSE_BTN_MIDDLE;
+    drag_ = Drag{.last = event.GetPosition(), .button = button};
+}
+
+void Viewport::onMotion(wxMouseEvent& event) {
+    event.Skip();
+    if (!drag_) {
+        return;
+    }
+    if (!event.ButtonIsDown(drag_->button)) {
+        if (HasCapture()) {
+            ReleaseMouse();
+        }
+        endDrag();
+        return;
+    }
+    const wxPoint position = event.GetPosition();
+    const wxPoint delta = position - drag_->last;
+    drag_->last = position;
+    const double scale = contentScale();  // window units to backing pixels
+    setView(panBy(view_, physicalClientSize(), image_, delta.x * scale, delta.y * scale));
+}
+
+void Viewport::onButtonUp(wxMouseEvent& event) {
+    event.Skip();
+    if (!drag_ || !event.ButtonUp(drag_->button)) {
+        return;
+    }
+    if (HasCapture()) {
+        ReleaseMouse();
+    }
+    endDrag();
+}
+
+void Viewport::onCaptureLost(wxMouseCaptureLostEvent& /*event*/) {
+    if (drag_) {
+        endDrag();  // wx has already taken the capture away
+    }
+}
+
+void Viewport::endDrag() {
+    SetCursor(wxNullCursor);
+    drag_.reset();
+}
+
+void Viewport::onWheel(wxMouseEvent& event) {
+    if (image_.empty()) {
+        event.Skip();
+        return;
+    }
+    const dvv::platform::PixelSize extent = physicalClientSize();
+    const bool vertical = event.GetWheelAxis() == wxMOUSE_WHEEL_VERTICAL;
+#if !defined(__WXOSX__)
+    // macOS has no scroll zoom (design §5): there the wheel pans with Cmd too.
+    if (event.ControlDown() && vertical) {
+        const int notches =
+            takeWheelNotches(wheel_zoom_, event.GetWheelRotation(), event.GetWheelDelta());
+        const double scale = contentScale();  // window units to backing pixels
+        const PointD anchor{.x = event.GetPosition().x * scale, .y = event.GetPosition().y * scale};
+        ViewRequest request = view_;
+        for (int i = 0; i < std::abs(notches); ++i) {
+            const std::optional<ViewRequest> next =
+                stepZoom(request, extent, image_, notches > 0, anchor);
+            if (!next) {
+                break;  // at the limit
+            }
+            request = *next;
+        }
+        setView(request);
+        return;
+    }
+    if (!event.ControlDown()) {
+        wheel_zoom_ = 0;  // a half notch counts only within one run of Ctrl+wheel
+    }
+#endif
+    if (!canPan(view_, extent, image_)) {
+        return;
+    }
+    const double per_dip = backingPerDip();
+    const int lines = event.IsPageScroll()
+                          ? -1
+                          : (vertical ? event.GetLinesPerAction() : event.GetColumnsPerAction());
+    const double page_dip = (vertical ? extent.height : extent.width) / per_dip;
+    const double move = wheelPanDip(event.GetWheelRotation(), event.GetWheelDelta(), lines,
+                                    WHEEL_LINE_DIP, page_dip) *
+                        per_dip;
+    if (vertical) {
+        setView(panBy(view_, extent, image_, 0, move));
+    } else {
+        setView(panBy(view_, extent, image_, -move, 0));
+    }
+}
+
+void Viewport::onZoomGesture(wxZoomGestureEvent& event) {
+    if (image_.empty()) {
+        if (event.IsGestureEnd()) {
+            pinch_start_zoom_ = 0;  // a clip closed mid-pinch: no stale start zoom
+        }
+        event.Skip();
+        return;
+    }
+    const double factor = event.GetZoomFactor();
+    if (std::isfinite(factor) && factor > 0) {
+        const double shown = shownView().zoom();
+        // A gesture whose start was not seen starts at the zoom shown now.
+        if (event.IsGestureStart() || !(pinch_start_zoom_ > 0)) {
+            pinch_start_zoom_ = shown / factor;
+        }
+        const ZoomLimits limits = zoomLimits(fitZoom());
+        const double zoom = std::clamp(pinch_start_zoom_ * factor, limits.minimum, limits.maximum);
+        // The zoom shown already (a start at factor 1): no setView, so Fit stays Fit.
+        if (std::abs(zoom - shown) > 1e-6 * shown) {
+            const double scale = contentScale();  // window units to backing pixels
+            const PointD anchor{.x = event.GetPosition().x * scale,
+                                .y = event.GetPosition().y * scale};
+            setView(zoomAround(view_, physicalClientSize(), image_, zoom, anchor));
+        }
+    }
+    if (event.IsGestureEnd()) {
+        pinch_start_zoom_ = 0;
+    }
+}
+
 void Viewport::resizePresenter() {
     // Only the presenter is resized: the renderer resolves the view against its extent.
     if (presenter_) {
@@ -298,6 +459,15 @@ void Viewport::setView(const ViewRequest& request) {
     }
 }
 
+void Viewport::setImageSize(dvv::platform::PixelSize image) noexcept {
+#if !defined(__WXOSX__)
+    if (image != image_) {
+        wheel_zoom_ = 0;  // a new clip: no half notch carries over
+    }
+#endif
+    image_ = image;
+}
+
 ViewTransform Viewport::shownView() const {
     return resolveView(view_, physicalClientSize(), image_);
 }
@@ -308,6 +478,14 @@ double Viewport::fitZoom() const {
 
 double Viewport::contentScale() const {
     return GetContentScaleFactor();
+}
+
+double Viewport::backingPerDip() const {
+#if defined(__WXMSW__)
+    return GetDPIScaleFactor();
+#else
+    return contentScale();
+#endif
 }
 
 void Viewport::setViewChangedHandler(std::function<void()> handler) {

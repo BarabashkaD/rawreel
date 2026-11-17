@@ -205,6 +205,11 @@ if(NOT DVV_SANITIZE)
     # The source providers (file, synthetic) are components linked into the program.
     dvv_link_components(rawreel_gui dvv::media_sources)
     dvv_set_compiler_options(rawreel_gui)
+    # The selftest steps give selftest.cpp more sections than MSVC's default object format allows
+    # (C1128 in the Release build).
+    if(MSVC)
+        set_source_files_properties(src/gui/selftest.cpp PROPERTIES COMPILE_OPTIONS /bigobj)
+    endif()
     # The embedded PNGs (app icon plan D7) from packaging/icons/owl-on-film-reel: About's logo,
     # transparent-background's 1024 px PNG (scaled at run time), on every platform (so the table is
     # never empty), plus square-background's hicolor PNGs as the window icons on Linux; Windows

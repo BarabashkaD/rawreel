@@ -19,6 +19,15 @@
 
 namespace rawreel {
 
+// The picture's move per wheel line in DIP (view zoom design §5). wxOSX reports scroll in points
+// as rotation with a wheel delta of 10 and one line per notch, so 10 moves the picture one point
+// per rotation unit; 16 elsewhere.
+#if defined(__WXOSX__)
+inline constexpr double WHEEL_LINE_DIP = 10;
+#else
+inline constexpr double WHEEL_LINE_DIP = 16;
+#endif
+
 // The viewport (M1b §5.6 plus design M3 v2 §5.3 GUI side): a native child window that shows the
 // DisplayState through one ViewportRenderer and one Presenter of the current stack. Every member
 // runs on the GUI thread; the GUI thread only calls the presenter's non-blocking members.
@@ -87,8 +96,9 @@ public:
     // when it changed, display->setParams({.dark, .view = request}), then the view handler.
     void setView(const ViewRequest& request);
     [[nodiscard]] const ViewRequest& view() const noexcept { return view_; }
-    // The stream's frame size; {} without a stream (MainFrame::onStreamsChanged).
-    void setImageSize(dvv::platform::PixelSize image) noexcept { image_ = image; }
+    // The stream's frame size; {} without a stream (MainFrame::onStreamsChanged). A new size drops
+    // the Ctrl+wheel rotation not yet a whole notch.
+    void setImageSize(dvv::platform::PixelSize image) noexcept;
     [[nodiscard]] dvv::platform::PixelSize imageSize() const noexcept { return image_; }
     // The view as shown: resolveView(view(), physicalClientSize(), imageSize()).
     [[nodiscard]] ViewTransform shownView() const;
@@ -98,8 +108,12 @@ public:
     // Backing pixels per window unit: GetContentScaleFactor() (1 on Windows, where window units
     // are physical pixels).
     [[nodiscard]] double contentScale() const;
+    // Backing pixels per DIP: GetDPIScaleFactor() on Windows, contentScale() elsewhere.
+    [[nodiscard]] double backingPerDip() const;
     // Called after setView() changed the request and at the end of every resizePresenter().
     void setViewChangedHandler(std::function<void()> handler);
+    // Test hook (selftest): a left- or middle-button drag is panning the picture.
+    [[nodiscard]] bool draggingForTest() const noexcept { return drag_.has_value(); }
 
 private:
     void startPresenting();
@@ -112,7 +126,26 @@ private:
     void updateVisible(bool shown, bool old_visible, const char* event);
     void onPaint(wxPaintEvent& event);
     void onSize(wxSizeEvent& event);
-    void onMouseDown(wxMouseEvent& event);  // SetFocus() on every button press (R5)
+    void onMouseDown(wxMouseEvent& event);  // SetFocus() on a right or aux button press (R5)
+    // Left and middle press and double-click: SetFocus(); with canPan(), a drag starts (mouse
+    // capture, the drag cursor).
+    void onButtonDown(wxMouseEvent& event);
+    // During a drag: panBy() the pointer's move; with the drag's button no longer down (wxOSX may
+    // not send its release, e.g. during a menu or a modal loop), ReleaseMouse() and endDrag().
+    void onMotion(wxMouseEvent& event);
+    // The drag's button released: ReleaseMouse(), endDrag(). Another button's release does not.
+    void onButtonUp(wxMouseEvent& event);
+    void onCaptureLost(wxMouseCaptureLostEvent& event);  // ends a drag without ReleaseMouse()
+    void endDrag();                                      // the default cursor, drag_ reset
+    // View zoom design §5: with an image, Ctrl+wheel (Windows, Linux; vertical axis) steps the
+    // zoom at the pointer (stepZoom), one step per whole notch; a wheel without Ctrl drops the
+    // rotation not yet a whole notch. Any other wheel pans when canPan().
+    void onWheel(wxMouseEvent& event);
+    // View zoom design §5: with an image, a pinch zooms at the gesture position: the zoom shown at
+    // the gesture's start times the event's factor, within zoomLimits(fit). No snap at the end.
+    // Without a seen start the start zoom is the shown zoom over the factor; a factor that is not
+    // finite or not > 0 is ignored; a zoom equal to the shown one (within 1e-6) sets nothing.
+    void onZoomGesture(wxZoomGestureEvent& event);
 
     std::shared_ptr<DisplayState> display_;
     bool dark_ = false;  // the background of the paint handler without a presenter
@@ -138,6 +171,16 @@ private:
     std::optional<dvv::Error> last_failure_;
     ViewRequest view_{};                // view()
     dvv::platform::PixelSize image_{};  // imageSize()
+    struct Drag {
+        wxPoint last;          // the last pointer position (window units)
+        wxMouseButton button;  // the button that started it: wxMOUSE_BTN_LEFT or _MIDDLE
+    };
+    std::optional<Drag> drag_;  // during a drag
+    // The zoom shown at the current pinch's start; 0 between gestures.
+    double pinch_start_zoom_ = 0;
+#if !defined(__WXOSX__)
+    double wheel_zoom_ = 0;  // Ctrl+wheel rotation not yet a whole notch (takeWheelNotches)
+#endif
 };
 
 }  // namespace rawreel
