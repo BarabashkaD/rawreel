@@ -1,5 +1,7 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -25,10 +27,14 @@ using rawreel::ViewMode;
 using rawreel::ViewRequest;
 using rawreel::ViewTransform;
 using rawreel::wheelPanDip;
+using rawreel::ZOOM_MENU_STEPS;
 using rawreel::ZOOM_STEPS;
 using rawreel::zoomAround;
 using rawreel::ZoomLimits;
 using rawreel::zoomLimits;
+using rawreel::ZoomMenuCheck;
+using rawreel::zoomMenuChecked;
+using rawreel::ZoomMenuEntry;
 using rawreel::ZoomStep;
 using rawreel::zoomText;
 
@@ -386,6 +392,26 @@ TEST_SUITE("core") {
         CHECK(zoomLimits(0.3) == ZoomLimits{0.125, 32});
         CHECK(zoomLimits(45) == ZoomLimits{0.125, 45});
         CHECK(zoomLimits(0.01) == ZoomLimits{0.01, 32});
+    }
+
+    TEST_CASE("view: zoom menu check") {
+        for (const double zoom : {0.83, 1.0, 2.0}) {
+            CHECK(zoomMenuChecked(ViewMode::Fit, zoom) == ZoomMenuEntry{ZoomMenuCheck::Fit, 0});
+        }
+        CHECK(zoomMenuChecked(ViewMode::Zoom, 1) == ZoomMenuEntry{ZoomMenuCheck::ActualSize, 0});
+        CHECK(zoomMenuChecked(ViewMode::Zoom, 1 + 1e-9) ==
+              ZoomMenuEntry{ZoomMenuCheck::ActualSize, 0});
+        CHECK(zoomMenuChecked(ViewMode::Zoom, 0.25) == ZoomMenuEntry{ZoomMenuCheck::Step, 0});
+        CHECK(zoomMenuChecked(ViewMode::Zoom, 4) == ZoomMenuEntry{ZoomMenuCheck::Step, 3});
+        CHECK(zoomMenuChecked(ViewMode::Zoom, 16) == ZoomMenuEntry{ZoomMenuCheck::Step, 5});
+        for (const double zoom : {0.125, 32.0, 1.37, 4.001}) {
+            CHECK(zoomMenuChecked(ViewMode::Zoom, zoom) == ZoomMenuEntry{});
+        }
+        CHECK(ZOOM_MENU_STEPS.back() == 16);
+        for (const double step : ZOOM_MENU_STEPS) {
+            CHECK(step != 1);
+            CHECK(std::ranges::find(ZOOM_STEPS, step) != ZOOM_STEPS.end());
+        }
     }
 
     TEST_CASE("zoomText") {

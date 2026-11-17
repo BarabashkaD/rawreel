@@ -205,20 +205,23 @@ program's folder as `<app>`, the variable's folder as `$DVV_FFMPEG_DIR` and the 
 ## rawreel-gui
 
 `rawreel-gui` plays one video stream. The window has the viewport with the control panel under it,
-a Log pane, a status bar (the file name, frame and length, target / actual fps, the zoom, e.g.
-"Fit (47 %)" or "200 %", the pipeline's bottleneck, and the colour mapping, e.g. "SDR, no tone
-mapping" or "PQ → SDR tone mapping (1000 → 100 nits)") and an infobar for warnings and errors. The
-log also goes to log files (`rawreel-YYYYMMDD-HHMMSS.log`, see [Log files](#log-files)) in the
-user's data folder (`%APPDATA%\rawreel\` on Windows, `~/.local/share/rawreel/` on Linux, or
-`$XDG_DATA_HOME/rawreel/` when that is set, `~/Library/Application Support/rawreel/` on macOS).
+a Log pane, a status bar (the file name, frame and length, target / actual fps, the pipeline's
+bottleneck, and the colour mapping, e.g. "SDR, no tone mapping" or "PQ → SDR tone mapping
+(1000 → 100 nits)") and an infobar for warnings and errors. The log also goes to log files
+(`rawreel-YYYYMMDD-HHMMSS.log`, see [Log files](#log-files)) in the user's data folder
+(`%APPDATA%\rawreel\` on Windows, `~/.local/share/rawreel/` on Linux, or `$XDG_DATA_HOME/rawreel/`
+when that is set, `~/Library/Application Support/rawreel/` on macOS).
 Help → About shows the rawreel logo, the owl of the app icon on a transparent background, the same
 in light and dark appearance.
 
 The control panel has two rows. The upper row is a timeline strip over the slider: ticks, the first
 and last frame numbers, and above the thumb the number of the frame on screen. The lower row has
-Open on the left and, centred, First, Step back, Play/Pause, Stop, Step forward, Last and Loop,
-with icons and tooltips. While you drag the slider, a marker shows the frame where the drag
-started.
+Open and Format on the left; centred, First, Step back, Play/Pause, Stop, Step forward, Last and
+Loop; on the right Zoom out, a button that shows the zoom, e.g. "Fit (47 %)" or "200 %", and opens
+a menu with Fit to window, Actual size, 25–1600 % and Resize window to actual size (on macOS: Zoom
+to Fit, Actual Size, 25–1600 % and Resize Window to Actual Size), then Zoom in
+and "i". The icon buttons have tooltips. While you drag the slider, a marker shows the frame where
+the drag started.
 
 While the video is paused, holding ⌥ Option (macOS) or Ctrl (Windows, Linux) and moving over the
 slider skims: the thumb, the frame number and the picture follow the pointer, and the marker shows
@@ -316,11 +319,11 @@ characters on Windows and for every URI, numbered `1`–`10` on Windows and Linu
 shows in the status bar.
 
 **Playback** shows every frame in order (it waits for a slow frame instead of skipping it) and
-a new clip opens at 100 % (one clip pixel per screen pixel) with the window sized to it, or in Fit
-in the largest window of its shape that fits the screen. Fit scales the frame up or down, centred,
-aspect ratio kept. View → Fit to window, Actual size, Zoom in and Zoom out (12.5–3200 %) and Resize
-window to actual size change the view (on macOS: Zoom to Fit, Actual Size, Zoom In, Zoom Out and
-Resize Window to Actual Size).
+a new clip opens in Fit at 100 % (one clip pixel per screen pixel) with the window sized to it, the
+picture then following the window, or in Fit in the largest window of its shape that fits the
+screen. Fit scales the frame up or down, centred, aspect ratio kept. View → Fit to window, Actual
+size, Zoom in and Zoom out (12.5–3200 %) and Resize window to actual size change the view (on
+macOS: Zoom to Fit, Actual Size, Zoom In, Zoom Out and Resize Window to Actual Size).
 
 **4K at 60 fps.** Uncompressed 4K 10-bit 4:2:0 (`yuv420p10le`) at 60 fps is about 1.5 GB/s. The
 file must sit on a drive that sustains that, i.e. an NVMe SSD, read unbuffered (the default); a
@@ -774,7 +777,8 @@ another file:
 - The sample aspect ratio is ignored, so anamorphic files show stretched.
 - A step or seek backwards on a `Sequential` stream decodes again from the start of the file.
 - MKV and NUT files are scanned when they open, so large ones open more slowly.
-- A clip smaller than the minimum window shows at 100 % with background around it.
+- A clip smaller than the minimum window on both axes shows at 100 % with background around it;
+  smaller on one axis only, it opens in Fit with background bars on the other.
 - Views below 12.5 % undersample, so very small views of very large frames can alias.
 - FFV1 decoding is CPU-bound, so 4K FFV1 does not reach 60 fps: about 50 fps on a typical 8-core
   desktop CPU for easy content, far less for noisy content. Raw and Y4M files play 4K at 60 fps.

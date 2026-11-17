@@ -1,6 +1,6 @@
 # View zoom — design (simple version)
 
-Status: rev 5 (2026-11-16), after the builder check and the optimistic and pessimistic reviews. Replaces the rev 4 design on `feat/view-zoom-1`
+Status: rev 6 (2026-11-17: a clip that fits opens in Fit, §3.1, §3.2); rev 5 (2026-11-16), after the builder check and the optimistic and pessimistic reviews. Replaces the rev 4 design on `feat/view-zoom-1`
 (`2026-11-10-view-zoom-design.md`, 870 lines) and its plan. The user asked on 2026-11-16 to make
 the feature as simple as possible and focus on the GUI. Rev 4's decisions still hold where this
 document does not change them; everything rev 4 had that is not here is cut (§10).
@@ -57,11 +57,14 @@ When a new clip opens (Open, Open URI, a drop, Open Recent, the command line, Vi
 
 - **The window fits on the screen with the clip at 100 %:** the window resizes so the viewport is
   exactly the clip at 100 %. It grows for a larger clip and shrinks for a smaller one. The window
-  keeps its top-left corner and moves only as far as it must to stay on the screen. The readout
-  shows "100 %".
+  keeps its top-left corner and moves only as far as it must to stay on the screen. The clip shows
+  in Fit, so the picture follows the window when it is resized; the zoom button shows
+  "Fit (100 %)" ("Fit (100.1 %)" or similar after the 1-pixel round-up on a 2x display). (rev 6,
+  2026-11-17, user: video-player behaviour; rev 5 opened at Zoom 100 %, which kept the picture at
+  100 % and cut it off when the window shrank)
 - **It does not fit:** the window becomes the largest window that keeps the clip's shape (no
   background bars) and fits on the screen. It is centred on the screen and the clip shows in Fit.
-  The readout shows "Fit (63 %)" (the real value). (user, 2026-11-16: keep the clip's shape)
+  The zoom button shows "Fit (63 %)" (the real value). (user, 2026-11-16: keep the clip's shape)
 
 ### 3.2 Rules
 
@@ -73,19 +76,30 @@ When a new clip opens (Open, Open URI, a drop, Open Recent, the command line, Vi
   size. (call)
 - Clip size in window units = clip pixels / the viewport's content scale, rounded up (points on
   macOS, physical pixels on Windows, GTK logical pixels on Linux).
-- **Smaller than the minimum window:** the window takes its minimum size and the clip shows at 100 %,
-  centred, with background around it. On a 2x display this applies to every clip narrower than about
-  1900 pixels, since the minimum window width is about 950 points (status bar fields plus 400 DIP,
-  plus the zoom field). (call, follows from §2.6)
+- **Smaller than the minimum window:** the window takes its minimum size. A clip smaller than the
+  minimum viewport on both axes shows at Zoom 100 %, centred, with background around it (Fit would
+  scale it above 100 %). On a 2x display this applies to clips narrower than a little under 1900
+  pixels and lower than the minimum viewport, since the minimum window width is a little under 950
+  points (status bar fields plus 400 DIP). A clip smaller on one axis only (a wide, short clip at
+  the minimum height) has a fit of about 100 % and opens in Fit, with background bars on the other
+  axis. (call, follows from §2.6; rev 6, 2026-11-17, user)
 - **Maximised (Windows, Linux) or full screen (macOS):** the window stays as it is. The clip shows
-  at 100 % if it fits the viewport, otherwise in Fit. (call)
+  at Zoom 100 % if the viewport is larger than the clip on both axes (Fit would scale it above
+  100 %), otherwise in Fit. (call; rev 6, 2026-11-17, user)
+- **Rule after the open sizing (rev 6, 2026-11-17, user):** the fit zoom of the resulting viewport
+  decides. At most 1.002 (100.2 %): the view is Fit, so the picture follows the window. Above it
+  (Fit would show the clip above 100 %: the clip is smaller than the minimum window on both axes,
+  or a maximised or full-screen window is larger than the clip on both axes): Zoom 100 %, centred.
+  The 0.2 % covers the round-up of the clip size in window units on a 2x display (an odd clip
+  width gives a viewport 1 pixel wider). Resize window to actual size and Actual size stay
+  explicit Zoom 100 % commands.
 - **Reopen** (also after a lost device) keeps the window and the view. **Close** keeps the window
   size and drops the view back to Fit. (call)
 - **View → Format** counts as an open: it sizes the window again, also when the frame size is
   unchanged. (call: the simplest rule, since Format goes through `openUri` like every open)
 - If something around the viewport changes size after the window moved (a dock growing back, a
-  window manager adjusting the size), nothing corrects it: the view stays 100 % and any small
-  overflow can be panned. (call)
+  window manager adjusting the size), nothing corrects it: the view stays as it is (Fit refits;
+  at Zoom 100 % any small overflow can be panned). (call)
 
 ### 3.3 How the open is recognised (no new argument)
 
@@ -208,7 +222,9 @@ All of it extends existing files; no new modules.
   derive the clip size from the minimum client size and the content scale, so they give the same
   result on a 2x Mac and on a small 1x CI screen. Existing steps that assume the 1280×720 start
   window in Fit are updated, since every open now sizes the window.
-  - a clip that fits opens at 100 % with the viewport equal to the clip;
+  - a clip that fits opens in Fit at about 100 % with the viewport equal to the clip, and a
+    smaller window then scales the picture down; a wide clip lower than the minimum viewport
+    opens in Fit at about 100 % (rev 6);
   - a clip larger than the test work area opens in Fit with the window inside it;
   - two opens in quick succession size the window for the second clip;
   - Reopen keeps the view;

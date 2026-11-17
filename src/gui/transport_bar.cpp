@@ -10,10 +10,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
+
+#include <wx/dcclient.h>
 
 #include "core/timeline.h"
 #include "dvv/base/log.h"
@@ -68,11 +72,21 @@ wxString fromUtf8(std::string_view text) {
     return wxString::FromUTF8(text.data(), text.size());
 }
 
+// Zoom buttons design §3: the zoom button is as wide as this text and the mark; a longer text is
+// cut with ELLIPSIS ("…"). UTF-8.
+constexpr std::string_view WIDEST_ZOOM_TEXT = "Fit (8888.8 %)";
+constexpr std::string_view ELLIPSIS = "\xE2\x80\xA6";
+
+// The zoom button's text: the zoom text, NO_ZOOM_TEXT unless the zoom is available.
+std::string_view zoomTextShown(const ZoomControls& zoom) noexcept {
+    return zoom.available ? std::string_view(zoom.text) : NO_ZOOM_TEXT;
+}
+
 }  // namespace
 
-// Spec §5.1, window title and Info design §12: the slider row, then [Open][Format] stretch [group]
-// stretch [spacer]["i"]. The spacer makes the right side as wide as the left (syncSpacer), so the
-// group is centred on the whole bar.
+// Spec §5.1, window title and Info design §12, zoom buttons design §2, §3: the slider row, then
+// [Open][Format][pad] stretch [group] stretch [pad][Zoom out][zoom][Zoom in]["i"]. The pads make
+// the two sides equally wide (syncSpacer), so the group is centred on the whole bar.
 TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)> execute,
                            dvv::MoveOnlyFunction<void(std::int64_t)> seek,
                            dvv::MoveOnlyFunction<BarStatus()> read_status)
@@ -99,9 +113,9 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
 
     auto* row = new wxBoxSizer(wxHORIZONTAL);
     open_ = addButton(*row, Command::Open, Icon::FolderOpen);
-    open_item_ = row->GetItem(open_);
     format_ = addButton(*row, Command::Format, Icon::SlidersHorizontal);
-    format_item_ = row->GetItem(format_);
+    left_items_ = {row->GetItem(open_), row->GetItem(format_)};
+    left_pad_ = row->Add(0, 0);
     row->AddStretchSpacer();
     auto* group = new wxBoxSizer(wxHORIZONTAL);
     addButton(*group, Command::First, Icon::SkipBack);
@@ -119,13 +133,26 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
     group->Add(loop_, wxSizerFlags().Border(wxALL, border));
     row->Add(group);
     row->AddStretchSpacer();
-    spacer_ = row->Add(0, 0);
+    right_pad_ = row->Add(0, 0);
+    zoom_out_ = addButton(*row, Command::ZoomOut, Icon::ZoomOut);
+    // Zoom buttons design §3: a text button without a command; it takes no focus either.
+    zoom_ = new wxButton(this, wxID_ANY, wxString());
+    zoom_->SetCanFocus(false);
+    zoom_->SetName("Zoom");
+    setAccessibleName(*zoom_, "Zoom");
+    zoom_->Disable();
+    zoom_->Bind(wxEVT_BUTTON, [this](wxCommandEvent& /*event*/) { popUpZoomMenu(); });
+    row->Add(zoom_, wxSizerFlags().Border(wxALL, border));
+    zoom_in_ = addButton(*row, Command::ZoomIn, Icon::ZoomIn);
     info_ = new wxBitmapToggleButton(this, wxID_ANY, bundles_[static_cast<std::size_t>(Icon::Info)],
                                      wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
     info_->Bind(wxEVT_TOGGLEBUTTON,
                 [this](wxCommandEvent& /*event*/) { execute_(Command::InfoWindow); });
     setUp(*info_, Command::InfoWindow, Icon::Info);
-    info_item_ = row->Add(info_, wxSizerFlags().Border(wxALL, border));
+    row->Add(info_, wxSizerFlags().Border(wxALL, border));
+    right_items_ = {row->GetItem(zoom_out_), row->GetItem(zoom_), row->GetItem(zoom_in_),
+                    row->GetItem(info_)};
+    applyZoomMinSize();
     syncSpacer();
 
     auto* sizer = new wxBoxSizer(wxVERTICAL);
@@ -181,14 +208,94 @@ void TransportBar::applyMinSize(wxAnyButton& button) {
     button.SetMinSize(wxSize(std::max(native.x, least.x), std::max(native.y, least.y)));
 }
 
-// The right side (the spacer and "i") as wide as the left (Open and Format), with their borders.
-void TransportBar::syncSpacer() {
-    const auto side = [](const wxWindow& button, const wxSizerItem& item) {
-        return button.GetEffectiveMinSize().x + (2 * item.GetBorder());
+// The zoom button's minimum (zoom buttons design §3): as wide as "Fit (8888.8 %)" and the mark
+// in its own font, whatever it reads, so the bar does not shift as the zoom changes; as high as
+// the icon buttons.
+void TransportBar::applyZoomMinSize() {
+    const wxString widest = fromUtf8(WIDEST_ZOOM_TEXT);
+    zoom_->SetLabel(widest + fromUtf8(ZOOM_BUTTON_MARK));
+    zoom_->SetMinSize(wxDefaultSize);
+    zoom_->InvalidateBestSize();
+    const wxSize native = zoom_->GetBestSize();
+    zoom_->SetMinSize(wxSize(native.x, std::max(native.y, FromDIP(BUTTON_HEIGHT_DIP))));
+    wxInfoDC dc(zoom_);
+    dc.SetFont(zoom_->GetFont());
+    zoom_room_ = dc.GetTextExtent(widest).x;
+    applyZoomLabel();
+}
+
+// The shown text, cut by hand when wider than zoom_room_: trailing characters go until the rest
+// and "…" fit (wxControl::Ellipsize would insert "..."); the mark stays.
+void TransportBar::applyZoomLabel() {
+    wxString text = fromUtf8(zoomTextShown(zoom_shown_));
+    wxInfoDC dc(zoom_);
+    dc.SetFont(zoom_->GetFont());
+    if (dc.GetTextExtent(text).x > zoom_room_) {
+        const wxString ellipsis = fromUtf8(ELLIPSIS);
+        while (!text.empty() && dc.GetTextExtent(text + ellipsis).x > zoom_room_) {
+            text.RemoveLast();
+        }
+        text.Trim();  // no space before the ellipsis
+        text += ellipsis;
+    }
+    const wxString label = text + fromUtf8(ZOOM_BUTTON_MARK);
+    if (zoom_->GetLabel() != label) {
+        zoom_->SetLabel(label);
+    }
+}
+
+void TransportBar::showZoom(const ZoomControls& zoom) {
+    if (zoom == zoom_shown_) {
+        return;
+    }
+    const std::string_view before = zoomTextShown(zoom_shown_);
+    const bool text_changed = zoomTextShown(zoom) != before;
+    zoom_shown_ = zoom;
+    if (text_changed) {
+        applyZoomLabel();
+        // Only on a change: wxMSW replaces the window's wxAccessible on every call.
+        setAccessibleName(*zoom_,
+                          zoom.available ? fromUtf8("Zoom " + zoom.text) : fromUtf8("Zoom"));
+    }
+    const auto enable = [](wxWindow& window, bool on) {
+        if (window.IsEnabled() != on) {
+            window.Enable(on);
+        }
     };
-    const int width =
-        side(*open_, *open_item_) + side(*format_, *format_item_) - side(*info_, *info_item_);
-    spacer_->AssignSpacer(std::max(width, 0), 0);
+    enable(*zoom_, zoom.available);
+    enable(*zoom_out_, zoom.canZoomOut);
+    enable(*zoom_in_, zoom.canZoomIn);
+}
+
+void TransportBar::setZoomMenu(dvv::MoveOnlyFunction<std::unique_ptr<wxMenu>()> menu) {
+    zoom_menu_ = std::move(menu);
+}
+
+// The OS's pop-up menu at the zoom button's lower left corner (bar client coordinates); PopupMenu
+// returns once the menu is closed, so the menu lives until then.
+void TransportBar::popUpZoomMenu() {
+    if (!zoom_menu_) {
+        return;
+    }
+    const std::unique_ptr<wxMenu> menu = zoom_menu_();
+    const wxRect rect = zoom_->GetRect();
+    PopupMenu(menu.get(), rect.GetLeft(), rect.GetBottom() + 1);
+}
+
+// The two sides of the group as wide as each other, with their borders: the narrower one gets the
+// padding.
+void TransportBar::syncSpacer() {
+    const auto side = [](const std::vector<wxSizerItem*>& items) {
+        int width = 0;
+        for (const wxSizerItem* item : items) {
+            width += item->GetWindow()->GetEffectiveMinSize().x + (2 * item->GetBorder());
+        }
+        return width;
+    };
+    const int left = side(left_items_);
+    const int right = side(right_items_);
+    left_pad_->AssignSpacer(std::max(right - left, 0), 0);
+    right_pad_->AssignSpacer(std::max(left - right, 0), 0);
 }
 
 void TransportBar::setInfoShown(bool shown) {
@@ -228,6 +335,7 @@ void TransportBar::onDpiChanged(wxDPIChangedEvent& event) {
     for (const IconButton& entry : buttons_) {
         applyMinSize(*entry.button);
     }
+    applyZoomMinSize();
     syncSpacer();
     Layout();
     event.Skip();
@@ -256,7 +364,7 @@ wxRect TransportBar::groupRectForTest() const {
     return rect.value_or(wxRect());
 }
 
-wxAnyButton& TransportBar::buttonForTest(Command command) {
+wxAnyButton& TransportBar::buttonForTest(Command command) const {
     const auto found = std::ranges::find(buttons_, command, &IconButton::command);
     if (found == buttons_.end()) {
         DVV_LOG_ERROR("transport: no button for command {}", commandInfo(command).id);
@@ -551,10 +659,15 @@ void TransportBar::applyIdleView(bool fresh) {
 }
 
 // CP-D4, as MainFrame::isAvailable: every button but Open and "i" waits for a stream, Last also for
-// a known length. Enable states, bitmaps and values change only when they differ.
+// a known length. Enable states, bitmaps and values change only when they differ. Zoom out and
+// Zoom in follow showZoom alone (zoom buttons design §4): a notification never enables them at a
+// limit.
 void TransportBar::showStatus() {
     const PlayerStatus& status = last_status_.player;
     for (const IconButton& entry : buttons_) {
+        if (entry.command == Command::ZoomOut || entry.command == Command::ZoomIn) {
+            continue;
+        }
         bool enabled = true;
         if (entry.command == Command::Last) {
             enabled = last_status_.hasStream && status.length.has_value();
