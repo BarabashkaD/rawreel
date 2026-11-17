@@ -2,7 +2,8 @@
 # RAWREEL_TEST_CRASH mode must give exactly one "rawreel: crash dump <path>" line, a non-empty dump
 # and a process that ends with the exception code (not 0, not a WER or C++ catch path):
 #   1        an access violation on the main thread
-#   stack    a stack overflow (the filter runs on a thread with almost no stack left)
+#   stack    a stack overflow on the main thread (install()'s 64 KB guarantee must be in effect, else
+#            exit 99)
 #   threads  four threads crash at the same moment (the first wins, the others wait)
 #   exit     an access violation in a static destructor after main() (the handler's state must
 #            still be valid)
