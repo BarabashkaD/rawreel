@@ -16,4 +16,10 @@ Windows: Windows 10 or newer, 64-bit, with a GPU driver that supports Vulkan 1.4
 Microsoft Visual C++ Redistributable (x64) 14.52 or newer, which the zip does not include.
 "MSVCP140.dll was not found" at the start means it is missing or too old.
 
-The requirements for Linux and macOS are the same as in 0.11.0.
+Linux: Ubuntu 24.04 (x86-64) with its current updates (glibc 2.39); an X11 desktop, or a Wayland
+desktop with XWayland; GTK 3; the Vulkan loader `libvulkan1`; and a Vulkan 1.4 driver (Mesa from
+`noble-updates` or the GPU vendor's driver). Install the system packages with
+`sudo apt install libgtk-3-0t64 libsm6 libice6 libvulkan1 mesa-vulkan-drivers`.
+
+macOS: a Mac with Apple Silicon and macOS 27 or newer. The app brings its Vulkan loader, its
+Vulkan driver and FFmpeg; nothing else is needed. Intel Macs are not supported.
