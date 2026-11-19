@@ -12,7 +12,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/source-txt.cmake")
 # do not name it. It also covers the custom_ffmpeg DLLs (MSVC STL of VS 2022 17.14, runtime
 # 14.44). Every configure only warns; the packaging path (the Release install of the
 # component "rawreel", which CPack runs) fails, so Debug and PR builds stay green.
-set(RAWREEL_MIN_VCRT_VERSION "14.51")
+set(RAWREEL_MIN_VCRT_VERSION "14.52")
 set(rawreel_redist_docs "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
                         "${CMAKE_CURRENT_SOURCE_DIR}/docs/release-notes-${PROJECT_VERSION}.md")
 set(rawreel_msvc_version "")
