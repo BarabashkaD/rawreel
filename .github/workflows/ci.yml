@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   dvv:
-    uses: BarabashkaD/dvv-build/.github/workflows/dvv-ci.yml@v0.5.0
+    uses: BarabashkaD/dvv-build/.github/workflows/dvv-ci.yml@v0.5.1
     with:
       repo: rawreel
       app: true

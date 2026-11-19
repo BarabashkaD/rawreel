@@ -8,7 +8,7 @@ as 0.11.0.
 
 - Windows: the minimum Microsoft Visual C++ Redistributable (x64) is 14.52 (0.11.0: 14.51),
   because the build tools moved to MSVC 14.52.
-- Build: dvv-build 0.5.0 and dvv-base 0.5.0. No user-visible change.
+- Build: dvv-build 0.5.1 and dvv-base 0.5.0. No user-visible change.
 
 ## Requirements
 
