@@ -5,8 +5,6 @@
 #include <mutex>
 #include <optional>
 
-#include <vulkan/vulkan_core.h>
-
 #include "dvv/base/error.h"
 #include "dvv/gpu/context_vulkan.h"
 #include "dvv/gpu/presenter_vulkan.h"

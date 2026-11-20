@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "core/log_mirror.h"
+#include "dvv/base/log.h"
 
 namespace rawreel {
 

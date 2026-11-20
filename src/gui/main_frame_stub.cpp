@@ -9,10 +9,10 @@
 
 namespace rawreel {
 
-// clang-format off
 void MainFrame::bindApplicationMenu() {}
 
-wxWindow* MainFrame::settingsInFront() const { return nullptr; }
-// clang-format on
+wxWindow* MainFrame::settingsInFront() const {
+    return nullptr;
+}
 
 }  // namespace rawreel

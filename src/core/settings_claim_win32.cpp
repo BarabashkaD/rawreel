@@ -3,6 +3,7 @@
 #include <format>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -19,6 +20,20 @@
 namespace rawreel {
 
 namespace fs = std::filesystem;
+
+namespace {
+
+// FNV-1a 64 of `text`: the hash in the mutex name.
+std::uint64_t fnv1a64(std::string_view text) {
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (const char byte : text) {
+        hash ^= static_cast<unsigned char>(byte);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+}  // namespace
 
 std::unique_ptr<SettingsClaim> SettingsClaim::tryClaim(const fs::path& config) {
     std::error_code error;

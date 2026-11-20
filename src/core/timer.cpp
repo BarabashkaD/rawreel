@@ -3,8 +3,6 @@
 #include <chrono>
 #include <memory>
 
-#include "core/session_types.h"
-
 namespace rawreel {
 namespace {
 

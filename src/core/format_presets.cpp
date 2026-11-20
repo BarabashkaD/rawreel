@@ -98,7 +98,7 @@ std::span<const std::string_view> frameRatePresets() noexcept {
     return FRAME_RATES;
 }
 
-std::optional<std::size_t> findFrameRatePreset(dvv::media::Rational fps) noexcept {
+std::optional<std::size_t> findFrameRatePreset(dvv::media::Rational fps) {
     for (std::size_t i = 0; i < FRAME_RATES.size(); ++i) {
         if (parseFpsText(FRAME_RATES.at(i)) == fps) {
             return i;

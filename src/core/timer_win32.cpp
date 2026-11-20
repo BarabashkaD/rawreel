@@ -109,6 +109,7 @@ private:
 
     HANDLE timer_;
     HANDLE event_;
+    bool stop_ = false;   // guarded by mutex_
     std::thread thread_;  // last: starts after the handles exist
 };
 

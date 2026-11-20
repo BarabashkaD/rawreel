@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
-#include <string_view>
 
 namespace rawreel {
 
@@ -40,8 +39,5 @@ private:
     // Windows: the mutex HANDLE. POSIX: the open "<config>.lock" fd, holding the flock.
     std::intptr_t native_;
 };
-
-// FNV-1a 64 of `text`: the hash in the Windows mutex name.
-[[nodiscard]] std::uint64_t fnv1a64(std::string_view text);
 
 }  // namespace rawreel

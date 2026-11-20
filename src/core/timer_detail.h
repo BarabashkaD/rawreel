@@ -77,7 +77,6 @@ protected:
     dvv::MoveOnlyFunction<void()> callback_;
     std::uint64_t generation_ = 0;
     bool running_ = false;
-    bool stop_ = false;  // Windows only
 };
 
 }  // namespace detail

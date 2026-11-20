@@ -39,7 +39,7 @@ struct SizePreset {
 // The frame-rate combo's entries: 23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 100, 119.88, 120.
 [[nodiscard]] std::span<const std::string_view> frameRatePresets() noexcept;
 // The index of the entry whose parseFpsText() equals `fps`, or nullopt.
-[[nodiscard]] std::optional<std::size_t> findFrameRatePreset(dvv::media::Rational fps) noexcept;
+[[nodiscard]] std::optional<std::size_t> findFrameRatePreset(dvv::media::Rational fps);
 // "= 29.970 fps (30000/1001)", "= 25 fps" for an integer rate, "" for nullopt.
 [[nodiscard]] std::string frameRateValueLabel(std::optional<dvv::media::Rational> fps);
 

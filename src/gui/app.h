@@ -132,7 +132,7 @@ public:
     // The values in effect for this run.
     [[nodiscard]] const Config& config() const noexcept { return config_; }
     // log.source as the enum the log chain takes: the one conversion.
-    dvv::SourceSuffix sourceSuffix() const noexcept {
+    [[nodiscard]] dvv::SourceSuffix sourceSuffix() const noexcept {
         return config_.log.source ? dvv::SourceSuffix::With : dvv::SourceSuffix::Without;
     }
     // This process holds the settings claim of configPath() (spec §6.3): it alone may save.
@@ -204,7 +204,7 @@ public:
     [[nodiscard]] const std::shared_ptr<dvv::ComponentRegistry>& components() const noexcept {
         return startup_.components;
     }
-    // The FFmpeg status, capabilities and component registry of OnInit step 5 (design M4 v2 §4.6).
+    // The component registry of OnInit step 5 (design M4 v2 §4.6).
     [[nodiscard]] const Startup& startup() const noexcept { return startup_; }
     [[nodiscard]] const std::shared_ptr<dvv::IExecutor>& cpu() const noexcept { return cpu_; }
     [[nodiscard]] const std::shared_ptr<dvv::IExecutor>& io() const noexcept { return io_; }
@@ -278,7 +278,7 @@ private:
     std::shared_ptr<dvv::IExecutor> io_;
     std::shared_ptr<dvv::gpu::GpuInstance> gpu_instance_;
     std::optional<dvv::gpu::DeviceId> device_;
-    Startup startup_;  // the FFmpeg status and the component registry
+    Startup startup_;  // the component registry
     std::shared_ptr<DisplayState> display_;
     std::shared_ptr<ShowHistory> show_history_;
     std::shared_ptr<ProduceDelay> produce_delay_;
