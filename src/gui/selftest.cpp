@@ -6387,14 +6387,15 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
         std::filesystem::path dir;
         std::uint64_t dialogs0 = 0;
         bool formatHookRan = false;
-        dvv::media::ColourParams colourBefore{};  // the stream's colour before View > Format
-        ColourChoice colourRead{};                // the colour a format hook read
-        FormatChoice choiceRead{};                // the choice a format hook read (D5 T5b)
-        bool lockedRead = false;                  // FormatDialog::fieldsLocked() in a hook
-        bool flagRead = false;                    // another yes/no a format hook read
-        std::vector<std::string> textsRead;       // dialog texts a format hook read
-        std::uint64_t logNext = 0;                // logNext() at the step start
-        bool loopBefore = false;                  // loop wraps: the GUI's loop flag before the step
+        dvv::media::ColourParams colourBefore{};   // the stream's colour before View > Format
+        ColourChoice colourRead{};                 // the colour a format hook read
+        FormatChoice choiceRead{};                 // the choice a format hook read (D5 T5b)
+        bool lockedRead = false;                   // FormatDialog::fieldsLocked() in a hook
+        FormatDialog::FieldsEnabled fieldsRead{};  // FormatDialog::fieldsEnabled() in a hook
+        bool flagRead = false;                     // another yes/no a format hook read
+        std::vector<std::string> textsRead;        // dialog texts a format hook read
+        std::uint64_t logNext = 0;                 // logNext() at the step start
+        bool loopBefore = false;     // loop wraps: the GUI's loop flag before the step
         std::uint64_t ignored0 = 0;  // real input is ignored: SelfTestInput's count before
         std::chrono::steady_clock::time_point at;  // real input is ignored: the step start
         wxSize client0;  // the client size before "title of a file" widens it
@@ -8145,12 +8146,17 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             std::ofstream(st->dir / "broken.json", std::ios::binary).write("{", 1);
             st->textsRead.clear();
             st->choiceRead = {};
+            // All enabled until the hook reads them: a dialog that never opened cannot pass.
+            st->fieldsRead = {
+                .format = true, .size = true, .width = true, .height = true, .fps = true};
             st->lockedRead = false;
             st->flagRead = false;
             dialogHooks().format = [st, path = dvv::pathText(file)](FormatDialog& dialog) {
                 using Control = FormatDialog::Control;
                 std::vector<std::string>& texts = st->textsRead;
                 st->lockedRead = dialog.fieldsLocked();
+                // SourceInfo::fixed of a Y4M stream is all(): every field is disabled.
+                st->fieldsRead = dialog.fieldsEnabled();
                 st->flagRead = dialog.colourTakesInitialFocus();  // Enter presses OK
                 texts.push_back(dialog.lockedText().utf8_string());
                 // The Y4M header gives no colour: BT.709 by default, the range as the header says.
@@ -8203,10 +8209,15 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             for (const std::string& text : st->textsRead) {
                 texts += std::format("'{}' ", text);
             }
-            seen = std::format("locked {}, Colour first {}, texts {}, colour only {}, URI '{}'",
-                               st->lockedRead, st->flagRead, texts, colour_only, uri);
-            return st->lockedRead && st->flagRead && st->textsRead == expected && colour_only &&
-                   uri.contains("colour=bt2020") && stream_is(16, 16, "yuv420p");
+            const FormatDialog::FieldsEnabled& fields = st->fieldsRead;
+            const bool all_disabled =
+                !fields.format && !fields.size && !fields.width && !fields.height && !fields.fps;
+            seen = std::format(
+                "locked {}, all fields disabled {}, Colour first {}, texts {}, colour only {}, URI "
+                "'{}'",
+                st->lockedRead, all_disabled, st->flagRead, texts, colour_only, uri);
+            return st->lockedRead && all_disabled && st->flagRead && st->textsRead == expected &&
+                   colour_only && uri.contains("colour=bt2020") && stream_is(16, 16, "yuv420p");
         }));
     if constexpr (NATIVE_OS == Os::MacOs) {
         // Design C5: a file opened from Finder or the Dock (wxApp::MacOpenFiles) takes the route of

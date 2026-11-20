@@ -76,6 +76,8 @@ TEST_SUITE("core") {
             {sys_days{2024y / 2 / 29} + 12h + 34min + 56s, 124, 1, 29, 12, 34, 56, 4, 59},
             {sys_days{2023y / 12 / 31} + 23h + 59min + 59s, 123, 11, 31, 23, 59, 59, 0, 364},
             {sys_seconds{-1s}, 69, 11, 31, 23, 59, 59, 3, 364},
+            {sys_days{2100y / 3 / 1}, 200, 2, 1, 0, 0, 0, 1, 59},
+            {sys_days{1900y / 1 / 1}, 0, 0, 1, 0, 0, 0, 1, 0},
         };
         for (const Expected& expected : cases) {
             const std::tm tm = rawreel::utcBreakdown(expected.time);

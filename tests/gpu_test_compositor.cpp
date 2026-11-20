@@ -12,6 +12,7 @@
 #include <cstring>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -132,6 +133,27 @@ std::string describe(PixelSize extent) {
     return std::to_string(extent.width) + "x" + std::to_string(extent.height);
 }
 
+// A display-format frame bound as host planes, with no bytes: a display view whose binding is not
+// the display image, which the renderer must refuse.
+class HostDisplayFrame final : public dvv::media::IFrame {
+public:
+    explicit HostDisplayFrame(const dvv::media::ViewSpec& view)
+        : desc_{.format = view.format, .colour = view.colour, .width = 1, .height = 1},
+          view_(view) {}
+    [[nodiscard]] const dvv::media::FrameDesc& desc() const noexcept override { return desc_; }
+    [[nodiscard]] std::span<const dvv::media::ViewSpec> nativeViews() const noexcept override {
+        return {&view_, 1};
+    }
+    [[nodiscard]] dvv::media::Binding bind(const dvv::media::ViewSpec& /*native*/) const override {
+        return dvv::media::HostPlanesB{};
+    }
+    [[nodiscard]] std::size_t bytes() const noexcept override { return 0; }
+
+private:
+    dvv::media::FrameDesc desc_;
+    dvv::media::ViewSpec view_;
+};
+
 // One GPU instance, pools and component registry; a context on the best device, a GPU FrameStore
 // and a SourceFactory. Test-case locals (FrameSets, leases, renderer) are released first; then the
 // store, the factory and the context; then no validation message may have been counted.
@@ -169,6 +191,18 @@ public:
 
     [[nodiscard]] std::vector<dvv::media::LeaseInfo> outstandingLeases() const {
         return store_->outstandingLeases();
+    }
+
+    // A display-format view in host memory (HostDisplayFrame), adopted as frame `index`.
+    [[nodiscard]] dvv::media::ReadLease hostDisplayLease(std::int64_t index) {
+        const dvv::media::ViewSpec view{.format = dvv::media::displayFormat(),
+                                        .colour = dvv::media::displayColour(),
+                                        .layout = dvv::media::LayoutPolicy::Tight,
+                                        .domain = store_->hostDomain()};
+        auto lease = store_->adopt(dvv::media::FrameKey{.origin = 1, .index = index},
+                                   std::make_shared<HostDisplayFrame>(view));
+        REQUIRE_MESSAGE(lease, (lease ? std::string() : lease.error().describe()));
+        return lease ? std::move(*lease) : dvv::media::ReadLease{};
     }
 
     // A source for `uri`, attached to the store.
@@ -523,6 +557,38 @@ TEST_CASE_FIXTURE(CompositorTest,
     CHECK(wrong == 0);
     CHECK(renderer->lastRecorded().index == -1);
     CHECK(errors.lines().empty());
+    // The helper sees Error lines, so the empty check above is not vacuous.
+    DVV_LOG_ERROR("compositor test: the error log is live");
+    CHECK(errors.lines().size() == 1);
+}
+
+TEST_CASE_FIXTURE(CompositorTest,
+                  "compositor: a display view with another binding logs one Error per epoch") {
+    const dvv::media::ReadLease view = hostDisplayLease(0);
+    REQUIRE(dvv::media::isDisplay(view.view().format));
+    REQUIRE(dvv::media::vulkan::image(view, 0) == nullptr);
+    const ErrorLog errors;
+    const PixelSize viewport{211, 97};
+    const auto first = makeRenderer(context(), 1);
+    for (int i = 0; i < 3; ++i) {
+        const FrameSet frames{.index = 0, .count = 1, .views = {view.share()}, .epoch = 1};
+        const std::vector<std::byte> bytes = renderAndRead(*first, viewport, frames, DARK);
+        CHECK(pixelAt(bytes, viewport, 0, 0) == DARK_BG);
+        CHECK(first->lastRecorded().index == -1);
+    }
+    std::vector<std::string> lines = errors.lines();
+    REQUIRE(lines.size() == 1);
+    CHECK(lines.front().find("unexpected binding (epoch 1)") != std::string::npos);
+    // A renderer of the next epoch reports it again, once.
+    const auto second = makeRenderer(context(), 2);
+    for (int i = 0; i < 2; ++i) {
+        const FrameSet frames{.index = 0, .count = 1, .views = {view.share()}, .epoch = 2};
+        [[maybe_unused]] const std::vector<std::byte> bytes =
+            renderAndRead(*second, viewport, frames, DARK);
+    }
+    lines = errors.lines();
+    REQUIRE(lines.size() == 2);
+    CHECK(lines.back().find("unexpected binding (epoch 2)") != std::string::npos);
 }
 
 TEST_CASE_FIXTURE(CompositorTest,

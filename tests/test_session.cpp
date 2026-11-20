@@ -1018,6 +1018,8 @@ TEST_SUITE("session") {
                 SessionFixture f;
                 f.open(0, A);
                 REQUIRE(f.sink->waitShown(0));
+                // Session::create always builds the first stack, so this subcase reaches the
+                // open's buildStack spawn through a device loss, which drops the stack.
                 f.session->reportDeviceLost(1);
                 [[maybe_unused]] const SessionEvent lost = waitError(f, 1);
                 // No stack: the open builds one, and its open starts after buildStack.

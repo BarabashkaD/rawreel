@@ -426,6 +426,9 @@ TEST_SUITE("core") {
         check("file:shot_1920x1080_take2.yuv", 1920, 1080, "nv12");
         check("file:x_70000x10.yuv", 64, 32, "nv12");
         check("file:shots_640x480/clip_foo.yuv", 64, 32, "nv12");
+        check("file:dir\\clip_1920x1080_foo.yuv", 1920, 1080, "nv12");
+        check("file:dir_640x480\\clip_foo.yuv", 64, 32, "nv12");
+        check("file:clip_1920X1080_foo.yuv", 64, 32, "nv12");
     }
 
     TEST_CASE("format choice: lavfi refusal") {
