@@ -20,10 +20,9 @@
 #include "dvv/base/leak_check.h"
 #include "dvv/base/log.h"
 #include "gui/app.h"
+#include "gui/gui_platform.h"
 #if defined(_WIN32)
 #include "core/utf8_arguments_win32.h"
-#elif !defined(__APPLE__)
-#include "gui/gui_platform.h"
 #endif
 
 wxIMPLEMENT_APP_NO_MAIN(rawreel::App);
@@ -45,15 +44,13 @@ int run(std::span<const std::string_view> args, StartWx start_wx) {
         std::fputs(rawreel::USAGE, stdout);
         return rawreel::exit_code::SUCCESS;
     }
-#if !defined(_WIN32) && !defined(__APPLE__)
-    // Before wxEntry(): XInitThreads(), GDK limited to X11, then the DISPLAY check.
+    // Before wxEntry(), on Linux: XInitThreads(), GDK limited to X11, then the DISPLAY check.
     // Without a usable X display, GTK would fail inside wxEntry() with an unclear message.
-    if (const std::optional<std::string> problem = rawreel::prepareX11StartUp(); problem) {
+    if (const std::optional<std::string> problem = rawreel::prepareGuiStartUp(); problem) {
         std::fprintf(stderr, "rawreel-gui: %s\n", problem->c_str());
         return arguments->selftest != rawreel::Scenario::None ? rawreel::skipExitCode()
                                                               : rawreel::exit_code::BAD_ARGUMENTS;
     }
-#endif
     // At Info, the default level, until the App sets it to the active log level (log level
     // design §2.1).
     auto stderr_sink = std::make_shared<dvv::StderrSink>();

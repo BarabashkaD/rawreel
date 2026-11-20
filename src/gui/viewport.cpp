@@ -258,15 +258,9 @@ std::optional<RecordedInfo> Viewport::lastRecorded() const {
     return renderer_ ? std::optional(renderer_->lastRecorded()) : std::nullopt;
 }
 
+// On macOS the layer's own scale (it follows the backing scale and the backing_scale test hook).
 dvv::platform::PixelSize Viewport::physicalClientSize() const {
-#if defined(__WXOSX__)
-    // The layer's own scale (it follows the backing scale and the backing_scale test hook).
     return nativePixelSize(*this);
-#else
-    const wxSize size = ToPhys(GetClientSize());
-    return {.width = static_cast<std::uint32_t>(std::max(size.x, 0)),
-            .height = static_cast<std::uint32_t>(std::max(size.y, 0))};
-#endif
 }
 
 void Viewport::onPaint(wxPaintEvent& /*event*/) {

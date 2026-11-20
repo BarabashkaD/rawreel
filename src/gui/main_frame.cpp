@@ -198,7 +198,7 @@ bool isLiveLogFile(const std::filesystem::path& file, const std::filesystem::pat
     if (!std::filesystem::equivalent(file.parent_path(), log_folder, error) || error) {
         return false;
     }
-#if defined(_WIN32) || defined(__APPLE__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
     constexpr bool CASE_INSENSITIVE = true;
 #else
     constexpr bool CASE_INSENSITIVE = false;

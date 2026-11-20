@@ -179,31 +179,14 @@ private:
         return items;
     }
 
-    [[nodiscard]] std::size_t topRow() const {
-#if defined(__WXGTK__)
-        return dataViewTopRow(*view_).value_or(0);
-#else
-        const wxDataViewItem top = view_->GetTopItem();
-        return top.IsOk() ? model_->GetRow(top) : 0;
-#endif
-    }
+    [[nodiscard]] std::size_t topRow() const { return dataViewTopRow(*view_).value_or(0); }
 
-    // `row` at the top. GTK: a scroll aligned to the top (scrollDataViewRowToTop). Elsewhere
-    // EnsureVisible scrolls as little as it can, so a row below the view first goes to the end and
-    // then back up to the top edge.
+    // `row` at the top, per toolkit (scrollDataViewRowToTop).
     void showAtTop(std::size_t row) {
-        const std::size_t top = topRow();
-        if (top == row) {
+        if (topRow() == row) {
             return;
         }
-#if defined(__WXGTK__)
         scrollDataViewRowToTop(*view_, row);
-#else
-        if (top < row) {
-            view_->EnsureVisible(itemAt(model_->GetCount() - 1));
-        }
-        view_->EnsureVisible(itemAt(row));
-#endif
     }
 
     wxObjectDataPtr<LogListModel> model_;

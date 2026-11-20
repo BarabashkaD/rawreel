@@ -2,7 +2,7 @@
 
 // Queries on native controls that wx does not expose (video control panel spec §5.3), and their
 // accessible names (§7). One source file per toolkit: native_controls_msw.cpp,
-// native_controls_gtk.cpp, native_controls_cocoa.mm, and native_controls_stub.cpp for any other.
+// native_controls_gtk.cpp and native_controls_cocoa.mm.
 
 // clang-format off
 #include <wx/wx.h>  // first (R11)
@@ -81,30 +81,33 @@ void setSecondaryText(wxWindow& label);
 // never call it (selftest.h revealFile).
 void revealInFileManager(const std::filesystem::path& file_or_folder);
 
-#if defined(__WXOSX__)
-// Edit -> Undo and Redo in a text field (Log pane and Settings design §4.2). wxOSX maps neither
-// item to the native undo:/redo: (its menu event goes to the main window), and its
-// wxTextEntry::CanUndo() is false for every single-line field. These act on the undo manager of the
-// window's first responder when that is an editable NSTextView of `window` (a multi-line control,
-// or the field editor that is editing a single-line field or combo box): the manager the text view
-// registers its typing with. The call goes to that manager only, not down the responder chain,
-// whose window delegate would send it back to the main window as a menu event.
-[[nodiscard]] bool canUndoText(wxWindow& window, bool redo);
-bool undoText(wxWindow& window, bool redo);  // false when there was nothing to undo or redo
-// The NSWindow's representedFilename (spec §5, §8: what SetRepresentedFilename set); "" for none.
+// Edit -> Undo and Redo in a text field (Log pane and Settings design §4.2); `window` is the text
+// control and `entry` its wxTextEntry. MSW and GTK: the entry's wxTextEntry CanUndo()/CanRedo()
+// and Undo()/Redo(), and undoText returns true. wxOSX maps neither item to the native
+// undo:/redo: (its menu event goes to the main window), and its wxTextEntry::CanUndo() is false
+// for every single-line field. There these act on the undo manager of the window's first
+// responder when that is an editable NSTextView of `window` (a multi-line control, or the field
+// editor that is editing a single-line field or combo box): the manager the text view registers
+// its typing with. The call goes to that manager only, not down the responder chain, whose window
+// delegate would send it back to the main window as a menu event.
+[[nodiscard]] bool canUndoText(wxWindow& window, const wxTextEntry& entry, bool redo);
+// macOS: false when there was nothing to undo or redo.
+bool undoText(wxWindow& window, wxTextEntry& entry, bool redo);
+// macOS: the NSWindow's representedFilename (spec §5, §8: what SetRepresentedFilename set); ""
+// for none. MSW and GTK: "".
 [[nodiscard]] wxString representedFilename(wxTopLevelWindow& window);
-#endif
 
-#if defined(__WXGTK__)
-// `row` of a list wxDataViewCtrl at the top edge of its view: gtk_tree_view_scroll_to_cell with
-// the row aligned to the top. wxGTK's EnsureVisible scrolls as little as it can (no alignment), and
-// GTK 3 can animate the scroll, so a pair of them (to the end, then back up) may not be exact.
+// `row` of a list wxDataViewCtrl at the top edge of its view. GTK: gtk_tree_view_scroll_to_cell
+// with the row aligned to the top. wxGTK's EnsureVisible scrolls as little as it can (no
+// alignment), and GTK 3 can animate the scroll, so a pair of them (to the end, then back up) may
+// not be exact. MSW and macOS: EnsureVisible, so a row below the view first goes to the end and
+// then back up to the top edge.
 void scrollDataViewRowToTop(wxDataViewCtrl& view, std::size_t row);
-// The top row of a list wxDataViewCtrl: the first row of gtk_tree_view_get_visible_range (what
-// wxGTK's GetTopItem returns), or the row after it when that row's middle is above the view. With
-// the view starting exactly on a row's top edge, GTK can name the hidden row above as the first
-// visible one (measured on CI). nullopt: no row in view.
+// The top row of a list wxDataViewCtrl. GTK: the first row of gtk_tree_view_get_visible_range
+// (what wxGTK's GetTopItem returns), or the row after it when that row's middle is above the view.
+// With the view starting exactly on a row's top edge, GTK can name the hidden row above as the
+// first visible one (measured on CI). MSW and macOS: the row of GetTopItem(). nullopt: no row in
+// view.
 [[nodiscard]] std::optional<std::size_t> dataViewTopRow(wxDataViewCtrl& view);
-#endif
 
 }  // namespace rawreel

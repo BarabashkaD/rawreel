@@ -21,7 +21,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <exception>
 #include <format>
 #include <functional>
 #include <memory>
@@ -41,14 +40,11 @@
 #include "core/player.h"
 #include "core/timeline.h"
 #include "dvv/base/log.h"
+#include "dvv/base/move_only_function.h"
+#include "gui/gui_platform.h"
 #include "gui/native_controls.h"
 #include "gui/skim_key.h"
 #include "gui/transport_bar.h"
-#if defined(_WIN32)
-#include "core/utf8_arguments_win32.h"
-#elif !defined(__APPLE__)
-#include "gui/gui_platform.h"
-#endif
 
 namespace {
 
@@ -505,21 +501,17 @@ public:
 
 wxIMPLEMENT_APP_NO_MAIN(LabApp);
 
-namespace {
-
-// Parses, then runs wx through `start_wx`; returns the process exit code.
-template <class StartWx>
-int run(std::span<const std::string_view> args, StartWx start_wx) {
+// The lab's per-OS entries (panel_lab_win32.cpp, panel_lab_posix.cpp) call it with the arguments
+// after the program name: parses, then runs wx through `start_wx`; returns the process exit code.
+int run(std::span<const std::string_view> args, dvv::MoveOnlyFunction<int()> start_wx) {
     if (const std::optional<int> code = parseOptions(args, labOptions()); code) {
         return *code;
     }
-#if !defined(_WIN32) && !defined(__APPLE__)
-    // As rawreel-gui: XInitThreads(), GDK limited to X11, then the DISPLAY check.
-    if (const std::optional<std::string> problem = rawreel::prepareX11StartUp(); problem) {
+    // As rawreel-gui, on Linux: XInitThreads(), GDK limited to X11, then the DISPLAY check.
+    if (const std::optional<std::string> problem = rawreel::prepareGuiStartUp(); problem) {
         std::fprintf(stderr, "rawreel-panel-lab: %s\n", problem->c_str());
         return rawreel::skipExitCode();
     }
-#endif
     if (labOptions().debugTransport) {
         // The trace lines are DVV_LOG_INFO: they reach stderr through a sink, as in rawreel-gui.
         dvv::Logger::instance().addSink(std::make_shared<dvv::StderrSink>());
@@ -530,33 +522,3 @@ int run(std::span<const std::string_view> args, StartWx start_wx) {
     }
     return labExitCode();
 }
-
-}  // namespace
-
-#if defined(_WIN32)
-// A console program with wide arguments: the console entry point calls wmain.
-int wmain(int argc, wchar_t** argv) {
-    try {
-        const dvv::Result<std::vector<std::string>> utf8 = rawreel::utf8Arguments(argc, argv);
-        if (!utf8) {
-            std::fprintf(stderr, "rawreel-panel-lab: %s\n", utf8.error().message.c_str());
-            return FAILED;
-        }
-        const std::vector<std::string_view> args(utf8->begin() + 1, utf8->end());
-        return run(args, [&argc, argv] { return wxEntry(argc, argv); });
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "rawreel-panel-lab: %s\n", error.what());
-        return FAILED;
-    }
-}
-#else
-int main(int argc, char** argv) {
-    try {
-        const std::vector<std::string_view> args(argv + 1, argv + argc);
-        return run(args, [&argc, argv] { return wxEntry(argc, argv); });
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "rawreel-panel-lab: %s\n", error.what());
-        return FAILED;
-    }
-}
-#endif

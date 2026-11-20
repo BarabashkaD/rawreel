@@ -180,20 +180,16 @@ if(NOT DVV_SANITIZE)
                 src/gui/timeline_strip.cpp src/gui/transport_bar.cpp)
     target_link_libraries(rawreel_panel PUBLIC rawreel_core wx::core dvv::base
                                          PRIVATE dvv::media)
+    # The native controls per toolkit, and the start-up before wx (gui_platform: the X11 start-up
+    # on Linux, the stub elsewhere), for both programs.
+    dvv_os_sources(rawreel_panel src/gui/native_controls src/gui/gui_platform)
     if(WIN32)
-        target_sources(rawreel_panel PRIVATE src/gui/native_controls_msw.cpp)
         # native_controls_msw.cpp calls ShellExecuteW; dvv-base no longer links shell32.
         target_link_libraries(rawreel_panel PRIVATE shell32)
     elseif(UNIX AND NOT APPLE)
-        target_sources(rawreel_panel PRIVATE src/gui/native_controls_gtk.cpp)
-        target_link_libraries(rawreel_panel PRIVATE PkgConfig::GTK3)
+        target_link_libraries(rawreel_panel PRIVATE PkgConfig::GTK3 X11::X11)
     elseif(APPLE)
-        target_sources(rawreel_panel PRIVATE src/gui/native_controls_cocoa.mm)
-        set_source_files_properties(src/gui/native_controls_cocoa.mm PROPERTIES
-                                    COMPILE_OPTIONS -fobjc-arc)
         target_link_libraries(rawreel_panel PRIVATE "-framework AppKit")
-    else()
-        target_sources(rawreel_panel PRIVATE src/gui/native_controls_stub.cpp)
     endif()
     dvv_set_compiler_options(rawreel_panel)
     add_executable(rawreel_gui WIN32
@@ -261,23 +257,22 @@ if(NOT DVV_SANITIZE)
         COMMENT "Embedding the rawreel PNGs"
         VERBATIM)
     target_sources(rawreel_gui PRIVATE src/gui/app_icon.cpp "${rawreel_icon_data}")
+    # The viewport's native window per toolkit (viewport_msw.cpp, viewport_gtk.cpp,
+    # viewport_cocoa.mm).
+    dvv_os_sources(rawreel_gui src/gui/viewport)
     if(WIN32)
-        target_sources(rawreel_gui PRIVATE src/gui/viewport_msw.cpp)
         # The rawreel icon as the first icon group (Explorer, taskbar), then wx.rc.
         rawreel_icon_resource(rawreel_gui src/gui/rawreel-gui.rc)
         # wmain() in a GUI-subsystem program; the manifest comes from wx.rc (rawreel-gui.rc).
         target_link_options(rawreel_gui PRIVATE /ENTRY:wmainCRTStartup /MANIFEST:NO)
     elseif(UNIX AND NOT APPLE)
-        # Linux (wxGTK): the X11 start-up (gui_platform_gtk.cpp) and the viewport's X11 window.
-        target_sources(rawreel_gui PRIVATE src/gui/gui_platform_gtk.cpp src/gui/viewport_gtk.cpp)
+        # Linux (wxGTK): the viewport's X11 window.
         target_link_libraries(rawreel_gui PRIVATE PkgConfig::GTK3 X11::X11)
     elseif(APPLE)
         # macOS (wxOSX, Cocoa): the viewport's child NSView with its CAMetalLayer
-        # (viewport_cocoa.mm, ARC as in dvv-platform). rawreel-gui is an app bundle,
+        # (viewport_cocoa.mm). rawreel-gui is an app bundle,
         # rawreel-gui.app in the build tree, which finds the prefix's libraries through
         # CMAKE_BUILD_RPATH (ninja-macos preset); the packaged app uses its own Frameworks folder.
-        target_sources(rawreel_gui PRIVATE src/gui/viewport_cocoa.mm)
-        set_source_files_properties(src/gui/viewport_cocoa.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
         target_link_libraries(rawreel_gui PRIVATE "-framework AppKit" "-framework QuartzCore")
         # The app icon, square-background's .icns as delivered, copied into the build tree
         # as rawreel.icns and from there to Contents/Resources; the plist names it as
@@ -295,24 +290,19 @@ if(NOT DVV_SANITIZE)
             MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/packaging/Info.plist.in"
             MACOSX_BUNDLE_GUI_IDENTIFIER "${RAWREEL_DEV_BUNDLE_ID}"
             INSTALL_RPATH "@executable_path/../Frameworks")
-    else()
-        # Other toolkits: no native viewport yet (the viewport reports a failure).
-        target_sources(rawreel_gui PRIVATE src/gui/viewport_stub.cpp)
     endif()
     # rawreel_panel_lab (video control panel spec §10.1): the transport bar with a simulated
     # player, for the manual checks and its --report self-check. A console program; no install()
-    # rule: the lab is never packaged.
+    # rule: the lab is never packaged. Its entry point per OS: panel_lab_win32.cpp (wmain) and
+    # panel_lab_posix.cpp (main).
     add_executable(rawreel_panel_lab tools/panel_lab/panel_lab.cpp)
+    dvv_os_sources(rawreel_panel_lab tools/panel_lab/panel_lab)
     target_link_libraries(rawreel_panel_lab PRIVATE rawreel_panel dvv::base)
     set_target_properties(rawreel_panel_lab PROPERTIES OUTPUT_NAME rawreel-panel-lab)
     if(WIN32)
         # The manifest (common controls v6, per-monitor DPI awareness v2) comes from wx.rc.
         target_sources(rawreel_panel_lab PRIVATE tools/panel_lab/panel_lab.rc)
         target_link_options(rawreel_panel_lab PRIVATE /MANIFEST:NO)
-    elseif(UNIX AND NOT APPLE)
-        # rawreel-gui's X11 start-up (prepareX11StartUp).
-        target_sources(rawreel_panel_lab PRIVATE src/gui/gui_platform_gtk.cpp)
-        target_link_libraries(rawreel_panel_lab PRIVATE PkgConfig::GTK3 X11::X11)
     endif()
     dvv_set_compiler_options(rawreel_panel_lab)
 endif()

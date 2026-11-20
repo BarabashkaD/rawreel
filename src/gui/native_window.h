@@ -44,15 +44,15 @@ struct ViewportWindow {
 // the window's state directly).
 void syncNativeWindow(wxWindow& window);
 
-#if defined(__WXOSX__)
-// The presenter's extent: physicalPixelSize() of the child view's size in points and its layer's
-// contentsScale; without a child view, of the window's client size and its content scale factor.
+// The presenter's extent. wxOSX: physicalPixelSize() of the child view's size in points and its
+// layer's contentsScale; without a child view, of the window's client size and its content scale
+// factor. MSW and wxGTK: the client area in physical pixels (wx 3.3 ToPhys), negative sizes as 0.
 [[nodiscard]] dvv::platform::PixelSize nativePixelSize(const wxWindow& window);
 
-// Test only (the backing_scale selftest): `scale` > 0 replaces the window's backing scale factor
-// for the child view (0 gives it back), then the child's viewDidChangeBackingProperties runs, as
-// Cocoa runs it after a display change. False when the window has no child view (no presenter).
+// Test only (the backing_scale selftest). wxOSX: `scale` > 0 replaces the window's backing scale
+// factor for the child view (0 gives it back), then the child's viewDidChangeBackingProperties
+// runs, as Cocoa runs it after a display change. False when the window has no child view (no
+// presenter). MSW and wxGTK: false (no hook).
 bool setBackingScaleForTest(wxWindow& window, double scale);
-#endif
 
 }  // namespace rawreel

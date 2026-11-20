@@ -126,6 +126,25 @@ void revealInFileManager(const std::filesystem::path& file_or_folder) {
         wxString::FromUTF8("file://" + dvv::percentEncode(dvv::pathText(folder))));
 }
 
+// wx's own undo of the entry: `window` is the same control.
+bool canUndoText(wxWindow& /*window*/, const wxTextEntry& entry, bool redo) {
+    return redo ? entry.CanRedo() : entry.CanUndo();
+}
+
+bool undoText(wxWindow& /*window*/, wxTextEntry& entry, bool redo) {
+    if (redo) {
+        entry.Redo();
+    } else {
+        entry.Undo();
+    }
+    return true;
+}
+
+// No represented file on this toolkit.
+wxString representedFilename(wxTopLevelWindow& /*window*/) {
+    return {};
+}
+
 // A list model's path is the row alone. Aligned scrolls are deferred by GtkTreeView itself until
 // its rows are laid out, like EnsureVisible's.
 void scrollDataViewRowToTop(wxDataViewCtrl& view, std::size_t row) {

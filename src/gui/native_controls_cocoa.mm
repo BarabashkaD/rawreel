@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -17,6 +18,7 @@
 
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
+#include <wx/dataview.h>
 
 #include "dvv/base/utf8.h"
 #include "gui/native_controls.h"
@@ -152,12 +154,12 @@ NSUndoManager* textUndoManager(wxWindow& window) {
 
 }  // namespace
 
-bool canUndoText(wxWindow& window, bool redo) {
+bool canUndoText(wxWindow& window, const wxTextEntry& /*entry*/, bool redo) {
     NSUndoManager* const manager = textUndoManager(window);
     return manager != nil && (redo ? [manager canRedo] : [manager canUndo]);
 }
 
-bool undoText(wxWindow& window, bool redo) {
+bool undoText(wxWindow& window, wxTextEntry& /*entry*/, bool redo) {
     NSUndoManager* const manager = textUndoManager(window);
     if (manager == nil || !(redo ? [manager canRedo] : [manager canUndo])) {
         return false;
@@ -229,6 +231,29 @@ void setSecondaryText(wxWindow& label) {
     label.SetForegroundColour(
         wxColour(channel([colour redComponent]), channel([colour greenComponent]),
                  channel([colour blueComponent]), channel([colour alphaComponent])));
+}
+
+// The log list's model is a wxDataViewVirtualListModel: an item names its row.
+std::optional<std::size_t> dataViewTopRow(wxDataViewCtrl& view) {
+    const auto* const model = dynamic_cast<const wxDataViewVirtualListModel*>(view.GetModel());
+    const wxDataViewItem top = view.GetTopItem();
+    if (model == nullptr || !top.IsOk()) {
+        return std::nullopt;
+    }
+    return model->GetRow(top);
+}
+
+// EnsureVisible scrolls as little as it can, so a row below the view first goes to the end and
+// then back up to the top edge.
+void scrollDataViewRowToTop(wxDataViewCtrl& view, std::size_t row) {
+    const auto* const model = dynamic_cast<const wxDataViewVirtualListModel*>(view.GetModel());
+    if (model == nullptr) {
+        return;
+    }
+    if (dataViewTopRow(view).value_or(0) < row) {
+        view.EnsureVisible(model->GetItem(model->GetCount() - 1));
+    }
+    view.EnsureVisible(model->GetItem(static_cast<unsigned>(row)));
 }
 
 }  // namespace rawreel

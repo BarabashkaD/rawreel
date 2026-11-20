@@ -614,7 +614,7 @@ SelfTestStep movedPaneStep(SelfTest* test, const SharedState& state, bool back) 
 SelfTestStep hideStep(SelfTest* test, const SharedState& state) {
     auto start = [test, state] {
         markStart(test->frame().viewport(), *state);
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         test->frame().Iconize(true);  // Windows and Cocoa minimise a window themselves
 #else
         test->frame().Hide();  // X11: no WM-independent iconify (Xvfb has no WM); Hide/Show
@@ -645,7 +645,7 @@ SelfTestStep hideStep(SelfTest* test, const SharedState& state) {
 SelfTestStep restoreStep(SelfTest* test, const SharedState& state) {
     auto start = [test, state] {
         markStart(test->frame().viewport(), *state);
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         test->frame().Iconize(false);
 #else
         test->frame().Show();  // X11: no WM-independent iconify; Hide/Show
@@ -979,7 +979,7 @@ SelfTestStep infoWindowOpensStep(SelfTest* test, const std::shared_ptr<InfoWindo
         if (!keyed) {
             return false;
         }
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         const bool placed = requested == expected && actual == requested;
 #else
         const bool placed = requested == expected;  // X11: the window manager may move it
@@ -1061,7 +1061,7 @@ SelfTestStep infoWindowMinimisedStep(SelfTest* test,
         state->phase = 0;
         const InfoWindow* const info = test->frame().infoWindow();
         state->requestedBefore = info != nullptr ? info->requestedRectForTest() : wxRect();
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         test->frame().Iconize(true);
 #else
         test->frame().Hide();  // X11: no WM-independent iconify (as hideStep)
@@ -1093,7 +1093,7 @@ SelfTestStep infoWindowMinimisedStep(SelfTest* test,
                 // shown again by the restore.
                 frame.setInfoShown(false);
                 frame.setInfoShown(true);
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
                 frame.Iconize(false);
 #else
                 frame.Show();
@@ -1101,7 +1101,7 @@ SelfTestStep infoWindowMinimisedStep(SelfTest* test,
             }
             return false;
         }
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         const bool placed = requested == state->requestedBefore && actual == requested;
 #else
         const bool placed = requested == state->requestedBefore;  // X11: the WM may move it
@@ -1123,7 +1123,7 @@ SelfTestStep infoWindowFirstShownMinimisedStep(SelfTest* test,
         if (InfoWindow* const info = frame.infoWindow(); info != nullptr) {
             info->forgetPlaceForTest();
         }
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         frame.Iconize(true);
 #else
         frame.Hide();  // X11: no WM-independent iconify (as hideStep)
@@ -1136,7 +1136,7 @@ SelfTestStep infoWindowFirstShownMinimisedStep(SelfTest* test,
             seen = "no Info window";
             return false;
         }
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         const bool frame_down = frame.IsIconized();
 #else
         const bool frame_down = !frame.IsShown();
@@ -1164,7 +1164,7 @@ SelfTestStep infoWindowFirstShownMinimisedStep(SelfTest* test,
                 if (frame_down && !info->IsShown() && frame.infoShown()) {
                     DVV_LOG_INFO("selftest: info window first shown minimised: {}", seen);
                     state->phase = 2;
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
                     frame.Iconize(false);
 #else
                     frame.Show();
@@ -1173,7 +1173,7 @@ SelfTestStep infoWindowFirstShownMinimisedStep(SelfTest* test,
                 return false;
             default: break;
         }
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         const bool placed = requested == expected && actual == requested;
 #else
         const bool placed = requested == expected;  // X11: the window manager may move it
@@ -2403,7 +2403,7 @@ SelfTestStep saveOverLiveLogStep(SelfTest* test, const std::shared_ptr<EditState
 // and the message names the current file.
 SelfTestStep saveOverLogFileStep(SelfTest* test, const std::shared_ptr<EditState>& state) {
     auto start = [test, state] {
-#if defined(_WIN32) || defined(__APPLE__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         const std::string name = "RawReel-20200101-000000.LOG";
 #else
         const std::string name = "rawreel-20200101-000000.log";
