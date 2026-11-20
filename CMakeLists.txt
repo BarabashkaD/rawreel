@@ -74,6 +74,7 @@ add_library(rawreel_core STATIC
     src/core/view.cpp)
 # The UTF-16 to UTF-8 arguments of the Windows entries: src/core/utf8_arguments_win32.cpp.
 dvv_os_sources(rawreel_core OPTIONAL src/core/utf8_arguments)
+dvv_os_sources(rawreel_core src/core/settings_claim src/core/timer)
 target_include_directories(rawreel_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # core/native_os.h: the OS this build targets, from the system name (dvv-build's split).
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")

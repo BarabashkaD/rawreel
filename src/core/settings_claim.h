@@ -5,8 +5,10 @@
 // canonical path (weakly_canonical), so two spellings of one file conflict. The OS releases the
 // claim when the process ends, so a crash leaves no stale owner. wx-free.
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <string_view>
 
 namespace rawreel {
 
@@ -34,13 +36,12 @@ public:
     ~SettingsClaim();
 
 private:
-#if defined(_WIN32)
-    explicit SettingsClaim(void* mutex) noexcept : mutex_(mutex) {}
-    void* mutex_;  // HANDLE
-#else
-    explicit SettingsClaim(int lock_file) noexcept : lock_file_(lock_file) {}
-    int lock_file_;  // the open "<config>.lock", holding the flock
-#endif
+    explicit SettingsClaim(std::intptr_t native) noexcept : native_(native) {}
+    // Windows: the mutex HANDLE. POSIX: the open "<config>.lock" fd, holding the flock.
+    std::intptr_t native_;
 };
+
+// FNV-1a 64 of `text`: the hash in the Windows mutex name.
+[[nodiscard]] std::uint64_t fnv1a64(std::string_view text);
 
 }  // namespace rawreel

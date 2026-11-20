@@ -2,10 +2,7 @@
 1	src/cli/main.cpp
 1	src/core/commands.cpp
 1	src/core/gui_arguments.cpp
-2	src/core/settings_claim.cpp
-1	src/core/settings_claim.h
 1	src/core/stream_name.h
-2	src/core/timer.cpp
 3	src/gui/app.cpp
 1	src/gui/app.h
 5	src/gui/app_icon.cpp
