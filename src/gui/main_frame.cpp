@@ -336,7 +336,7 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     viewport_->SetDropTarget(new DropTarget(open));
     // NOLINTNEXTLINE(cppcoreguidelines-owning-memory): wx takes ownership
     player_->SetDropTarget(new DropTarget(open));
-    log_ = new LogPanel(this, wxGetApp().config().log.source);
+    log_ = new LogPanel(this, wxGetApp().sourceSuffix());
     log_->setSaveHandler([this](bool selected) {  // the list's context menu (spec §4.3)
         execute(selected ? Command::SaveSelectedLines : Command::SaveLog, CommandSource::Menu);
     });

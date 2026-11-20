@@ -33,10 +33,10 @@ enum class FolderCreation : std::uint8_t {
                                                  FolderCreation creation);
 
 // prepareLogFolder, then SplitFileSink::open(folder, LOG_FILE_PREFIX, LOG_FILE_BYTES,
-// append_newest): append_newest appends to the newest log file below the limit, false always
+// open): AppendNewest appends to the newest log file below the limit, NewFile always
 // creates a new file.
 [[nodiscard]] dvv::Result<std::shared_ptr<dvv::SplitFileSink>> openLogFile(
-    const std::filesystem::path& folder, FolderCreation creation, bool append_newest);
+    const std::filesystem::path& folder, FolderCreation creation, dvv::SplitOpen open);
 
 // `name` is a log file's name: strictly rawreel-YYYYMMDD-HHMMSS.log or
 // rawreel-YYYYMMDD-HHMMSS-N.log (N 1 to 9 digits, no leading zero), as SplitFileSink parses it.
@@ -45,13 +45,13 @@ enum class FolderCreation : std::uint8_t {
 
 class LogFileSwitch final : public dvv::ILogSink {
 public:
-    // To the file, if any, as formatLogRecord(record, with_source); `line` is not used.
+    // To the file, if any, as formatLogRecord(record, suffix); `line` is not used.
     void write(const dvv::LogRecord& record, std::string_view line) override;
     void batchEnd() override;
     void flush() override;
     // Whether live lines keep " [file.cpp:42]" (log.source); false by default. Set at start,
     // before any record.
-    void setWithSource(bool with_source) noexcept;
+    void setSourceSuffix(dvv::SourceSuffix suffix) noexcept;
     // Under the switch's mutex: writes each `backfill` entry's line unchanged into `file` (when
     // non-null), then swaps it in. Returns the old sink, which the caller drops outside any lock.
     // Null: no log file.
@@ -68,7 +68,7 @@ public:
 private:
     mutable std::mutex mutex_;
     std::shared_ptr<dvv::SplitFileSink> file_;
-    std::atomic<bool> with_source_{false};
+    std::atomic<dvv::SourceSuffix> suffix_{dvv::SourceSuffix::Without};
 };
 
 }  // namespace rawreel

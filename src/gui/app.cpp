@@ -386,8 +386,9 @@ bool App::startLogAndConfig() {
     }
     // Addendum §4: log.source for the store's lines and the file's live lines; the lines the
     // store took before this keep the default (no source).
-    log_store_->setWithSource(config_.log.source);
-    log_file_->setWithSource(config_.log.source);
+    const dvv::SourceSuffix suffix = sourceSuffix();
+    log_store_->setSourceSuffix(suffix);
+    log_file_->setSourceSuffix(suffix);
     applyLevel(config_.log.level);  // addendum §2.2: the active level is log.level
     level_source_ = config_.log.levelSaved ? LevelSource::Settings : LevelSource::Default;
     useSystemLog(config_.log.system.enabled);
@@ -589,7 +590,9 @@ dvv::Result<std::shared_ptr<dvv::SplitFileSink>> App::prepareLogFile(
 dvv::Result<std::shared_ptr<dvv::SplitFileSink>> App::openLogFileIn(
     const std::filesystem::path& folder, FolderCreation creation) {
     DVV_TRY(std::shared_ptr<dvv::SplitFileSink> sink,
-            rawreel::openLogFile(folder, creation, ownsSettings()));
+            rawreel::openLogFile(
+                folder, creation,
+                ownsSettings() ? dvv::SplitOpen::AppendNewest : dvv::SplitOpen::NewFile));
     // Runs under the sink's mutex, on the thread whose line starts a new file: it only builds the
     // text (no logging, no lock of ours); the level comes from the shared atomic. A new file from
     // open() gets its header here at once; an appended one gets none.

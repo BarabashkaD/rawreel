@@ -127,6 +127,10 @@ public:
     [[nodiscard]] const std::filesystem::path& configPath() const noexcept { return config_path_; }
     // The values in effect for this run.
     [[nodiscard]] const Config& config() const noexcept { return config_; }
+    // log.source as the enum the log chain takes: the one conversion.
+    dvv::SourceSuffix sourceSuffix() const noexcept {
+        return config_.log.source ? dvv::SourceSuffix::With : dvv::SourceSuffix::Without;
+    }
     // This process holds the settings claim of configPath() (spec §6.3): it alone may save.
     [[nodiscard]] bool ownsSettings() const noexcept { return settings_claim_ != nullptr; }
     // The only way rawreel-gui writes its config (spec §5.4, §6.3): false, and nothing written,
@@ -203,7 +207,7 @@ public:
 
 private:
     // OnInit() steps 2 to 4 of spec §5.3 "At start" and §7.1: the selftest config, the config,
-    // the settings claim (before the log file, whose append_newest is ownsSettings()), the
+    // the settings claim (before the log file, whose open mode follows ownsSettings()), the
     // source flag and the active level (addendum §2.1, §4), the system log, the log file and the
     // start marker (addendum §3.1). False (after finish()) when a selftest's own config folder
     // cannot be made.
@@ -218,8 +222,8 @@ private:
     // the switch first gets the lines the store already holds at or above the active level
     // (addendum §2.3), then the file's "log file: '<path>'" line follows.
     void startLogFile();
-    // openLogFile(folder, creation, ownsSettings()) with the header of each new file (addendum
-    // §5.2): logFileHeader(active level, the previous file's name).
+    // openLogFile with the open mode that ownsSettings() picks, and with the header of each new
+    // file (addendum §5.2): logFileHeader(active level, the previous file's name).
     [[nodiscard]] dvv::Result<std::shared_ptr<dvv::SplitFileSink>> openLogFileIn(
         const std::filesystem::path& folder, FolderCreation creation);
     // The levels of the log file switch, the store and the stderr sink, and activeLevel().

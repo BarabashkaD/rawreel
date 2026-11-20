@@ -53,9 +53,9 @@ private:
 
 class ListCtrlLogList final : public LogList {
 public:
-    ListCtrlLogList(wxWindow* parent, const LogMirror& mirror, bool with_source)
+    ListCtrlLogList(wxWindow* parent, const LogMirror& mirror, dvv::SourceSuffix suffix)
         : LogList(parent, mirror), list_(new VirtualListCtrl(this, mirror)) {
-        for (std::size_t column = 0; column < logListColumns(with_source); ++column) {
+        for (std::size_t column = 0; column < logListColumns(suffix); ++column) {
             const std::string_view title = LOG_LIST_COLUMNS[column];
             list_->AppendColumn(wxString::FromUTF8(title.data(), title.size()), wxLIST_FORMAT_LEFT,
                                 FromDIP(COLUMN_WIDTHS_DIP[column]));
@@ -207,8 +207,9 @@ private:
 
 }  // namespace
 
-LogList* createListCtrlLogList(wxWindow* parent, const LogMirror& mirror, bool with_source) {
-    return new ListCtrlLogList(parent, mirror, with_source);
+LogList* createListCtrlLogList(wxWindow* parent, const LogMirror& mirror,
+                               dvv::SourceSuffix suffix) {
+    return new ListCtrlLogList(parent, mirror, suffix);
 }
 
 }  // namespace rawreel

@@ -47,13 +47,13 @@ private:
 
 class DataViewLogList final : public LogList {
 public:
-    DataViewLogList(wxWindow* parent, const LogMirror& mirror, bool with_source)
+    DataViewLogList(wxWindow* parent, const LogMirror& mirror, dvv::SourceSuffix suffix)
         : LogList(parent, mirror),
           model_(new LogListModel(mirror)),
           view_(
               new wxDataViewCtrl(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxDV_MULTIPLE)) {
         view_->AssociateModel(model_.get());
-        for (std::size_t column = 0; column < logListColumns(with_source); ++column) {
+        for (std::size_t column = 0; column < logListColumns(suffix); ++column) {
             const std::string_view title = LOG_LIST_COLUMNS[column];
             view_->AppendTextColumn(wxString::FromUTF8(title.data(), title.size()),
                                     static_cast<unsigned>(column), wxDATAVIEW_CELL_INERT,
@@ -212,8 +212,9 @@ private:
 
 }  // namespace
 
-LogList* createDataViewLogList(wxWindow* parent, const LogMirror& mirror, bool with_source) {
-    return new DataViewLogList(parent, mirror, with_source);
+LogList* createDataViewLogList(wxWindow* parent, const LogMirror& mirror,
+                               dvv::SourceSuffix suffix) {
+    return new DataViewLogList(parent, mirror, suffix);
 }
 
 }  // namespace rawreel

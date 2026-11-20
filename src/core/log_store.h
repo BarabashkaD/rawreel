@@ -30,7 +30,7 @@ struct LogEntry {
     std::string message;
     std::source_location where;  // the record's call site (its strings are static)
     bool mark = false;           // a marker line (Logger::mark), never counted
-    // formatLogRecord(record, with_source) with the store's flag: what copy, save and the log
+    // formatLogRecord(record, suffix) with the store's suffix: what copy, save and the log
     // file's backfill use.
     std::string line;
 };
@@ -54,7 +54,7 @@ public:
     void write(const dvv::LogRecord& record, std::string_view line) override;
     // Whether the lines keep " [file.cpp:42]" (log.source); false by default. Set at start,
     // before any record.
-    void setWithSource(bool with_source) noexcept;
+    void setSourceSuffix(dvv::SourceSuffix suffix) noexcept;
     // Called after the first record that follows a take() (or the call itself), until the next
     // take(). Empty: none.
     void setNotify(std::function<void()> notify);
@@ -70,7 +70,7 @@ private:
     LogCounts counts_;
     bool pending_ = false;  // true only after notify_ was called, until take()
     std::function<void()> notify_;
-    std::atomic<bool> with_source_{false};
+    std::atomic<dvv::SourceSuffix> suffix_{dvv::SourceSuffix::Without};
 };
 
 }  // namespace rawreel

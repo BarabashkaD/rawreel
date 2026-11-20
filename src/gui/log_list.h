@@ -32,8 +32,9 @@ enum class LogListKind : std::uint8_t { ListCtrl, DataView };
 inline constexpr std::array<std::string_view, 4> LOG_LIST_COLUMNS{"Time (local)", "Level",
                                                                   "Message", "Source"};
 // The columns shown (addendum §4): Source only with log.source.
-[[nodiscard]] constexpr std::size_t logListColumns(bool with_source) noexcept {
-    return with_source ? LOG_LIST_COLUMNS.size() : LOG_LIST_COLUMNS.size() - 1;
+[[nodiscard]] constexpr std::size_t logListColumns(dvv::SourceSuffix suffix) noexcept {
+    return suffix == dvv::SourceSuffix::With ? LOG_LIST_COLUMNS.size()
+                                             : LOG_LIST_COLUMNS.size() - 1;
 }
 
 // Whether a row is in view: `row` is its rectangle in the control's client coordinates (empty when
@@ -54,9 +55,10 @@ inline constexpr std::array<std::string_view, 4> LOG_LIST_COLUMNS{"Time (local)"
 class LogList : public wxPanel {
 public:
     // A new list of `kind`, a child of `parent`, reading `mirror` (which outlives it), with the
-    // Source column only when `with_source` (log.source); empty until rebuild() or applyBatch().
+    // Source column only with SourceSuffix::With (log.source); empty until rebuild() or
+    // applyBatch().
     [[nodiscard]] static LogList* create(wxWindow* parent, const LogMirror& mirror,
-                                         LogListKind kind, bool with_source);
+                                         LogListKind kind, dvv::SourceSuffix suffix);
 
     // The rows from the mirror, no selection, the last row visible.
     virtual void rebuild() = 0;
@@ -97,8 +99,8 @@ private:
 
 // The adapters (log_list_listctrl.cpp, log_list_dataview.cpp).
 [[nodiscard]] LogList* createListCtrlLogList(wxWindow* parent, const LogMirror& mirror,
-                                             bool with_source);
+                                             dvv::SourceSuffix suffix);
 [[nodiscard]] LogList* createDataViewLogList(wxWindow* parent, const LogMirror& mirror,
-                                             bool with_source);
+                                             dvv::SourceSuffix suffix);
 
 }  // namespace rawreel
