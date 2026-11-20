@@ -8741,13 +8741,15 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             bool mkvLocked = false;
             bool rawAsked = false;
             bool rawSeen = false;
-            bool rawLocked = true;
+            bool rawFormat = false;  // the format list is enabled
+            bool rawSize = false;    // the size list and both spins are enabled
+            bool rawFps = false;     // the fps box is enabled
         };
         auto lock = std::make_shared<Lock>();
-        auto read_lock = [&frame](bool& seen, bool& locked) {
-            dialogHooks().format = [&seen, &locked](FormatDialog& dialog) {
+        auto read_lock = [&frame](bool& seen, const std::function<void(FormatDialog&)>& read) {
+            dialogHooks().format = [&seen, &read](FormatDialog& dialog) {
                 seen = true;
-                locked = dialog.fieldsLocked();
+                read(dialog);
             };
             frame.execute(Command::Format);
             dialogHooks().format = nullptr;
@@ -8756,7 +8758,9 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             "format dialog: locked for an MKV, editable for a raw file",
             [&frame, st, lock, read_lock] {
                 st->dialogs0 = frame.formatDialogsShown();
-                read_lock(lock->mkvSeen, lock->mkvLocked);
+                read_lock(lock->mkvSeen, [lock](FormatDialog& dialog) {
+                    lock->mkvLocked = dialog.fieldsLocked();
+                });
                 const auto file = st->dir / "fixed_16x16_gray.yuv";
                 writeFile(file, 512, '\x40');  // 2 frames of gray 16x16
                 dropFiles(frame.viewport(), {file});
@@ -8764,11 +8768,35 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             [&frame, st, lock, read_lock, stream_is](std::string& seen) {
                 if (stream_is(16, 16, "gray") && !lock->rawAsked) {
                     lock->rawAsked = true;
-                    read_lock(lock->rawSeen, lock->rawLocked);
+                    read_lock(lock->rawSeen, [lock](FormatDialog& dialog) {
+                        // The format, size and fps controls are the dialog's children in creation
+                        // order: two lists (format, size), two spins, the fps box.
+                        std::vector<const wxChoice*> lists;
+                        std::vector<const wxSpinCtrl*> spins;
+                        const wxComboBox* fps = nullptr;
+                        for (const wxWindow* child : dialog.GetChildren()) {
+                            if (const auto* list = dynamic_cast<const wxChoice*>(child)) {
+                                lists.push_back(list);
+                            } else if (const auto* spin = dynamic_cast<const wxSpinCtrl*>(child)) {
+                                spins.push_back(spin);
+                            } else if (const auto* box = dynamic_cast<const wxComboBox*>(child)) {
+                                fps = box;
+                            }
+                        }
+                        if (lists.size() >= 2 && spins.size() == 2 && fps != nullptr) {
+                            lock->rawFormat = lists[0]->IsEnabled();
+                            lock->rawSize = lists[1]->IsEnabled() && spins[0]->IsEnabled() &&
+                                            spins[1]->IsEnabled();
+                            lock->rawFps = fps->IsEnabled();
+                        }
+                    });
                 }
-                seen = std::format("MKV dialog {} locked {}, raw dialog {} locked {}",
-                                   lock->mkvSeen, lock->mkvLocked, lock->rawSeen, lock->rawLocked);
-                return lock->mkvSeen && lock->mkvLocked && lock->rawSeen && !lock->rawLocked &&
+                seen = std::format(
+                    "MKV dialog {} locked {}, raw dialog {} enabled: format {} size {} fps {}",
+                    lock->mkvSeen, lock->mkvLocked, lock->rawSeen, lock->rawFormat, lock->rawSize,
+                    lock->rawFps);
+                return lock->mkvSeen && lock->mkvLocked && lock->rawSeen && lock->rawFormat &&
+                       lock->rawSize && lock->rawFps &&
                        frame.formatDialogsShown() >= st->dialogs0 + 2;
             }));
     } else if (ffmpegRequired()) {
