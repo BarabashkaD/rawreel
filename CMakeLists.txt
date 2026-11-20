@@ -27,6 +27,7 @@ if(NOT DVV_CMAKE_DIR)
     message(FATAL_ERROR "dvv_base did not define DVV_CMAKE_DIR")
 endif()
 include("${DVV_CMAKE_DIR}/DvvCompilerOptions.cmake")
+include("${DVV_CMAKE_DIR}/DvvOsSources.cmake")
 
 # rawreel_render: the rendering of rawreel-gui that needs no wx (the display state and the viewport
 # compositor), so unit, GPU and sanitizer builds use it without the GUI.
@@ -72,6 +73,15 @@ add_library(rawreel_core STATIC
     src/core/timer.cpp
     src/core/view.cpp)
 target_include_directories(rawreel_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+# core/native_os.h: the OS this build targets, from the system name (dvv-build's split).
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(rawreel_native_os Windows)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set(rawreel_native_os MacOs)
+else()
+    set(rawreel_native_os Linux)
+endif()
+target_compile_definitions(rawreel_core PUBLIC RAWREEL_NATIVE_OS=${rawreel_native_os})
 dvv_set_compiler_options(rawreel_core)
 
 # rawreel_dvv_version(<package> <out>): the version of a dvv package with its release stage

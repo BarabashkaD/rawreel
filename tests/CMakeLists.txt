@@ -63,6 +63,7 @@ add_executable(rawreel_core_tests
     test_session_notify.cpp test_session_storm.cpp test_session_types.cpp test_settings_claim.cpp
     test_open_text.cpp test_recent.cpp test_source_provider.cpp test_startup.cpp test_vulkan_driver.cpp
     test_status_text.cpp test_stream_name.cpp test_svg_colour.cpp test_timeline.cpp test_timer.cpp test_view.cpp)
+dvv_os_sources(rawreel_core_tests test_native_os)
 target_link_libraries(rawreel_core_tests PRIVATE rawreel_core doctest::doctest)
 dvv_link_components(rawreel_core_tests dvv::media_sources)
 # RAWREEL_VERSION: the version packageVersions() must report for rawreel.
