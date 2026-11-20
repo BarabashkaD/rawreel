@@ -65,6 +65,7 @@
 #include "gui/log_panel.h"
 #include "gui/player_panel.h"
 #include "gui/selftest.h"
+#include "gui/native_policy.h"
 #include "gui/settings.h"
 #include "gui/transport_bar.h"
 #include "gui/viewport.h"
@@ -105,8 +106,8 @@ constexpr int VARIABLE_FIELDS_MINIMUM_DIP = FILE_FIELD_MINIMUM_DIP *
                                              VARIABLE_FIELD_SHARES[2] + VARIABLE_FIELD_SHARES[3]) /
                                             VARIABLE_FIELD_SHARES[0];
 
-#if defined(__WXOSX__)
-// View -> Show Log / Hide Log (spec §2): the macOS item's title.
+// View -> Show Log / Hide Log (spec §2): the item's title where it changes
+// (nativePolicy::logItemHasChangingTitle).
 wxString logItemTitle(bool shown) {
     return shown ? "Hide Log" : "Show Log";
 }
@@ -118,7 +119,6 @@ wxString infoItemTitle(bool shown) {
     const wxString title = shown ? "Hide Info" : "Show Info";
     return info.key ? title + "\t" + wxString::FromUTF8(keyText(*info.key)) : title;
 }
-#endif
 
 // The wx key codes Task 4's normaliser names (core/commands.cpp, D17).
 static_assert(WXK_ESCAPE == 27 && WXK_SPACE == 32);
@@ -262,14 +262,9 @@ int menuId(Command command) noexcept {
     if (command == Command::Settings) {
         return wxID_PREFERENCES;
     }
-#if defined(__WXOSX__)
-    if (command == Command::About) {
-        return wxID_ABOUT;
+    if (const std::optional<int> stock = nativePolicy::stockId(command); stock) {
+        return *stock;
     }
-    if (command == Command::Quit) {
-        return wxID_EXIT;
-    }
-#endif
     return COMMAND_ID_BASE + static_cast<int>(command);
 }
 
@@ -277,14 +272,9 @@ std::optional<Command> commandOfMenuId(int id) noexcept {
     if (id == wxID_PREFERENCES) {
         return Command::Settings;
     }
-#if defined(__WXOSX__)
-    if (id == wxID_ABOUT) {
-        return Command::About;
+    if (const std::optional<Command> stock = nativePolicy::commandOfStockId(id); stock) {
+        return stock;
     }
-    if (id == wxID_EXIT) {
-        return Command::Quit;
-    }
-#endif
     if (id < COMMAND_ID_BASE || id > LAST_COMMAND_ID) {
         return std::nullopt;
     }
@@ -489,30 +479,26 @@ void MainFrame::buildMenus() {
         // show their key without "\t" (Task 10 dispatches them).
         const wxString label = wxString::FromUTF8(menuLabel(info));
         const wxString help = wxString::FromUTF8(info.help);
-#if defined(__WXGTK__)
-        if (info.command == Command::Settings) {
+        if (nativePolicy::settingsAtEndOfEdit() && info.command == Command::Settings) {
             continue;  // Edit -> Preferences..., below
         }
-#endif
-#if defined(__WXOSX__)
-        // Spec §2: macOS shows and hides a part of a window with a title that changes, not a
-        // check mark ("checkable" does not apply); onUpdateUi keeps the title.
-        if (info.command == Command::LogPane) {
-            menu->Append(menuId(info.command), logItemTitle(logShown()), help);
-            continue;
-        }
-        if (info.command == Command::InfoWindow) {
-            menu->Append(menuId(info.command), infoItemTitle(infoShown()), help);
-            continue;
-        }
-        menu->Append(menuId(info.command), label, help);
-#else
-        if (info.checkable) {
+        if (nativePolicy::logItemHasChangingTitle()) {
+            // Spec §2: macOS shows and hides a part of a window with a title that changes, not a
+            // check mark ("checkable" does not apply); onUpdateUi keeps the title.
+            if (info.command == Command::LogPane) {
+                menu->Append(menuId(info.command), logItemTitle(logShown()), help);
+                continue;
+            }
+            if (info.command == Command::InfoWindow) {
+                menu->Append(menuId(info.command), infoItemTitle(infoShown()), help);
+                continue;
+            }
+            menu->Append(menuId(info.command), label, help);
+        } else if (info.checkable) {
             menu->AppendCheckItem(menuId(info.command), label, help);  // onUpdateUi checks it
         } else {
             menu->Append(menuId(info.command), label, help);
         }
-#endif
         if (info.command == Command::ResizeWindowToActualSize) {
             menu->AppendSeparator();
         }
@@ -523,14 +509,14 @@ void MainFrame::buildMenus() {
         }
     }
     buildEditMenu(*bar);  // between File and Playback (spec §4.2)
-#if defined(__WXGTK__)
-    // Spec §5.1: GTK puts Preferences... at the end of Edit, after a separator.
-    const CommandInfo& settings = commandTable()[static_cast<std::size_t>(Command::Settings)];
-    wxMenu* edit = bar->GetMenu(1);
-    edit->AppendSeparator();
-    edit->Append(menuId(Command::Settings), wxString::FromUTF8(menuLabel(settings)),
-                 wxString::FromUTF8(settings.help));
-#endif
+    if (nativePolicy::settingsAtEndOfEdit()) {
+        // Spec §5.1: GTK puts Preferences... at the end of Edit, after a separator.
+        const CommandInfo& settings = commandTable()[static_cast<std::size_t>(Command::Settings)];
+        wxMenu* edit = bar->GetMenu(1);
+        edit->AppendSeparator();
+        edit->Append(menuId(Command::Settings), wxString::FromUTF8(menuLabel(settings)),
+                     wxString::FromUTF8(settings.help));
+    }
     SetMenuBar(bar);
     Bind(wxEVT_MENU, &MainFrame::onMenu, this, COMMAND_ID_BASE, LAST_COMMAND_ID);
     Bind(wxEVT_UPDATE_UI, &MainFrame::onUpdateUi, this, COMMAND_ID_BASE, LAST_COMMAND_ID);
@@ -552,15 +538,7 @@ void MainFrame::buildMenus() {
     // Settings... carries wxID_PREFERENCES on every OS (spec §5.1).
     Bind(wxEVT_MENU, &MainFrame::onMenu, this, wxID_PREFERENCES);
     Bind(wxEVT_UPDATE_UI, &MainFrame::onUpdateUi, this, wxID_PREFERENCES);
-#if defined(__WXOSX__)
-    // The application menu's About and Quit (wxOSX hides the items in Help and File). Quit closes
-    // the frame through onClose; unhandled, wxOSX would end the main loop without the frame's close
-    // sequence.
-    for (const int id : {wxID_ABOUT, wxID_EXIT}) {
-        Bind(wxEVT_MENU, &MainFrame::onMenu, this, id);
-        Bind(wxEVT_UPDATE_UI, &MainFrame::onUpdateUi, this, id);
-    }
-#endif
+    bindApplicationMenu();
     recentChanged();
 }
 
@@ -850,12 +828,11 @@ bool MainFrame::isAvailable(Command command) const {
         case Command::Diagnostics:
         case Command::Settings:
         case Command::About: return true;
-#if defined(__WXOSX__)
         case Command::CloseStreams:
-            return hasStream() || settingsInFront() != nullptr || infoInFront() != nullptr;
-#else
-        case Command::CloseStreams:
-#endif
+            if (nativePolicy::closeCommandClosesSettingsFirst()) {
+                return hasStream() || settingsInFront() != nullptr || infoInFront() != nullptr;
+            }
+            [[fallthrough]];
         case Command::PlayPause:
         case Command::Stop:
         case Command::StepBack:
@@ -905,10 +882,9 @@ void MainFrame::execute(Command command, CommandSource source) {
     if (closing_) {
         return;
     }
-#if defined(__WXOSX__)
     // Spec §5.1: ⌘W closes the Settings window when it is in front (it has no menu of its own);
     // otherwise Close stream acts on the main window.
-    if (command == Command::CloseStreams) {
+    if (nativePolicy::closeCommandClosesSettingsFirst() && command == Command::CloseStreams) {
         if (wxWindow* settings = settingsInFront(); settings != nullptr) {
             settings->Close();
             return;
@@ -919,7 +895,6 @@ void MainFrame::execute(Command command, CommandSource source) {
             return;
         }
     }
-#endif
     if (!isAvailable(command)) {
         DVV_LOG_DEBUG("command {} is not available", commandId(command));
         return;
@@ -1039,22 +1014,6 @@ void MainFrame::showSettings() {
     }
     showSettingsWindow(*settings_, *this);  // the selftest's hook, if any
 }
-
-#if defined(__WXOSX__)
-wxWindow* MainFrame::settingsInFront() const {
-    wxWindow* const settings = settings_ ? settings_->window() : nullptr;
-    if (settings == nullptr) {
-        return nullptr;
-    }
-    // wxOSX FindFocus() is null when the key window's first responder is the NSWindow itself (no
-    // control has the focus), so the Settings window as the active window counts too.
-    auto* const window = wxDynamicCast(settings, wxTopLevelWindow);
-    wxWindow* const focus = focusedWindow();
-    const bool focused = focus != nullptr && wxGetTopLevelParent(focus) == settings;
-    return focused || (window != nullptr && window->IsShown() && window->IsActive()) ? settings
-                                                                                     : nullptr;
-}
-#endif
 
 wxWindow* MainFrame::infoInFront() const {
     InfoWindow* const info = info_window_.get();
@@ -1738,18 +1697,18 @@ void MainFrame::onUpdateUi(wxUpdateUIEvent& event) {
     const std::optional<Command> command = commandOfMenuId(event.GetId());
     event.Enable(!closing_ && command && isAvailable(*command));
     if (command == Command::LogPane) {  // spec §2: the item follows the pane however it changed
-#if defined(__WXOSX__)
-        event.SetText(logItemTitle(logShown()));
-#else
-        event.Check(logShown());
-#endif
+        if (nativePolicy::logItemHasChangingTitle()) {
+            event.SetText(logItemTitle(logShown()));
+        } else {
+            event.Check(logShown());
+        }
     }
     if (command == Command::InfoWindow) {  // §10: the item follows the window
-#if defined(__WXOSX__)
-        event.SetText(infoItemTitle(infoShown()));
-#else
-        event.Check(infoShown());
-#endif
+        if (nativePolicy::logItemHasChangingTitle()) {
+            event.SetText(infoItemTitle(infoShown()));
+        } else {
+            event.Check(infoShown());
+        }
     }
 }
 
@@ -1908,36 +1867,23 @@ void MainFrame::checkLayoutLimits() {
             return;
         }
         bool stale = aui_.minimumClientSize() != applied_minimum_;
-#if defined(__WXGTK__)
         // wxGTK keeps a minimum as a window size, converted with the decoration size it knew at
         // SetMinClientSize(); the menu bar, status bar and window decorations are known only after
         // the map, so the minimum client size can end up below the one applied: apply it again.
         // MSW and wxOSX know the decorations when the window is created (wxOSX's menu bar is not
         // in the window), so their minimum client size stays as applied.
-        wxSize wanted = applied_minimum_ + FromDIP(wxSize(LAYOUT_MARGIN_DIP, LAYOUT_MARGIN_DIP));
-        wanted.x = std::max(wanted.x, statusMinimumWidth());
-        const wxSize effective = GetMinClientSize();
-        stale = stale || effective.x < wanted.x || effective.y < wanted.y;
-#endif
+        if (nativePolicy::reappliesMinimumAfterMap()) {
+            wxSize wanted =
+                applied_minimum_ + FromDIP(wxSize(LAYOUT_MARGIN_DIP, LAYOUT_MARGIN_DIP));
+            wanted.x = std::max(wanted.x, statusMinimumWidth());
+            const wxSize effective = GetMinClientSize();
+            stale = stale || effective.x < wanted.x || effective.y < wanted.y;
+        }
         if (stale) {
             applyLayoutLimits();
         }
     });
 }
-
-#if defined(__WXOSX__)
-void MainFrame::DoSetSize(int x, int y, int width, int height, int flags) {
-    // The minimum is a window size (SetMinClientSize converted it); -1 keeps a dimension.
-    const wxSize minimum = GetMinSize();
-    if (width != wxDefaultCoord && minimum.x != wxDefaultCoord) {
-        width = std::max(width, minimum.x);
-    }
-    if (height != wxDefaultCoord && minimum.y != wxDefaultCoord) {
-        height = std::max(height, minimum.y);
-    }
-    wxFrame::DoSetSize(x, y, width, height, flags);
-}
-#endif
 
 void MainFrame::onShow(wxShowEvent& event) {
     if (viewport_ != nullptr) {
@@ -1969,12 +1915,9 @@ void MainFrame::setInfoShown(bool shown) {
                 info_window_ = new InfoWindow(*this);  // a child top-level window: wx owns it
             }
             info_window_->showFor(streams_.empty() ? nullptr : &streams_.front());
-#if defined(__WXGTK__)
             // X11: Hide stands for iconify (onShow).
-            const bool frame_hidden = IsIconized() || !IsShown();
-#else
-            const bool frame_hidden = IsIconized();
-#endif
+            const bool frame_hidden =
+                IsIconized() || (nativePolicy::hideMeansIconified() && !IsShown());
             if (frame_hidden) {
                 info_hidden_by_iconize_ = true;  // shown with the main window when restored
             } else {

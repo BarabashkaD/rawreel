@@ -1,37 +1,32 @@
 // rawreel-gui entry point (spec §10.2; design M1b §5.6). The arguments are parsed before wx
 // starts. The App's exit code is kept in App::exitCode(), because wxEntry() returns -1 when
-// OnInit() fails.
+// OnInit() fails. The per-OS entry points are in main_win32.cpp (wmain) and main_posix.cpp (main).
 // clang-format off
 #include <wx/wx.h>  // first: wx's Windows headers before anything else includes <windows.h> (R11)
 // clang-format on
 
 #include <cstdio>
-#include <exception>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "core/gui_arguments.h"
 #include "core/vulkan_driver.h"
 #include "dvv/base/leak_check.h"
 #include "dvv/base/log.h"
+#include "dvv/base/move_only_function.h"
 #include "gui/app.h"
+#include "gui/gui_main.h"
 #include "gui/gui_platform.h"
-#if defined(_WIN32)
-#include "core/utf8_arguments_win32.h"
-#endif
 
 wxIMPLEMENT_APP_NO_MAIN(rawreel::App);
 
-namespace {
-
-// Parses, then runs wx through `start_wx`; returns the process exit code.
-template <class StartWx>
-int run(std::span<const std::string_view> args, StartWx start_wx) {
+// Declared in gui/gui_main.h; the per-OS entries call it.
+int rawreel::runGui(std::span<const std::string_view> args,
+                    dvv::MoveOnlyFunction<int()> start_wx) {
     // First: before anything can open the Vulkan loader.
     dvv::Result<dvv::gpu::DriverChoice> driver = rawreel::applyBundledDriver();
     dvv::Result<rawreel::GuiArguments> arguments = rawreel::parseGuiArguments(args);
@@ -66,37 +61,3 @@ int run(std::span<const std::string_view> args, StartWx start_wx) {
     }
     return dvv::finishWithLeakCheck(code);
 }
-
-}  // namespace
-
-#if defined(_WIN32)
-// wmain with /ENTRY:wmainCRTStartup: a GUI-subsystem program with wide arguments (§5.6).
-int wmain(int argc, wchar_t** argv) {
-    try {
-        const dvv::Result<std::vector<std::string>> utf8 = rawreel::utf8Arguments(argc, argv);
-        if (!utf8) {
-            std::fprintf(stderr, "rawreel-gui: %s\n", utf8.error().message.c_str());
-            return rawreel::exit_code::BAD_ARGUMENTS;
-        }
-        const std::vector<std::string_view> args(utf8->begin() + 1, utf8->end());
-        return run(args, [&argc, argv] { return wxEntry(argc, argv); });
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "rawreel-gui: %s\n", error.what());
-        return rawreel::exit_code::BAD_ARGUMENTS;
-    }
-}
-#else
-// Linux and macOS: the arguments are UTF-8 already. run() parses them; on Linux it then does the
-// X11 start-up (XInitThreads, GDK limited to X11, the DISPLAY check) after --help and before
-// wxEntry(). macOS has no such step: Cocoa needs no display variable, and the files Finder or the
-// Dock opens come through App::MacOpenFiles(), not argv.
-int main(int argc, char** argv) {
-    try {
-        const std::vector<std::string_view> args(argv + 1, argv + argc);
-        return run(args, [&argc, argv] { return wxEntry(argc, argv); });
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "rawreel-gui: %s\n", error.what());
-        return rawreel::exit_code::BAD_ARGUMENTS;
-    }
-}
-#endif
