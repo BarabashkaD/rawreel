@@ -18,7 +18,7 @@ log on every OS and stops busy sources at once when a stream closes. It plays th
 - A "no source can open" error ends with the FFmpeg status line only when an FFmpeg source would
   have handled the request: a file or a `lavfi:` URI while FFmpeg is missing, and a `lavfi:` URI
   while FFmpeg is present but its lavfi part is off. A URI of any other scheme gets no FFmpeg line.
-- The Format… dialog reads size and format from a file name that follows
+- The Format… dialog reads size, format and frame rate from a file name that follows
   `<name>_WxH[_format][_fps][_colour]`; for any other name it takes the first WxH, as before. The
   frame rate field accepts up to 9 decimals.
 - The size fields accept 1 to 65535.

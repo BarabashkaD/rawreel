@@ -120,14 +120,17 @@ void applyClipFormat(const dvv::Uri& parsed, FormatChoice& choice) {
     }
 }
 
-// The file name's size and format, then the clip description's (clip=@), then the query's fmt,
-// size, w, h and fps (file: URIs only).
+// The file name's size, format and fps, then the clip description's (clip=@), then the query's
+// fmt, size, w, h and fps (file: URIs only).
 void applyUriFormat(const dvv::Uri& parsed, FormatChoice& choice) {
     if (const auto from_name = dvv::media::parseFileName(parsed.path)) {
         choice.width = from_name->width;
         choice.height = from_name->height;
         if (from_name->format) {
             choice.format = std::string(dvv::media::formatDesc(*from_name->format).name);
+        }
+        if (from_name->fps) {
+            choice.fps = *from_name->fps;
         }
     } else {
         applyFirstSizeToken(parsed.path, choice);

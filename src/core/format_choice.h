@@ -69,10 +69,10 @@ struct FormatChoice {
 // the colour keys of info.resolvedUri (colourChoiceFromUri).
 [[nodiscard]] FormatChoice choiceFromInfo(const dvv::media::SourceInfo& info);
 // The format dialog's prefill for a request URI (D5 design §4.4): for a file: URI,
-// `fallback` with the size and catalogue format of the file name (<name>_WxH[_fmt]...), then the
-// format, size and fps of the clip description of clip=@<path> (dvv::media::loadClipJson; an
-// error is ignored, the open names it), then the query's fmt, size (WxH), w, h and
-// fps on top (design §4.2 order); `fallback`'s format, size and fps for other URIs. The colour is
+// `fallback` with the size, catalogue format and fps of the file name (<name>_WxH[_fmt][_fps]...),
+// then the format, size and fps of the clip description of clip=@<path> (dvv::media::loadClipJson;
+// an error is ignored, the open names it), then the query's fmt, size (WxH), w, h and fps on top
+// (design §4.2 order); `fallback`'s format, size and fps for other URIs. The colour is
 // colourChoiceFromUri(uri): no colour key gives none, never the fallback's.
 [[nodiscard]] FormatChoice choiceFromUri(std::string_view uri, FormatChoice fallback);
 // The URI's colour= and range= (D5R §4.4 "Reading a URI"); none for an unparsable URI or colour.

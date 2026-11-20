@@ -431,6 +431,22 @@ TEST_SUITE("core") {
         check("file:clip_1920X1080_foo.yuv", 64, 32, "nv12");
     }
 
+    TEST_CASE("prefill: the file name's fps") {
+        const FormatChoice fallback{.format = "nv12", .width = 64, .height = 32};
+        const FormatChoice with_suffix =
+            rawreel::choiceFromUri("file:clip_1920x1080_yuv420p_50fps.yuv", fallback);
+        CHECK(with_suffix.width == 1920);
+        CHECK(with_suffix.height == 1080);
+        CHECK(with_suffix.format == "yuv420p");
+        CHECK(with_suffix.fps == dvv::media::Rational{.num = 50, .den = 1});
+        const FormatChoice plain = rawreel::choiceFromUri("file:clip_1920x1080_50.yuv", fallback);
+        CHECK(plain.fps == dvv::media::Rational{.num = 50, .den = 1});
+        // No fps token: the fallback's fps stays.
+        const FormatChoice no_fps =
+            rawreel::choiceFromUri("file:clip_1920x1080_yuv420p.yuv", fallback);
+        CHECK(no_fps.fps == fallback.fps);
+    }
+
     TEST_CASE("format choice: lavfi refusal") {
         const auto refusal = rawreel::formatRefusal("lavfi:testsrc2=s=64x48");
         REQUIRE(refusal);
