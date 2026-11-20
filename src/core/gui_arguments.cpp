@@ -10,6 +10,7 @@
 #include <string>
 #include <utility>
 
+#include "core/native_os.h"
 #include "dvv/base/environment.h"
 
 namespace rawreel {
@@ -87,12 +88,10 @@ dvv::Result<GuiArguments> parseGuiArguments(std::span<const std::string_view> ar
     bool transport_seen = false;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string_view arg = args[i];
-#ifdef __APPLE__
-        // A process serial number that LaunchServices may pass; not a URI.
-        if (arg.starts_with("-psn_")) {
+        // A process serial number that LaunchServices may pass on macOS; not a URI.
+        if (NATIVE_OS == Os::MacOs && arg.starts_with("-psn_")) {
             continue;
         }
-#endif
         if (!arg.starts_with("--")) {
             if (arguments.uri) {
                 return dvv::makeError(dvv::Errc::Format, "at most one URI");

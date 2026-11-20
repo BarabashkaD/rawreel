@@ -1,5 +1,5 @@
-// rawreel-cli entry point (spec §10.3, M2 design §4.6). On Windows wmain receives the arguments as
-// UTF-16 and converts them to UTF-8 (D19); the console subsystem picks the wmain CRT entry itself.
+// rawreel-cli: the shared run of both entries (spec §7.9, M2 design §4.6); main_win32.cpp and
+// main_posix.cpp hold the entry points.
 
 #include <algorithm>
 #include <cstdio>
@@ -12,9 +12,9 @@
 #include <vector>
 
 #include "cli/arguments.h"
+#include "cli/cli_main.h"
 #include "cli/commands.h"
 #include "cli/output.h"
-#include "core/utf8_arguments_win32.h"
 #include "core/vulkan_driver.h"
 #include "dvv/base/json.h"
 #include "dvv/base/leak_check.h"
@@ -74,8 +74,7 @@ int lastResort() noexcept {
 
 }  // namespace
 
-#if defined(_WIN32)
-int wmain(int argc, wchar_t** argv) {
+int runCli(dvv::MoveOnlyFunction<dvv::Result<std::vector<std::string>>()> arguments) noexcept {
     // First: before anything can open the Vulkan loader.
     const dvv::Result<dvv::gpu::DriverChoice> driver = rawreel::applyBundledDriver();
     try {
@@ -86,7 +85,7 @@ int wmain(int argc, wchar_t** argv) {
         if (!driver) {
             DVV_LOG_WARN("the bundled Vulkan driver is not used: {}", driver.error().message);
         }
-        auto all = rawreel::utf8Arguments(argc, argv);
+        const auto all = arguments();
         if (!all) {
             std::println(stderr, "error: {}", all.error().message);
             return rawreel::cli::exit_code::BAD_ARGUMENTS;
@@ -96,21 +95,3 @@ int wmain(int argc, wchar_t** argv) {
         return lastResort();
     }
 }
-#else
-int main(int argc, char** argv) {
-    // First: before anything can open the Vulkan loader.
-    const dvv::Result<dvv::gpu::DriverChoice> driver = rawreel::applyBundledDriver();
-    try {
-        // The logger, then the crash handler (it logs its own warning), then the test hook.
-        setUpLogging();
-        dvv::platform::installCrashHandler({.app = "rawreel", .process = "rawreel-cli"});
-        dvv::platform::crashIfRequested("RAWREEL_TEST_CRASH");
-        if (!driver) {
-            DVV_LOG_WARN("the bundled Vulkan driver is not used: {}", driver.error().message);
-        }
-        return guarded(std::vector<std::string>(argv, argv + argc));
-    } catch (...) {
-        return lastResort();
-    }
-}
-#endif

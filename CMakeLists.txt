@@ -149,6 +149,7 @@ endfunction()
 
 # rawreel-cli (spec §10.3): console, no wx; built under every preset including the sanitizers.
 add_executable(rawreel_cli src/cli/main.cpp)
+dvv_os_sources(rawreel_cli src/cli/main)
 set_target_properties(rawreel_cli PROPERTIES OUTPUT_NAME rawreel-cli)
 target_link_libraries(rawreel_cli PRIVATE rawreel_cli_core rawreel_core dvv::base dvv::platform)
 dvv_link_components(rawreel_cli dvv::media_sources)
