@@ -123,10 +123,10 @@ void Viewport::startPresenting() {
          .visible = visible,
          .frames =
              [display = display_, renderer = renderer_.get(),
-              fail = fail_presenters_](const dvv::gpu::PresentFrameInfo& info) {
+              fail = fail_presenters_](const dvv::gpu::PresentFrameParams& params) {
                  // Presenter thread: one consistent read of the state, then record (design §5.3).
                  const DisplaySnapshot snapshot = display->snapshot();
-                 dvv::Result<dvv::gpu::PresentFrame> frame = renderer->frame(info, snapshot);
+                 dvv::Result<dvv::gpu::PresentFrame> frame = renderer->frame(params, snapshot);
                  if (fail && frame) {
                      // Test only: the renderer's record function is dropped unrun (as after a
                      // failed acquire); the failed recording fails the presenter.

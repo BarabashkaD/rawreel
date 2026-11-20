@@ -115,25 +115,26 @@ dvv::gpu::RecordFunction ViewportRenderer::recordComposite(
     };
 }
 
-dvv::Result<dvv::gpu::PresentFrame> ViewportRenderer::frame(const dvv::gpu::PresentFrameInfo& info,
-                                                            const DisplaySnapshot& snapshot) {
-    const bool skip_encode = isSrgbFormat(info.format);
+dvv::Result<dvv::gpu::PresentFrame> ViewportRenderer::frame(
+    const dvv::gpu::PresentFrameParams& params, const DisplaySnapshot& snapshot) {
+    const bool skip_encode = params.encoding == dvv::gpu::PresentEncoding::Srgb;
     if (skip_encode && !logged_srgb_) {
         logged_srgb_ = true;
-        DVV_LOG_WARN("viewport: the swapchain format is sRGB; the compositor skips its own encode");
+        DVV_LOG_WARN(
+            "viewport: the presenter applies the sRGB encode; the compositor skips its own");
     }
-    bool record =
-        !info.previousFrameCompleted || snapshot.version != version_ || skip_encode != skip_encode_;
-    if (!output_ || info.extent != extent_) {
-        DVV_TRY(output_, makeOutput(info.extent));
-        extent_ = info.extent;
+    bool record = !params.previousFrameCompleted || snapshot.version != version_ ||
+                  skip_encode != skip_encode_;
+    if (!output_ || params.extent != extent_) {
+        DVV_TRY(output_, makeOutput(params.extent));
+        extent_ = params.extent;
         record = true;
     }
     if (!record) {
         return dvv::gpu::PresentFrame{.record = {}, .image = output_};
     }
     dvv::gpu::RecordFunction commands =
-        recordComposite(output_, info.extent, snapshot.frames, snapshot.params, skip_encode);
+        recordComposite(output_, params.extent, snapshot.frames, snapshot.params, skip_encode);
     version_ = snapshot.version;
     skip_encode_ = skip_encode;
     return dvv::gpu::PresentFrame{.record = std::move(commands), .image = output_};
@@ -150,11 +151,6 @@ dvv::Result<dvv::gpu::PresentFrame> ViewportRenderer::render(dvv::platform::Pixe
 RecordedInfo ViewportRenderer::lastRecorded() const {
     std::lock_guard lock(recorded_mutex_);
     return recorded_;
-}
-
-bool isSrgbFormat(VkFormat format) noexcept {
-    return format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_R8G8B8A8_SRGB ||
-           format == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
 }
 
 }  // namespace rawreel

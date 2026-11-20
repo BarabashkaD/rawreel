@@ -76,12 +76,12 @@ FrameSet frameSet(const DisplayFrame& frame, std::int64_t index, std::uint64_t e
     return FrameSet{.index = index, .count = 1, .views = {frame.lease}, .epoch = epoch};
 }
 
-dvv::gpu::PresentFrameInfo frameInfo(PixelSize extent, VkFormat format, std::uint64_t number,
-                                     bool previous_completed) {
+dvv::gpu::PresentFrameParams frameParams(PixelSize extent, dvv::gpu::PresentEncoding encoding,
+                                         std::uint64_t number, bool completed) {
     return {.extent = extent,
-            .format = format,
             .frameNumber = number,
-            .previousFrameCompleted = previous_completed};
+            .previousFrameCompleted = completed,
+            .encoding = encoding};
 }
 
 Rgba8 pixelAt(const std::vector<std::byte>& bytes, PixelSize extent, std::uint32_t x,
@@ -349,16 +349,16 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: 200 % panned matches the CPU refe
     rawreel::DisplayState state;
     state.show(frameSet(g, 0, 1));
     state.setParams(params);
-    auto panned =
-        renderer->frame(frameInfo(viewport, VK_FORMAT_B8G8R8A8_UNORM, 0, false), state.snapshot());
+    auto panned = renderer->frame(
+        frameParams(viewport, dvv::gpu::PresentEncoding::Linear, 0, false), state.snapshot());
     REQUIRE_MESSAGE(panned, (panned ? std::string() : panned.error().describe()));
     REQUIRE(static_cast<bool>(panned->record));
     CHECK(renderer->lastRecorded().origin == view.origin());
     submit(std::move(panned->record));
     const CompositeParams moved{.dark = true, .view = {ViewMode::Zoom, 4, {20, 14}, IMAGE}};
     state.setParams(moved);
-    auto next =
-        renderer->frame(frameInfo(viewport, VK_FORMAT_B8G8R8A8_UNORM, 1, true), state.snapshot());
+    auto next = renderer->frame(frameParams(viewport, dvv::gpu::PresentEncoding::Linear, 1, true),
+                                state.snapshot());
     REQUIRE_MESSAGE(next, (next ? std::string() : next.error().describe()));
     REQUIRE(static_cast<bool>(next->record));
     const auto moved_view = resolveView(moved.view, viewport, IMAGE);
@@ -379,8 +379,8 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
     CHECK(renderer->lastRecorded() == RecordedInfo{});
 
     const DisplaySnapshot first_snapshot{frameSet(g, 0, 1), DARK, 1};
-    auto first =
-        renderer->frame(frameInfo(wide, VK_FORMAT_B8G8R8A8_UNORM, 0, false), first_snapshot);
+    auto first = renderer->frame(frameParams(wide, dvv::gpu::PresentEncoding::Linear, 0, false),
+                                 first_snapshot);
     REQUIRE_MESSAGE(first, (first ? std::string() : first.error().describe()));
     REQUIRE(static_cast<bool>(first->record));
     REQUIRE(first->image != nullptr);
@@ -393,14 +393,15 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
     submit(std::move(first->record));
 
     // Nothing changed and the previous frame completed: the same image, no commands.
-    auto same = renderer->frame(frameInfo(wide, VK_FORMAT_B8G8R8A8_UNORM, 1, true), first_snapshot);
+    auto same = renderer->frame(frameParams(wide, dvv::gpu::PresentEncoding::Linear, 1, true),
+                                first_snapshot);
     REQUIRE(same);
     CHECK_FALSE(static_cast<bool>(same->record));
     CHECK(same->image == first->image);
     CHECK(renderer->lastRecorded() == first_info);
 
     // A new version (the next FrameSet): recorded into the same image.
-    auto next = renderer->frame(frameInfo(wide, VK_FORMAT_B8G8R8A8_UNORM, 2, true),
+    auto next = renderer->frame(frameParams(wide, dvv::gpu::PresentEncoding::Linear, 2, true),
                                 DisplaySnapshot{frameSet(g, 1, 1), DARK, 2});
     REQUIRE(next);
     REQUIRE(static_cast<bool>(next->record));
@@ -410,8 +411,8 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
 
     // A new extent: a new image.
     const DisplaySnapshot second_snapshot{frameSet(g, 1, 1), DARK, 2};
-    auto resized =
-        renderer->frame(frameInfo(tall, VK_FORMAT_B8G8R8A8_UNORM, 3, true), second_snapshot);
+    auto resized = renderer->frame(frameParams(tall, dvv::gpu::PresentEncoding::Linear, 3, true),
+                                   second_snapshot);
     REQUIRE(resized);
     REQUIRE(static_cast<bool>(resized->record));
     REQUIRE(resized->image != nullptr);
@@ -423,15 +424,15 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
     submit(std::move(resized->record));
 
     // The previous frame was dropped: recorded again.
-    auto dropped =
-        renderer->frame(frameInfo(tall, VK_FORMAT_B8G8R8A8_UNORM, 4, false), second_snapshot);
+    auto dropped = renderer->frame(frameParams(tall, dvv::gpu::PresentEncoding::Linear, 4, false),
+                                   second_snapshot);
     REQUIRE(dropped);
     REQUIRE(static_cast<bool>(dropped->record));
     CHECK(dropped->image == resized->image);
     submit(std::move(dropped->record));
 
     // No frame: the background only.
-    auto cleared = renderer->frame(frameInfo(tall, VK_FORMAT_B8G8R8A8_UNORM, 5, true),
+    auto cleared = renderer->frame(frameParams(tall, dvv::gpu::PresentEncoding::Linear, 5, true),
                                    DisplaySnapshot{FrameSet{}, DARK, 3});
     REQUIRE(cleared);
     REQUIRE(static_cast<bool>(cleared->record));
@@ -457,11 +458,11 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a FrameSet of another epoch draws
     CHECK(renderer->lastRecorded().zoom == 0.0);
 }
 
-TEST_CASE_FIXTURE(CompositorTest, "compositor: an sRGB swapchain skips the encode") {
+TEST_CASE_FIXTURE(CompositorTest, "an sRGB-encoding presenter skips the compositor's encode") {
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame n = displayFrame(N);
     const PixelSize viewport{211, 97};
-    auto frame = renderer->frame(frameInfo(viewport, VK_FORMAT_B8G8R8A8_SRGB, 0, false),
+    auto frame = renderer->frame(frameParams(viewport, dvv::gpu::PresentEncoding::Srgb, 0, false),
                                  DisplaySnapshot{frameSet(n, 0, 1), DARK, 1});
     REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
     REQUIRE(static_cast<bool>(frame->record));
@@ -500,7 +501,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: lastRecorded() may be read while 
         }
         for (std::uint64_t i = 0; i < 200; ++i) {
             auto frame = renderer->frame(
-                frameInfo(viewport, VK_FORMAT_B8G8R8A8_UNORM, i, true),
+                frameParams(viewport, dvv::gpu::PresentEncoding::Linear, i, true),
                 DisplaySnapshot{frameSet(g, static_cast<std::int64_t>(i % 2), 1), DARK, i + 1});
             REQUIRE(frame);
             CHECK(static_cast<bool>(frame->record));  // dropped unsubmitted

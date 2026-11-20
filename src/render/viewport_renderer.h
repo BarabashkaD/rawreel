@@ -45,13 +45,13 @@ public:
                      std::shared_ptr<dvv::gpu::GpuImage> dummy) noexcept;
 
     // The PresentFrame for the presenter: records the composite of snapshot.frames.views[0] with
-    // resolveView(snapshot.params.view, info.extent, display image size) and snapshot.params.
+    // resolveView(snapshot.params.view, params.extent, display image size) and snapshot.params.
     // Records again only when the snapshot version, the extent or the sRGB rule changed, or
-    // !info.previousFrameCompleted; otherwise the same image and no commands. FrameSets of another
-    // epoch (or without a usable display view) draw the background only. The record function holds
-    // the FrameSet's leases until the submission has completed.
-    [[nodiscard]] dvv::Result<dvv::gpu::PresentFrame> frame(const dvv::gpu::PresentFrameInfo& info,
-                                                            const DisplaySnapshot& snapshot);
+    // !params.previousFrameCompleted; otherwise the same image and no commands. FrameSets of
+    // another epoch (or without a usable display view) draw the background only. The record
+    // function holds the FrameSet's leases until the submission has completed.
+    [[nodiscard]] dvv::Result<dvv::gpu::PresentFrame> frame(
+        const dvv::gpu::PresentFrameParams& params, const DisplaySnapshot& snapshot);
     // Tests: always records, into a new image of `extent`, and returns it (no sRGB rule).
     [[nodiscard]] dvv::Result<dvv::gpu::PresentFrame> render(dvv::platform::PixelSize extent,
                                                              const FrameSet& frames,
@@ -80,8 +80,5 @@ private:
     mutable std::mutex recorded_mutex_;
     RecordedInfo recorded_;
 };
-
-// B8G8R8A8_SRGB, R8G8B8A8_SRGB, A8B8G8R8_SRGB_PACK32.
-[[nodiscard]] bool isSrgbFormat(VkFormat format) noexcept;
 
 }  // namespace rawreel
