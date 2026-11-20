@@ -9,7 +9,6 @@
 3	src/gui/app.cpp
 1	src/gui/app.h
 5	src/gui/app_icon.cpp
-1	src/gui/crash_handler.cpp
 2	src/gui/edit_dispatch.cpp
 3	src/gui/format_dialog.cpp
 1	src/gui/format_dialog.h

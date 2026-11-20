@@ -402,13 +402,17 @@ struct SmokeState {
 };
 
 // The store's next sequence: a step remembers it at its start (the store is capped, so steps
-// compare sequence numbers, not text lengths; spec §7.1).
+// compare sequence numbers, not text lengths; spec §7.1). After Logger::flush(), so a line logged
+// before the call is below it.
 std::uint64_t logNext(const App& app) {
+    dvv::Logger::instance().flush();
     return app.logStore()->next();
 }
 
-// The lines logged from sequence `since` on, as logRecordsText gives them.
+// The lines logged from sequence `since` on, as logRecordsText gives them (after
+// Logger::flush()).
 std::string loggedSince(const App& app, std::uint64_t since) {
+    dvv::Logger::instance().flush();
     const std::vector<LogEntry> entries = app.logStore()->entries();
     const auto first = std::ranges::find_if(
         entries, [since](const LogEntry& entry) { return entry.sequence >= since; });
@@ -1856,8 +1860,10 @@ std::optional<std::string> fileText(const std::filesystem::path& file) {
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
-// The store holds a mark whose message is `text`, with a sequence of at least `since`.
+// The store holds a mark whose message is `text`, with a sequence of at least `since` (read after
+// Logger::flush()).
 bool storeHasMark(const App& app, std::string_view text, std::uint64_t since = 0) {
+    dvv::Logger::instance().flush();
     const std::shared_ptr<LogStore>& store = app.logStore();
     if (store == nullptr) {
         return false;
@@ -2443,6 +2449,7 @@ SelfTestStep saveFailureStep(SelfTest* test, const std::shared_ptr<EditState>& s
     auto passed = [test, state](std::string& seen) {
         const std::string path = dvv::pathDisplayText(state->file);
         bool warned = false;
+        dvv::Logger::instance().flush();
         for (const LogEntry& entry : test->app().logStore()->entries()) {
             warned =
                 warned || (entry.sequence >= state->logNext && entry.level == dvv::LogLevel::Warn &&
@@ -3439,6 +3446,7 @@ SelfTestStep settingsLogFolderStep(SelfTest* test, const std::shared_ptr<Setting
         std::error_code error;
         const bool file = !current.empty() && sameFolder(current.parent_path(), state->target) &&
                           std::filesystem::exists(current, error) && !error;
+        dvv::Logger::instance().flush();
         const std::optional<std::string> old_text = fileText(state->oldFile);
         bool named = false;
         if (old_text && !current.empty()) {
@@ -6590,6 +6598,7 @@ void addRecentSteps(std::vector<SelfTestStep>& steps, SelfTest& test,
                                                  recentEntryOfPath(st->fileA));
             bool warned = false;
             bool removal_logged = false;
+            dvv::Logger::instance().flush();
             for (const LogEntry& logged : app.logStore()->entries()) {
                 if (logged.sequence < st->logNext) {
                     continue;

@@ -118,10 +118,8 @@ foreach(package IN ITEMS dvv_base dvv_registry dvv_platform dvv_gpu dvv_media dv
     list(APPEND rawreel_versions "RAWREEL_${upper}_VERSION=\"${version}\"")
 endforeach()
 target_compile_definitions(rawreel_core PRIVATE ${rawreel_versions})
-# The startup shared by both executables (design M4 v2 §4.6), the version lines and the crash
-# handler (wx-free, so rawreel-cli uses it too).
-target_sources(rawreel_core PRIVATE src/core/startup.cpp src/core/version_text.cpp src/core/vulkan_driver.cpp
-                                    src/gui/crash_handler.cpp)
+# The startup shared by both executables (design M4 v2 §4.6) and the version lines.
+target_sources(rawreel_core PRIVATE src/core/startup.cpp src/core/version_text.cpp src/core/vulkan_driver.cpp)
 # One edge per dvv library the headers or sources include. dvv::components: dvv/components/ffmpeg.h
 # (the FFmpeg module's constants; ComponentRegistry::load() runs the module); no FFmpeg is linked.
 target_link_libraries(rawreel_core PUBLIC dvv::base dvv::registry dvv::media dvv::gpu dvv::platform
@@ -151,7 +149,7 @@ endfunction()
 # rawreel-cli (spec §10.3): console, no wx; built under every preset including the sanitizers.
 add_executable(rawreel_cli src/cli/main.cpp)
 set_target_properties(rawreel_cli PROPERTIES OUTPUT_NAME rawreel-cli)
-target_link_libraries(rawreel_cli PRIVATE rawreel_cli_core rawreel_core dvv::base)
+target_link_libraries(rawreel_cli PRIVATE rawreel_cli_core rawreel_core dvv::base dvv::platform)
 dvv_link_components(rawreel_cli dvv::media_sources)
 # The dvv-components libraries (the ffmpeg component: providers ffmpeg and lavfi).
 dvv_link_enabled_components(rawreel_cli)

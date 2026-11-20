@@ -42,8 +42,8 @@
 #include "dvv/base/utf8.h"
 #include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/gpu_info.h"
+#include "dvv/platform/crash_handler.h"
 #include "dvv/platform/native_window.h"
-#include "gui/crash_handler.h"
 #include "gui/main_frame.h"
 #include "gui/selftest.h"
 #include "gui/session_bridge.h"
@@ -184,7 +184,6 @@ void App::finish(int code, const std::string& message) {
 }
 
 bool App::OnInit() {
-    const std::string crash_warning = CrashHandler::install("rawreel-gui");  // first (D22)
     // Spec §5.3 "At start" step 1: the sinks, added once for the whole run and never removed (the
     // stderr sink is main()'s). The log file switch holds no file yet; the system log is off until
     // the config says otherwise. The Logger itself is at Trace for the whole run, so only the
@@ -202,9 +201,9 @@ bool App::OnInit() {
     if (!the_driver) {
         DVV_LOG_WARN("the bundled Vulkan driver is not used: {}", the_driver.error().message);
     }
-    if (!crash_warning.empty()) {
-        DVV_LOG_TEXT(dvv::LogLevel::Warn, crash_warning);  // now that the sinks exist
-    }
+    dvv::platform::installCrashHandler({.app = "rawreel", .process = "rawreel-gui"});
+    // Every sink is in the Logger now: from here on the log thread delivers the records.
+    dvv::Logger::instance().start();
     // A failed start after the selftest's config folder exists removes it here: wx calls no
     // OnExit() after a failed OnInit().
     const auto failed = [this] {
@@ -602,9 +601,10 @@ dvv::Result<std::shared_ptr<dvv::SplitFileSink>> App::openLogFileIn(
             rawreel::openLogFile(
                 folder, creation,
                 ownsSettings() ? dvv::SplitOpen::AppendNewest : dvv::SplitOpen::NewFile));
-    // Runs under the sink's mutex, on the thread whose line starts a new file: it only builds the
-    // text (no logging, no lock of ours); the level comes from the shared atomic. A new file from
-    // open() gets its header here at once; an appended one gets none.
+    // Runs under the sink's mutex, on the thread whose line starts a new file (the log thread once
+    // it runs): it only builds the text (no logging, no lock of ours); the level comes from the
+    // shared atomic. A new file from open() gets its header here at once; an appended one gets
+    // none.
     sink->setHeader([level = active_level_](const std::filesystem::path& previous) {
         return logFileHeader(level->load(std::memory_order_relaxed),
                              dvv::pathDisplayText(previous.filename()));
@@ -711,10 +711,13 @@ void App::startLogFile() {
     }
     log_folder_ = std::move(folder);
     // One call: the file first gets the lines the store holds (the config's among them), then
-    // takes every later one. Nothing was in the switch before (a null old sink). Only the GUI
-    // thread logs at this point (no pool runs yet), so no line falls between the two calls.
+    // takes every later one. Nothing was in the switch before (a null old sink). The log thread
+    // delivers records at any time, so the flush first puts every line logged so far into the
+    // store. Only the GUI thread logs until the replace (no pool runs yet), so no line falls
+    // between the two calls.
     // Addendum §2.3: the store took the lines before the config at every level; the file gets
     // only those at or above the active level (and marks, which pass every level).
+    dvv::Logger::instance().flush();
     std::vector<LogEntry> held = log_store_->entries();
     const dvv::LogLevel level = activeLevel();
     std::erase_if(held,

@@ -423,8 +423,9 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     Bind(wxEVT_ICONIZE, &MainFrame::onIconize, this);
     Bind(wxEVT_SHOW, &MainFrame::onShow, this);
     Bind(wxEVT_CLOSE_WINDOW, &MainFrame::onClose, this);
-    // The Log pane's feed (spec §3.2), last, once the status bar exists: the store's notify posts
-    // onLogChanged to the GUI thread (no timer); the first call takes what was logged so far.
+    // The Log pane's feed (spec §3.2), last, once the status bar exists: the store's notify runs on
+    // the log thread and posts onLogChanged to the GUI thread (CallAfter, no timer); the first call
+    // takes what was logged so far.
     if (const std::shared_ptr<LogStore>& store = wxGetApp().logStore(); store != nullptr) {
         store->setNotify([this] { CallAfter([this] { onLogChanged(); }); });
     }
