@@ -50,6 +50,7 @@
 #include "dvv/base/json.h"
 #include "dvv/base/log.h"
 #include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/gpu_info_json.h"
@@ -142,7 +143,7 @@ std::string_view sourceName(CommandSource source) noexcept {
 
 // A file dialog's start folder (M4 GUI D6); empty lets the system choose.
 wxString dialogFolder(const std::filesystem::path& folder) {
-    return wxString::FromUTF8(dvv::media::utf8FromPath(folder));
+    return wxString::FromUTF8(dvv::pathDisplayText(folder));
 }
 
 // View > Format's context (D5 design §1.8, D5R §4.4): what applies without a colour key
@@ -202,7 +203,7 @@ bool isLiveLogFile(const std::filesystem::path& file, const std::filesystem::pat
 #else
     constexpr bool CASE_INSENSITIVE = false;
 #endif
-    return isLogFileName(dvv::media::utf8FromPath(file.filename()), CASE_INSENSITIVE);
+    return isLogFileName(dvv::pathDisplayText(file.filename()), CASE_INSENSITIVE);
 }
 
 // The reason `text` could not be written to `file` (created or replaced); nullopt once written.
@@ -1117,7 +1118,7 @@ void MainFrame::showOpenDialog() {
         logOpenCancelled();
         return;
     }
-    openFiles({dvv::media::pathFromUtf8(dialog.GetPath().utf8_string())});
+    openFiles({dvv::pathFromText(dialog.GetPath().utf8_string())});
 }
 
 void MainFrame::showOpenUriDialog() {
@@ -1500,7 +1501,7 @@ void MainFrame::showStreamName() {
     if (!uri.empty()) {
         std::error_code error;
         const std::filesystem::path folder = std::filesystem::current_path(error);
-        path = streamFullPath(uri, error ? std::string() : dvv::media::utf8FromPath(folder),
+        path = streamFullPath(uri, error ? std::string() : dvv::pathDisplayText(folder),
                               NATIVE_PATH_STYLE);
         const dvv::Result<dvv::Uri> parsed = dvv::parseUri(uri);
         file = parsed && parsed->scheme == "file";
@@ -1785,8 +1786,8 @@ void MainFrame::saveLog(bool selected) {
     if (showModal(dialog) != wxID_OK || closing_) {
         return;
     }
-    const std::filesystem::path file = dvv::media::pathFromUtf8(chosenPath(dialog));
-    const std::string path = dvv::media::utf8FromPath(file);
+    const std::filesystem::path file = dvv::pathFromText(chosenPath(dialog));
+    const std::string path = dvv::pathDisplayText(file);
     const auto refuse = [this](const std::string& detail) {
         wxMessageDialog message(this, "The log was not saved.", "rawreel", wxOK | wxICON_ERROR);
         message.SetExtendedMessage(wxString::FromUTF8(detail));
@@ -1799,7 +1800,7 @@ void MainFrame::saveLog(bool selected) {
         refuse(
             std::format("'{}' is a log file rawreel writes (the current one is '{}'). Choose "
                         "another file.",
-                        path, dvv::media::utf8FromPath(current)));
+                        path, dvv::pathDisplayText(current)));
         return;
     }
     if (const std::optional<std::string> failure = writeTextFile(file, text)) {

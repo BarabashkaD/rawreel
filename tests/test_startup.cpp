@@ -15,8 +15,8 @@
 #include "core/version_text.h"
 #include "dvv/base/error.h"
 #include "dvv/base/json.h"
+#include "dvv/base/utf8.h"
 #include "dvv/components/ffmpeg.h"
-#include "dvv/media/types.h"
 
 namespace {
 
@@ -24,7 +24,7 @@ using dvv::components::FfmpegStatus;
 namespace fs = std::filesystem;
 
 std::string utf8(const fs::path& path) {
-    return dvv::media::utf8FromPath(path);
+    return dvv::pathDisplayText(path);
 }
 
 dvv::Error errorOf(dvv::Errc code, std::string message) {

@@ -60,6 +60,7 @@
 #include "core/log_mirror.h"
 #include "core/log_store.h"
 #include "core/log_text.h"
+#include "core/native_os.h"
 #include "core/perf_stats.h"
 #include "core/recent.h"
 #include "core/session.h"
@@ -73,6 +74,7 @@
 #include "dvv/base/json.h"
 #include "dvv/base/log.h"
 #include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/gpu_info_json.h"
@@ -2214,7 +2216,7 @@ std::filesystem::path saveFolder(const SelfTest* test) {
 // The saved file holds the expected text.
 bool savedAsExpected(const EditState& state, std::string& seen) {
     const std::optional<std::string> text = fileText(state.file);
-    seen = std::format("'{}': {} bytes (want {})", dvv::media::utf8FromPath(state.file),
+    seen = std::format("'{}': {} bytes (want {})", dvv::pathDisplayText(state.file),
                        text ? std::to_string(text->size()) : "not readable", state.expected.size());
     return !state.expected.empty() && text == state.expected;
 }
@@ -2226,7 +2228,7 @@ SelfTestStep saveLogStep(SelfTest* test, const std::shared_ptr<EditState>& state
         state->file = saveFolder(test) / "saved.txt";
         state->expected = mirrorText(test->frame().logPanel().mirror());
         dialogHooks().saveLog = [state](wxFileDialog& dialog) {
-            dialog.SetPath(wxString::FromUTF8(dvv::media::utf8FromPath(state->file)));
+            dialog.SetPath(wxString::FromUTF8(dvv::pathDisplayText(state->file)));
         };
         test->frame().execute(Command::SaveLog);
     };
@@ -2245,21 +2247,21 @@ SelfTestStep saveLogFolderStep(SelfTest* test, const std::shared_ptr<EditState>&
         dialogHooks().saveLog = [state](wxFileDialog& dialog) {
             // The folder the dialog was created with (wxGTK's GetDirectory() reads its chooser).
             state->directory = dialog.wxFileDialogBase::GetDirectory().utf8_string();
-            dialog.SetPath(wxString::FromUTF8(dvv::media::utf8FromPath(state->file)));
+            dialog.SetPath(wxString::FromUTF8(dvv::pathDisplayText(state->file)));
         };
         test->frame().execute(Command::SaveLog);
     };
     auto passed = [test, state](std::string& seen) {
         const std::filesystem::path folder = saveFolder(test);
         std::error_code error;
-        const bool same = state->directory && !folder.empty() &&
-                          std::filesystem::equivalent(dvv::media::pathFromUtf8(*state->directory),
-                                                      folder, error) &&
-                          !error;
+        const bool same =
+            state->directory && !folder.empty() &&
+            std::filesystem::equivalent(dvv::pathFromText(*state->directory), folder, error) &&
+            !error;
         std::string saved;
         const bool written = savedAsExpected(*state, saved);
         seen = std::format("dialog folder '{}' is '{}' {}; {}", state->directory.value_or("none"),
-                           dvv::media::utf8FromPath(folder), same, saved);
+                           dvv::pathDisplayText(folder), same, saved);
         return same && written;
     };
     return step("save log remembers the folder", std::move(start), std::move(passed));
@@ -2275,7 +2277,7 @@ SelfTestStep saveSelectedStep(SelfTest* test, const std::shared_ptr<EditState>& 
         state->file = saveFolder(test) / "selected.txt";
         state->expected = mirrorRowsText(panel.mirror(), ROWS);
         dialogHooks().saveLog = [state](wxFileDialog& dialog) {
-            dialog.SetPath(wxString::FromUTF8(dvv::media::utf8FromPath(state->file)));
+            dialog.SetPath(wxString::FromUTF8(dvv::pathDisplayText(state->file)));
         };
         test->frame().execute(Command::SaveSelectedLines);
     };
@@ -2317,7 +2319,7 @@ SelfTestStep savedTextStep(SelfTest* test, const std::shared_ptr<EditState>& sta
         *records = test->frame().logPanel().allRecords();  // what the save below writes
         state->expected = logRecordsText(*records);
         dialogHooks().saveLog = [state](wxFileDialog& dialog) {
-            dialog.SetPath(wxString::FromUTF8(dvv::media::utf8FromPath(state->file)));
+            dialog.SetPath(wxString::FromUTF8(dvv::pathDisplayText(state->file)));
         };
         test->frame().execute(Command::SaveLog);
     };
@@ -2368,7 +2370,7 @@ SelfTestStep saveOverLiveLogStep(SelfTest* test, const std::shared_ptr<EditState
         state->logSize = std::filesystem::file_size(state->file, error);
         state->message.reset();
         dialogHooks().saveLog = [state](wxFileDialog& dialog) {
-            dialog.SetPath(wxString::FromUTF8(dvv::media::utf8FromPath(state->file)));
+            dialog.SetPath(wxString::FromUTF8(dvv::pathDisplayText(state->file)));
         };
         dialogHooks().message = [state](wxMessageDialog& dialog) {
             state->message =
@@ -2380,11 +2382,11 @@ SelfTestStep saveOverLiveLogStep(SelfTest* test, const std::shared_ptr<EditState
         std::error_code error;
         const std::uintmax_t size = std::filesystem::file_size(state->file, error);
         seen = std::format("log file '{}', message '{}', {} bytes (was {})",
-                           dvv::media::utf8FromPath(state->file), state->message.value_or("none"),
+                           dvv::pathDisplayText(state->file), state->message.value_or("none"),
                            error ? 0 : size, state->logSize);
         return !state->file.empty() && state->logSize > 0 && !error && size >= state->logSize &&
                state->message &&
-               state->message->find(dvv::media::utf8FromPath(state->file)) != std::string::npos;
+               state->message->find(dvv::pathDisplayText(state->file)) != std::string::npos;
     };
     return step("save over the live log", std::move(start), std::move(passed));
 }
@@ -2402,7 +2404,7 @@ SelfTestStep saveOverLogFileStep(SelfTest* test, const std::shared_ptr<EditState
         state->file = test->app().logFolderInUse() / name;
         state->message.reset();
         dialogHooks().saveLog = [state](wxFileDialog& dialog) {
-            dialog.SetPath(wxString::FromUTF8(dvv::media::utf8FromPath(state->file)));
+            dialog.SetPath(wxString::FromUTF8(dvv::pathDisplayText(state->file)));
         };
         dialogHooks().message = [state](wxMessageDialog& dialog) {
             state->message =
@@ -2413,8 +2415,8 @@ SelfTestStep saveOverLogFileStep(SelfTest* test, const std::shared_ptr<EditState
     auto passed = [test, state](std::string& seen) {
         std::error_code error;
         const bool exists = std::filesystem::exists(state->file, error);
-        const std::string current = dvv::media::utf8FromPath(test->app().currentLogFile());
-        seen = std::format("'{}' {}, message '{}'", dvv::media::utf8FromPath(state->file),
+        const std::string current = dvv::pathDisplayText(test->app().currentLogFile());
+        seen = std::format("'{}' {}, message '{}'", dvv::pathDisplayText(state->file),
                            exists ? "exists" : "absent", state->message.value_or("none"));
         return !test->app().logFolderInUse().empty() && !current.empty() && !error && !exists &&
                state->message && state->message->find(current) != std::string::npos;
@@ -2429,7 +2431,7 @@ SelfTestStep saveFailureStep(SelfTest* test, const std::shared_ptr<EditState>& s
         state->message.reset();
         state->logNext = logNext(test->app());
         dialogHooks().saveLog = [state](wxFileDialog& dialog) {
-            dialog.SetPath(wxString::FromUTF8(dvv::media::utf8FromPath(state->file)));
+            dialog.SetPath(wxString::FromUTF8(dvv::pathDisplayText(state->file)));
         };
         dialogHooks().message = [state](wxMessageDialog& dialog) {
             state->message =
@@ -2438,7 +2440,7 @@ SelfTestStep saveFailureStep(SelfTest* test, const std::shared_ptr<EditState>& s
         test->frame().execute(Command::SaveLog);
     };
     auto passed = [test, state](std::string& seen) {
-        const std::string path = dvv::media::utf8FromPath(state->file);
+        const std::string path = dvv::pathDisplayText(state->file);
         bool warned = false;
         for (const LogEntry& entry : test->app().logStore()->entries()) {
             warned =
@@ -2557,7 +2559,7 @@ SelfTestStep settingsOwnerStep(SelfTest* test) {
         const bool owner = app.ownsSettings();
         const bool second_refused = SettingsClaim::tryClaim(app.configPath()) == nullptr;
         seen = std::format("owns the settings {}, a second claim of '{}' refused {}", owner,
-                           dvv::media::utf8FromPath(app.configPath()), second_refused);
+                           dvv::pathDisplayText(app.configPath()), second_refused);
         return owner && second_refused;
     };
     return step("settings owner", {}, std::move(passed));
@@ -2575,7 +2577,7 @@ SelfTestStep selftestConfigStep(SelfTest* test) {
             !folder.empty() &&
             std::filesystem::equivalent(folder.parent_path(),
                                         std::filesystem::temp_directory_path(), error) &&
-            !error && dvv::media::utf8FromPath(folder.filename()).starts_with(prefix);
+            !error && dvv::pathDisplayText(folder.filename()).starts_with(prefix);
         const bool in_folder =
             named && !app.configPath().empty() &&
             std::filesystem::equivalent(app.configPath().parent_path(), folder, error) && !error;
@@ -2594,8 +2596,8 @@ SelfTestStep selftestConfigStep(SelfTest* test) {
 #endif
         seen = std::format(
             "config '{}' in '{}' {}, log folder '{}' its logs/ {}, 0700 folders {}, system log {}",
-            dvv::media::utf8FromPath(app.configPath()), dvv::media::utf8FromPath(folder), in_folder,
-            dvv::media::utf8FromPath(logs), logs_used, private_folders, app.systemLogEnabled());
+            dvv::pathDisplayText(app.configPath()), dvv::pathDisplayText(folder), in_folder,
+            dvv::pathDisplayText(logs), logs_used, private_folders, app.systemLogEnabled());
         return in_folder && logs_used && private_folders && !app.systemLogEnabled();
     };
     return step("selftest config", {}, std::move(passed));
@@ -2615,7 +2617,7 @@ SelfTestStep levelStartMarkerStep(SelfTest* test) {
         const std::string first = text.substr(0, text.find('\n'));
         const bool starts = first.ends_with(header);
         const std::string named =
-            std::format("log file: '{}'", dvv::media::utf8FromPath(app.currentLogFile()));
+            std::format("log file: '{}'", dvv::pathDisplayText(app.currentLogFile()));
         const bool names = text.find(named) != std::string::npos;
         const bool in_file = text.find(marker) != std::string::npos;
         const bool in_store = storeHasMark(app, marker);
@@ -2697,9 +2699,9 @@ SelfTestStep levelSystemLogOffStep(SelfTest* test, const std::shared_ptr<LevelSt
 SelfTestStep logFileTimestampedStep(SelfTest* test) {
     auto passed = [test](std::string& seen) {
         const std::filesystem::path file = test->app().currentLogFile();
-        const std::string name = dvv::media::utf8FromPath(file.filename());
+        const std::string name = dvv::pathDisplayText(file.filename());
         const bool matches = !name.empty() && isLogFileName(name, false);
-        seen = std::format("log file '{}' matches {}", dvv::media::utf8FromPath(file), matches);
+        seen = std::format("log file '{}' matches {}", dvv::pathDisplayText(file), matches);
         return matches;
     };
     return step("log file is timestamped", {}, std::move(passed));
@@ -3087,8 +3089,7 @@ SelfTestStep aboutStep(SelfTest* test, const std::shared_ptr<SmokeState>& state)
         const VulkanStatus vulkan = frame.vulkanStatus();
         const dvv::components::FfmpegStatus& ffmpeg = test->app().startup().ffmpeg;
         // The status only: no FFmpeg directory in About (users share its text).
-        const bool no_path =
-            !ffmpeg.core || !text.contains(dvv::media::utf8FromPath(ffmpeg.directory));
+        const bool no_path = !ffmpeg.core || !text.contains(dvv::pathDisplayText(ffmpeg.directory));
         // About: the name and version once, the licence, the FFmpeg version, the components, no
         // GPU (Help -> GPU info); the copied text is the full aboutText().
         const std::string heading = std::format("rawreel {}", packageVersions().front().second);
@@ -3368,9 +3369,8 @@ SelfTestStep settingsOpensStep(SelfTest* test, const std::shared_ptr<SettingsSta
         const App& app = test->app();
         const std::filesystem::path logs = app.selftestConfigFolder() / "logs";
         const bool config =
-            state->configPathText.utf8_string() == dvv::media::utf8FromPath(app.configPath());
-        const bool folder =
-            sameFolder(dvv::media::pathFromUtf8(state->folderText.utf8_string()), logs);
+            state->configPathText.utf8_string() == dvv::pathDisplayText(app.configPath());
+        const bool folder = sameFolder(dvv::pathFromText(state->folderText.utf8_string()), logs);
         seen = std::format(
             "hook ran {}, pages {}, shown {}, settings file '{}' is the config {}, folder '{}' is "
             "logs/ {}, Use Default enabled {}",
@@ -3382,6 +3382,32 @@ SelfTestStep settingsOpensStep(SelfTest* test, const std::shared_ptr<SettingsSta
     return step("settings opens", std::move(start), std::move(passed));
 }
 
+// POSIX only: a log folder whose name is not UTF-8 stays as stored when Settings opens and applies
+// without an edit (the field shows U+FFFD text, which is never parsed back into the folder).
+SelfTestStep settingsNonUtf8FolderStep(SelfTest* test,
+                                       const std::shared_ptr<SettingsState>& state) {
+    const std::string bytes =
+        "/tmp/rawreel-non-utf8-\xFF"
+        "-logs";
+    auto start = [test, state, bytes] {
+        state->target = test->app().config().log.file.folder;  // restored in passed
+        test->app().setLogFileConfig(test->app().config().log.file.enabled,
+                                     dvv::pathFromText(bytes));
+        runSettings(test, state, [](SettingsWindow&) {});
+    };
+    auto passed = [test, state, bytes](std::string& seen) {
+        App& app = test->app();
+        const std::string kept = app.config().log.file.folder.native();
+        const bool same = kept == bytes;
+        app.setLogFileConfig(app.config().log.file.enabled, state->target);
+        seen = std::format("hook ran {}, the stored folder has the same bytes {}", state->hookRan,
+                           same);
+        return state->hookRan && same;
+    };
+    return step("settings: a non-UTF-8 log folder stays unchanged when the field is not edited",
+                std::move(start), std::move(passed));
+}
+
 // Spec §5.3: Choose... a new folder: logs2/ is created and gets a log file, and the old file's
 // last line names the new file; the value is saved and Use Default is enabled.
 SelfTestStep settingsLogFolderStep(SelfTest* test, const std::shared_ptr<SettingsState>& state) {
@@ -3391,7 +3417,7 @@ SelfTestStep settingsLogFolderStep(SelfTest* test, const std::shared_ptr<Setting
         state->target = test->app().selftestConfigFolder() / "logs2";
         dialogHooks().chooseFolder = [state](wxDirDialog& dialog) {
             dialog.wxDirDialogBase::SetPath(
-                wxString::FromUTF8(dvv::media::utf8FromPath(state->target)));
+                wxString::FromUTF8(dvv::pathDisplayText(state->target)));
         };
         runSettings(test, state, [state](SettingsWindow& settings) {
             settings.logPage().chooseFolder();
@@ -3411,16 +3437,16 @@ SelfTestStep settingsLogFolderStep(SelfTest* test, const std::shared_ptr<Setting
         if (old_text && !current.empty()) {
             const std::size_t line = old_text->rfind("log file moves to");
             named = line != std::string::npos &&
-                    old_text->find(dvv::media::utf8FromPath(current), line) != std::string::npos;
+                    old_text->find(dvv::pathDisplayText(current), line) != std::string::npos;
         }
         const std::optional<Config> saved = scratchConfig(app);
         const bool stored = saved && sameFolder(saved->log.file.folder, state->target);
         seen = std::format(
             "hook ran {}, log folder '{}' is logs2 {}, log file '{}' in logs2 {}, old file names "
             "it {}, saved log.file.folder '{}' {}, field '{}', Use Default enabled {}",
-            state->hookRan, dvv::media::utf8FromPath(app.logFolderInUse()), moved,
-            dvv::media::utf8FromPath(current), file, named,
-            saved ? dvv::media::utf8FromPath(saved->log.file.folder) : "not readable", stored,
+            state->hookRan, dvv::pathDisplayText(app.logFolderInUse()), moved,
+            dvv::pathDisplayText(current), file, named,
+            saved ? dvv::pathDisplayText(saved->log.file.folder) : "not readable", stored,
             state->folderText.utf8_string(), state->useDefaultEnabled);
         return state->hookRan && moved && file && named && stored && state->useDefaultEnabled;
     };
@@ -3438,7 +3464,7 @@ SelfTestStep settingsLogAppendStep(SelfTest* test, const std::shared_ptr<Setting
         std::ofstream(state->oldFile, std::ios::binary) << "an older line\n";
         dialogHooks().chooseFolder = [state](wxDirDialog& dialog) {
             dialog.wxDirDialogBase::SetPath(
-                wxString::FromUTF8(dvv::media::utf8FromPath(state->target)));
+                wxString::FromUTF8(dvv::pathDisplayText(state->target)));
         };
         runSettings(test, state,
                     [](SettingsWindow& settings) { settings.logPage().chooseFolder(); });
@@ -3454,15 +3480,15 @@ SelfTestStep settingsLogAppendStep(SelfTest* test, const std::shared_ptr<Setting
         const bool kept = text.starts_with(older);
         const std::string rest = kept ? text.substr(older.size()) : std::string();
         const std::string marker = levelMarker(app.activeLevel(), app.activeLevelSource());
-        const std::size_t named = rest.find(
-            std::format("log file: '{}'", dvv::media::utf8FromPath(app.currentLogFile())));
+        const std::size_t named =
+            rest.find(std::format("log file: '{}'", dvv::pathDisplayText(app.currentLogFile())));
         const bool marked =
             named != std::string::npos && rest.find(marker, named) != std::string::npos;
         const bool no_header = rest.find("===== log file: level") == std::string::npos;
         seen = std::format(
             "hook ran {}, log file '{}' is the existing one {}, older line kept {}, names itself "
             "{}, marker '{}' after it {}, no header {}",
-            state->hookRan, dvv::media::utf8FromPath(current), appended, kept,
+            state->hookRan, dvv::pathDisplayText(current), appended, kept,
             named != std::string::npos, marker, marked, no_header);
         return state->hookRan && appended && kept && marked && no_header;
     };
@@ -3480,7 +3506,7 @@ SelfTestStep settingsFolderFailureStep(SelfTest* test,
         state->message.reset();
         dialogHooks().chooseFolder = [state](wxDirDialog& dialog) {
             dialog.wxDirDialogBase::SetPath(
-                wxString::FromUTF8(dvv::media::utf8FromPath(state->target)));
+                wxString::FromUTF8(dvv::pathDisplayText(state->target)));
         };
         dialogHooks().message = [state](wxMessageDialog& dialog) {
             state->message =
@@ -3502,12 +3528,12 @@ SelfTestStep settingsFolderFailureStep(SelfTest* test,
 #endif
         const bool named =
             state->message &&
-            state->message->find(dvv::media::utf8FromPath(state->target)) != std::string::npos;
+            state->message->find(dvv::pathDisplayText(state->target)) != std::string::npos;
         seen = std::format(
             "hook ran {}, message '{}' names the folder {}, log folder '{}' kept {}, field '{}' "
             "(was '{}') {}",
             state->hookRan, state->message.value_or("none"), named,
-            dvv::media::utf8FromPath(app.logFolderInUse()), kept, state->folderText.utf8_string(),
+            dvv::pathDisplayText(app.logFolderInUse()), kept, state->folderText.utf8_string(),
             state->folderBefore.utf8_string(), field);
         return state->hookRan && named && kept && field;
     };
@@ -3531,8 +3557,8 @@ SelfTestStep settingsRevealStep(SelfTest* test, const std::shared_ptr<SettingsSt
         const bool same = state->revealed && *state->revealed == want;
         seen = std::format("hook ran {}, enabled {}, revealed '{}' (want '{}') {}", state->hookRan,
                            state->revealEnabled,
-                           state->revealed ? dvv::media::utf8FromPath(*state->revealed) : "none",
-                           dvv::media::utf8FromPath(want), same);
+                           state->revealed ? dvv::pathDisplayText(*state->revealed) : "none",
+                           dvv::pathDisplayText(want), same);
         return state->hookRan && state->revealEnabled && !want.empty() && same;
     };
     return step("settings reveal", std::move(start), std::move(passed));
@@ -3757,13 +3783,13 @@ SelfTestStep menuLevelReopenStep(SelfTest* test, const std::shared_ptr<SettingsS
         const std::size_t named =
             current.empty()
                 ? std::string::npos
-                : text.rfind(std::format("log file: '{}'", dvv::media::utf8FromPath(current)));
+                : text.rfind(std::format("log file: '{}'", dvv::pathDisplayText(current)));
         const bool marked =
             named != std::string::npos && text.find(level->marker, named) != std::string::npos;
         seen = std::format(
             "hook ran {}, log file '{}' names itself {}, marker '{}' after it {}, "
             "active {}",
-            state->hookRan, dvv::media::utf8FromPath(current), named != std::string::npos,
+            state->hookRan, dvv::pathDisplayText(current), named != std::string::npos,
             level->marker, marked, levelShownName(app.activeLevel()));
         return state->hookRan && marked && app.activeLevel() == dvv::LogLevel::Trace;
     };
@@ -3894,6 +3920,9 @@ SelfTestStep closeKeyOtherWindowStep(SelfTest* test, const std::shared_ptr<Setti
 void addSettingsSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     const auto state = std::make_shared<SettingsState>();
     steps.push_back(settingsOpensStep(test, state));
+    if constexpr (NATIVE_OS != Os::Windows) {
+        steps.push_back(settingsNonUtf8FolderStep(test, state));
+    }
     steps.push_back(settingsLogFolderStep(test, state));
     steps.push_back(settingsLogAppendStep(test, state));
     steps.push_back(settingsFolderFailureStep(test, state));
@@ -4497,7 +4526,7 @@ void dropFiles(Viewport& viewport, const std::vector<std::filesystem::path>& fil
     const wxSize size = viewport.GetClientSize();
     wxArrayString names;
     for (const auto& file : files) {
-        names.Add(wxString::FromUTF8(dvv::media::utf8FromPath(file)));
+        names.Add(wxString::FromUTF8(dvv::pathDisplayText(file)));
     }
     target->OnDropFiles(size.x / 2, size.y / 2, names);
 }
@@ -6162,7 +6191,7 @@ void addRecentSteps(std::vector<SelfTestStep>& steps, SelfTest& test,
         "Open Recent lists the earlier opens",
         [st, dir = std::move(dir)] {
             const std::filesystem::path folder = dir();
-            st->fileA = folder / dvv::media::pathFromUtf8("recent & \xC3\xBC_64x48_yuv420p.yuv");
+            st->fileA = folder / dvv::pathFromText("recent & \xC3\xBC_64x48_yuv420p.yuv");
             st->fileB = folder / "recent_second_64x48_yuv420p.yuv";
             st->fileNoSize = folder / "recent_nosize.yuv";
             st->fileFmtOnly = folder / "recent_fmtonly.yuv";
@@ -6264,7 +6293,7 @@ void addRecentSteps(std::vector<SelfTestStep>& steps, SelfTest& test,
         [&frame, st, remember] {
             remember();
             dialogHooks().uri = [st](wxTextEntryDialog& dialog) {
-                dialog.SetValue(wxString::FromUTF8(dvv::media::utf8FromPath(
+                dialog.SetValue(wxString::FromUTF8(dvv::pathDisplayText(
                     st->fileA.parent_path() / "recent_missing_64x48_yuv420p.yuv")));
             };
             frame.execute(Command::OpenUri);
@@ -6323,7 +6352,7 @@ void addRecentSteps(std::vector<SelfTestStep>& steps, SelfTest& test,
             remember();
             dialogHooks().uri = [st](wxTextEntryDialog& dialog) {
                 dialog.SetValue(
-                    wxString::FromUTF8(dvv::media::utf8FromPath(st->fileFmtOnly) + "?fmt=yuv420p"));
+                    wxString::FromUTF8(dvv::pathDisplayText(st->fileFmtOnly) + "?fmt=yuv420p"));
             };
             frame.execute(Command::OpenUri);
         },
@@ -6353,7 +6382,7 @@ void addRecentSteps(std::vector<SelfTestStep>& steps, SelfTest& test,
             seen += std::format(", hook {}, yuv420p 64x48 {}", st->formatHookRan,
                                 streamIs(frame, 64, 48, "yuv420p"));
             return st->formatHookRan && streamIs(frame, 64, 48, "yuv420p") &&
-                   top_is(dvv::media::utf8FromPath(st->fileFmtOnly) + "?fmt=yuv420p") && listed;
+                   top_is(dvv::pathText(st->fileFmtOnly) + "?fmt=yuv420p") && listed;
         }));
     // R10 (focus 4): a history save that fails logs one warning and shows no message.
     steps.push_back(step(
@@ -8113,8 +8142,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                 .write(json.data(), static_cast<std::streamsize>(json.size()));
             st->textsRead.clear();
             st->choiceRead = {};
-            dialogHooks().format = [st,
-                                    path = dvv::media::utf8FromPath(file)](FormatDialog& dialog) {
+            dialogHooks().format = [st, path = dvv::pathText(file)](FormatDialog& dialog) {
                 FormatChoice qcif = dialog.choice();
                 qcif.width = 176;
                 qcif.height = 144;
@@ -8175,10 +8203,10 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                                     .utf8_string());
                 texts.emplace_back(header.AfterLast('\n').utf8_string());  // the tooltip's end
                 // A bad pixel-format JSON: the red line, no entry.
-                dialog.loadJson(dvv::media::utf8FromPath(dir / "bad-format.json"));
+                dialog.loadJson(dvv::pathText(dir / "bad-format.json"));
                 texts.emplace_back(dialog.errorText().empty() ? "no error" : "error");
                 texts.push_back(dialog.formatLabel().BeforeFirst('|').utf8_string());
-                dialog.loadJson(dvv::media::utf8FromPath(dir / "custom.json"));
+                dialog.loadJson(dvv::pathText(dir / "custom.json"));
                 const wxString label = dialog.formatLabel();
                 texts.push_back(
                     (label.BeforeFirst('|') + "|" +
@@ -8194,7 +8222,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                                 dialog.errorText().utf8_string());
                 st->flagRead = dialog.choice().format.starts_with('@');
                 // A Load JSON error goes when the user picks a candidate.
-                dialog.loadJson(dvv::media::utf8FromPath(dir / "bad-format.json"));
+                dialog.loadJson(dvv::pathText(dir / "bad-format.json"));
                 const bool picked = dialog.userPick(Control::Candidate, 0);
                 texts.push_back(
                     std::format("picked {} '{}'", picked, dialog.errorText().utf8_string()));
@@ -8357,8 +8385,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             st->choiceRead = {};
             st->lockedRead = false;
             st->flagRead = false;
-            dialogHooks().format = [st,
-                                    path = dvv::media::utf8FromPath(file)](FormatDialog& dialog) {
+            dialogHooks().format = [st, path = dvv::pathText(file)](FormatDialog& dialog) {
                 using Control = FormatDialog::Control;
                 std::vector<std::string>& texts = st->textsRead;
                 st->lockedRead = dialog.fieldsLocked();
@@ -8370,8 +8397,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                 // Load JSON never shrinks a dialog the user enlarged.
                 const wxSize enlarged = dialog.GetSize() + dialog.FromDIP(wxSize(120, 160));
                 dialog.SetSize(enlarged);
-                dialog.loadJson(
-                    dvv::media::utf8FromPath(st->dir / "size-only.json"));  // no colour group
+                dialog.loadJson(dvv::pathText(st->dir / "size-only.json"));  // no colour group
                 texts.push_back(dialog.noteText().utf8_string());
                 dialog.loadJson(path);
                 texts.push_back(dialog.noteText().utf8_string());
@@ -8382,7 +8408,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                                                   after.x, after.y));
                 st->choiceRead = dialog.choice();
                 // A Load JSON error goes when the user changes a control.
-                dialog.loadJson(dvv::media::utf8FromPath(st->dir / "broken.json"));
+                dialog.loadJson(dvv::pathText(st->dir / "broken.json"));
                 texts.emplace_back(dialog.errorText().empty() ? "no error" : "error");
                 dialog.userPick(Control::Colour, "BT.601 (NTSC)");
                 texts.push_back((dialog.errorText() + "|" + dialog.colourText()).utf8_string());
@@ -8435,7 +8461,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                 .write(y4m.data(), static_cast<std::streamsize>(y4m.size()));
             st->dialogs0 = frame.formatDialogsShown();
             wxArrayString names;
-            names.Add(wxString::FromUTF8(dvv::media::utf8FromPath(file)));
+            names.Add(wxString::FromUTF8(dvv::pathDisplayText(file)));
             wxGetApp().MacOpenFiles(names);
         },
         [&frame, st, stream_is, stream_uri](std::string& seen) {
@@ -8541,8 +8567,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             }
         },
         [&frame, st, first_name](std::string& seen) {
-            const wxString path =
-                wxString::FromUTF8(dvv::media::utf8FromPath(st->dir / first_name));
+            const wxString path = wxString::FromUTF8(dvv::pathDisplayText(st->dir / first_name));
             const wxString title = wxString::FromUTF8(windowTitle(first_name, NATIVE_TITLE_STYLE));
             const wxString tip = fieldTooltip(frame, MainFrame::FILE_FIELD);
 #if defined(__WXOSX__)
@@ -8568,14 +8593,14 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
     steps.push_back(step(
         "long file name",
         [&frame, st, long_name] {
-            const auto file = st->dir / dvv::media::pathFromUtf8(long_name);
+            const auto file = st->dir / dvv::pathFromText(long_name);
             writeFile(file, 1024, '\x40');
             frame.openFiles({file});
             frame.SetClientSize(frame.GetMinClientSize().x, frame.GetClientSize().y);
         },
         [&frame, st, long_name, stream_is](std::string& seen) {
-            const wxString path = wxString::FromUTF8(
-                dvv::media::utf8FromPath(st->dir / dvv::media::pathFromUtf8(long_name)));
+            const wxString path =
+                wxString::FromUTF8(dvv::pathDisplayText(st->dir / dvv::pathFromText(long_name)));
             seen = std::format("gray 32x16 {}, path '{}'", stream_is(32, 16, "gray"),
                                frame.streamPath().utf8_string());
             return stream_is(32, 16, "gray") && frame.streamPath() == path;
@@ -8583,8 +8608,8 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
     steps.push_back(
         step("long file name is cut in the middle", {}, [&frame, st, long_name](std::string& seen) {
             const wxString name = wxString::FromUTF8(long_name);
-            const wxString path = wxString::FromUTF8(
-                dvv::media::utf8FromPath(st->dir / dvv::media::pathFromUtf8(long_name)));
+            const wxString path =
+                wxString::FromUTF8(dvv::pathDisplayText(st->dir / dvv::pathFromText(long_name)));
             const wxString field = frame.statusTexts()[MainFrame::FILE_FIELD];
             const wxString tip = fieldTooltip(frame, MainFrame::FILE_FIELD);
             // Review focus 1: the title is never cut, whatever the field shows.
@@ -8624,7 +8649,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
     wxString mkv_text;
     const bool mkv_named = wxGetEnv("RAWREEL_TEST_MKV", &mkv_text) && !mkv_text.empty();
     const std::filesystem::path mkv =
-        mkv_named ? dvv::media::pathFromUtf8(mkv_text.utf8_string()) : std::filesystem::path{};
+        mkv_named ? dvv::pathFromText(mkv_text.utf8_string()) : std::filesystem::path{};
     std::error_code mkv_error;
     const bool mkv_exists = mkv_named && std::filesystem::is_regular_file(mkv, mkv_error);
     if (test.app().startup().ffmpeg.core && mkv_exists) {

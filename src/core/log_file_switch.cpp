@@ -14,7 +14,7 @@
 #include "dvv/base/error.h"
 #include "dvv/base/log.h"
 #include "dvv/base/paths.h"
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 
 namespace rawreel {
 
@@ -58,12 +58,12 @@ dvv::Result<void> prepareLogFolder(const fs::path& folder, FolderCreation creati
     const fs::path parent = folder.parent_path();
     if (!fs::is_directory(parent, error)) {
         return dvv::makeError(dvv::Errc::Io, std::format("the folder {} does not exist",
-                                                         dvv::media::utf8FromPath(parent)));
+                                                         dvv::pathDisplayText(parent)));
     }
     if (!fs::create_directory(folder, error) && error) {
         return dvv::makeError(
             dvv::Errc::Io,
-            std::format("cannot create {}: {}", dvv::media::utf8FromPath(folder), error.message()));
+            std::format("cannot create {}: {}", dvv::pathDisplayText(folder), error.message()));
     }
     return {};
 }

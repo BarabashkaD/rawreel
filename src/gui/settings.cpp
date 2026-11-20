@@ -28,7 +28,7 @@
 #include "core/log_file_switch.h"
 #include "core/log_level.h"
 #include "dvv/base/log.h"
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 #include "gui/app.h"
 #include "gui/main_frame.h"
 #include "gui/native_controls.h"
@@ -72,10 +72,6 @@ constexpr std::array<dvv::LogLevel, 5> LEVELS{dvv::LogLevel::Error, dvv::LogLeve
 
 wxString fromUtf8(std::string_view text) {
     return wxString::FromUTF8(text.data(), text.size());
-}
-
-wxString pathText(const std::filesystem::path& path) {
-    return wxString::FromUTF8(dvv::media::utf8FromPath(path));
 }
 
 // The same folder: the same path, or one std::filesystem::equivalent to it (both exist).
@@ -205,11 +201,11 @@ void LogSettingsPage::chooseFolder() {
     }
     const dvv::Result<std::filesystem::path> start = folderOf(wanted_);
     wxDirDialog dialog(wxGetTopLevelParent(this), "Choose the log folder",
-                       start ? pathText(*start) : wxString());
+                       start ? fromUtf8(dvv::pathDisplayText(*start)) : wxString());
     if (showModal(dialog) != wxID_OK || !active()) {
         return;
     }
-    const std::filesystem::path chosen = dvv::media::pathFromUtf8(chosenFolder(dialog));
+    const std::filesystem::path chosen = dvv::pathFromText(chosenFolder(dialog));
     if (chosen.empty()) {
         return;
     }
@@ -371,7 +367,7 @@ bool LogSettingsPage::prepare() {
         reason = folder.error().message;
     }
     // The old file stays in use; a native message gives the path and the reason.
-    const std::string path = dvv::media::utf8FromPath(folder ? *folder : wanted_.folder);
+    const std::string path = dvv::pathDisplayText(folder ? *folder : wanted_.folder);
     DVV_LOG_WARN("log folder '{}' cannot be used: {}", path, reason);
     wxMessageDialog dialog(wxGetTopLevelParent(this), "The log folder cannot be used.", "rawreel",
                            wxOK | wxICON_ERROR);
@@ -395,8 +391,7 @@ void LogSettingsPage::apply(std::vector<ConfigValue>& values) {
         values.push_back({.key = "log.file.enabled", .value = wanted_.fileEnabled});
     }
     if (wanted_.folder != before.folder) {
-        values.push_back(
-            {.key = "log.file.folder", .value = dvv::media::utf8FromPath(wanted_.folder)});
+        values.push_back({.key = "log.file.folder", .value = dvv::pathText(wanted_.folder)});
     }
     app.setLogFileConfig(wanted_.fileEnabled, wanted_.folder);
     if (wanted_.systemLog != before.systemLog) {
@@ -425,9 +420,9 @@ void LogSettingsPage::refresh() {
     level_->SetSelection(level != LEVELS.end() ? static_cast<int>(level - LEVELS.begin())
                                                : wxNOT_FOUND);
     file_box_->SetValue(wanted_.fileEnabled);
-    folder_->ChangeValue(pathText(wanted_.folder));
+    folder_->ChangeValue(fromUtf8(dvv::pathDisplayText(wanted_.folder)));
     const dvv::Result<std::filesystem::path> fallback = app.defaultLogFolder();
-    folder_->SetHint(fallback ? pathText(*fallback) : wxString());
+    folder_->SetHint(fallback ? fromUtf8(dvv::pathDisplayText(*fallback)) : wxString());
     use_default_->Enable(useDefaultEnabled());
     reveal_->Enable(revealEnabled());
     system_box_->SetValue(wanted_.systemLog);
@@ -435,7 +430,8 @@ void LogSettingsPage::refresh() {
     const std::filesystem::path in_use = app.logFolderInUse();
     const dvv::Result<std::filesystem::path> saved = folderOf(applied());
     const bool unavailable = !in_use.empty() && saved && !sameFolder(*saved, in_use);
-    unavailable_->SetLabel(unavailable ? "Not available, writing to " + pathText(in_use)
+    unavailable_->SetLabel(unavailable ? "Not available, writing to " +
+                                             fromUtf8(dvv::pathDisplayText(in_use))
                                        : wxString());
     unavailable_->Show(unavailable);
     Layout();
@@ -489,9 +485,9 @@ FilesSettingsPage::FilesSettingsPage(wxWindow* parent, MainFrame& frame, Setting
     file_row->Add(new wxStaticText(this, wxID_ANY, "Settings file:"),
                   wxSizerFlags().CenterVertical().Border(wxRIGHT));
     const std::filesystem::path& config = wxGetApp().configPath();
-    config_path_ =
-        new wxTextCtrl(this, wxID_ANY, config.empty() ? wxString("none") : pathText(config),
-                       wxDefaultPosition, wxSize(FromDIP(360), -1), wxTE_READONLY);
+    config_path_ = new wxTextCtrl(
+        this, wxID_ANY, config.empty() ? wxString("none") : fromUtf8(dvv::pathDisplayText(config)),
+        wxDefaultPosition, wxSize(FromDIP(360), -1), wxTE_READONLY);
     file_row->Add(config_path_, wxSizerFlags(1).CenterVertical());
     sizer->AddStretchSpacer();
     sizer->Add(file_row, wxSizerFlags().Expand().Border(wxALL));

@@ -13,7 +13,7 @@
 
 #include "dvv/base/environment.h"
 #include "dvv/base/paths.h"
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 
 namespace rawreel {
 
@@ -39,7 +39,7 @@ FfmpegOrigin currentFfmpegOrigin() {
 #endif
     if (const std::optional<std::string> home = dvv::getEnvironment(home_variable);
         home && !home->empty()) {
-        origin.homeFolder = dvv::media::pathFromUtf8(*home);
+        origin.homeFolder = dvv::pathFromText(*home);
     }
     return origin;
 }
@@ -53,7 +53,7 @@ std::string maskFolders(std::string text, const FfmpegOrigin& origin) {
             return;  // empty or a root: replacing it would garble every path
         }
         for (const std::filesystem::path& form : {folder, folder.lexically_normal()}) {
-            std::string from = dvv::media::utf8FromPath(form);
+            std::string from = dvv::pathDisplayText(form);
             while (from.size() > 1 && (from.back() == '/' || from.back() == '\\')) {
                 from.pop_back();
             }
@@ -61,17 +61,17 @@ std::string maskFolders(std::string text, const FfmpegOrigin& origin) {
         }
     };
     if (!origin.ffmpegDirVariable.empty()) {
-        add(dvv::media::pathFromUtf8(origin.ffmpegDirVariable), "$DVV_FFMPEG_DIR");
+        add(dvv::pathFromText(origin.ffmpegDirVariable), "$DVV_FFMPEG_DIR");
     }
     if (!origin.appFolder.empty()) {
         const std::filesystem::path lib = std::filesystem::path("..") / "lib" / "ffmpeg";
         add((origin.appFolder / lib).lexically_normal(),
-            dvv::media::utf8FromPath(std::filesystem::path("<app>") / lib));
+            dvv::pathDisplayText(std::filesystem::path("<app>") / lib));
         // macOS bundle: Contents/MacOS/../Frameworks/ffmpeg.
         const std::filesystem::path frameworks =
             std::filesystem::path("..") / "Frameworks" / "ffmpeg";
         add((origin.appFolder / frameworks).lexically_normal(),
-            dvv::media::utf8FromPath(std::filesystem::path("<app>") / frameworks));
+            dvv::pathDisplayText(std::filesystem::path("<app>") / frameworks));
         add(origin.appFolder, "<app>");
     }
     add(origin.homeFolder, "~");

@@ -7,7 +7,7 @@
 #include <string_view>
 #include <system_error>
 
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 #include "gui/native_controls.h"
 
 namespace rawreel {
@@ -51,7 +51,7 @@ void revealInFileManager(const std::filesystem::path& file_or_folder) {
     const std::filesystem::path folder = std::filesystem::is_directory(file_or_folder, error)
                                              ? file_or_folder
                                              : file_or_folder.parent_path();
-    (void)wxLaunchDefaultApplication(wxString::FromUTF8(dvv::media::utf8FromPath(folder)));
+    (void)wxLaunchDefaultApplication(wxString::FromUTF8(dvv::pathDisplayText(folder)));
 }
 
 }  // namespace rawreel

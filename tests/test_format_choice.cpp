@@ -15,6 +15,7 @@
 #include "core/format_presets.h"
 #include "core/session_types.h"
 #include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/media/colour_preset.h"
 #include "dvv/media/display.h"
 #include "dvv/media/pixel_format.h"
@@ -446,7 +447,7 @@ TEST_SUITE("core") {
         const auto write = [&dir](std::string_view name, std::string_view text) {
             const std::filesystem::path path = dir / name;
             writeFile(path, text);
-            return dvv::media::utf8FromPath(path);
+            return dvv::pathText(path);
         };
         SUBCASE("a clip description fills only its groups") {
             const std::string path =
@@ -491,7 +492,7 @@ TEST_SUITE("core") {
             REQUIRE_FALSE(clip);
             CHECK_MESSAGE(clip.error().message.starts_with("clip description '"),
                           clip.error().message);
-            CHECK_FALSE(rawreel::loadFormatJson(dvv::media::utf8FromPath(dir / "missing.json")));
+            CHECK_FALSE(rawreel::loadFormatJson(dvv::pathText(dir / "missing.json")));
         }
         SUBCASE("choiceFromUri reads clip=@ before the query") {
             const std::string path =
@@ -520,8 +521,7 @@ TEST_SUITE("core") {
             CHECK_MESSAGE(written.find("fps=30000/1001") != std::string::npos, written);
             CHECK_MESSAGE(written.find("clip=") != std::string::npos, written);
             // A clip that cannot be read is ignored (the open names the error).
-            const std::string missing =
-                "file:x.yuv?clip=@" + dvv::media::utf8FromPath(dir / "missing.json");
+            const std::string missing = "file:x.yuv?clip=@" + dvv::pathText(dir / "missing.json");
             CHECK(rawreel::choiceFromUri(missing, fallback) == fallback);
         }
         std::error_code error;

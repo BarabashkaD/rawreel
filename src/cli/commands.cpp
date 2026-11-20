@@ -34,6 +34,7 @@
 #include "dvv/base/log.h"
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/base/when_all.h"
 #include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/execution_context.h"
@@ -289,7 +290,7 @@ int dump(const Arguments& arguments, Resources& resources) {
     const auto cannot_write = [&arguments] {
         return dvv::makeError(dvv::Errc::Io, std::format("cannot write '{}'", arguments.out));
     };
-    std::ofstream file(media::pathFromUtf8(arguments.out), std::ios::binary | std::ios::trunc);
+    std::ofstream file(dvv::pathFromText(arguments.out), std::ios::binary | std::ios::trunc);
     if (!file) {
         return fail(arguments, cannot_write(), exit_code::INPUT_ERROR);
     }

@@ -18,7 +18,7 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
 
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 #include "gui/native_controls.h"
 
 // wx's own maker of a bundle that hands wxOSX the NSImage itself (wx/private/bmpbndl.h, which wx
@@ -191,7 +191,7 @@ wxBitmapBundle settingsPageIcon(std::string_view sf_symbol) {
 }
 
 void revealInFileManager(const std::filesystem::path& file_or_folder) {
-    const std::string text = dvv::media::utf8FromPath(file_or_folder);
+    const std::string text = dvv::pathText(file_or_folder);
     NSString* const path = [NSString stringWithUTF8String:text.c_str()];
     if (path == nil) {
         return;

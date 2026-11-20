@@ -23,7 +23,7 @@
 #include "core/log_file_switch.h"
 #include "core/log_store.h"
 #include "dvv/base/log.h"
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 #include "temporary_directory.h"
 
 namespace fs = std::filesystem;
@@ -56,7 +56,7 @@ void writeLine(LogFileSwitch& log, std::string_view text) {
 std::vector<std::string> namesIn(const fs::path& folder) {
     std::vector<std::string> names;
     for (const fs::directory_entry& entry : fs::directory_iterator(folder)) {
-        names.push_back(dvv::media::utf8FromPath(entry.path().filename()));
+        names.push_back(dvv::pathDisplayText(entry.path().filename()));
     }
     return names;
 }

@@ -18,7 +18,7 @@
 #endif
 #include <windows.h>
 
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 #else
 #include <fcntl.h>
 #include <sys/file.h>
@@ -52,8 +52,8 @@ std::unique_ptr<SettingsClaim> SettingsClaim::tryClaim(const fs::path& config) {
     if (error) {
         return nullptr;
     }
-    const std::wstring name = std::format(L"Local\\rawreel-settings-{:016x}",
-                                          fnv1a64(dvv::media::utf8FromPath(canonical)));
+    const std::wstring name =
+        std::format(L"Local\\rawreel-settings-{:016x}", fnv1a64(dvv::pathText(canonical)));
     const HANDLE mutex = CreateMutexW(nullptr, FALSE, name.c_str());
     if (mutex == nullptr) {
         return nullptr;

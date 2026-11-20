@@ -39,9 +39,9 @@
 #include "dvv/base/log.h"
 #include "dvv/base/paths.h"
 #include "dvv/base/task.h"
+#include "dvv/base/utf8.h"
 #include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/gpu_info.h"
-#include "dvv/media/types.h"
 #include "dvv/platform/native_window.h"
 #include "gui/crash_handler.h"
 #include "gui/main_frame.h"
@@ -110,7 +110,7 @@ dvv::Result<bool> createNewFolder(const std::filesystem::path& folder) {
     if (error) {
         return dvv::makeError(
             dvv::Errc::Io,
-            std::format("cannot create {}: {}", dvv::media::utf8FromPath(folder), error.message()));
+            std::format("cannot create {}: {}", dvv::pathDisplayText(folder), error.message()));
     }
     return created;
 }
@@ -123,14 +123,14 @@ dvv::Result<void> secureNewFolder(const std::filesystem::path& folder) {
                                  std::filesystem::perm_options::replace, error);
     if (error) {
         return dvv::makeError(
-            dvv::Errc::Io, std::format("cannot restrict {}: {}", dvv::media::utf8FromPath(folder),
-                                       error.message()));
+            dvv::Errc::Io,
+            std::format("cannot restrict {}: {}", dvv::pathDisplayText(folder), error.message()));
     }
 #endif
     const std::filesystem::file_status status = std::filesystem::symlink_status(folder, error);
     if (error || status.type() != std::filesystem::file_type::directory) {
         return dvv::makeError(dvv::Errc::Io, std::format("{} is not a folder of its own",
-                                                         dvv::media::utf8FromPath(folder)));
+                                                         dvv::pathDisplayText(folder)));
     }
     return {};
 }
@@ -327,7 +327,7 @@ void App::MacOpenFiles(const wxArrayString& names) {
     std::vector<std::filesystem::path> files;
     files.reserve(names.size());
     for (const wxString& name : names) {
-        files.push_back(dvv::media::pathFromUtf8(name.utf8_string()));
+        files.push_back(dvv::pathFromText(name.utf8_string()));
     }
     DVV_LOG_INFO("{} files opened from Finder or the Dock", files.size());
     if (MainFrame* frame = mainFrame(); frame != nullptr) {
@@ -359,7 +359,7 @@ bool App::startLogAndConfig() {
     // writes.
     if (selftest()) {
         const std::filesystem::path seed = the_arguments.config
-                                               ? dvv::media::pathFromUtf8(*the_arguments.config)
+                                               ? dvv::pathFromText(*the_arguments.config)
                                                : std::filesystem::path();
         dvv::Result<std::filesystem::path> made = makeSelftestConfig(seed);
         if (!made) {
@@ -368,7 +368,7 @@ bool App::startLogAndConfig() {
                        made.error().describe());
             return false;
         }
-        the_arguments.config = dvv::media::utf8FromPath(*made);
+        the_arguments.config = dvv::pathText(*made);
     }
     // Its lines reach the store and stderr; the log file gets them when it opens.
     LoadedConfig loaded = loadConfig(the_arguments.config);
@@ -377,7 +377,7 @@ bool App::startLogAndConfig() {
     // Open Recent spec §7, §8: the history keys of the text the config was read from; nothing is
     // written at start.
     if (!loaded.text.empty()) {
-        const std::string shown = dvv::media::utf8FromPath(config_path_);
+        const std::string shown = dvv::pathDisplayText(config_path_);
         RecentConfig history = parseRecent(loaded.text);
         for (const std::string& warning : history.warnings) {
             DVV_LOG_WARN("config '{}': {}", shown, warning);
@@ -449,7 +449,7 @@ void App::checkLogSize() {
     size_warned_ = true;  // once per run
     // Posted: the caller may be on the Log pane's refresh path, where a line logged would post
     // another refresh (spec §3.3).
-    CallAfter([text = logSizeWarning(dvv::media::utf8FromPath(log_folder_), bytes)] {
+    CallAfter([text = logSizeWarning(dvv::pathDisplayText(log_folder_), bytes)] {
         DVV_LOG_TEXT(dvv::LogLevel::Warn, text);
     });
 }
@@ -474,7 +474,7 @@ dvv::Result<std::filesystem::path> App::makeSelftestConfig(const std::filesystem
     }
     if (selftest_config_dir_.empty()) {
         return dvv::makeError(dvv::Errc::Io, std::format("no new folder in {} after {} names",
-                                                         dvv::media::utf8FromPath(temp), ATTEMPTS));
+                                                         dvv::pathDisplayText(temp), ATTEMPTS));
     }
     const std::filesystem::path& folder = selftest_config_dir_;
     DVV_TRY_VOID(secureNewFolder(folder));
@@ -482,7 +482,7 @@ dvv::Result<std::filesystem::path> App::makeSelftestConfig(const std::filesystem
     DVV_TRY(const bool logs_created, createNewFolder(logs));
     if (!logs_created) {
         return dvv::makeError(dvv::Errc::Io,
-                              std::format("{} already exists", dvv::media::utf8FromPath(logs)));
+                              std::format("{} already exists", dvv::pathDisplayText(logs)));
     }
     DVV_TRY_VOID(secureNewFolder(logs));
     std::filesystem::path file = folder / CONFIG_FILE_NAME;
@@ -492,12 +492,12 @@ dvv::Result<std::filesystem::path> App::makeSelftestConfig(const std::filesystem
         out << text;
         out.close();
         if (!out) {
-            return dvv::makeError(dvv::Errc::Io, std::format("{} could not be written",
-                                                             dvv::media::utf8FromPath(file)));
+            return dvv::makeError(
+                dvv::Errc::Io, std::format("{} could not be written", dvv::pathDisplayText(file)));
         }
     }
     const std::array<ConfigValue, 2> values{{
-        {.key = "log.file.folder", .value = dvv::media::utf8FromPath(logs)},
+        {.key = "log.file.folder", .value = dvv::pathText(logs)},
         {.key = "log.system.enabled", .value = false},
     }};
     DVV_TRY_VOID(saveConfigValues(file, values));
@@ -513,8 +513,8 @@ bool App::saveSettings(std::span<const ConfigValue> values, bool closing) {
         return true;
     }
     // Spec §5.4: one warning; the setting stays applied for the session.
-    const std::string text = std::format(
-        "config '{}' not saved: {}", dvv::media::utf8FromPath(config_path_), saved.error().message);
+    const std::string text = std::format("config '{}' not saved: {}",
+                                         dvv::pathDisplayText(config_path_), saved.error().message);
     DVV_LOG_TEXT(dvv::LogLevel::Warn, text);
     // The run's first failure also shows a native message, but never while the main window
     // closes (it would block quitting and logging out). A selftest's goes to its hook.
@@ -538,7 +538,7 @@ bool App::saveHistory(std::span<const ConfigValue> values) {
     // Spec §7: never a dialog; one warning on the run's first history failure only. The list
     // stays in effect for the run.
     if (!std::exchange(history_save_failed_, true)) {
-        DVV_LOG_WARN("config '{}' not saved: {}", dvv::media::utf8FromPath(config_path_),
+        DVV_LOG_WARN("config '{}' not saved: {}", dvv::pathDisplayText(config_path_),
                      saved.error().message);
     }
     return false;
@@ -561,7 +561,7 @@ void App::checkSavedLogPane(bool saved) {
         record(exit_code::SELFTEST_FAILED,
                std::format("rawreel-gui --selftest: gui.showLogPane {} was saved at close, but "
                            "'{}' has {}",
-                           saved, dvv::media::utf8FromPath(config_path_), found));
+                           saved, dvv::pathDisplayText(config_path_), found));
     }
 }
 
@@ -605,7 +605,7 @@ dvv::Result<std::shared_ptr<dvv::SplitFileSink>> App::openLogFileIn(
     // open() gets its header here at once; an appended one gets none.
     sink->setHeader([level = active_level_](const std::filesystem::path& previous) {
         return logFileHeader(level->load(std::memory_order_relaxed),
-                             dvv::media::utf8FromPath(previous.filename()));
+                             dvv::pathDisplayText(previous.filename()));
     });
     return sink;
 }
@@ -614,7 +614,7 @@ void App::useLogFile(std::shared_ptr<dvv::SplitFileSink> sink, std::filesystem::
     const std::filesystem::path file = sink->currentFile();
     if (!log_folder_.empty()) {
         // Step 3: the last line of the old file names the new one (addendum §5.2: its full path).
-        DVV_LOG_INFO("log file moves to '{}'", dvv::media::utf8FromPath(file));
+        DVV_LOG_INFO("log file moves to '{}'", dvv::pathDisplayText(file));
         dvv::Logger::instance().flush();  // in the old file before the swap, even when queued
     }
     std::shared_ptr<dvv::ILogSink> previous = log_file_->replace(std::move(sink));
@@ -623,7 +623,7 @@ void App::useLogFile(std::shared_ptr<dvv::SplitFileSink> sink, std::filesystem::
     // Addendum §5.2: after its header, the new file names itself, then the level marker follows.
     // The marker comes after every open, because an appended file (the settings owner reopening a
     // folder whose newest file is below the limit) gets no header to carry the level.
-    DVV_LOG_INFO("log file: '{}'", dvv::media::utf8FromPath(file));
+    DVV_LOG_INFO("log file: '{}'", dvv::pathDisplayText(file));
     // The marker names where the active level came from: "(this run, Log pane menu)" for a
     // run-only level.
     dvv::Logger::instance().mark(levelMarker(activeLevel(), level_source_));
@@ -679,7 +679,7 @@ void App::startLogFile() {
     if (!file && !selftest_config_dir_.empty()) {
         // §7.1: a selftest never writes the user's log file, so no default folder here.
         DVV_LOG_WARN("log folder '{}' cannot be used: {}; no log file in this selftest",
-                     dvv::media::utf8FromPath(saved), saved_failure.value_or("no folder"));
+                     dvv::pathDisplayText(saved), saved_failure.value_or("no folder"));
         return;
     }
     if (!file) {
@@ -687,7 +687,7 @@ void App::startLogFile() {
         const dvv::Result<std::filesystem::path> directory = dvv::paths::userDataDir("rawreel");
         if (!directory) {
             if (saved_failure) {
-                DVV_LOG_WARN("log folder '{}' cannot be used: {}", dvv::media::utf8FromPath(saved),
+                DVV_LOG_WARN("log folder '{}' cannot be used: {}", dvv::pathDisplayText(saved),
                              *saved_failure);
             }
             DVV_LOG_WARN("no log file: {}", directory.error().describe());
@@ -695,8 +695,8 @@ void App::startLogFile() {
         }
         if (saved_failure) {
             DVV_LOG_WARN("log folder '{}' cannot be used: {}; writing to '{}'",
-                         dvv::media::utf8FromPath(saved), *saved_failure,
-                         dvv::media::utf8FromPath(*directory));
+                         dvv::pathDisplayText(saved), *saved_failure,
+                         dvv::pathDisplayText(*directory));
         }
         dvv::Result<std::shared_ptr<dvv::SplitFileSink>> opened =
             openLogFileIn(*directory, FolderCreation::WithParents);
@@ -720,7 +720,7 @@ void App::startLogFile() {
     std::shared_ptr<dvv::ILogSink> previous = log_file_->replace(std::move(file), held);
     previous.reset();  // outside the switch's lock
     // Addendum §5.2: after the header (and the held lines), the file names itself.
-    DVV_LOG_INFO("log file: '{}'", dvv::media::utf8FromPath(currentLogFile()));
+    DVV_LOG_INFO("log file: '{}'", dvv::pathDisplayText(currentLogFile()));
     checked_splits_ = log_file_->splits();
 }
 
@@ -739,7 +739,7 @@ void App::closeLogAndConfig() {
         if (error) {
             std::fprintf(
                 stderr, "rawreel-gui --selftest: the config folder '%s' was not removed: %s\n",
-                dvv::media::utf8FromPath(selftest_config_dir_).c_str(), error.message().c_str());
+                dvv::pathDisplayText(selftest_config_dir_).c_str(), error.message().c_str());
         }
         selftest_config_dir_.clear();
     }

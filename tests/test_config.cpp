@@ -15,11 +15,12 @@
 #include <vector>
 
 #include "core/config.h"
+#include "core/native_os.h"
 #include "dvv/base/error.h"
 #include "dvv/base/json.h"
 #include "dvv/base/log.h"
 #include "dvv/base/paths.h"
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 #include "dvv/platform/file_reader.h"
 #include "temporary_directory.h"
 
@@ -128,7 +129,7 @@ TEST_SUITE("core") {
         const fs::path folder = fs::temp_directory_path() / "rawreel logs";
         const std::string text = std::format(
             R"({{"log":{{"file":{{"enabled":false,"folder":{}}},"system":{{"enabled":true}}}}}})",
-            dvv::json::dump(dvv::json::Value(dvv::media::utf8FromPath(folder))));
+            dvv::json::dump(dvv::json::Value(dvv::pathText(folder))));
         const Config set = parse(text);
         CHECK_FALSE(set.log.file.enabled);
         CHECK(set.log.file.folder == folder);
@@ -276,7 +277,7 @@ TEST_SUITE("core") {
         const fs::path path = directory.path() / fs::path(u8"my config ü.json");
         writeText(path, R"({"io": {"fileReads": "unbuffered"}})");
         const LoadedConfig loaded =
-            rawreel::loadConfig(std::optional<std::string>(dvv::media::utf8FromPath(path)));
+            rawreel::loadConfig(std::optional<std::string>(dvv::pathText(path)));
         CHECK(loaded.found);
         CHECK(loaded.path == path);
         CHECK(loaded.config.io.fileReads == FileReadMode::Unbuffered);
@@ -287,7 +288,7 @@ TEST_SUITE("core") {
         const TemporaryDirectory directory("rawreel-config");
         const WarningLog log;
         const LoadedConfig missing = rawreel::loadConfig(
-            std::optional<std::string>(dvv::media::utf8FromPath(directory.path() / "none.json")));
+            std::optional<std::string>(dvv::pathText(directory.path() / "none.json")));
         CHECK_FALSE(missing.found);
         CHECK(missing.config.io.fileReads == FileReadMode::Auto);
         CHECK(missing.warning == "not found");
@@ -295,6 +296,20 @@ TEST_SUITE("core") {
         REQUIRE(lines.size() == 1);
         CHECK(contains(lines[0], "WARN"));
         CHECK(contains(lines[0], "none.json' ignored: not found; using the defaults"));
+    }
+
+    TEST_CASE("config: a message about a non-UTF-8 config file shows U+FFFD") {
+        if constexpr (rawreel::NATIVE_OS != rawreel::Os::Windows) {
+            const WarningLog log;
+            const LoadedConfig missing =
+                rawreel::loadConfig(std::optional<std::string>{"/tmp/rawreel-missing-\xFF"
+                                                               "x.json"});
+            CHECK_FALSE(missing.found);
+            const std::vector<std::string> lines = log.lines();
+            REQUIRE(lines.size() == 1);
+            CHECK(contains(lines[0], "\xEF\xBF\xBD"));
+            CHECK(lines[0].find('\xFF') == std::string::npos);
+        }
     }
 
     // The portable file next to the executable wins when it exists (not in a macOS app bundle);
