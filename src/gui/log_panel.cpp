@@ -113,6 +113,13 @@ void LogPanel::refresh(LogBatch batch, bool shown) {
         before = list_->place();
     }
     const MirrorChange change = mirror_.apply(std::move(batch));
+    ++refreshes_;
+    if (before) {
+        refresh_records_.push_back({.before = *before, .change = change});
+        if (refresh_records_.size() > REFRESH_RECORDS_KEPT) {
+            refresh_records_.pop_front();
+        }
+    }
     if (shown && (change.reset || change.dropped > 0 || change.appended > 0)) {
         list_->applyBatch(rowsAfterBatch(*before, mirror_));
     }

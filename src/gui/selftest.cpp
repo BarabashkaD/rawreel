@@ -1563,6 +1563,7 @@ struct LogListState {
     std::vector<std::uint64_t> selected;  // the sequences of the rows the scroll step selected
     std::uint64_t top = 0;                // the sequence of the record the scroll step put on top
     std::uint64_t first = 0;              // the mirror's first sequence before the 50 more lines
+    std::size_t refreshes = 0;            // the pane's refresh count before them (a diagnostic)
 };
 
 // The list of `kind` replaces the pane's list (shown), then Info lines fill the mirror to 5000.
@@ -1635,6 +1636,7 @@ SelfTestStep logListKeepsPlaceStep(SelfTest* test, LogListKind kind,
                                    const std::shared_ptr<LogListState>& state) {
     auto start = [test, state] {
         state->first = test->frame().logPanel().mirror().at(0).sequence;
+        state->refreshes = test->frame().logPanel().refreshCount();
         for (std::size_t i = 0; i < LOG_LIST_MORE; ++i) {
             DVV_LOG_INFO("selftest more {}", i);
         }
@@ -1665,6 +1667,17 @@ SelfTestStep logListKeepsPlaceStep(SelfTest* test, LogListKind kind,
             logListKindName(kind), first, state->first, text(selected), text(want),
             text(state->selected), place.top ? std::format("{}", *place.top) : "none", state->top,
             place.tail);
+        // A diagnostic: the refreshes since the start and the place each recorded one took.
+        seen += std::format("; {} refreshes since the start, the last before-places:",
+                            panel.refreshCount() - state->refreshes);
+        for (const LogPanel::RefreshRecord& record : panel.refreshRecords()) {
+            seen += std::format(
+                " [top {} tail {} selected [{}] focus {}, dropped {} appended {} reset {}]",
+                record.before.top ? std::format("{}", *record.before.top) : "none",
+                record.before.tail, text(record.before.selected),
+                record.before.focus ? std::format("{}", *record.before.focus) : "none",
+                record.change.dropped, record.change.appended, record.change.reset);
+        }
         return panel.list().kind() == kind && first >= state->first + LOG_LIST_MORE &&
                want.size() + 1 == state->selected.size() && selected == want &&
                place.top == state->top;

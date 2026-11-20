@@ -9,6 +9,8 @@
 #include <wx/wx.h>  // first (R11)
 // clang-format on
 
+#include <cstddef>
+#include <deque>
 #include <functional>
 #include <utility>
 #include <vector>
@@ -56,8 +58,24 @@ public:
     // (App::setActiveLevel(level, LevelSource::Menu)); nothing is saved.
     void setRunLevel(dvv::LogLevel level);
 
+    // Selftests only (a diagnostic text): one shown refresh, the list's place taken before the
+    // batch and what the batch changed.
+    struct RefreshRecord {
+        ListPlace before;
+        MirrorChange change;
+    };
+    static constexpr std::size_t REFRESH_RECORDS_KEPT = 8;
+    // Selftests only: every refresh() so far, and the last REFRESH_RECORDS_KEPT shown ones, oldest
+    // first.
+    [[nodiscard]] std::size_t refreshCount() const noexcept { return refreshes_; }
+    [[nodiscard]] const std::deque<RefreshRecord>& refreshRecords() const noexcept {
+        return refresh_records_;
+    }
+
 private:
     LogMirror mirror_;
+    std::size_t refreshes_ = 0;
+    std::deque<RefreshRecord> refresh_records_;
     LogList* list_;  // a child window: wx owns it
     dvv::SourceSuffix suffix_;
     std::function<void(bool selected)> save_;
