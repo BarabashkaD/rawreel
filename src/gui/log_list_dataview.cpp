@@ -91,12 +91,6 @@ public:
             }
             event.Skip();
         });
-        // A new size of the control (a sash drag, a maximise: no user input) moves its rows; its
-        // own place counts again.
-        view_->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
-            requested_.reset();
-            event.Skip();
-        });
     }
 
     void rebuild() override {
@@ -238,9 +232,7 @@ private:
         scrollDataViewRowToTop(*view_, row);
     }
 
-    // Whether the control shows requested_ (true when there is none). A requested top on the last
-    // page counts as shown when the control clamped it: the end shows and the actual top is at or
-    // above the requested row.
+    // Whether the control shows requested_ (true when there is none).
     [[nodiscard]] bool showsRequested() const {
         if (!requested_) {
             return true;
@@ -248,16 +240,7 @@ private:
         if (requested_->tail) {
             return lastRowVisible();
         }
-        const std::optional<std::uint64_t> wanted = requested_->top;
-        if (!wanted) {
-            return false;
-        }
-        const std::size_t top = topRow();
-        if (sequenceAt(top) == wanted) {
-            return true;
-        }
-        const std::optional<std::size_t> wanted_row = mirror().rowOf(*wanted);
-        return wanted_row.has_value() && *wanted_row >= top && lastRowVisible();
+        return requested_->top.has_value() && sequenceAt(topRow()) == requested_->top;
     }
 
     wxObjectDataPtr<LogListModel> model_;
@@ -265,9 +248,8 @@ private:
     // The top or the tail that applyBatch() restored, until the control shows it. wxGTK scrolls
     // only on its next layout after a model reset, so a batch before that would read the place of
     // a list that has not scrolled yet and follow the end. place() reads it while the control does
-    // not show it; an idle event that finds it shown, a new batch, a new size of the control and
-    // any user input clear it (a user's scroll is never undone). Other toolkits scroll at once, so
-    // the first read clears it.
+    // not show it; an idle event that finds it shown, a new batch and any user input clear it (a
+    // user's scroll is never undone). Other toolkits scroll at once, so the first read clears it.
     struct RequestedPlace {
         std::optional<std::uint64_t> top;
         bool tail = false;
