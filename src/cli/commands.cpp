@@ -83,7 +83,7 @@ public:
     }
 
     std::shared_ptr<dvv::ThreadPool> io, cpu;
-    Startup startup;  // the FFmpeg status and the component registry
+    Startup startup;  // the component registry
     std::unique_ptr<media::SourceFactory> factory;
     std::unique_ptr<media::ISource> source;  // until dump attaches it
     std::shared_ptr<dvv::gpu::GpuInstance> gpu;

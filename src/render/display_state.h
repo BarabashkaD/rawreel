@@ -45,7 +45,7 @@ private:
 
     // Lock order: display state, then store. snapshot() takes lease shares under mutex_ (a share
     // takes the store's mutex); show() and clear() drop the leases they replace outside mutex_
-    // (a ReadLease destructor takes the store's mutex too).
+    // (a release may free the frame and the store).
     mutable std::mutex mutex_;
     FrameSet frames_;
     CompositeParams params_{};

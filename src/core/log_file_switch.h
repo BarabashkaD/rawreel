@@ -2,8 +2,9 @@
 
 // The log file as a Logger sink that can change files (Settings window design): the Logger keeps
 // one LogFileSwitch for the whole run and the GUI replaces the sink inside it, so no sink is ever
-// removed from the Logger. wx-free. Lock order: Logger -> switch -> file sink; replace() takes only
-// the switch's mutex and hands the old sink back so the caller drops it outside any lock.
+// removed from the Logger. wx-free. Lock order: Logger -> switch -> file sink in synchronous mode;
+// on the log thread the switch is taken alone, without the Logger's lock. replace() takes only the
+// switch's mutex and hands the old sink back so the caller drops it outside any lock.
 
 #include <atomic>
 #include <cstdint>
@@ -49,8 +50,8 @@ public:
     void write(const dvv::LogRecord& record, std::string_view line) override;
     void batchEnd() override;
     void flush() override;
-    // Whether live lines keep " [file.cpp:42]" (log.source); false by default. Set at start,
-    // before any record.
+    // Whether live lines keep " [file.cpp:42]" (log.source); SourceSuffix::Without by
+    // default. Set at start, before any record.
     void setSourceSuffix(dvv::SourceSuffix suffix) noexcept;
     // Under the switch's mutex: writes each `backfill` entry's line unchanged into `file` (when
     // non-null), then swaps it in. Returns the old sink, which the caller drops outside any lock.

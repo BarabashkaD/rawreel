@@ -53,8 +53,8 @@ class LogStore final : public dvv::ILogSink {
 public:
     // Formats each record itself (the Logger's `line` is not kept); a mark is not counted.
     void write(const dvv::LogRecord& record, std::string_view line) override;
-    // Whether the lines keep " [file.cpp:42]" (log.source); false by default. Set at start,
-    // before any record.
+    // Whether the lines keep " [file.cpp:42]" (log.source); SourceSuffix::Without by
+    // default. Set at start, before any record.
     void setSourceSuffix(dvv::SourceSuffix suffix) noexcept;
     // Called after the first record that follows a take() (or the call itself), until the next
     // take(). Empty: none.
