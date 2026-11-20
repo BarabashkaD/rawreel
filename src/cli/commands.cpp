@@ -526,10 +526,11 @@ int runSource(const Arguments& arguments, Resources& resources) {
         // With the FFmpeg status line when FFmpeg is the likely reason (design v2 §4.6).
         const dvv::Error& error = opened.error();
         if (arguments.json) {  // error.message, as every other --json error (fail())
-            printJson(
-                errorJson(dvv::errcName(error.code), openErrorMessage(error, resources.startup)));
+            printJson(errorJson(dvv::errcName(error.code),
+                                openErrorMessage(error, request.uri.scheme, resources.startup)));
         } else {
-            std::println(stderr, "error: {}", openErrorText(error, resources.startup));
+            std::println(stderr, "error: {}",
+                         openErrorText(error, request.uri.scheme, resources.startup));
         }
         return exitCodeFor(error, false);
     }

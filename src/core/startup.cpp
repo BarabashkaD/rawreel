@@ -1,6 +1,7 @@
 #include "core/startup.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <format>
@@ -139,9 +140,31 @@ std::string ffmpegStatusLine(const dvv::ModuleStatus* module, StatusPaths paths,
 
 namespace {
 
+// A URI scheme a Source provider opens ("file" includes bare paths).
+struct ProviderScheme {
+    std::string_view provider;  // the provider's component id
+    std::string_view scheme;
+};
+
+// The schemes of dvv-components' FFmpeg Source providers, the ones a module can withhold. An
+// unavailable provider is never created, so its schemes() cannot be asked, and the factory offers
+// a request only to the providers of its scheme.
+constexpr std::array<ProviderScheme, 2> PROVIDER_SCHEMES{
+    ProviderScheme{.provider = "ffmpeg", .scheme = "file"},
+    ProviderScheme{.provider = "lavfi", .scheme = "lavfi"}};
+
+// True when `provider` is a known provider that opens `scheme`.
+bool opensScheme(const dvv::ComponentStatus& provider, std::string_view scheme) {
+    return std::ranges::any_of(PROVIDER_SCHEMES, [&provider, scheme](const ProviderScheme& entry) {
+        return entry.provider == provider.info.id && entry.scheme == scheme;
+    });
+}
+
 // "; " + the status line of each module that withholds a capability an unavailable Source
-// provider misses, when `error` is the factory's no-match (design v2 §4.6); empty otherwise.
-std::string moduleSuffix(const dvv::Error& error, std::span<const dvv::ModuleStatus> modules,
+// provider for `scheme` misses, when `error` is the factory's no-match (design v2 §4.6); empty
+// otherwise.
+std::string moduleSuffix(const dvv::Error& error, std::string_view scheme,
+                         std::span<const dvv::ModuleStatus> modules,
                          std::span<const dvv::ComponentStatus> providers, StatusPaths paths) {
     std::string suffix;
     if (!dvv::media::isNoProviderMatch(error)) {
@@ -149,8 +172,8 @@ std::string moduleSuffix(const dvv::Error& error, std::span<const dvv::ModuleSta
     }
     for (const dvv::ModuleStatus& module : modules) {
         const bool withholds =
-            std::ranges::any_of(providers, [&module](const dvv::ComponentStatus& provider) {
-                return provider.unavailable &&
+            std::ranges::any_of(providers, [&module, scheme](const dvv::ComponentStatus& provider) {
+                return provider.unavailable && opensScheme(provider, scheme) &&
                        std::ranges::contains(module.withheld, provider.unavailable->capability);
             });
         if (withholds) {
@@ -178,24 +201,28 @@ std::span<const dvv::ModuleStatus> modulesOf(const Startup& startup) {
 
 }  // namespace
 
-std::string openErrorText(const dvv::Error& error, std::span<const dvv::ModuleStatus> modules,
+std::string openErrorText(const dvv::Error& error, std::string_view scheme,
+                          std::span<const dvv::ModuleStatus> modules,
                           std::span<const dvv::ComponentStatus> providers, StatusPaths paths) {
-    return error.describe() + moduleSuffix(error, modules, providers, paths);
+    return error.describe() + moduleSuffix(error, scheme, modules, providers, paths);
 }
 
-std::string openErrorText(const dvv::Error& error, const Startup& startup, StatusPaths paths) {
+std::string openErrorText(const dvv::Error& error, std::string_view scheme, const Startup& startup,
+                          StatusPaths paths) {
     const std::vector<dvv::ComponentStatus> providers = sourceProviders(startup);
-    return openErrorText(error, modulesOf(startup), providers, paths);
+    return openErrorText(error, scheme, modulesOf(startup), providers, paths);
 }
 
-std::string openErrorMessage(const dvv::Error& error, std::span<const dvv::ModuleStatus> modules,
+std::string openErrorMessage(const dvv::Error& error, std::string_view scheme,
+                             std::span<const dvv::ModuleStatus> modules,
                              std::span<const dvv::ComponentStatus> providers) {
-    return error.message + moduleSuffix(error, modules, providers, StatusPaths::Shown);
+    return error.message + moduleSuffix(error, scheme, modules, providers, StatusPaths::Shown);
 }
 
-std::string openErrorMessage(const dvv::Error& error, const Startup& startup) {
+std::string openErrorMessage(const dvv::Error& error, std::string_view scheme,
+                             const Startup& startup) {
     const std::vector<dvv::ComponentStatus> providers = sourceProviders(startup);
-    return openErrorMessage(error, modulesOf(startup), providers);
+    return openErrorMessage(error, scheme, modulesOf(startup), providers);
 }
 
 }  // namespace rawreel

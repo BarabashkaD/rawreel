@@ -66,11 +66,12 @@ enum class StatusPaths : std::uint8_t { Shown, Hidden };
 
 // The open-error text of the CLI and the GUI (design v2 §4.6): error.describe(), plus "; " + the
 // status line of each module that withholds a capability an unavailable Source provider misses,
-// when isNoProviderMatch(error). The Startup form reads the registry's modules and Source
-// providers.
-[[nodiscard]] std::string openErrorText(const dvv::Error& error, const Startup& startup,
+// when isNoProviderMatch(error) and that provider opens `scheme`, the scheme of the request that
+// failed ("file" for a path). The Startup form reads the registry's modules and Source providers.
+[[nodiscard]] std::string openErrorText(const dvv::Error& error, std::string_view scheme,
+                                        const Startup& startup,
                                         StatusPaths paths = StatusPaths::Shown);
-[[nodiscard]] std::string openErrorText(const dvv::Error& error,
+[[nodiscard]] std::string openErrorText(const dvv::Error& error, std::string_view scheme,
                                         std::span<const dvv::ModuleStatus> modules,
                                         std::span<const dvv::ComponentStatus> providers,
                                         StatusPaths paths = StatusPaths::Shown);
@@ -78,8 +79,9 @@ enum class StatusPaths : std::uint8_t { Shown, Hidden };
 // The same for machine-readable output (rawreel-cli --json): error.message instead of
 // error.describe() (no code, source location or cause, as every other --json error), plus the same
 // suffix under the same condition.
-[[nodiscard]] std::string openErrorMessage(const dvv::Error& error, const Startup& startup);
-[[nodiscard]] std::string openErrorMessage(const dvv::Error& error,
+[[nodiscard]] std::string openErrorMessage(const dvv::Error& error, std::string_view scheme,
+                                           const Startup& startup);
+[[nodiscard]] std::string openErrorMessage(const dvv::Error& error, std::string_view scheme,
                                            std::span<const dvv::ModuleStatus> modules,
                                            std::span<const dvv::ComponentStatus> providers);
 

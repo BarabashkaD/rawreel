@@ -1609,8 +1609,8 @@ void MainFrame::onError(const dvv::Error& error) {
         return;
     }
     // Design v2 §4.6: the FFmpeg status is appended when FFmpeg withholds what an unavailable
-    // Source provider misses. The log keeps the full status line; the infobar shows no directory
-    // or path.
+    // Source provider for the request's scheme misses. The log keeps the full status line; the
+    // infobar shows no directory or path.
     const Startup& startup = wxGetApp().startup();
     // M4 GUI D7 C: a scheme-less text that failed as a missing file was probably meant as a URI.
     // The hint and the Format... button are for open errors only; an open closes the
@@ -1620,9 +1620,13 @@ void MainFrame::onError(const dvv::Error& error) {
         sizing_uri_.clear();  // view zoom design §3.3: the failed open sizes nothing
     }
     const std::string_view typed = open_error ? std::string_view(last_open_uri_) : "";
-    DVV_LOG_TEXT(dvv::LogLevel::Warn, withSchemeHint(openErrorText(error, startup), typed, error));
+    // The scheme of the failed open (openUri stores only texts that parse); empty otherwise.
+    const dvv::Result<dvv::Uri> typed_uri = dvv::parseUri(typed);
+    const std::string_view scheme = typed_uri ? std::string_view(typed_uri->scheme) : "";
+    DVV_LOG_TEXT(dvv::LogLevel::Warn,
+                 withSchemeHint(openErrorText(error, scheme, startup), typed, error));
     const std::string text =
-        withSchemeHint(openErrorText(error, startup, StatusPaths::Hidden), typed, error);
+        withSchemeHint(openErrorText(error, scheme, startup, StatusPaths::Hidden), typed, error);
     // A loss, or a failed makeStack while no stack is installed (§7 "infobar keeps Reopen").
     // Session events arrive in the Session's order and stackChanged({}, 0) comes before
     // error(DeviceLost), so stack_lost_ is current.

@@ -107,6 +107,21 @@ dvv::ComponentStatus lavfiUnavailable() {
                              .capability = std::string(dvv::components::FFMPEG_LAVFI_CAPABILITY)}};
 }
 
+// The FFmpeg container provider as the registry lists it without FFmpeg.
+dvv::ComponentStatus ffmpegUnavailable() {
+    return dvv::ComponentStatus{.info = {.id = "ffmpeg", .name = "ffmpeg"},
+                                .unavailable = dvv::Unavailable{
+                                    .reason = "missing ffmpeg",
+                                    .capability = std::string(dvv::components::FFMPEG_CAPABILITY)}};
+}
+
+// The scheme of the request that `text` opens ("file" for a path).
+std::string schemeOf(std::string_view text) {
+    const dvv::Result<dvv::Uri> uri = dvv::parseUri(text);
+    CHECK(uri.has_value());
+    return uri ? uri->scheme : std::string();
+}
+
 // A real no-match: a SourceFactory on a registry without capabilities opens lavfi:testsrc2.
 dvv::Error noProviderMatch() {
     dvv::Error error = errorOf(dvv::Errc::Internal, "the open did not run");
@@ -297,47 +312,63 @@ TEST_SUITE("core") {
         const dvv::Error no_match = noProviderMatch();
         const std::vector<dvv::ComponentStatus> providers{lavfiUnavailable()};
         const fs::path folder = fs::path("ffmpeg");
+        const std::string lavfi = schemeOf("lavfi:testsrc2");
 
-        // A module withholds the capability the unavailable provider misses: its line, and only
-        // its line, follows the error.
+        // A module withholds the capability the unavailable provider misses, and that provider
+        // opens the request's scheme: its line, and only its line, follows the error.
         const std::vector<dvv::ModuleStatus> core_only{
             coreOnly(loadedFfmpeg("n8.1.3", "LGPL", folder), "avfilter missing"), otherModule()};
-        CHECK(rawreel::openErrorText(no_match, core_only, providers) ==
+        CHECK(rawreel::openErrorText(no_match, lavfi, core_only, providers) ==
               no_match.describe() + "; " + rawreel::ffmpegStatusLine(core_only.data()));
-        CHECK(
-            rawreel::openErrorText(no_match, core_only, providers, rawreel::StatusPaths::Hidden) ==
-            no_match.describe() + "; " +
-                rawreel::ffmpegStatusLine(core_only.data(), rawreel::StatusPaths::Hidden));
+        CHECK(rawreel::openErrorText(no_match, lavfi, core_only, providers,
+                                     rawreel::StatusPaths::Hidden) ==
+              no_match.describe() + "; " +
+                  rawreel::ffmpegStatusLine(core_only.data(), rawreel::StatusPaths::Hidden));
 
-        // FFmpeg missing: every no-match error ends with the FFmpeg line.
+        // lavfi withheld and a request of another scheme: no suffix.
+        CHECK(rawreel::openErrorText(no_match, schemeOf("synthetc:x"), core_only, providers) ==
+              no_match.describe());
+        CHECK(rawreel::openErrorText(no_match, schemeOf("notes.txt"), core_only, providers) ==
+              no_match.describe());
+
+        // FFmpeg missing: a file or lavfi: request ends with the FFmpeg line, other schemes not.
         const std::vector<dvv::ModuleStatus> missing{missingFfmpeg("not found")};
-        CHECK(rawreel::openErrorText(no_match, missing, providers) ==
+        const std::vector<dvv::ComponentStatus> both{ffmpegUnavailable(), lavfiUnavailable()};
+        CHECK(rawreel::openErrorText(no_match, schemeOf("clip.mkv"), missing, both) ==
               no_match.describe() + "; FFmpeg: not available (not found)");
+        CHECK(rawreel::openErrorText(no_match, lavfi, missing, both) ==
+              no_match.describe() + "; FFmpeg: not available (not found)");
+        CHECK(rawreel::openErrorText(no_match, schemeOf("synthetc:x"), missing, both) ==
+              no_match.describe());
 
         // Not a no-match: no suffix.
         const dvv::Error format = errorOf(dvv::Errc::Format, "bad header");
-        CHECK(rawreel::openErrorText(format, core_only, providers) == format.describe());
+        CHECK(rawreel::openErrorText(format, lavfi, core_only, providers) == format.describe());
         const dvv::Error unsupported =
             errorOf(dvv::Errc::Unsupported, "no source provider for scheme 'lavfi'");
-        CHECK(rawreel::openErrorText(unsupported, missing, providers) == unsupported.describe());
+        CHECK(rawreel::openErrorText(unsupported, lavfi, missing, both) == unsupported.describe());
 
         // The module provides both: no suffix.
         const std::vector<dvv::ModuleStatus> loaded{loadedFfmpeg("n8.1.3", "LGPL", folder)};
-        CHECK(rawreel::openErrorText(no_match, loaded, providers) == no_match.describe());
+        CHECK(rawreel::openErrorText(no_match, lavfi, loaded, providers) == no_match.describe());
     }
 
     TEST_CASE("startup: open error message for --json") {
         const dvv::Error no_match = noProviderMatch();
         const std::vector<dvv::ComponentStatus> providers{lavfiUnavailable()};
+        const std::string lavfi = schemeOf("lavfi:testsrc2");
         const std::vector<dvv::ModuleStatus> core_only{
             coreOnly(loadedFfmpeg("n8.1.3", "LGPL", fs::path("ffmpeg")), "avfilter missing")};
-        CHECK(rawreel::openErrorMessage(no_match, core_only, providers) ==
+        CHECK(rawreel::openErrorMessage(no_match, lavfi, core_only, providers) ==
               no_match.message + "; " + rawreel::ffmpegStatusLine(core_only.data()));
+        CHECK(rawreel::openErrorMessage(no_match, schemeOf("notes.txt"), core_only, providers) ==
+              no_match.message);
         const std::vector<dvv::ModuleStatus> missing{missingFfmpeg("not found")};
-        CHECK(rawreel::openErrorMessage(no_match, missing, providers) ==
+        const std::vector<dvv::ComponentStatus> both{ffmpegUnavailable(), lavfiUnavailable()};
+        CHECK(rawreel::openErrorMessage(no_match, schemeOf("clip.mkv"), missing, both) ==
               no_match.message + "; FFmpeg: not available (not found)");
         const dvv::Error format = errorOf(dvv::Errc::Format, "bad header");
-        CHECK(rawreel::openErrorMessage(format, missing, providers) == "bad header");
+        CHECK(rawreel::openErrorMessage(format, lavfi, missing, both) == "bad header");
     }
 
     TEST_CASE("version: Vulkan line") {
