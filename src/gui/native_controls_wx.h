@@ -59,4 +59,11 @@ inline void scrollDataViewRowToTop(wxDataViewCtrl& view, std::size_t row) {
     view.EnsureVisible(model->GetItem(static_cast<unsigned>(row)));
 }
 
+// wx's generic list exposes no selection mark (GTK, macOS).
+[[nodiscard]] inline std::optional<std::size_t> listSelectionMark() {
+    return std::nullopt;
+}
+
+inline void setListSelectionMark() {}
+
 }  // namespace rawreel::wx_generic

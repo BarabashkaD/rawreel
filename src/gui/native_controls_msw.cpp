@@ -19,6 +19,9 @@
 #include <wx/access.h>
 #endif
 
+#include <wx/listctrl.h>
+#include <wx/msw/wrapcctl.h>  // ListView_GetSelectionMark, ListView_SetSelectionMark
+
 #include "gui/native_controls.h"
 #include "gui/native_controls_wx.h"
 
@@ -40,6 +43,9 @@ bool trackbarRects(const wxSlider& slider, RECT& channel, RECT& thumb) {
 #if wxUSE_ACCESSIBILITY
 // Answers the name for the window itself; everything else falls back to the control's standard
 // MSAA object (wx's wxIAccessible does that for wxACC_NOT_IMPLEMENTED).
+
+#include <wx/listctrl.h>
+#include <wx/msw/wrapcctl.h>  // ListView_GetSelectionMark, ListView_SetSelectionMark
 class NamedAccessible final : public wxAccessible {
 public:
     NamedAccessible(wxWindow* window, const wxString& name) : wxAccessible(window), name_(name) {}
@@ -125,6 +131,9 @@ void setAccessibleName(wxWindow& window, const wxString& name) {
 #if wxUSE_ACCESSIBILITY
     window.SetAccessible(new NamedAccessible(&window, name));
 #else
+
+#include <wx/listctrl.h>
+#include <wx/msw/wrapcctl.h>  // ListView_GetSelectionMark, ListView_SetSelectionMark
     // A documented gap (spec §7): this wx build has no wxAccessible.
     static_cast<void>(window);
     static_cast<void>(name);
@@ -150,6 +159,18 @@ std::optional<std::size_t> dataViewTopRow(wxDataViewCtrl& view) {
 
 void scrollDataViewRowToTop(wxDataViewCtrl& view, std::size_t row) {
     wx_generic::scrollDataViewRowToTop(view, row);
+}
+
+std::optional<std::size_t> listSelectionMark(const wxListCtrl& list) {
+    if (const int mark = ListView_GetSelectionMark(static_cast<HWND>(list.GetHWND())); mark >= 0) {
+        return static_cast<std::size_t>(mark);
+    }
+    return std::nullopt;
+}
+
+void setListSelectionMark(wxListCtrl& list, std::optional<std::size_t> row) {
+    static_cast<void>(ListView_SetSelectionMark(static_cast<HWND>(list.GetHWND()),
+                                                row ? static_cast<int>(*row) : -1));
 }
 
 }  // namespace rawreel

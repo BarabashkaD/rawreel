@@ -17,6 +17,7 @@
 #include <wx/slider.h>
 
 class wxDataViewCtrl;
+class wxListCtrl;
 
 namespace rawreel {
 
@@ -108,5 +109,13 @@ void scrollDataViewRowToTop(wxDataViewCtrl& view, std::size_t row);
 // first visible one (measured on CI). MSW and macOS: the row of GetTopItem(), nullopt unless the
 // view's model is a wxDataViewVirtualListModel. nullopt: no row in view.
 [[nodiscard]] std::optional<std::size_t> dataViewTopRow(wxDataViewCtrl& view);
+
+// The selection mark (the anchor of a Shift range) of a report wxListCtrl. Windows: the native
+// ListView's ListView_GetSelectionMark; nullopt for none. GTK and macOS (wx's generic list, which
+// keeps no mark it exposes): nullopt.
+[[nodiscard]] std::optional<std::size_t> listSelectionMark(const wxListCtrl& list);
+// Sets the selection mark to `row`, nullopt clears it. Windows: ListView_SetSelectionMark. GTK and
+// macOS: nothing.
+void setListSelectionMark(wxListCtrl& list, std::optional<std::size_t> row);
 
 }  // namespace rawreel

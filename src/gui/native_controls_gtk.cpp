@@ -187,4 +187,12 @@ std::optional<std::size_t> dataViewTopRow(wxDataViewCtrl& view) {
     return top;
 }
 
+std::optional<std::size_t> listSelectionMark(const wxListCtrl& /*list*/) {
+    return wx_generic::listSelectionMark();
+}
+
+void setListSelectionMark(wxListCtrl& /*list*/, std::optional<std::size_t> /*row*/) {
+    wx_generic::setListSelectionMark();
+}
+
 }  // namespace rawreel

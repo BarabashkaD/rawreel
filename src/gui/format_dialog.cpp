@@ -31,6 +31,7 @@
 #include "dvv/media/format_json.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
+#include "gui/native_policy.h"
 
 namespace rawreel {
 
@@ -335,13 +336,8 @@ FormatDialog::FormatDialog(wxWindow* parent, const wxString& title, const Format
     }
     size_->Append(fromUtf8(CUSTOM_LABEL));
     size_text_ = new wxStaticText(this, wxID_ANY, wxEmptyString);
-#if defined(__WXGTK__)
-    // A GTK 3 spin button draws its - and + buttons beside the entry; 72 DIP is less than its
-    // minimum (Gtk-CRITICAL "size >= 0" in GtkSpinButton), so GTK gets its best width.
-    const wxSize spin_size = wxDefaultSize;
-#else
-    const wxSize spin_size = FromDIP(wxSize(72, -1));
-#endif
+    const wxSize spin_size =
+        native_policy::spinButtonsTakeBestWidth() ? wxDefaultSize : FromDIP(wxSize(72, -1));
     width_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, spin_size,
                             wxSP_ARROW_KEYS, 1, MAX_SIZE, 1920);
     height_ = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, spin_size,
@@ -512,14 +508,13 @@ FormatDialog::FormatDialog(wxWindow* parent, const wxString& title, const Format
     setChoice(initial);
     // Room for the longest validation message without a relayout.
     SetMinSize(GetSize());
-#if defined(__WXGTK__)
-    fixed_client_ = GetClientSize();
-    Bind(wxEVT_SIZE, &FormatDialog::keepFixedSize, this);
-#endif
+    if (native_policy::undoesForeignResize()) {
+        fixed_client_ = GetClientSize();
+        Bind(wxEVT_SIZE, &FormatDialog::keepFixedSize, this);
+    }
     CentreOnParent();
 }
 
-#if defined(__WXGTK__)
 void FormatDialog::keepFixedSize(wxSizeEvent& event) {
     event.Skip();
     if (restore_pending_ || GetClientSize() == fixed_client_) {
@@ -534,7 +529,6 @@ void FormatDialog::keepFixedSize(wxSizeEvent& event) {
         }
     });
 }
-#endif
 
 void FormatDialog::selectFormat(const std::string& format) {
     const wxString name = wxString::FromUTF8(format);
@@ -810,9 +804,9 @@ void FormatDialog::setLine(wxStaticText& line, const wxString& text) {
     const wxSize now = GetSize();
     SetMinSize(wxSize(std::max(GetMinSize().x, best.x), std::max(GetMinSize().y, best.y)));
     SetSize(wxSize(std::max(now.x, best.x), std::max(now.y, best.y)));
-#if defined(__WXGTK__)
-    fixed_client_ = GetClientSize();
-#endif
+    if (native_policy::undoesForeignResize()) {
+        fixed_client_ = GetClientSize();
+    }
     Layout();
 }
 
@@ -1065,15 +1059,11 @@ bool FormatDialog::colourTakesInitialFocus() const {
             return child == colour_;
         }
     }
-#if defined(__WXOSX__)
     // macOS without Full Keyboard Access (the system default): lists, check boxes and buttons
     // never take the focus, and a locked stream shows no text field, so no child has it. Return
     // then goes to the default button's key equivalent: OK, not Load JSON, as the rule above
     // gives on MSW and GTK.
-    return GetDefaultItem() == ok_;
-#else
-    return false;
-#endif
+    return native_policy::returnTakesDefaultButtonWithoutFocus() && GetDefaultItem() == ok_;
 }
 
 }  // namespace rawreel

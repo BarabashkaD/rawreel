@@ -15,11 +15,9 @@
 #include <vector>
 
 #include <wx/listctrl.h>
-#if defined(__WXMSW__)
-#include <wx/msw/wrapcctl.h>  // ListView_GetSelectionMark, ListView_SetSelectionMark
-#endif
 
 #include "gui/log_list.h"
+#include "gui/native_controls.h"
 
 namespace rawreel {
 
@@ -86,11 +84,7 @@ public:
             if (rows.focus) {
                 list_->SetItemState(static_cast<long>(*rows.focus), FOCUSED, FOCUSED);
             }
-#if defined(__WXMSW__)
-            static_cast<void>(
-                ListView_SetSelectionMark(static_cast<HWND>(list_->GetHWND()),
-                                          rows.anchor ? static_cast<int>(*rows.anchor) : -1));
-#endif
+            setListSelectionMark(*list_, rows.anchor);
             if (rows.tail) {
                 list_->EnsureVisible(count - 1);
             } else if (rows.top) {
@@ -113,12 +107,9 @@ public:
         if (const long focus = list_->GetNextItem(-1, wxLIST_NEXT_ALL, FOCUSED); focus >= 0) {
             place.focus = sequenceAt(static_cast<std::size_t>(focus));
         }
-#if defined(__WXMSW__)
-        if (const int mark = ListView_GetSelectionMark(static_cast<HWND>(list_->GetHWND()));
-            mark >= 0) {
-            place.anchor = sequenceAt(static_cast<std::size_t>(mark));
+        if (const std::optional<std::size_t> mark = listSelectionMark(*list_)) {
+            place.anchor = sequenceAt(*mark);
         }
-#endif
         place.top = sequenceAt(static_cast<std::size_t>(std::max(list_->GetTopItem(), 0L)));
         place.tail = lastRowVisible();
         return place;

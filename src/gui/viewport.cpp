@@ -290,13 +290,7 @@ void Viewport::onButtonDown(wxMouseEvent& event) {
     CaptureMouse();
     // The standard wx cursors: the closed hand (macOS), the move cursor (Windows), fleur (wxGTK
     // maps wxCURSOR_SIZENWSE to it).
-#if defined(__WXOSX__)
-    SetCursor(wxCursor(wxCURSOR_CLOSED_HAND));
-#elif defined(__WXMSW__)
-    SetCursor(wxCursor(wxCURSOR_SIZING));
-#elif defined(__WXGTK__)
-    SetCursor(wxCursor(wxCURSOR_SIZENWSE));
-#endif
+    SetCursor(wxCursor(native_policy::panCursor()));
     // Bound to left and middle presses and double-clicks only.
     const wxMouseButton button =
         event.Button(wxMOUSE_BTN_LEFT) ? wxMOUSE_BTN_LEFT : wxMOUSE_BTN_MIDDLE;

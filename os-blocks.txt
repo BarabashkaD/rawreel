@@ -1,9 +1,2 @@
 # os-blocks baseline, written by dvv-build tools/os-blocks.cmake; it may only shrink
-3	src/gui/app.cpp
-1	src/gui/app.h
-3	src/gui/format_dialog.cpp
-1	src/gui/format_dialog.h
-3	src/gui/info_window.cpp
-1	src/gui/log_list_listctrl.cpp
 14	src/gui/selftest.cpp
-1	src/gui/viewport.cpp

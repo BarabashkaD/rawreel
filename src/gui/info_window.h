@@ -69,9 +69,7 @@ private:
     void onClose(wxCloseEvent& event);
     void onDpiChanged(wxDPIChangedEvent& event);
     void onSysColourChanged(wxSysColourChangedEvent& event);
-#if defined(__WXGTK__)
     void onShow(wxShowEvent& event);
-#endif
 
     MainFrame& owner_;
     wxPanel* content_ = nullptr;
@@ -82,9 +80,7 @@ private:
     wxStaticText* no_stream_ = nullptr;
     std::optional<wxPoint> place_;  // remembered at hide, for this run
     wxRect requested_;
-#if defined(__WXGTK__)
     bool wanted_shown_ = false;  // the owner's last choice (showBesideOwner, hideKeepingPlace)
-#endif
 };
 
 }  // namespace rawreel

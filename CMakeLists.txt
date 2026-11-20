@@ -262,8 +262,10 @@ if(NOT DVV_SANITIZE)
     dvv_os_sources(rawreel_gui src/gui/viewport)
     # Per toolkit: the window icons and About's logo (app_icon_<msw|gtk|cocoa>), the entry point
     # (main_win32.cpp, main_posix.cpp), the native choices (native_policy_<msw|gtk|cocoa>) and the
-    # main frame's macOS menu and size (main_frame_cocoa.mm; main_frame_stub.cpp elsewhere).
-    dvv_os_sources(rawreel_gui src/gui/app_icon src/gui/main src/gui/native_policy src/gui/main_frame)
+    # main frame's macOS menu and size (main_frame_cocoa.mm; main_frame_stub.cpp elsewhere) and the
+    # app's macOS menu name and opened files (app_cocoa.mm; app_stub.cpp elsewhere).
+    dvv_os_sources(rawreel_gui src/gui/app_icon src/gui/main src/gui/native_policy src/gui/main_frame
+                   src/gui/app)
     if(WIN32)
         # The rawreel icon as the first icon group (Explorer, taskbar), then wx.rc.
         rawreel_icon_resource(rawreel_gui src/gui/rawreel-gui.rc)

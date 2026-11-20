@@ -169,14 +169,12 @@ private:
     [[nodiscard]] dvv::media::ColourModel model() const;  // of the selected format (cached)
     // Shows or hides a grey line under the fields; the dialog grows if it must.
     void setLine(wxStaticText& line, const wxString& text);
-#if defined(__WXGTK__)
     // GTK leaves a dialog without a resize border to the window manager, and some (WSLg's) resize
     // it anyway, down to no height: a resize the dialog did not make is undone, so the dialog keeps
-    // the fixed size it has on Windows.
+    // the fixed size it has on Windows. Bound where native_policy::undoesForeignResize() says.
     void keepFixedSize(wxSizeEvent& event);
     wxSize fixed_client_;           // the client size the dialog set itself
     bool restore_pending_ = false;  // a CallAfter restores fixed_client_
-#endif
 
     std::vector<dvv::media::Candidate> candidates_;
     wxString folder_;  // the clip's folder (Load JSON...)

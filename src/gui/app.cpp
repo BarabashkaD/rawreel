@@ -22,15 +22,14 @@
 #include <utility>
 #include <vector>
 
-#if defined(__WXGTK__)
 #include <wx/clipbrd.h>  // OnExit's Flush()
-#endif
 
 #include "core/config.h"
 #include "core/config_writer.h"
 #include "core/log_file_switch.h"
 #include "core/log_level.h"
 #include "core/log_store.h"
+#include "core/native_os.h"
 #include "core/recent.h"
 #include "core/settings_claim.h"
 #include "core/timer.h"
@@ -45,6 +44,7 @@
 #include "dvv/platform/crash_handler.h"
 #include "dvv/platform/native_window.h"
 #include "gui/main_frame.h"
+#include "gui/native_policy.h"
 #include "gui/selftest.h"
 #include "gui/session_bridge.h"
 #include "gui/transport_bar.h"
@@ -118,15 +118,15 @@ dvv::Result<bool> createNewFolder(const std::filesystem::path& folder) {
 // A folder createNewFolder() made: mode 0700 on POSIX, and still a real folder, not a link.
 dvv::Result<void> secureNewFolder(const std::filesystem::path& folder) {
     std::error_code error;
-#if !defined(_WIN32)
-    std::filesystem::permissions(folder, std::filesystem::perms::owner_all,
-                                 std::filesystem::perm_options::replace, error);
-    if (error) {
-        return dvv::makeError(
-            dvv::Errc::Io,
-            std::format("cannot restrict {}: {}", dvv::pathDisplayText(folder), error.message()));
+    if constexpr (NATIVE_OS != Os::Windows) {
+        std::filesystem::permissions(folder, std::filesystem::perms::owner_all,
+                                     std::filesystem::perm_options::replace, error);
+        if (error) {
+            return dvv::makeError(
+                dvv::Errc::Io, std::format("cannot restrict {}: {}", dvv::pathDisplayText(folder),
+                                           error.message()));
+        }
     }
-#endif
     const std::filesystem::file_status status = std::filesystem::symlink_status(folder, error);
     if (error || status.type() != std::filesystem::file_type::directory) {
         return dvv::makeError(dvv::Errc::Io, std::format("{} is not a folder of its own",
@@ -210,11 +210,7 @@ bool App::OnInit() {
         closeLogAndConfig();
         return false;
     };
-#if defined(__WXOSX__)
-    // The application menu says "About rawreel", "Hide rawreel" and "Quit rawreel", not the
-    // executable's capitalised name.
-    SetAppDisplayName("rawreel");
-#endif
+    setApplicationMenuName();
     if (selftest()) {
         // wx's default GUI log target shows modal dialogs; the selftest runs unattended.
         delete wxLog::SetActiveTarget(new wxLogStderr());
@@ -322,20 +318,6 @@ bool App::OnInit() {
     }
     return true;
 }
-
-#if defined(__WXOSX__)
-void App::MacOpenFiles(const wxArrayString& names) {
-    std::vector<std::filesystem::path> files;
-    files.reserve(names.size());
-    for (const wxString& name : names) {
-        files.push_back(dvv::pathFromText(name.utf8_string()));
-    }
-    DVV_LOG_INFO("{} files opened from Finder or the Dock", files.size());
-    if (MainFrame* frame = mainFrame(); frame != nullptr) {
-        frame->openFiles(std::move(files));  // returns at once while the frame closes
-    }
-}
-#endif
 
 MainFrame* App::mainFrame() const {
     for (wxWindow* window : wxTopLevelWindows) {
@@ -855,13 +837,11 @@ int App::OnExit() {
     gpu_instance_.reset();
     io_.reset();
     cpu_.reset();
-#if defined(__WXGTK__)
     // Log pane and Settings design §4.3: text copied in rawreel stays on the clipboard after it
     // quits (GTK hands it to the clipboard manager). A selftest's copies went to its hook.
-    if (!selftest()) {
+    if (native_policy::flushesClipboardOnExit() && !selftest()) {
         (void)wxTheClipboard->Flush();
     }
-#endif
     // Last: flush, close the log file (every line above reached it) and remove a selftest's
     // config folder.
     closeLogAndConfig();

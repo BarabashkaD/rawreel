@@ -68,11 +68,11 @@ public:
     // messages of a --selftest run, and releases the GPU instance and the pools; last, flushes the
     // Logger, closes the log file and removes a selftest's own config folder.
     int OnExit() override;
-#if defined(__WXOSX__)
     // Files opened from Finder or the Dock (design C5), also the ones of the launch, which wxOSX
     // passes after OnInit(): the route of a drop on the window (MainFrame::openFiles), so the
     // first file replaces the stream and the others are logged as ignored. Nothing without a main
-    // frame (a failed start) or once it is closing.
+    // frame (a failed start) or once it is closing. Only wxOSX's wxApp has it (app_cocoa.mm).
+#if defined(__WXOSX__)
     void MacOpenFiles(const wxArrayString& names) override;
 #endif
 
@@ -239,6 +239,10 @@ private:
     // releases the settings claim, then removes the selftest's config folder (a failure is one
     // stderr line, the exit code stays).
     void closeLogAndConfig();
+    // OnInit, early: on macOS the application menu says "About rawreel", "Hide rawreel" and "Quit
+    // rawreel", not the executable's capitalised name (app_cocoa.mm). Nothing on the other
+    // toolkits (app_stub.cpp).
+    void setApplicationMenuName();
     // OnExit step 1 of a selftest: the config file holds `saved`, the value the close saved; a
     // mismatch records exit 6.
     void checkSavedLogPane(bool saved);
