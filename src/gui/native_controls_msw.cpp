@@ -43,9 +43,6 @@ bool trackbarRects(const wxSlider& slider, RECT& channel, RECT& thumb) {
 #if wxUSE_ACCESSIBILITY
 // Answers the name for the window itself; everything else falls back to the control's standard
 // MSAA object (wx's wxIAccessible does that for wxACC_NOT_IMPLEMENTED).
-
-#include <wx/listctrl.h>
-#include <wx/msw/wrapcctl.h>  // ListView_GetSelectionMark, ListView_SetSelectionMark
 class NamedAccessible final : public wxAccessible {
 public:
     NamedAccessible(wxWindow* window, const wxString& name) : wxAccessible(window), name_(name) {}
@@ -131,9 +128,6 @@ void setAccessibleName(wxWindow& window, const wxString& name) {
 #if wxUSE_ACCESSIBILITY
     window.SetAccessible(new NamedAccessible(&window, name));
 #else
-
-#include <wx/listctrl.h>
-#include <wx/msw/wrapcctl.h>  // ListView_GetSelectionMark, ListView_SetSelectionMark
     // A documented gap (spec §7): this wx build has no wxAccessible.
     static_cast<void>(window);
     static_cast<void>(name);
