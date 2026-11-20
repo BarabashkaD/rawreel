@@ -179,7 +179,8 @@ TEST_SUITE("core") {
     TEST_CASE("masks: a non-UTF-8 home folder is masked") {
         const rawreel::FfmpegOrigin origin{.appFolder = {},
                                            .ffmpegDirVariable = {},
-                                           .homeFolder = dvv::pathFromText("/tmp/h\xFF" "me")};
+                                           .homeFolder = dvv::pathFromText("/tmp/h\xFF"
+                                                                           "me")};
         const std::string text =
             "not found in " + dvv::pathDisplayText(origin.homeFolder / "ffmpeg");
         CHECK(rawreel::maskFolders(text, origin) == "not found in ~/ffmpeg");
