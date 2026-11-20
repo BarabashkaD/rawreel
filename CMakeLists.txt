@@ -177,8 +177,7 @@ if(NOT DVV_SANITIZE)
     # §5.3) and the skim key (§6.4), shared by rawreel-gui and the panel lab.
     add_library(rawreel_panel STATIC src/gui/icons.cpp src/gui/skim_key.cpp
                 src/gui/timeline_strip.cpp src/gui/transport_bar.cpp)
-    target_link_libraries(rawreel_panel PUBLIC rawreel_core wx::core dvv::base
-                                         PRIVATE dvv::media)
+    target_link_libraries(rawreel_panel PUBLIC rawreel_core wx::core dvv::base)
     # The native controls per toolkit, and the start-up before wx (gui_platform: the X11 start-up
     # on Linux, the stub elsewhere), for both programs.
     dvv_os_sources(rawreel_panel src/gui/native_controls src/gui/gui_platform)
