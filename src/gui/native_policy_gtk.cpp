@@ -9,7 +9,7 @@
 #include "gui/native_policy.h"
 #include "gui/native_policy_wx.h"
 
-namespace rawreel::nativePolicy {
+namespace rawreel::native_policy {
 
 bool ctrlWheelZooms() noexcept {
     return wx_generic::ctrlWheelZooms();
@@ -99,4 +99,4 @@ wxStockCursor panCursor() noexcept {
     return wxCURSOR_SIZENWSE;
 }
 
-}  // namespace rawreel::nativePolicy
+}  // namespace rawreel::native_policy

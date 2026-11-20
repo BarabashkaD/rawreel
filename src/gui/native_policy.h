@@ -14,7 +14,7 @@
 #include "core/commands.h"
 #include "dvv/base/move_only_function.h"
 
-namespace rawreel::nativePolicy {
+namespace rawreel::native_policy {
 
 // Ctrl+wheel zooms the view (MSW, GTK). macOS has no scroll zoom (design §5).
 [[nodiscard]] bool ctrlWheelZooms() noexcept;
@@ -78,4 +78,4 @@ void applySettingsPageStyle(wxWindow& page, dvv::MoveOnlyFunction<void(wxWindow&
 // The viewport's cursor while it pans.
 [[nodiscard]] wxStockCursor panCursor() noexcept;
 
-}  // namespace rawreel::nativePolicy
+}  // namespace rawreel::native_policy

@@ -107,7 +107,7 @@ constexpr int VARIABLE_FIELDS_MINIMUM_DIP = FILE_FIELD_MINIMUM_DIP *
                                             VARIABLE_FIELD_SHARES[0];
 
 // View -> Show Log / Hide Log (spec §2): the item's title where it changes
-// (nativePolicy::logItemHasChangingTitle).
+// (native_policy::logItemHasChangingTitle).
 wxString logItemTitle(bool shown) {
     return shown ? "Hide Log" : "Show Log";
 }
@@ -262,7 +262,7 @@ int menuId(Command command) noexcept {
     if (command == Command::Settings) {
         return wxID_PREFERENCES;
     }
-    if (const std::optional<int> stock = nativePolicy::stockId(command); stock) {
+    if (const std::optional<int> stock = native_policy::stockId(command); stock) {
         return *stock;
     }
     return COMMAND_ID_BASE + static_cast<int>(command);
@@ -272,7 +272,7 @@ std::optional<Command> commandOfMenuId(int id) noexcept {
     if (id == wxID_PREFERENCES) {
         return Command::Settings;
     }
-    if (const std::optional<Command> stock = nativePolicy::commandOfStockId(id); stock) {
+    if (const std::optional<Command> stock = native_policy::commandOfStockId(id); stock) {
         return stock;
     }
     if (id < COMMAND_ID_BASE || id > LAST_COMMAND_ID) {
@@ -479,10 +479,10 @@ void MainFrame::buildMenus() {
         // show their key without "\t" (Task 10 dispatches them).
         const wxString label = wxString::FromUTF8(menuLabel(info));
         const wxString help = wxString::FromUTF8(info.help);
-        if (nativePolicy::settingsAtEndOfEdit() && info.command == Command::Settings) {
+        if (native_policy::settingsAtEndOfEdit() && info.command == Command::Settings) {
             continue;  // Edit -> Preferences..., below
         }
-        if (nativePolicy::logItemHasChangingTitle()) {
+        if (native_policy::logItemHasChangingTitle()) {
             // Spec §2: macOS shows and hides a part of a window with a title that changes, not a
             // check mark ("checkable" does not apply); onUpdateUi keeps the title.
             if (info.command == Command::LogPane) {
@@ -509,7 +509,7 @@ void MainFrame::buildMenus() {
         }
     }
     buildEditMenu(*bar);  // between File and Playback (spec §4.2)
-    if (nativePolicy::settingsAtEndOfEdit()) {
+    if (native_policy::settingsAtEndOfEdit()) {
         // Spec §5.1: GTK puts Preferences... at the end of Edit, after a separator.
         const CommandInfo& settings = commandTable()[static_cast<std::size_t>(Command::Settings)];
         wxMenu* edit = bar->GetMenu(1);
@@ -829,7 +829,7 @@ bool MainFrame::isAvailable(Command command) const {
         case Command::Settings:
         case Command::About: return true;
         case Command::CloseStreams:
-            if (nativePolicy::closeCommandClosesSettingsFirst()) {
+            if (native_policy::closeCommandClosesSettingsFirst()) {
                 return hasStream() || settingsInFront() != nullptr || infoInFront() != nullptr;
             }
             [[fallthrough]];
@@ -884,7 +884,7 @@ void MainFrame::execute(Command command, CommandSource source) {
     }
     // Spec §5.1: ⌘W closes the Settings window when it is in front (it has no menu of its own);
     // otherwise Close stream acts on the main window.
-    if (nativePolicy::closeCommandClosesSettingsFirst() && command == Command::CloseStreams) {
+    if (native_policy::closeCommandClosesSettingsFirst() && command == Command::CloseStreams) {
         if (wxWindow* settings = settingsInFront(); settings != nullptr) {
             settings->Close();
             return;
@@ -1697,14 +1697,14 @@ void MainFrame::onUpdateUi(wxUpdateUIEvent& event) {
     const std::optional<Command> command = commandOfMenuId(event.GetId());
     event.Enable(!closing_ && command && isAvailable(*command));
     if (command == Command::LogPane) {  // spec §2: the item follows the pane however it changed
-        if (nativePolicy::logItemHasChangingTitle()) {
+        if (native_policy::logItemHasChangingTitle()) {
             event.SetText(logItemTitle(logShown()));
         } else {
             event.Check(logShown());
         }
     }
     if (command == Command::InfoWindow) {  // §10: the item follows the window
-        if (nativePolicy::logItemHasChangingTitle()) {
+        if (native_policy::logItemHasChangingTitle()) {
             event.SetText(infoItemTitle(infoShown()));
         } else {
             event.Check(infoShown());
@@ -1872,7 +1872,7 @@ void MainFrame::checkLayoutLimits() {
         // the map, so the minimum client size can end up below the one applied: apply it again.
         // MSW and wxOSX know the decorations when the window is created (wxOSX's menu bar is not
         // in the window), so their minimum client size stays as applied.
-        if (nativePolicy::reappliesMinimumAfterMap()) {
+        if (native_policy::reappliesMinimumAfterMap()) {
             wxSize wanted =
                 applied_minimum_ + FromDIP(wxSize(LAYOUT_MARGIN_DIP, LAYOUT_MARGIN_DIP));
             wanted.x = std::max(wanted.x, statusMinimumWidth());
@@ -1917,7 +1917,7 @@ void MainFrame::setInfoShown(bool shown) {
             info_window_->showFor(streams_.empty() ? nullptr : &streams_.front());
             // X11: Hide stands for iconify (onShow).
             const bool frame_hidden =
-                IsIconized() || (nativePolicy::hideMeansIconified() && !IsShown());
+                IsIconized() || (native_policy::hideMeansIconified() && !IsShown());
             if (frame_hidden) {
                 info_hidden_by_iconize_ = true;  // shown with the main window when restored
             } else {

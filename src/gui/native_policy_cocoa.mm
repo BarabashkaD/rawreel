@@ -10,7 +10,7 @@
 #include "gui/native_policy.h"
 #include "gui/native_policy_wx.h"
 
-namespace rawreel::nativePolicy {
+namespace rawreel::native_policy {
 
 // macOS has no scroll zoom (design §5): there the wheel pans with Cmd too.
 bool ctrlWheelZooms() noexcept {
@@ -106,4 +106,4 @@ wxStockCursor panCursor() noexcept {
     return wxCURSOR_CLOSED_HAND;
 }
 
-}  // namespace rawreel::nativePolicy
+}  // namespace rawreel::native_policy

@@ -352,7 +352,7 @@ void Viewport::onWheel(wxMouseEvent& event) {
     const dvv::platform::PixelSize extent = physicalClientSize();
     const bool vertical = event.GetWheelAxis() == wxMOUSE_WHEEL_VERTICAL;
     // macOS has no scroll zoom (design §5): there the wheel pans with Cmd too.
-    if (nativePolicy::ctrlWheelZooms() && event.ControlDown() && vertical) {
+    if (native_policy::ctrlWheelZooms() && event.ControlDown() && vertical) {
         const int notches =
             takeWheelNotches(wheel_zoom_, event.GetWheelRotation(), event.GetWheelDelta());
         const double scale = contentScale();  // window units to backing pixels
@@ -369,7 +369,7 @@ void Viewport::onWheel(wxMouseEvent& event) {
         setView(request);
         return;
     }
-    if (nativePolicy::ctrlWheelZooms() && !event.ControlDown()) {
+    if (native_policy::ctrlWheelZooms() && !event.ControlDown()) {
         wheel_zoom_ = 0;  // a half notch counts only within one run of Ctrl+wheel
     }
     if (!canPan(view_, extent, image_)) {

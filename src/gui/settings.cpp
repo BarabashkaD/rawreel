@@ -137,7 +137,7 @@ LogSettingsPage::LogSettingsPage(wxWindow* parent, MainFrame& frame, SettingsWin
     choose->Bind(wxEVT_BUTTON, [this](wxCommandEvent& /*event*/) { chooseFolder(); });
     use_default_ = new wxButton(this, wxID_ANY, "Use Default");
     use_default_->Bind(wxEVT_BUTTON, [this](wxCommandEvent& /*event*/) { useDefault(); });
-    reveal_ = new wxButton(this, wxID_ANY, nativePolicy::revealFolderLabel());
+    reveal_ = new wxButton(this, wxID_ANY, native_policy::revealFolderLabel());
     reveal_->Bind(wxEVT_BUTTON, [this](wxCommandEvent& /*event*/) { reveal(); });
     buttons->Add(choose, wxSizerFlags().Border(wxRIGHT));
     buttons->Add(use_default_, wxSizerFlags().Border(wxRIGHT));
@@ -147,14 +147,14 @@ LogSettingsPage::LogSettingsPage(wxWindow* parent, MainFrame& frame, SettingsWin
     unavailable_ = new wxStaticText(this, wxID_ANY, wxString());
     sizer->Add(unavailable_, wxSizerFlags().Expand().Border(wxLEFT | wxRIGHT | wxBOTTOM));
 
-    system_box_ = new wxCheckBox(this, wxID_ANY, nativePolicy::systemLogLabel());
+    system_box_ = new wxCheckBox(this, wxID_ANY, native_policy::systemLogLabel());
     system_box_->Bind(wxEVT_CHECKBOX,
                       [this](wxCommandEvent& event) { setSystemLog(event.IsChecked()); });
     sizer->Add(system_box_, wxSizerFlags().Border(wxALL));
 
     SetSizerAndFit(sizer);
     // Spec §5.1: the window is only hidden between shows; wx unbinds when the page goes.
-    nativePolicy::applySettingsPageStyle(*this, [this](wxWindow& top) {
+    native_policy::applySettingsPageStyle(*this, [this](wxWindow& top) {
         top.Bind(wxEVT_SHOW, &LogSettingsPage::onTopLevelShown, this);
     });
     (void)TransferDataToWindow();  // spec §5.1: the values when created
@@ -477,7 +477,7 @@ FilesSettingsPage::FilesSettingsPage(wxWindow* parent, MainFrame& frame, Setting
     sizer->Add(file_row, wxSizerFlags().Expand().Border(wxALL));
 
     SetSizerAndFit(sizer);
-    nativePolicy::applySettingsPageStyle(*this, [this](wxWindow& top) {
+    native_policy::applySettingsPageStyle(*this, [this](wxWindow& top) {
         top.Bind(wxEVT_SHOW, &FilesSettingsPage::onTopLevelShown, this);
     });
     (void)TransferDataToWindow();
