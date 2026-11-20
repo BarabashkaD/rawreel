@@ -393,7 +393,9 @@ bool App::startLogAndConfig() {
         settings_claim_ = SettingsClaim::tryClaim(config_path_);
     }
     // Addendum §4: log.source for the store's lines and the file's live lines; the lines the
-    // store took before this keep the default (no source).
+    // store took before this keep the default (no source). The flush delivers the queued ones
+    // first, under the old suffix.
+    dvv::Logger::instance().flush();
     const dvv::SourceSuffix suffix = sourceSuffix();
     log_store_->setSourceSuffix(suffix);
     log_file_->setSourceSuffix(suffix);
@@ -410,7 +412,10 @@ bool App::startLogAndConfig() {
 }
 
 void App::applyLevel(dvv::LogLevel level) {
-    // First, so a file the switch starts from now on has the new level in its header.
+    // Records logged so far are delivered under the old level (the log thread reads a sink's level
+    // when it delivers).
+    dvv::Logger::instance().flush();
+    // Before the sinks, so a file the switch starts from now on has the new level in its header.
     active_level_->store(level, std::memory_order_relaxed);
     dvv::Logger& logger = dvv::Logger::instance();
     logger.setSinkLevel(*log_file_, level);
@@ -567,6 +572,8 @@ void App::checkSavedLogPane(bool saved) {
 }
 
 void App::useSystemLog(bool on) {
+    // Records logged so far reach the system log as it was.
+    dvv::Logger::instance().flush();
     dvv::Logger::instance().setSinkLevel(*system_sink_,
                                          on ? dvv::LogLevel::Warn : dvv::LogLevel::Off);
     system_log_enabled_ = on;

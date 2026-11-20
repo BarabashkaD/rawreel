@@ -1,9 +1,10 @@
 #pragma once
 
 // The records the Log pane shows (Log pane design): a bounded, thread-safe copy of what the Logger
-// delivered. wx-free. LogStore is a Logger sink: write() runs under the Logger's lock on any thread
-// and neither logs nor calls back into the Logger. The notify function is called under the store's
-// own lock, so it must only wake the consumer (no take(), no logging).
+// delivered. wx-free. LogStore is a Logger sink: write() is called one record at a time, under the
+// Logger's lock in synchronous mode and on the log thread once the Logger started, and neither logs
+// nor calls back into the Logger. The notify function is called under the store's own lock, so it
+// must only wake the consumer (no take(), no logging).
 
 #include <atomic>
 #include <chrono>

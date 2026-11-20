@@ -2676,6 +2676,31 @@ SelfTestStep levelDebugStep(SelfTest* test, const std::shared_ptr<LevelState>& s
     return step("log level debug reaches the file", std::move(start), std::move(passed));
 }
 
+// §2.1: a level change applies to lines logged after it. A Debug line logged right before the
+// level goes up to Info stays in the store and the file, though the log thread may still hold it.
+SelfTestStep levelRaiseKeepsLoggedStep(SelfTest* test) {
+    auto start = [test] {
+        DVV_LOG_DEBUG("selftest debug line before Info");
+        test->app().setActiveLevel(dvv::LogLevel::Info, LevelSource::Menu);
+    };
+    auto passed = [test](std::string& seen) {
+        const App& app = test->app();
+        const std::string text = currentLogText(app);  // flushes first
+        const std::shared_ptr<LogStore>& store = app.logStore();
+        const bool line_stored =
+            store != nullptr && std::ranges::any_of(store->entries(), [](const LogEntry& entry) {
+                return entry.level == dvv::LogLevel::Debug &&
+                       entry.message == "selftest debug line before Info";
+            });
+        const bool line_in_file = text.find("selftest debug line before Info") != std::string::npos;
+        seen = std::format("active {}, debug line in the store {}, in the file {}",
+                           levelShownName(app.activeLevel()), line_stored, line_in_file);
+        return app.activeLevel() == dvv::LogLevel::Info && line_stored && line_in_file;
+    };
+    return step("log level raise keeps the lines logged before it", std::move(start),
+                std::move(passed));
+}
+
 // §2.1, D11: with the system log off, a change still reaches the store and the file, and the
 // system sink stays off. The level goes back to Info afterwards for the later steps.
 SelfTestStep levelSystemLogOffStep(SelfTest* test, const std::shared_ptr<LevelState>& state) {
@@ -2719,6 +2744,7 @@ void addLevelSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     const auto state = std::make_shared<LevelState>();
     steps.push_back(levelStartMarkerStep(test));
     steps.push_back(levelDebugStep(test, state));
+    steps.push_back(levelRaiseKeepsLoggedStep(test));
     steps.push_back(levelSystemLogOffStep(test, state));
     steps.push_back(logFileTimestampedStep(test));
 }
