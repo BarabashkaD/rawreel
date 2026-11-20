@@ -197,7 +197,7 @@ std::optional<std::string> fileKey(std::string_view uri) {
 }
 
 ColourModel streamModel(const StreamInfo& stream) {
-    return dvv::media::descriptor(stream.info.desc.format).model;
+    return dvv::media::formatDesc(stream.info.desc.format).model;
 }
 
 std::string fileNameOf(std::string_view path) {
@@ -334,7 +334,7 @@ ColourBase FileColourMemory::colourBase(const StreamInfo& stream) const {
     if (entry != entries_.end()) {
         return entry->second.base;
     }
-    const std::string format(dvv::media::descriptor(stream.info.desc.format).name);
+    const std::string format(dvv::media::formatDesc(stream.info.desc.format).name);
     return ColourBase{.standard = dvv::media::ColourPreset::Bt709,
                       .origin = ColourOrigin::Default,
                       .clipName = {},
@@ -355,7 +355,7 @@ FormatChoice choiceFromCandidate(const dvv::media::Candidate& candidate) {
     const dvv::media::FormatGuess& guess = candidate.guess;
     FormatChoice choice;
     if (guess.format) {
-        choice.format = dvv::media::descriptor(*guess.format).name;
+        choice.format = dvv::media::formatDesc(*guess.format).name;
     }
     if (guess.width != 0 && guess.height != 0) {
         choice.width = guess.width;
@@ -369,7 +369,7 @@ FormatChoice choiceFromCandidate(const dvv::media::Candidate& candidate) {
 
 FormatChoice choiceFromInfo(const dvv::media::SourceInfo& info) {
     FormatChoice choice;
-    choice.format = dvv::media::descriptor(info.desc.format).name;
+    choice.format = dvv::media::formatDesc(info.desc.format).name;
     if (const auto uri = dvv::parseUri(info.resolvedUri)) {
         if (const auto fmt = uri->param("fmt"); fmt && fmt->starts_with('@')) {
             choice.format = std::string(*fmt);  // a custom JSON format

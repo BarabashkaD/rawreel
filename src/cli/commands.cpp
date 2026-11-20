@@ -41,6 +41,7 @@
 #include "dvv/gpu/gpu_instance.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/source.h"
 #include "dvv/media/source_factory.h"
@@ -300,13 +301,18 @@ int dump(const Arguments& arguments, Resources& resources) {
     for (std::int64_t k = 0; k < arguments.count; ++k) {
         const media::FrameKey key{.origin = *origin, .index = arguments.frame + k};
         dvv::Result<media::OriginalRead> read = dvv::syncWait(resources.store->acquireOriginal(
-            key, media::Api::HostPlanes, domain, *resources.cpu, exact));
+            key,
+            {.api = media::BindingKind::HostPlanes,
+             .domain = domain,
+             .fidelity =
+                 exact ? media::OriginalFidelity::Exact : media::OriginalFidelity::Lossless},
+            *resources.cpu));
         if (!read) {
             const bool gpu_stage = gpu && read.error().code == dvv::Errc::OutOfMemory;
             return fail(arguments, read.error(), exitCodeFor(read.error(), gpu_stage));
         }
         const media::ReadLease& lease = read->lease();
-        const auto* const planes = std::get_if<media::HostPlanesB>(&lease.binding());
+        const media::HostPlanesB* const planes = lease.planes();
         if (planes == nullptr) {
             const dvv::Result<void> internal =
                 dvv::makeError(dvv::Errc::Internal, "the read is not in host memory");
@@ -331,7 +337,7 @@ int dump(const Arguments& arguments, Resources& resources) {
     }
 
     // 9. The result.
-    const std::string_view format = media::descriptor(written).name;
+    const std::string_view format = media::formatDesc(written).name;
     const std::string_view via = gpu ? "gpu" : "cpu";
     if (arguments.json) {
         dvv::json::Value value = dvv::json::Value::object();
@@ -439,12 +445,15 @@ int bench(const Arguments& arguments, Resources& resources) {
         tasks.reserve(static_cast<std::size_t>(end - first));
         for (std::int64_t index = first; index < end; ++index) {
             const media::FrameKey key{.origin = *origin, .index = index};
-            tasks.push_back(arguments.readOnly
-                                ? resources.store->acquireOriginal(key, media::Api::HostPlanes,
-                                                                   resources.store->hostDomain(),
-                                                                   *resources.cpu, true)
-                                : resources.store->acquireOriginal(key, media::Api::VkImage,
-                                                                   *device, *resources.cpu));
+            tasks.push_back(
+                arguments.readOnly
+                    ? resources.store->acquireOriginal(key,
+                                                       {.api = media::BindingKind::HostPlanes,
+                                                        .domain = resources.store->hostDomain(),
+                                                        .fidelity = media::OriginalFidelity::Exact},
+                                                       *resources.cpu)
+                    : resources.store->acquireOriginal(
+                          key, {.api = media::vulkan::IMAGE, .domain = *device}, *resources.cpu));
         }
         const std::vector<dvv::Result<media::OriginalRead>> reads =
             dvv::syncWait(dvv::whenAll(std::move(tasks)));
@@ -460,7 +469,7 @@ int bench(const Arguments& arguments, Resources& resources) {
 
     // 6. The report.
     const BenchReport report{.uri = info.resolvedUri,
-                             .format = std::string(media::descriptor(info.desc.format).name),
+                             .format = std::string(media::formatDesc(info.desc.format).name),
                              .reader = info.reader,
                              .device = resources.context->deviceInfo().name,
                              .width = info.desc.width,

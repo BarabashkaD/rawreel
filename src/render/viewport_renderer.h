@@ -9,7 +9,7 @@
 #include "dvv/base/error.h"
 #include "dvv/gpu/context_vulkan.h"
 #include "dvv/gpu/presenter_vulkan.h"
-#include "dvv/platform/native_window.h"
+#include "dvv/platform/pixel_size.h"
 #include "render/display_state.h"
 
 namespace rawreel {

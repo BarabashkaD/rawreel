@@ -10,7 +10,7 @@
 #include <optional>
 #include <string>
 
-#include "dvv/platform/native_window.h"
+#include "dvv/platform/pixel_size.h"
 
 namespace rawreel {
 

@@ -351,7 +351,7 @@ SessionOptions SessionFixture::options() {
             MediaStack stack;
             const dvv::media::Domain host = store->hostDomain();
             stack.viewFor = [host](const dvv::media::FrameDesc& desc) {
-                return dvv::media::planesView(desc, dvv::media::Api::HostPlanes, host);
+                return dvv::media::planesView(desc, dvv::media::BindingKind::HostPlanes, host);
             };
             stack.store = std::move(store);
             return stack;

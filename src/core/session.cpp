@@ -1046,7 +1046,7 @@ dvv::Result<MediaStack> hostStack(const std::shared_ptr<dvv::IExecutor>& cpu,
     MediaStack stack;
     const dvv::media::Domain host = store->hostDomain();
     stack.viewFor = [host](const dvv::media::FrameDesc& desc) {
-        return dvv::media::planesView(desc, dvv::media::Api::HostPlanes, host);
+        return dvv::media::planesView(desc, dvv::media::BindingKind::HostPlanes, host);
     };
     stack.store = std::move(store);
     return stack;
@@ -1128,7 +1128,7 @@ std::vector<std::string> diagnosticsLines(const dvv::media::StoreStats& stats,
     }
     for (const dvv::media::LeaseInfo& lease : leases) {
         lines.push_back(std::format("lease {}:{} {} {} at {}:{}", lease.key.origin, lease.key.index,
-                                    dvv::media::descriptor(lease.view.format).name,
+                                    dvv::media::formatDesc(lease.view.format).name,
                                     lease.kind == dvv::media::LeaseKind::Pin ? "Pin" : "Read",
                                     dvv::sourceFileName(lease.where), lease.where.line()));
     }
@@ -1283,7 +1283,7 @@ StackFactory gpuStackFactory(std::shared_ptr<dvv::gpu::GpuInstance> gpus,
     return [gpus = std::move(gpus), cpu = std::move(cpu), io = std::move(io),
             presentation](std::optional<dvv::gpu::DeviceId> device) -> dvv::Result<MediaStack> {
         if (!gpus) {
-            return dvv::makeError(dvv::Errc::Internal, "gpuStackFactory: no GPU registry");
+            return dvv::makeError(dvv::Errc::Internal, "gpuStackFactory: no GPU instance");
         }
         const std::span<const dvv::gpu::GpuInfo> devices = gpus->devices();
         std::optional<dvv::gpu::DeviceId> id;

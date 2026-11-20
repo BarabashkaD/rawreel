@@ -80,7 +80,7 @@ struct SessionOptions {
     bool presentation = false;                    // contexts with presentation (GUI)
     std::uint32_t inflight = 4;                   // PlayerConfig::inflight (K, D11)
     // SourceRequest::fileReads of every open (the config file's io.fileReads).
-    dvv::platform::FileReadMode fileReads = dvv::platform::FileReadMode::Auto;
+    dvv::platform::FileReadMode fileReads = dvv::media::DEFAULT_FILE_READS;
     std::shared_ptr<IClock> clock;
     std::shared_ptr<ITimer> timer;
     std::shared_ptr<IDisplaySink> sink;

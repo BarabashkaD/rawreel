@@ -82,6 +82,7 @@
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
 #include "dvv/platform/native_window.h"
+#include "dvv/platform/pixel_size.h"
 #include "gui/about.h"
 #include "gui/app.h"
 #include "gui/app_icon.h"
@@ -4617,7 +4618,7 @@ bool streamIs(const MainFrame& frame, std::uint32_t w, std::uint32_t h, std::str
     const auto& streams = frame.streams();
     return streams.size() == 1 && streams[0].info.desc.width == w &&
            streams[0].info.desc.height == h &&
-           dvv::media::descriptor(streams[0].info.desc.format).name == format;
+           dvv::media::formatDesc(streams[0].info.desc.format).name == format;
 }
 
 // --- View zoom (view zoom design): Fit, Actual size, Zoom in and out, the zoom button ---
@@ -6627,7 +6628,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
         const auto& streams = frame.streams();
         return streams.size() == 1 && streams[0].info.desc.width == w &&
                streams[0].info.desc.height == h &&
-               dvv::media::descriptor(streams[0].info.desc.format).name == format;
+               dvv::media::formatDesc(streams[0].info.desc.format).name == format;
     };
     // The resolved URI of the one stream; "" while none is open (a reopen).
     auto stream_uri = [&frame] {

@@ -69,7 +69,7 @@ std::string rateText(dvv::media::Rational fps) {
 }
 
 std::string formatText(dvv::media::FormatId format) {
-    const dvv::media::PixelFormatDescriptor& desc = dvv::media::descriptor(format);
+    const dvv::media::PixelFormatDesc& desc = dvv::media::formatDesc(format);
     const std::string_view model = desc.model == dvv::media::ColourModel::Yuv   ? "YUV"
                                    : desc.model == dvv::media::ColourModel::Rgb ? "RGB"
                                                                                 : "Gray";
@@ -123,7 +123,7 @@ std::string_view matrixText(const dvv::media::ColourParams& colour,
 }
 
 std::string rangeText(const dvv::media::ColourParams& colour,
-                      const dvv::media::PixelFormatDescriptor& desc) {
+                      const dvv::media::PixelFormatDesc& desc) {
     if (colour.range == ColourRange::Unspecified) {
         return "Unspecified";
     }
@@ -166,7 +166,7 @@ std::string resolutionText(const StreamInfo& stream) {
 
 std::vector<InfoRow> infoRows(const StreamInfo& stream) {
     const dvv::media::ColourParams& colour = stream.colour.params;
-    const dvv::media::PixelFormatDescriptor& desc = dvv::media::descriptor(stream.info.desc.format);
+    const dvv::media::PixelFormatDesc& desc = dvv::media::formatDesc(stream.info.desc.format);
     std::string matrix(matrixText(colour, desc.model));
     if (matrix.empty()) {  // ColourMatrix::Custom
         matrix = std::format("Custom (Kr {:.4f}, Kb {:.4f})", colour.kr, colour.kb);
@@ -188,7 +188,7 @@ std::vector<InfoRow> infoRows(const StreamInfo& stream) {
 std::string infoHint(const StreamInfo& stream) {
     std::string text =
         std::format("{} \xC2\xB7 {} \xC2\xB7 {}", resolutionText(stream), rateText(stream.info.fps),
-                    dvv::media::descriptor(stream.info.desc.format).name);
+                    dvv::media::formatDesc(stream.info.desc.format).name);
     std::string tail = standardText(stream);
     if (tail == "None") {
         tail.clear();

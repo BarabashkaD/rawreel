@@ -25,6 +25,7 @@
 #include "core/config_writer.h"
 #include "core/recent.h"
 #include "dvv/base/log.h"
+#include "dvv/media/source_factory.h"
 #include "dvv/platform/file_reader.h"
 #include "gui/main_frame.h"  // wxWeakRef<MainFrame> needs the class
 
@@ -137,7 +138,7 @@ private:
 
     wxWeakRef<MainFrame> frame_;
     SettingsWindow* owner_;
-    dvv::platform::FileReadMode wanted_ = dvv::platform::FileReadMode::Auto;
+    dvv::platform::FileReadMode wanted_ = dvv::media::DEFAULT_FILE_READS;
     std::size_t wanted_size_ = RECENT_DEFAULT_SIZE;  // Items in Open Recent
     std::array<wxRadioButton*, 3> modes_{};          // Automatic, Unbuffered, Buffered
     wxChoice* recent_size_ = nullptr;

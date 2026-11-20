@@ -58,7 +58,7 @@ struct ColourChoice {
 struct FormatChoice {
     std::string format = "yuv420p";  // catalogue name or "@<UTF-8 path to .json>"
     std::uint32_t width = 1920, height = 1080;
-    dvv::media::Rational fps{25, 1};
+    dvv::media::Rational fps = dvv::media::FALLBACK_FPS;
     ColourChoice colour{};
     bool operator==(const FormatChoice&) const = default;
 };

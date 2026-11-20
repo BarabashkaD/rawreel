@@ -13,7 +13,7 @@
 #include "dvv/base/error.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/presenter.h"
-#include "dvv/platform/native_window.h"
+#include "dvv/platform/pixel_size.h"
 #include "render/display_state.h"
 #include "render/viewport_renderer.h"
 

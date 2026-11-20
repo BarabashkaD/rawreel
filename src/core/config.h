@@ -31,6 +31,7 @@
 
 #include "dvv/base/error.h"
 #include "dvv/base/log.h"
+#include "dvv/media/source_factory.h"
 #include "dvv/platform/file_reader.h"
 
 namespace rawreel {
@@ -41,7 +42,7 @@ inline constexpr std::uintmax_t CONFIG_MAX_BYTES = std::uintmax_t{1} << 20U;
 
 struct IoConfig {
     // How file sources read frames (SourceRequest::fileReads).
-    dvv::platform::FileReadMode fileReads = dvv::platform::FileReadMode::Auto;
+    dvv::platform::FileReadMode fileReads = dvv::media::DEFAULT_FILE_READS;
 };
 
 struct GuiConfig {

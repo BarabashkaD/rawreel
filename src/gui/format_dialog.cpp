@@ -315,7 +315,7 @@ FormatDialog::FormatDialog(wxWindow* parent, const wxString& title, const Format
     // Format: every catalogue name, then the "@<path>" entry once one is loaded.
     format_ = new wxChoice(this, wxID_ANY);
     for (const dvv::media::FormatId id : dvv::media::catalogue()) {
-        format_->Append(wxString::FromUTF8(dvv::media::descriptor(id).name));
+        format_->Append(wxString::FromUTF8(dvv::media::formatDesc(id).name));
     }
     // A locked stream (D5 design §1.6) shows Format, Size and Frame rate as "(from file)" texts;
     // the hidden, disabled controls still hold the stream's values, which OK writes.

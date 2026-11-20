@@ -159,7 +159,7 @@ public:
                                      std::format("frame {} is outside [0, {})", index, frames));
         }
         const dvv::media::FrameDesc& desc = info_.desc;
-        const dvv::media::PixelFormatDescriptor& format = dvv::media::descriptor(desc.format);
+        const dvv::media::PixelFormatDesc& format = dvv::media::formatDesc(desc.format);
         dvv::media::CodeValues values;
         values.format = desc.format;
         values.width = desc.width;
@@ -329,7 +329,7 @@ void resetShots() {
 
 std::uint16_t testCode(FormatId format, std::size_t component, std::uint32_t x, std::uint32_t y,
                        std::int64_t index) {
-    const dvv::media::PixelFormatDescriptor& descriptor = dvv::media::descriptor(format);
+    const dvv::media::PixelFormatDesc& descriptor = dvv::media::formatDesc(format);
     const unsigned bits =
         component < descriptor.componentCount ? descriptor.components.at(component).bits : 16U;
     const std::uint64_t mask = (std::uint64_t{1} << bits) - 1;
