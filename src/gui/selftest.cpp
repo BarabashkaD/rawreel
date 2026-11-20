@@ -1667,6 +1667,9 @@ SelfTestStep logListKeepsPlaceStep(SelfTest* test, LogListKind kind,
             logListKindName(kind), first, state->first, text(selected), text(want),
             text(state->selected), place.top ? std::format("{}", *place.top) : "none", state->top,
             place.tail);
+        // The top is the control's own, not the one a batch restored and the control has not shown.
+        const bool settled = panel.list().placeSettled();
+        seen += std::format(", settled {}", settled);
         // A diagnostic: the refreshes since the start and the place each recorded one took.
         seen += std::format("; {} refreshes since the start, the last before-places:",
                             panel.refreshCount() - state->refreshes);
@@ -1680,7 +1683,7 @@ SelfTestStep logListKeepsPlaceStep(SelfTest* test, LogListKind kind,
         }
         return panel.list().kind() == kind && first >= state->first + LOG_LIST_MORE &&
                want.size() + 1 == state->selected.size() && selected == want &&
-               place.top == state->top;
+               place.top == state->top && settled;
     };
     return step(std::format("log list keeps its place ({})", logListKindName(kind)),
                 std::move(start), std::move(passed));

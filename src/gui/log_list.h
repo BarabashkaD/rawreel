@@ -67,6 +67,9 @@ public:
     virtual void applyBatch(const ListRows& rows) = 0;
     // Where the list stands, by sequence number (taken before a batch); tail is lastRowVisible().
     [[nodiscard]] virtual ListPlace place() const = 0;
+    // Selftests: whether the control shows the place the last batch restored, so place() reads the
+    // control itself (an adapter whose control scrolls at once is always settled).
+    [[nodiscard]] virtual bool placeSettled() const { return true; }
     // Whether the last row is in view (logRowInView with the control's own row rectangle), not row
     // arithmetic: wxOSX's GetCountPerPage counts only whole rows below the header while its
     // GetTopItem is the partly hidden row under it. False for an empty list.
