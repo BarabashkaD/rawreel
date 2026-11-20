@@ -96,11 +96,15 @@ int wmain(int argc, wchar_t** argv) {
 }
 #else
 int main(int argc, char** argv) {
-    rawreel::applyBundledDriver();  // first: before anything can open the Vulkan loader
+    // First: before anything can open the Vulkan loader.
+    const dvv::Result<dvv::gpu::DriverChoice> driver = rawreel::applyBundledDriver();
     try {
         // The crash handler first (design M4 v2 D22), then the logger, then the test hook.
         const std::string crash_warning = rawreel::CrashHandler::install("rawreel-cli");
         setUpLogging();
+        if (!driver) {
+            DVV_LOG_WARN("the bundled Vulkan driver is not used: {}", driver.error().message);
+        }
         if (!crash_warning.empty()) {
             DVV_LOG_TEXT(dvv::LogLevel::Warn, crash_warning);  // now that the sinks exist
         }

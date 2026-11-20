@@ -7,8 +7,6 @@
 #include <fstream>
 #include <optional>
 #include <random>
-#include <string>
-#include <string_view>
 #include <system_error>
 
 #include "core/vulkan_driver.h"
@@ -46,50 +44,19 @@ struct Bundle {
     }
 };
 
-std::optional<std::string> noVariables(std::string_view /*name*/) {
-    return std::nullopt;
-}
-
 }  // namespace
 
 TEST_SUITE("vulkan_driver") {
-    TEST_CASE("the manifest in the bundle is used when no variable is set") {
+    TEST_CASE("the manifest in the bundle is found") {
         const Bundle bundle;
         bundle.install();
-        const auto result = rawreel::bundledDriverEnvironment(bundle.exeDir, noVariables);
-        REQUIRE(result);
-        CHECK(fs::path(result.value_or(std::string{})).lexically_normal() ==
-              bundle.manifest.lexically_normal());
+        const std::optional<fs::path> result = rawreel::bundledDriverManifest(bundle.exeDir);
+        REQUIRE(result.has_value());
+        CHECK(result->lexically_normal() == bundle.manifest.lexically_normal());
     }
 
-    TEST_CASE("VK_DRIVER_FILES and VK_ICD_FILENAMES win") {
+    TEST_CASE("no manifest, no path") {
         const Bundle bundle;
-        bundle.install();
-        for (const std::string_view name : {"VK_DRIVER_FILES", "VK_ICD_FILENAMES"}) {
-            const auto get = [name](std::string_view asked) -> std::optional<std::string> {
-                return asked == name ? std::optional<std::string>("/somewhere/icd.json")
-                                     : std::nullopt;
-            };
-            CHECK_FALSE(rawreel::bundledDriverEnvironment(bundle.exeDir, get));
-        }
-    }
-
-    TEST_CASE("empty VK_DRIVER_FILES and VK_ICD_FILENAMES count as unset") {
-        const Bundle bundle;
-        bundle.install();
-        for (const std::string_view name : {"VK_DRIVER_FILES", "VK_ICD_FILENAMES"}) {
-            const auto get = [name](std::string_view asked) -> std::optional<std::string> {
-                return asked == name ? std::optional<std::string>("") : std::nullopt;
-            };
-            const auto result = rawreel::bundledDriverEnvironment(bundle.exeDir, get);
-            REQUIRE(result);
-            CHECK(fs::path(result.value_or(std::string{})).lexically_normal() ==
-                  bundle.manifest.lexically_normal());
-        }
-    }
-
-    TEST_CASE("no manifest (a build tree) leaves the loader alone") {
-        const Bundle bundle;
-        CHECK_FALSE(rawreel::bundledDriverEnvironment(bundle.exeDir, noVariables));
+        CHECK(rawreel::bundledDriverManifest(bundle.exeDir) == std::nullopt);
     }
 }

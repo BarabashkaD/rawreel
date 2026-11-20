@@ -31,7 +31,8 @@ namespace {
 // Parses, then runs wx through `start_wx`; returns the process exit code.
 template <class StartWx>
 int run(std::span<const std::string_view> args, StartWx start_wx) {
-    rawreel::applyBundledDriver();  // first: before anything can open the Vulkan loader
+    // First: before anything can open the Vulkan loader.
+    dvv::Result<dvv::gpu::DriverChoice> driver = rawreel::applyBundledDriver();
     dvv::Result<rawreel::GuiArguments> arguments = rawreel::parseGuiArguments(args);
     if (!arguments) {
         std::fprintf(stderr, "rawreel-gui: %s\n\n%s", arguments.error().message.c_str(),
@@ -55,7 +56,7 @@ int run(std::span<const std::string_view> args, StartWx start_wx) {
     // design §2.1).
     auto stderr_sink = std::make_shared<dvv::StderrSink>();
     dvv::Logger::instance().addSink(stderr_sink, dvv::LogLevel::Info);
-    rawreel::App::setArguments(std::move(*arguments), std::move(stderr_sink));
+    rawreel::App::setArguments(std::move(*arguments), std::move(stderr_sink), std::move(driver));
     const int wx_result = start_wx();
     int code = rawreel::exit_code::SUCCESS;
     if (const std::optional<int> decided = rawreel::App::exitCode(); decided) {

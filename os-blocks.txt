@@ -8,7 +8,6 @@
 1	src/core/settings_claim.h
 1	src/core/stream_name.h
 2	src/core/timer.cpp
-1	src/core/vulkan_driver.cpp
 3	src/gui/app.cpp
 1	src/gui/app.h
 5	src/gui/app_icon.cpp

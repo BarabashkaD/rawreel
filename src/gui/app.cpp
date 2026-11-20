@@ -59,6 +59,8 @@ namespace {
 GuiArguments the_arguments;
 // main()'s stderr sink (in the Logger since before wxEntry()); its level follows the active level.
 std::shared_ptr<dvv::StderrSink> the_stderr_sink;
+// What applyBundledDriver() returned, logged by OnInit once the sinks exist.
+dvv::Result<dvv::gpu::DriverChoice> the_driver;
 std::optional<int> decided_exit_code;
 
 constexpr std::size_t IO_THREADS = 4;
@@ -143,9 +145,11 @@ std::string randomSuffix() {
 
 }  // namespace
 
-void App::setArguments(GuiArguments arguments, std::shared_ptr<dvv::StderrSink> stderr_sink) {
+void App::setArguments(GuiArguments arguments, std::shared_ptr<dvv::StderrSink> stderr_sink,
+                       dvv::Result<dvv::gpu::DriverChoice> driver) {
     the_arguments = std::move(arguments);
     the_stderr_sink = std::move(stderr_sink);
+    the_driver = std::move(driver);
 }
 
 const GuiArguments& App::arguments() noexcept {
@@ -195,6 +199,9 @@ bool App::OnInit() {
     logger.addSink(log_file_, dvv::LogLevel::Info);
     system_sink_ = std::make_shared<dvv::SystemLogSink>("rawreel");
     logger.addSink(system_sink_, dvv::LogLevel::Off);
+    if (!the_driver) {
+        DVV_LOG_WARN("the bundled Vulkan driver is not used: {}", the_driver.error().message);
+    }
     if (!crash_warning.empty()) {
         DVV_LOG_TEXT(dvv::LogLevel::Warn, crash_warning);  // now that the sinks exist
     }

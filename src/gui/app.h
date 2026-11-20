@@ -26,8 +26,10 @@
 #include "core/session.h"
 #include "core/settings_claim.h"
 #include "core/startup.h"
+#include "dvv/base/error.h"
 #include "dvv/base/executor.h"
 #include "dvv/base/log.h"
+#include "dvv/gpu/bundled_drivers.h"
 #include "dvv/gpu/device_id.h"
 #include "dvv/gpu/gpu_instance.h"
 #include "dvv/registry/component_registry.h"
@@ -43,7 +45,9 @@ class App final : public wxApp {
 public:
     // main() passes the parsed arguments and the stderr sink it added to the Logger before
     // wxEntry(); the App sets that sink's level to the active level (log level design §2.1).
-    static void setArguments(GuiArguments arguments, std::shared_ptr<dvv::StderrSink> stderr_sink);
+    // `driver` is what applyBundledDriver() returned; OnInit logs an error once the sinks exist.
+    static void setArguments(GuiArguments arguments, std::shared_ptr<dvv::StderrSink> stderr_sink,
+                             dvv::Result<dvv::gpu::DriverChoice> driver);
     [[nodiscard]] static const GuiArguments& arguments() noexcept;
     // The exit code the App decided (0 after a passed selftest, 1, 4, 6, 77); nullopt otherwise.
     // main() reads it after wxEntry(), which returns -1 when OnInit() fails.
