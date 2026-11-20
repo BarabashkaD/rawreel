@@ -15,6 +15,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -42,6 +43,8 @@ using dvv::Result;
 using dvv::media::FormatId;
 
 constexpr auto GATE_TIMEOUT = std::chrono::seconds(10);
+// The bound of an open that waits for its stop token (slow:...&openstop=<name>).
+constexpr auto STOP_TIMEOUT = std::chrono::seconds(5);
 constexpr std::array<std::string_view, 3> SCHEMES{"slow", "fail", "file"};
 // A file it recognises and refuses, as the ffmpeg provider refuses a lossy codec (M4 GUI D4).
 constexpr std::string_view REFUSED_SUFFIX = ".refused";
@@ -49,11 +52,12 @@ constexpr std::string_view REFUSED_SUFFIX = ".refused";
 struct Gate {
     bool closed = false;
     std::size_t waiters = 0;
+    std::string outcome;  // how the last watched wait ended (waitOutcome)
 };
 
 struct Gates {
     std::mutex mutex;
-    std::condition_variable changed;
+    std::condition_variable_any changed;  // also wakes a waiter whose stop token stops
     std::map<std::string, Gate, std::less<>> gates;
 };
 
@@ -90,6 +94,31 @@ bool waitGate(std::string_view name) {
     return passGate(name, std::chrono::duration_cast<std::chrono::milliseconds>(GATE_TIMEOUT));
 }
 
+enum class WaitEnd : std::uint8_t { Passed, Stopped, TimedOut };
+
+// Waits under `name` until `stop` stops or `limit` passes; with `gated`, also until the gate
+// opens. Records the end as the name's outcome: "passed", "cancelled" or `timeout_text`.
+WaitEnd waitWatched(std::string_view name, bool gated, std::chrono::milliseconds limit,
+                    const std::stop_token& stop, std::string_view timeout_text) {
+    Gates& all = gates();
+    std::unique_lock lock(all.mutex);
+    Gate& gate = all.gates[std::string(name)];
+    ++gate.waiters;
+    const bool passed =
+        all.changed.wait_for(lock, stop, limit, [&gate, gated] { return gated && !gate.closed; });
+    --gate.waiters;
+    WaitEnd end = WaitEnd::TimedOut;
+    gate.outcome = std::string(timeout_text);
+    if (passed) {
+        end = WaitEnd::Passed;
+        gate.outcome = "passed";
+    } else if (stop.stop_requested()) {
+        end = WaitEnd::Stopped;
+        gate.outcome = "cancelled";
+    }
+    return end;
+}
+
 enum class Kind : std::uint8_t { Slow, Fail };
 
 struct Behaviour {
@@ -97,6 +126,7 @@ struct Behaviour {
     std::optional<std::int64_t> index;
     std::string gate;      // slow: produce(index) waits
     std::string openGate;  // slow: open() waits
+    std::string openStop;  // slow: open() waits for its stop token
     Errc errc = Errc::Io;  // fail:
     std::uint64_t times = 0;
     std::optional<std::uint64_t> shots;  // fail: per-URI count (replaces times)
@@ -128,10 +158,18 @@ public:
         std::int64_t index, dvv::media::ProduceContext& ctx) override {
         co_await dvv::resumeOn(ctx.io());
         if (behaviour_.index == index) {
-            if (behaviour_.kind == Kind::Slow && !behaviour_.gate.empty() &&
-                !waitGate(behaviour_.gate)) {
-                co_return dvv::makeError(Errc::Internal,
-                                         std::format("gate {} timed out", behaviour_.gate));
+            if (behaviour_.kind == Kind::Slow && !behaviour_.gate.empty()) {
+                const std::string timed_out = std::format("gate {} timed out", behaviour_.gate);
+                const WaitEnd end =
+                    waitWatched(behaviour_.gate, true,
+                                std::chrono::duration_cast<std::chrono::milliseconds>(GATE_TIMEOUT),
+                                ctx.stopToken(), timed_out);
+                if (end == WaitEnd::Stopped) {
+                    co_return dvv::makeError(Errc::Cancelled, "the produce step was stopped");
+                }
+                if (end == WaitEnd::TimedOut) {
+                    co_return dvv::makeError(Errc::Internal, timed_out);
+                }
             }
             if (behaviour_.kind == Kind::Fail) {
                 bool fails = false;
@@ -240,6 +278,7 @@ public:
         }
         behaviour.gate = std::string(uri.param("gate").value_or(""));
         behaviour.openGate = std::string(uri.param("opengate").value_or(""));
+        behaviour.openStop = std::string(uri.param("openstop").value_or(""));
         const std::string_view errc = uri.param("errc").value_or("io");
         behaviour.errc = errc == "devicelost" ? Errc::DeviceLost
                          : errc == "oom"      ? Errc::OutOfMemory
@@ -264,6 +303,15 @@ public:
             co_return dvv::makeError(Errc::Internal,
                                      std::format("gate {} timed out", behaviour.openGate));
         }
+        if (!behaviour.openStop.empty()) {
+            constexpr std::string_view NOT_STOPPED = "open was not stopped";
+            if (waitWatched(behaviour.openStop, false,
+                            std::chrono::duration_cast<std::chrono::milliseconds>(STOP_TIMEOUT),
+                            context.stop, NOT_STOPPED) == WaitEnd::Stopped) {
+                co_return dvv::makeError(Errc::Cancelled, "the open was stopped");
+            }
+            co_return dvv::makeError(Errc::Internal, std::string(NOT_STOPPED));
+        }
 
         dvv::media::SourceInfo info;
         info.desc = {.format = *format, .colour = 0, .width = width, .height = height};
@@ -287,7 +335,9 @@ DVV_REGISTER(dvv::media::ISourceProvider, TestSourceProvider);
 void closeGate(std::string_view name) {
     Gates& all = gates();
     std::lock_guard lock(all.mutex);
-    all.gates[std::string(name)].closed = true;
+    Gate& gate = all.gates[std::string(name)];
+    gate.closed = true;
+    gate.outcome.clear();
 }
 
 void releaseGate(std::string_view name) {
@@ -312,6 +362,13 @@ bool passGate(std::string_view name, std::chrono::milliseconds limit) {
     const bool passed = all.changed.wait_for(lock, limit, [&gate] { return !gate.closed; });
     --gate.waiters;
     return passed;
+}
+
+std::string waitOutcome(std::string_view name) {
+    Gates& all = gates();
+    std::lock_guard lock(all.mutex);
+    const auto gate = all.gates.find(name);
+    return gate == all.gates.end() ? std::string() : gate->second.outcome;
 }
 
 void resetShots() {

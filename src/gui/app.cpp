@@ -806,9 +806,6 @@ void App::shutdownSession() {
     if (produce_delay_) {
         produce_delay_->stop();  // first: the shutdown drain never waits out a delay
     }
-    // The FFmpeg and lavfi sources end their work at once, so the shutdown below, which waits for
-    // in-flight acquisitions, is bounded (design M4 v2 D5).
-    dvv::components::stopFfmpegSources();
     if (bridge_) {
         bridge_->detach();  // no event is queued onto the frame any more
     }
@@ -826,7 +823,6 @@ int App::OnExit() {
     if (selftest() && saved_log_pane_) {
         checkSavedLogPane(*saved_log_pane_);
     }
-    dvv::components::stopFfmpegSources();  // before the Session shutdown (design M4 v2 D5)
     // Every viewport, and so every presenter, is gone: MainFrame::onClose destroyed it.
     if (session_) {
         shutdownSession();

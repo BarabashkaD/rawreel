@@ -15,6 +15,7 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <variant>
@@ -103,8 +104,9 @@ struct StatusSubscriber {
 
 class SessionCore;
 // The detached task bodies (defined after the class; they use only its public members).
-dvv::Task<void> openSource(std::shared_ptr<SessionCore> core, OpenJob job,
-                           std::uint64_t stream_set);
+dvv::Task<void> openSource(std::shared_ptr<SessionCore> core, OpenJob job, std::uint64_t stream_set,
+                           std::stop_token stop);  // NOLINT(performance-unnecessary-value-param):
+                                                   // the task is lazy; it owns its arguments
 dvv::Task<void> buildStack(std::shared_ptr<SessionCore> core, OpenJob job,
                            std::uint64_t stream_set);
 dvv::Task<void> requestFrames(std::shared_ptr<SessionCore> core,
@@ -238,7 +240,9 @@ public:
         }
         installStack(std::move(*stack));
         if (job.request && stream_set == stream_set_) {
-            spawn(openSource(shared_from_this(), std::move(job), stream_set_), false);
+            spawn(
+                openSource(shared_from_this(), std::move(job), stream_set_, open_stop_.get_token()),
+                false);
             return;  // the job ends in openDone
         }
         finishJob();  // a stack-only job, or closeStreams() ran meanwhile: the request is dropped
@@ -248,6 +252,7 @@ public:
         last_stream_.reset();  // a later reopen() rebuilds only the stack
         opens_.clear();
         ++stream_set_;  // a running open and every request become stale
+        endOpenStop();
         detachStreams();
         ready_.clear();
         player_.reset();
@@ -430,6 +435,14 @@ public:
             *executor_);  // FIFO: ticks posted before cancel() returned run first
         opens_.clear();
         ++stream_set_;  // running opens and requests become stale
+        endOpenStop();
+        // The detach cancels the queued and running produce steps, so the drain below does not wait
+        // for them.
+        for (const Stream& stream : streams_) {
+            if (stack_.store && stream.origin != 0) {
+                stack_.store->detach(stream.origin);
+            }
+        }
         ready_.clear();
         options_.sink->clear();
         publish();
@@ -437,11 +450,6 @@ public:
             co_await DrainAwaiter{this};
         }
         MediaStack stack = std::exchange(stack_, MediaStack{});
-        for (const Stream& stream : streams_) {
-            if (stack.store && stream.origin != 0) {
-                stack.store->detach(stream.origin);
-            }
-        }
         streams_.clear();
         player_.reset();
         stack = MediaStack{};  // the Session's context reference is released here, on the executor
@@ -463,6 +471,12 @@ private:
     [[nodiscard]] IClock& clock() const noexcept { return *options_.clock; }
     [[nodiscard]] Tag currentTag() const noexcept {
         return {stream_set_, stack_epoch_, generation_};
+    }
+    // At each ++stream_set_, on the executor with no lock held: stops a running open, and the next
+    // open gets a fresh token.
+    void endOpenStop() {
+        open_stop_.request_stop();
+        open_stop_ = std::stop_source{};
     }
 
     // Every stack build after create() runs as a step of an open job (design v2 §5.3 step 3), so
@@ -497,7 +511,9 @@ private:
             if (!stack_.store) {
                 spawn(buildStack(shared_from_this(), std::move(job), stream_set_), false);
             } else if (job.request) {
-                spawn(openSource(shared_from_this(), std::move(job), stream_set_), false);
+                spawn(openSource(shared_from_this(), std::move(job), stream_set_,
+                                 open_stop_.get_token()),
+                      false);
             } else {
                 open_running_ =
                     false;  // nothing to do (not reachable: a rebuild released the stack)
@@ -562,6 +578,7 @@ private:
         ready_.clear();
         options_.sink->clear();
         ++stream_set_;  // in-flight results and a running open become stale
+        endOpenStop();
         for (const Stream& stream : streams_) {
             if (stream.origin != 0) {
                 stack_.store->detach(stream.origin);
@@ -691,6 +708,7 @@ private:
 
     void streamsReplaced(std::optional<std::int64_t> start) {
         ++stream_set_;
+        endOpenStop();
         ready_.clear();
         oom_retried_.clear();
         oom_window_.reset();
@@ -915,6 +933,8 @@ private:
     std::uint32_t tasks_ = 0;          // every detached task
     std::uint32_t request_tasks_ = 0;  // SessionStatus::inflight
     std::coroutine_handle<> drain_waiter_;
+    // Stopped and replaced at each ++stream_set_: a running open ends at once (Errc::Cancelled).
+    std::stop_source open_stop_;
     std::optional<Clock::time_point> scheduled_;
     std::uint64_t shown_ = 0;
     std::string bottleneck_;
@@ -974,14 +994,15 @@ void SessionCore::spawn(dvv::Task<void> body, bool request) {
     runDetached(shared_from_this(), std::move(body), request);
 }
 
-dvv::Task<void> openSource(std::shared_ptr<SessionCore> core, OpenJob job,
-                           std::uint64_t stream_set) {
+dvv::Task<void> openSource(std::shared_ptr<SessionCore> core, OpenJob job, std::uint64_t stream_set,
+                           std::stop_token stop) {  // NOLINT(performance-unnecessary-value-param):
+                                                    // the task is lazy; it owns its arguments
     // Spawned only for a job with a request; `job` lives in this frame.
     OpenResult opened = dvv::makeError(dvv::Errc::Internal, "an open job without a request");
     if (job.request) {
         job.request->fileReads = core->fileReads();  // every open, reopens included
         try {
-            opened = co_await core->factory().open(*job.request);
+            opened = co_await core->factory().open(*job.request, std::move(stop));
             if (opened && core->produceDelay()) {
                 if (auto* source = std::get_if<std::unique_ptr<dvv::media::ISource>>(&*opened)) {
                     *source =

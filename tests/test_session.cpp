@@ -231,6 +231,26 @@ bool isDeviceLost(const SessionEvent& e) {
            e.error.value_or(dvv::Error{}).code == dvv::Errc::DeviceLost;
 }
 
+// Opens a source whose open waits until its stop token stops (at most 5 s), then shuts down: the
+// shutdown returns at once, the open ends Cancelled and no event reports it.
+void shutdownWhileOpenRuns(SessionFixture& f, std::string_view name) {
+    closeGate(name);  // clears the name's outcome
+    f.open(0, std::string("slow:gradient?openstop=") + std::string(name));
+    REQUIRE(waitGateWaiters(name, 1));
+    const std::size_t events = f.events->events().size();
+
+    std::atomic<bool> done{false};
+    std::jthread shutter([&f, &done] {
+        dvv::syncWait(f.session->shutdown());
+        done = true;
+    });
+    CHECK(waitUntil([&done] { return done.load(); }, 2s));
+    shutter.join();  // bounded: an open that is not stopped ends after 5 s
+    f.shutDown = true;
+    CHECK(rawreel::testing::waitOutcome(name) == "cancelled");
+    CHECK(f.events->events().size() == events);
+}
+
 }  // namespace
 
 TEST_SUITE("session") {
@@ -804,14 +824,13 @@ TEST_SUITE("session") {
                 dvv::syncWait(f.session->shutdown());
                 done = true;
             });
-            releaseGate("g11");
-            const auto finish = std::chrono::steady_clock::now() + 5s;
-            while (!done.load() && std::chrono::steady_clock::now() < finish) {
-                std::this_thread::sleep_for(1ms);
-            }
-            CHECK(done.load());
+            // The detach stops the step that waits at the closed gate: shutdown does not wait.
+            const bool returned = waitUntil([&done] { return done.load(); }, 2s);
+            releaseGate("g11");  // a shutdown that waits for the gate ends here
+            CHECK(returned);
             shutter.join();
             f.shutDown = true;
+            CHECK(rawreel::testing::waitOutcome("g11") == "cancelled");  // the step ended Cancelled
             CHECK_FALSE(f.sink->holdsFrame());
             CHECK(f.session->status().inflight == 0);
             // Commands after shutdown are refused.
@@ -960,6 +979,71 @@ TEST_SUITE("session") {
         const auto t0 = std::chrono::steady_clock::now();
         f.shutdown();
         CHECK(std::chrono::steady_clock::now() - t0 < 2s);
+    }
+
+    TEST_CASE("session: the delay wakes when the stream is closed") {
+        const auto delay = std::make_shared<rawreel::ProduceDelay>();
+        SessionFixture f{rawreel::testing::RealTime{},
+                         [&](rawreel::SessionOptions& o) { o.produceDelay = delay; }};
+        f.open(0, "synthetic:gradient?w=32&h=16&fmt=yuv420p&frames=400&fps=25");
+        REQUIRE(f.sink->waitShown(0));
+        REQUIRE(f.settle(1));
+        delay->set(5000);  // the bound: a wait that is not stopped ends after 5 s
+        f.session->seek(300);
+        REQUIRE(f.waitStatus([](const SessionStatus& s) { return s.inflight >= 1; }));
+        const auto t0 = std::chrono::steady_clock::now();
+        f.session
+            ->closeStreams();  // the detach stops the delayed steps; delay->stop() is not called
+        CHECK(f.waitStatus([](const SessionStatus& s) { return s.streams == 0 && s.inflight == 0; },
+                           6s));
+        CHECK(std::chrono::steady_clock::now() - t0 < 2s);
+        CHECK(errorCount(f) == 0);
+        delay->set(0);
+        f.shutdown();
+    }
+
+    TEST_CASE("session: shutdown while an open runs") {
+        SUBCASE("on a session whose stack exists") {
+            {
+                SessionFixture f;
+                f.open(0, A);
+                REQUIRE(f.sink->waitShown(0));
+                shutdownWhileOpenRuns(f, "os1");
+                CHECK(f.stackCalls() == 1);
+            }
+            CHECK(dvv::LifetimeRegistry::instance().liveCount() == 0);
+        }
+        SUBCASE("as the first open, which builds the stack") {
+            {
+                SessionFixture f;
+                f.open(0, A);
+                REQUIRE(f.sink->waitShown(0));
+                f.session->reportDeviceLost(1);
+                [[maybe_unused]] const SessionEvent lost = waitError(f, 1);
+                // No stack: the open builds one, and its open starts after buildStack.
+                shutdownWhileOpenRuns(f, "os2");
+                CHECK(f.stackCalls() == 2);
+            }
+            CHECK(dvv::LifetimeRegistry::instance().liveCount() == 0);
+        }
+    }
+
+    TEST_CASE("session: a replace right after a close opens the new stream") {
+        SessionFixture f;
+        closeGate("rc1");  // clears the name's outcome
+        f.open(0, "slow:gradient?openstop=rc1");
+        REQUIRE(waitGateWaiters("rc1", 1));
+        f.session->closeStreams();
+        f.open(0, B);
+        // Stopped, A's open ends at once; past its 5 s bound it names "open was not stopped".
+        CHECK(waitUntil([] { return !rawreel::testing::waitOutcome("rc1").empty(); }, 7s));
+        CHECK(rawreel::testing::waitOutcome("rc1") == "cancelled");
+        const SessionEvent opened_b = waitStreamsChanged(f, 2);  // the close's, then B's
+        REQUIRE(opened_b.streams.size() == 1);
+        CHECK(opened_b.streams[0].resolvedUri.starts_with("synthetic:noise?"));
+        CHECK(f.events->of(Kind::StreamsChanged).size() == 2);  // A's result is dropped
+        CHECK(f.events->of(Kind::Error).empty());
+        f.shutdown();
     }
 
     TEST_CASE("session: plays and shuts down on the real timer") {

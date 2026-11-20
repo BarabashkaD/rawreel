@@ -14,6 +14,7 @@
 #include <mutex>
 #include <optional>
 #include <source_location>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -111,14 +112,14 @@ public:
     [[nodiscard]] std::uint32_t get() const noexcept { return ms_.load(); }
     // Wakes every wait now and makes later waits return at once.
     void stop() noexcept;
-    // Returns after `ms`, or at once / early after stop().
-    void waitFor(std::uint32_t ms);
+    // Returns after `ms`, or at once / early after stop() or when `stop` stops.
+    void waitFor(std::uint32_t ms, std::stop_token stop = {});
 
 private:
     std::atomic<std::uint32_t> ms_{0};
     std::mutex mutex_;
-    std::condition_variable wake_;
-    bool stopped_ = false;  // under mutex_
+    std::condition_variable_any wake_;  // also wakes when a wait's token stops
+    bool stopped_ = false;              // under mutex_
 };
 
 }  // namespace rawreel

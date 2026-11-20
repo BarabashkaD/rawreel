@@ -2,8 +2,10 @@
 
 #include <chrono>
 #include <cstdint>
+#include <stop_token>
 #include <utility>
 
+#include "dvv/base/error.h"
 #include "dvv/base/task.h"
 
 namespace rawreel {
@@ -16,9 +18,10 @@ void ProduceDelay::stop() noexcept {
     wake_.notify_all();
 }
 
-void ProduceDelay::waitFor(std::uint32_t ms) {
+void ProduceDelay::waitFor(std::uint32_t ms, std::stop_token stop) {
     std::unique_lock lock(mutex_);
-    wake_.wait_for(lock, std::chrono::milliseconds(ms), [this] { return stopped_; });
+    [[maybe_unused]] const bool woken = wake_.wait_for(
+        lock, std::move(stop), std::chrono::milliseconds(ms), [this] { return stopped_; });
 }
 
 namespace {
@@ -38,7 +41,10 @@ public:
         const std::uint32_t ms = delay_->get();
         if (ms != 0) {
             co_await dvv::resumeOn(*io_);  // the wait blocks: not on the caller's thread
-            delay_->waitFor(ms);
+            delay_->waitFor(ms, ctx.stopToken());
+            if (ctx.stopToken().stop_requested()) {
+                co_return dvv::makeError(dvv::Errc::Cancelled, "the produce step was stopped");
+            }
         }
         co_return co_await inner_->produce(index, ctx);
     }

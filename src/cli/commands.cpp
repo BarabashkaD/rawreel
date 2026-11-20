@@ -93,10 +93,8 @@ public:
 
 private:
     void shutdown() {
-        // 0. Queued prefetch work of an FFmpeg or lavfi source ends at once instead of decoding on
-        // (the store's queued Produce steps keep their sources alive).
-        dvv::components::stopFfmpegSources();
-        // 1. detach the origin (2. the leases are already dropped).
+        // 1. detach the origin: it cancels the queued and running produce steps (2. the leases are
+        // already dropped).
         if (store && origin) {
             store->detach(*origin);
             origin.reset();
