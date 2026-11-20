@@ -7,10 +7,8 @@
 #include <vulkan/vulkan_core.h>
 
 #include "dvv/base/error.h"
-#include "dvv/gpu/compute_pipeline.h"
-#include "dvv/gpu/execution_context.h"
-#include "dvv/gpu/presenter.h"
-#include "dvv/gpu/resources.h"
+#include "dvv/gpu/context_vulkan.h"
+#include "dvv/gpu/presenter_vulkan.h"
 #include "dvv/platform/native_window.h"
 #include "render/display_state.h"
 
@@ -39,7 +37,7 @@ class ViewportRenderer {
 
 public:
     // `epoch`: the Session stackEpoch of `context` (ISessionEvents::stackChanged). Errors of
-    // createComputePipeline and createImage pass through (DeviceLost on a lost context).
+    // the free createComputePipeline and createImage pass through (DeviceLost on a lost context).
     [[nodiscard]] static dvv::Result<std::unique_ptr<ViewportRenderer>> create(
         std::shared_ptr<dvv::gpu::ExecutionContext> context, std::uint64_t epoch);
     ViewportRenderer(Private key, std::shared_ptr<dvv::gpu::ExecutionContext> context,

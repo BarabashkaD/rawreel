@@ -599,7 +599,7 @@ SelfTestStep movedPaneStep(SelfTest* test, const SharedState& state, bool back) 
 }
 
 // 4. Hidden: no frames. start() hides the frame; its show or iconize event calls
-// Presenter::setVisible(false) at once, so from the first hidden report on PresenterLogic::next()
+// Presenter::hide() at once, so from the first hidden report on PresenterLogic::next()
 // starts no frame and presents only the one already in flight: one more frame is tolerated. The
 // presenter must not be made visible again before the restore step (a stray show or iconize event
 // would; the likely cause of an earlier rare WSLg failure under load, NOT VERIFIED).

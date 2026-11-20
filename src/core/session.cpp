@@ -28,7 +28,7 @@
 #include "dvv/base/when_all.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/gpu_info.h"
-#include "dvv/gpu/gpu_registry.h"
+#include "dvv/gpu/gpu_instance.h"
 #include "dvv/media/display.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/uri_colour.h"
@@ -1276,7 +1276,7 @@ void Session::reportDeviceLost(std::uint64_t epoch) {
     command([epoch](detail::SessionCore& core) { core.reportDeviceLost(epoch); });
 }
 
-StackFactory gpuStackFactory(std::shared_ptr<dvv::gpu::GpuRegistry> gpus,
+StackFactory gpuStackFactory(std::shared_ptr<dvv::gpu::GpuInstance> gpus,
                              std::shared_ptr<dvv::IExecutor> cpu,
                              std::shared_ptr<dvv::IExecutor> io, bool presentation) {
     // Captures no context: every call makes a new one (the old one is released by the Session).

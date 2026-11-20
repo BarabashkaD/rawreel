@@ -8,7 +8,7 @@
 
 #include "core/view.h"
 #include "dvv/base/log.h"
-#include "dvv/gpu/command_recorder.h"
+#include "dvv/gpu/context_vulkan.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
 #include "rawreel_shaders/composite.h"
@@ -34,7 +34,7 @@ std::shared_ptr<dvv::gpu::GpuImage> displayImageOf(
         return nullptr;
     }
     const std::shared_ptr<dvv::gpu::GpuImage>& image = binding->planes[0];
-    if (image->format() != VK_FORMAT_R16G16B16A16_SFLOAT ||
+    if (dvv::gpu::vulkanFormat(*image) != VK_FORMAT_R16G16B16A16_SFLOAT ||
         image->deviceId() != context.deviceId() || image->generation() != context.generation()) {
         return nullptr;
     }
@@ -45,17 +45,17 @@ std::shared_ptr<dvv::gpu::GpuImage> displayImageOf(
 
 dvv::Result<std::unique_ptr<ViewportRenderer>> ViewportRenderer::create(
     std::shared_ptr<dvv::gpu::ExecutionContext> context, std::uint64_t epoch) {
-    DVV_TRY(
-        std::shared_ptr<dvv::gpu::ComputePipeline> pipeline,
-        context->createComputePipeline(
-            rawreel_shaders::composite(), static_cast<std::uint32_t>(sizeof(CompositeConstants)),
-            dvv::gpu::ComputeBindings{.storageImages = MAX_STREAMS + 1}));
+    DVV_TRY(std::shared_ptr<dvv::gpu::ComputePipeline> pipeline,
+            dvv::gpu::createComputePipeline(
+                *context, rawreel_shaders::composite(),
+                static_cast<std::uint32_t>(sizeof(CompositeConstants)),
+                dvv::gpu::ComputeBindings{.storageImages = MAX_STREAMS + 1}));
     DVV_TRY(std::shared_ptr<dvv::gpu::GpuImage> dummy,
-            context->createImage({.width = 1,
-                                  .height = 1,
-                                  .format = VK_FORMAT_R16G16B16A16_SFLOAT,
-                                  .usage = VK_IMAGE_USAGE_STORAGE_BIT,
-                                  .name = "composite dummy"}));
+            dvv::gpu::createImage(*context, {.width = 1,
+                                             .height = 1,
+                                             .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                                             .usage = VK_IMAGE_USAGE_STORAGE_BIT,
+                                             .name = "composite dummy"}));
     return std::make_unique<ViewportRenderer>(Private{}, std::move(context), epoch,
                                               std::move(pipeline), std::move(dummy));
 }
@@ -72,12 +72,12 @@ ViewportRenderer::ViewportRenderer(Private /*key*/,
 
 dvv::Result<std::shared_ptr<dvv::gpu::GpuImage>> ViewportRenderer::makeOutput(
     dvv::platform::PixelSize extent) const {
-    return context_->createImage(
-        {.width = extent.width,
-         .height = extent.height,
-         .format = VK_FORMAT_R8G8B8A8_UNORM,
-         .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-         .name = "viewport composite"});
+    return dvv::gpu::createImage(
+        *context_, {.width = extent.width,
+                    .height = extent.height,
+                    .format = VK_FORMAT_R8G8B8A8_UNORM,
+                    .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    .name = "viewport composite"});
 }
 
 dvv::gpu::RecordFunction ViewportRenderer::recordComposite(
@@ -110,8 +110,8 @@ dvv::gpu::RecordFunction ViewportRenderer::recordComposite(
             constants, groups_x, groups_y](dvv::gpu::CommandRecorder& recorder) {
         static_cast<void>(leases);  // held only for their lifetime
         const std::array<dvv::gpu::GpuImage*, MAX_STREAMS + 1> bound{bound0.get(), output.get()};
-        recorder.dispatch(*pipeline, std::as_bytes(std::span(&constants, 1)), bound, groups_x,
-                          groups_y);
+        recorder.dispatch(*pipeline, std::as_bytes(std::span(&constants, 1)), bound,
+                          dvv::gpu::GroupCount{.x = groups_x, .y = groups_y});
     };
 }
 

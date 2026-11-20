@@ -38,7 +38,7 @@
 #include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/gpu_info.h"
-#include "dvv/gpu/gpu_registry.h"
+#include "dvv/gpu/gpu_instance.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
 #include "dvv/media/pixel_format.h"
@@ -84,7 +84,7 @@ public:
     Startup startup;  // the FFmpeg status and the component registry
     std::unique_ptr<media::SourceFactory> factory;
     std::unique_ptr<media::ISource> source;  // until dump attaches it
-    std::shared_ptr<dvv::gpu::GpuRegistry> gpu;
+    std::shared_ptr<dvv::gpu::GpuInstance> gpu;
     std::shared_ptr<dvv::gpu::ExecutionContext> context;
     std::shared_ptr<media::FrameStore> store;
     std::optional<media::OriginId> origin;
@@ -103,7 +103,7 @@ private:
         source.reset();
         factory.reset();
         store.reset();
-        // 4. drain the context, 5. then release it, the GPU registry and the component registry.
+        // 4. drain the context, 5. then release it, the GPU instance and the component registry.
         if (context) {
             if (const dvv::Result<void> drained = context->drain(); !drained) {
                 DVV_LOG_WARN("rawreel-cli: draining the GPU context failed: {}",
@@ -139,19 +139,19 @@ int fail(const Arguments& arguments, const dvv::Result<void>& failed, int code) 
     return fail(arguments, failed.error(), code);
 }
 
-// The best Vulkan device of a headless GPU registry, which is destroyed right after; never fails.
+// The best Vulkan device of a headless GPU instance, which is destroyed right after; never fails.
 [[nodiscard]] VulkanStatus vulkanStatus() {
-    dvv::gpu::GpuRegistryOptions options;
+    dvv::gpu::GpuInstanceOptions options;
     options.applicationName = "rawreel-cli";
-    const auto registry = dvv::gpu::GpuRegistry::create(options);
-    if (!registry) {
+    const auto instance = dvv::gpu::GpuInstance::create(options);
+    if (!instance) {
         return {.available = false,
                 .device = {},
                 .api = {},
                 .driver = {},
-                .reason = registry.error().describe()};
+                .reason = instance.error().describe()};
     }
-    const std::optional<dvv::gpu::DeviceId> best = (*registry)->bestDevice();
+    const std::optional<dvv::gpu::DeviceId> best = (*instance)->bestDevice();
     if (!best) {
         return {.available = false,
                 .device = {},
@@ -159,7 +159,7 @@ int fail(const Arguments& arguments, const dvv::Result<void>& failed, int code) 
                 .driver = {},
                 .reason = "no usable Vulkan 1.3 device"};
     }
-    const dvv::gpu::GpuInfo& device = (*registry)->devices()[best->index()];
+    const dvv::gpu::GpuInfo& device = (*instance)->devices()[best->index()];
     return {.available = true,
             .device = device.name,
             .api = dvv::gpu::formatVulkanVersion(device.apiVersion),
@@ -189,19 +189,19 @@ void printVersion(bool json) {
     return error.code == dvv::Errc::Unsupported && error.message.starts_with(NO_DEVICE);
 }
 
-// GpuRegistry::create() with the options from the environment, then a context on the best device.
+// GpuInstance::create() with the options from the environment, then a context on the best device.
 // No loader (Unsupported) or no usable device: Errc::Unsupported "no usable GPU device: <reason>";
 // other errors pass through.
 [[nodiscard]] dvv::Result<void> setUpGpu(Resources& resources) {
-    auto registry = dvv::gpu::GpuRegistry::create();
-    if (!registry) {
-        if (registry.error().code == dvv::Errc::Unsupported) {
+    auto instance = dvv::gpu::GpuInstance::create();
+    if (!instance) {
+        if (instance.error().code == dvv::Errc::Unsupported) {
             return dvv::makeError(dvv::Errc::Unsupported,
-                                  std::format("{}: {}", NO_DEVICE, registry.error().message));
+                                  std::format("{}: {}", NO_DEVICE, instance.error().message));
         }
-        return std::unexpected(std::move(registry).error());
+        return std::unexpected(std::move(instance).error());
     }
-    resources.gpu = std::move(*registry);
+    resources.gpu = std::move(*instance);
     const std::optional<dvv::gpu::DeviceId> best = resources.gpu->bestDevice();
     if (!best) {
         return dvv::makeError(dvv::Errc::Unsupported,

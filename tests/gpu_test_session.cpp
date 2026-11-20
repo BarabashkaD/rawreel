@@ -26,9 +26,8 @@
 #include "core/timer.h"
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
-#include "dvv/gpu/execution_context.h"
-#include "dvv/gpu/gpu_registry.h"
-#include "dvv/gpu/resources.h"
+#include "dvv/gpu/context_vulkan.h"
+#include "dvv/gpu/gpu_instance.h"
 #include "dvv/gpu/testing/fault_injection.h"
 #include "dvv/media/display.h"
 #include "dvv/media/frame.h"
@@ -62,7 +61,7 @@ bool isDisplayImage(const FrameSet& frames) {
     }
     const auto* image = std::get_if<dvv::media::VkImageB>(&lease.binding());
     return image != nullptr && image->planeCount == 1 && image->planes[0] != nullptr &&
-           image->planes[0]->format() == VK_FORMAT_R16G16B16A16_SFLOAT;
+           dvv::gpu::vulkanFormat(*image->planes[0]) == VK_FORMAT_R16G16B16A16_SFLOAT;
 }
 
 bool waitUntil(const std::function<bool()>& predicate, std::chrono::milliseconds timeout) {
@@ -99,7 +98,7 @@ public:
         options.components = environment.components;
         options.cpu = environment.cpu;
         options.io = environment.io;
-        options.gpus = environment.registry;
+        options.gpus = environment.gpuInstance;
         options.device = std::nullopt;
         options.presentation = false;
         options.inflight = 4;
@@ -146,7 +145,7 @@ public:
         events->setStatusProbe({});
         session.reset();
         CHECK(waitUntil([] { return liveCountOf("ExecutionContext") == 0; }, 5s));
-        CHECK(environment.registry->validationMessageCount() == 0);
+        CHECK(environment.gpuInstance->validationMessageCount() == 0);
     }
 
     // What happened so far, for failure messages: the events and the last shows.
@@ -291,11 +290,11 @@ TEST_CASE("gpu session: a small-budget store evicts under in-flight GPU work") {
     auto observed = std::make_shared<std::weak_ptr<dvv::media::FrameStore>>();
     const StackMaker small_budget = [observed](const rawreel::testing::GpuTestEnvironment& env) {
         return rawreel::StackFactory(
-            [registry = env.registry, cpu = env.cpu, io = env.io, observed](
+            [gpu_instance = env.gpuInstance, cpu = env.cpu, io = env.io, observed](
                 std::optional<dvv::gpu::DeviceId> /*device*/) -> dvv::Result<rawreel::MediaStack> {
                 std::optional<dvv::gpu::DeviceId> id;
-                for (const dvv::gpu::DeviceId candidate : registry->rankedDevices()) {
-                    if (registry->devices()[candidate.index()].usable()) {
+                for (const dvv::gpu::DeviceId candidate : gpu_instance->rankedDevices()) {
+                    if (gpu_instance->devices()[candidate.index()].usable()) {
                         id = candidate;
                         break;
                     }
@@ -304,7 +303,7 @@ TEST_CASE("gpu session: a small-budget store evicts under in-flight GPU work") {
                     return dvv::makeError(dvv::Errc::Unsupported, "no usable GPU device");
                 }
                 DVV_TRY(std::shared_ptr<dvv::gpu::ExecutionContext> context,
-                        registry->createContext(*id, {}));
+                        gpu_instance->createContext(*id, {}));
                 DVV_TRY(std::shared_ptr<dvv::media::FrameStore> store,
                         dvv::media::FrameStore::create(
                             dvv::media::FrameStoreOptions{.cpu = cpu,

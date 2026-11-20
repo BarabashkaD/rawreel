@@ -21,15 +21,11 @@
 #include "dvv/base/move_only_function.h"
 #include "dvv/base/task.h"
 #include "dvv/gpu/device_id.h"
+#include "dvv/gpu/gpu_fwd.h"
 #include "dvv/media/frame_store.h"
 #include "dvv/media/source_factory.h"
 #include "dvv/platform/file_reader.h"
 #include "dvv/registry/component_registry.h"
-
-namespace dvv::gpu {
-class ExecutionContext;
-class GpuRegistry;
-}  // namespace dvv::gpu
 
 namespace rawreel {
 
@@ -79,7 +75,7 @@ using StackFactory =
 struct SessionOptions {
     std::shared_ptr<dvv::ComponentRegistry> components;  // source providers
     std::shared_ptr<dvv::IExecutor> cpu, io;
-    std::shared_ptr<dvv::gpu::GpuRegistry> gpus;  // null: host-only
+    std::shared_ptr<dvv::gpu::GpuInstance> gpus;  // null: host-only
     std::optional<dvv::gpu::DeviceId> device;     // null: the best device
     bool presentation = false;                    // contexts with presentation (GUI)
     std::uint32_t inflight = 4;                   // PlayerConfig::inflight (K, D11)
@@ -189,7 +185,7 @@ private:
 // when that fails, presentation}); store: FrameStore::create({cpu, io, context}) with default
 // budgets; viewFor: displayView(*store->deviceDomain()) for every FrameDesc. Errors of
 // createContext and FrameStore::create pass through unchanged.
-[[nodiscard]] StackFactory gpuStackFactory(std::shared_ptr<dvv::gpu::GpuRegistry> gpus,
+[[nodiscard]] StackFactory gpuStackFactory(std::shared_ptr<dvv::gpu::GpuInstance> gpus,
                                            std::shared_ptr<dvv::IExecutor> cpu,
                                            std::shared_ptr<dvv::IExecutor> io, bool presentation);
 

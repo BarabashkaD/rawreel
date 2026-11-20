@@ -26,10 +26,9 @@
 #include "core/view.h"
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
-#include "dvv/gpu/execution_context.h"
-#include "dvv/gpu/gpu_registry.h"
-#include "dvv/gpu/presenter.h"
-#include "dvv/gpu/resources.h"
+#include "dvv/gpu/context_vulkan.h"
+#include "dvv/gpu/gpu_instance.h"
+#include "dvv/gpu/presenter_vulkan.h"
 #include "dvv/media/display.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
@@ -130,15 +129,15 @@ std::string describe(PixelSize extent) {
     return std::to_string(extent.width) + "x" + std::to_string(extent.height);
 }
 
-// One registry, pools and component registry; a context on the best device, a GPU FrameStore and
-// a SourceFactory. Test-case locals (FrameSets, leases, renderer) are released first; then the
+// One GPU instance, pools and component registry; a context on the best device, a GPU FrameStore
+// and a SourceFactory. Test-case locals (FrameSets, leases, renderer) are released first; then the
 // store, the factory and the context; then no validation message may have been counted.
 class CompositorTest {
 public:
     CompositorTest() : env_(rawreel::testing::makeGpuTestEnvironment()) {
         // The dereference stays in the checked branch: clang-tidy does not know that FAIL throws.
-        if (const auto device = env_.registry->bestDevice(); device) {
-            auto context = env_.registry->createContext(*device, {});
+        if (const auto device = env_.gpuInstance->bestDevice(); device) {
+            auto context = env_.gpuInstance->createContext(*device, {});
             REQUIRE_MESSAGE(context, (context ? std::string() : context.error().describe()));
             context_ = std::move(*context);
         } else {
@@ -160,7 +159,7 @@ public:
         store_.reset();
         factory_.reset();
         context_.reset();
-        CHECK(env_.registry->validationMessageCount() == 0);
+        CHECK(env_.gpuInstance->validationMessageCount() == 0);
     }
 
     [[nodiscard]] std::shared_ptr<dvv::gpu::ExecutionContext> context() const { return context_; }
@@ -193,7 +192,7 @@ public:
         REQUIRE(binding->planeCount == 1);
         const std::shared_ptr<dvv::gpu::GpuImage>& plane = binding->planes[0];
         REQUIRE(plane != nullptr);
-        REQUIRE(plane->format() == VK_FORMAT_R16G16B16A16_SFLOAT);
+        REQUIRE(dvv::gpu::vulkanFormat(*plane) == VK_FORMAT_R16G16B16A16_SFLOAT);
         frame.size = {plane->width(), plane->height()};
         REQUIRE(frame.size == IMAGE);
         auto bytes = rawreel::testing::readImage(*context_, *env_.cpu, plane, 8);
@@ -224,7 +223,7 @@ public:
         REQUIRE(frame->image != nullptr);
         CHECK(frame->image->width() == extent.width);
         CHECK(frame->image->height() == extent.height);
-        CHECK(frame->image->format() == VK_FORMAT_R8G8B8A8_UNORM);
+        CHECK(dvv::gpu::vulkanFormat(*frame->image) == VK_FORMAT_R8G8B8A8_UNORM);
         submit(std::move(frame->record));
         return read(frame->image);
     }

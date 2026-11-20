@@ -266,7 +266,7 @@ bool App::OnInit() {
         Session::create({.components = startup_.components,
                          .cpu = cpu_,
                          .io = io_,
-                         .gpus = registry_,
+                         .gpus = gpu_instance_,
                          .device = device_,
                          .presentation = true,
                          .inflight = the_arguments.inflight,
@@ -754,7 +754,7 @@ bool App::startPools() {
 }
 
 bool App::startGpu() {
-    auto created = dvv::gpu::GpuRegistry::create(
+    auto created = dvv::gpu::GpuInstance::create(
         {.applicationName = "rawreel", .windowSystem = dvv::platform::defaultWindowSystem()});
     if (!created) {
         // M1b: no loader (Unsupported) is a skip for a selftest; every other failure is 4.
@@ -763,9 +763,9 @@ bool App::startGpu() {
                "Vulkan could not start: " + created.error().describe());
         return false;
     }
-    registry_ = std::move(*created);
+    gpu_instance_ = std::move(*created);
 
-    const std::span<const dvv::gpu::GpuInfo> devices = registry_->devices();
+    const std::span<const dvv::gpu::GpuInfo> devices = gpu_instance_->devices();
     if (the_arguments.gpu) {
         // A bad argument found after enumeration (plan choice): exit 1. A listed device that
         // cannot present fails Session::create: exit 4.
@@ -780,7 +780,7 @@ bool App::startGpu() {
     }
     // gpuStackFactory picks the same device: the first ranked usable one that can present.
     const bool presentable =
-        std::ranges::any_of(registry_->rankedDevices(), [&](dvv::gpu::DeviceId id) {
+        std::ranges::any_of(gpu_instance_->rankedDevices(), [&](dvv::gpu::DeviceId id) {
             const dvv::gpu::GpuInfo& info = devices[id.index()];
             return info.usable() && info.optional.swapchain;
         });
@@ -825,8 +825,8 @@ int App::OnExit() {
     show_history_.reset();
     display_.reset();
     startup_ = {};
-    if (selftest() && !decided_exit_code && registry_) {
-        if (const std::uint64_t messages = registry_->validationMessageCount(); messages != 0) {
+    if (selftest() && !decided_exit_code && gpu_instance_) {
+        if (const std::uint64_t messages = gpu_instance_->validationMessageCount(); messages != 0) {
             record(exit_code::SELFTEST_FAILED,
                    std::format("rawreel-gui --selftest: {} (close) failed: {} validation messages",
                                scenarioName(the_arguments.selftest), messages));
@@ -834,7 +834,7 @@ int App::OnExit() {
             record(exit_code::SUCCESS, "rawreel-gui --selftest: passed");
         }
     }
-    registry_.reset();
+    gpu_instance_.reset();
     io_.reset();
     cpu_.reset();
 #if defined(__WXGTK__)

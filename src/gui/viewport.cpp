@@ -260,7 +260,11 @@ void Viewport::updateVisible(bool shown, bool old_visible, const char* event) {
     if (visible) {
         ++presenter_shows_;
     }
-    presenter_->setVisible(visible);
+    if (visible) {
+        presenter_->show();
+    } else {
+        presenter_->hide();
+    }
 }
 
 std::optional<RecordedInfo> Viewport::lastRecorded() const {

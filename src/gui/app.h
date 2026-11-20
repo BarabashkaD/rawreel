@@ -2,7 +2,7 @@
 
 // rawreel-gui's wx application (spec §10.2; design M1b §5.6, M3 v2 §5.5 and §7): the log sinks,
 // the config and the settings claim (Log pane and Settings design §5.3, §6.3, §7.1), appearance,
-// pools, GPU registry, the Session and its bridge, the main frame and the exit code.
+// pools, GPU instance, the Session and its bridge, the main frame and the exit code.
 
 // clang-format off
 #include <wx/wx.h>  // first (R11)
@@ -29,7 +29,7 @@
 #include "dvv/base/executor.h"
 #include "dvv/base/log.h"
 #include "dvv/gpu/device_id.h"
-#include "dvv/gpu/gpu_registry.h"
+#include "dvv/gpu/gpu_instance.h"
 #include "dvv/registry/component_registry.h"
 #include "render/display_state.h"
 
@@ -61,7 +61,7 @@ public:
     bool OnInit() override;
     // A --selftest run first checks that its config file holds the gui.showLogPane value the close
     // saved (a mismatch: exit 6). Then shuts a remaining Session down, checks the validation
-    // messages of a --selftest run, and releases the registry and the pools; last, flushes the
+    // messages of a --selftest run, and releases the GPU instance and the pools; last, flushes the
     // Logger, closes the log file and removes a selftest's own config folder.
     int OnExit() override;
 #if defined(__WXOSX__)
@@ -82,8 +82,8 @@ public:
 
     // Null before OnInit() created it and after shutdownSession().
     [[nodiscard]] Session* session() const noexcept { return session_.get(); }
-    [[nodiscard]] const std::shared_ptr<dvv::gpu::GpuRegistry>& registry() const noexcept {
-        return registry_;
+    [[nodiscard]] const std::shared_ptr<dvv::gpu::GpuInstance>& gpuInstance() const noexcept {
+        return gpu_instance_;
     }
     [[nodiscard]] const std::shared_ptr<DisplayState>& display() const noexcept { return display_; }
     // The Log pane's records (spec §3.1): a Logger sink from the start of OnInit() on, never
@@ -235,7 +235,7 @@ private:
     // mismatch records exit 6.
     void checkSavedLogPane(bool saved);
     [[nodiscard]] bool startPools();
-    // The registry and the device of --gpu; false (after finish()) when there is none to use.
+    // The GPU instance and the device of --gpu; false (after finish()) when there is none to use.
     [[nodiscard]] bool startGpu();
 
     // Declared in the reverse order of their release (the members' destruction order also covers
@@ -264,7 +264,7 @@ private:
     std::optional<AppearanceResult> appearance_result_;
     std::shared_ptr<dvv::IExecutor> cpu_;
     std::shared_ptr<dvv::IExecutor> io_;
-    std::shared_ptr<dvv::gpu::GpuRegistry> registry_;
+    std::shared_ptr<dvv::gpu::GpuInstance> gpu_instance_;
     std::optional<dvv::gpu::DeviceId> device_;
     Startup startup_;  // the FFmpeg status and the component registry
     std::shared_ptr<DisplayState> display_;
