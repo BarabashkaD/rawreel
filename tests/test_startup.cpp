@@ -175,6 +175,17 @@ TEST_SUITE("core") {
               "DVV_FFMPEG_DIR must be absolute (got '$DVV_FFMPEG_DIR'); /usr/lib");
     }
 
+#if !defined(_WIN32)
+    TEST_CASE("masks: a non-UTF-8 home folder is masked") {
+        const rawreel::FfmpegOrigin origin{.appFolder = {},
+                                           .ffmpegDirVariable = {},
+                                           .homeFolder = dvv::pathFromText("/tmp/h\xFF" "me")};
+        const std::string text =
+            "not found in " + dvv::pathDisplayText(origin.homeFolder / "ffmpeg");
+        CHECK(rawreel::maskFolders(text, origin) == "not found in ~/ffmpeg");
+    }
+#endif
+
     TEST_CASE("startup: open error text") {
         const dvv::Error unsupported =
             errorOf(dvv::Errc::Unsupported, "no source provider for scheme 'lavfi'");
