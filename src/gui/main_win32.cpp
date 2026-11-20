@@ -16,15 +16,19 @@
 #include "dvv/base/error.h"
 #include "gui/gui_main.h"
 
-// wmain with /ENTRY:wmainCRTStartup: a GUI-subsystem program with wide arguments (§5.6).
+// wmain with /ENTRY:wmainCRTStartup: a GUI-subsystem program with wide arguments (§5.6). Only
+// argv[1..] is converted: runGui never reads the program's own path, so a name that is not valid
+// Unicode there does not stop the start (a GUI-subsystem program's stderr is not seen).
 int wmain(int argc, wchar_t** argv) {
     try {
-        const dvv::Result<std::vector<std::string>> utf8 = rawreel::utf8Arguments(argc, argv);
+        const int skipped = argc > 0 ? 1 : 0;
+        const dvv::Result<std::vector<std::string>> utf8 =
+            rawreel::utf8Arguments(argc - skipped, argv + skipped);
         if (!utf8) {
             std::fprintf(stderr, "rawreel-gui: %s\n", utf8.error().message.c_str());
             return rawreel::exit_code::BAD_ARGUMENTS;
         }
-        const std::vector<std::string_view> args(utf8->begin() + 1, utf8->end());
+        const std::vector<std::string_view> args(utf8->begin(), utf8->end());
         return rawreel::runGui(args, [&argc, argv] { return wxEntry(argc, argv); });
     } catch (const std::exception& error) {
         std::fprintf(stderr, "rawreel-gui: %s\n", error.what());
