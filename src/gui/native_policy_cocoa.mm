@@ -4,11 +4,10 @@
 #include <wx/wx.h>  // first (R11)
 // clang-format on
 
-#include "gui/native_policy.h"
-
 #include <optional>
 #include <utility>
 
+#include "gui/native_policy.h"
 #include "gui/native_policy_wx.h"
 
 namespace rawreel::nativePolicy {

@@ -32,6 +32,7 @@
 #include "gui/app.h"
 #include "gui/main_frame.h"
 #include "gui/native_controls.h"
+#include "gui/native_policy.h"
 #include "gui/selftest.h"
 
 namespace rawreel {
@@ -42,21 +43,6 @@ namespace {
 constexpr std::string_view SECOND_COPY_TEXT =
     "Another rawreel window owns the settings. Changes here apply to this window only and are "
     "not saved.";
-
-// Spec §5.2: the labels of each OS.
-#if defined(__WXOSX__)
-constexpr std::string_view REVEAL_LABEL = "Show in Finder";
-constexpr std::string_view SYSTEM_LOG_LABEL =
-    "Send warnings and errors to the system log (Console)";
-#elif defined(__WXMSW__)
-constexpr std::string_view REVEAL_LABEL = "Show in Explorer";
-// SystemLogSink writes with OutputDebugStringW there, which is not the Event Log.
-constexpr std::string_view SYSTEM_LOG_LABEL = "Send warnings and errors to the debugger output";
-#else
-constexpr std::string_view REVEAL_LABEL = "Open Folder";
-constexpr std::string_view SYSTEM_LOG_LABEL =
-    "Send warnings and errors to the system log (journal/syslog)";
-#endif
 
 // The File reads buttons, in order.
 constexpr std::array<dvv::platform::FileReadMode, 3> READ_MODES{
@@ -151,7 +137,7 @@ LogSettingsPage::LogSettingsPage(wxWindow* parent, MainFrame& frame, SettingsWin
     choose->Bind(wxEVT_BUTTON, [this](wxCommandEvent& /*event*/) { chooseFolder(); });
     use_default_ = new wxButton(this, wxID_ANY, "Use Default");
     use_default_->Bind(wxEVT_BUTTON, [this](wxCommandEvent& /*event*/) { useDefault(); });
-    reveal_ = new wxButton(this, wxID_ANY, fromUtf8(REVEAL_LABEL));
+    reveal_ = new wxButton(this, wxID_ANY, nativePolicy::revealFolderLabel());
     reveal_->Bind(wxEVT_BUTTON, [this](wxCommandEvent& /*event*/) { reveal(); });
     buttons->Add(choose, wxSizerFlags().Border(wxRIGHT));
     buttons->Add(use_default_, wxSizerFlags().Border(wxRIGHT));
@@ -161,18 +147,16 @@ LogSettingsPage::LogSettingsPage(wxWindow* parent, MainFrame& frame, SettingsWin
     unavailable_ = new wxStaticText(this, wxID_ANY, wxString());
     sizer->Add(unavailable_, wxSizerFlags().Expand().Border(wxLEFT | wxRIGHT | wxBOTTOM));
 
-    system_box_ = new wxCheckBox(this, wxID_ANY, fromUtf8(SYSTEM_LOG_LABEL));
+    system_box_ = new wxCheckBox(this, wxID_ANY, nativePolicy::systemLogLabel());
     system_box_->Bind(wxEVT_CHECKBOX,
                       [this](wxCommandEvent& event) { setSystemLog(event.IsChecked()); });
     sizer->Add(system_box_, wxSizerFlags().Border(wxALL));
 
     SetSizerAndFit(sizer);
-#if defined(__WXGTK__)
     // Spec §5.1: the window is only hidden between shows; wx unbinds when the page goes.
-    if (wxWindow* top = wxGetTopLevelParent(this); top != nullptr) {
-        top->Bind(wxEVT_SHOW, &LogSettingsPage::onTopLevelShown, this);
-    }
-#endif
+    nativePolicy::applySettingsPageStyle(*this, [this](wxWindow& top) {
+        top.Bind(wxEVT_SHOW, &LogSettingsPage::onTopLevelShown, this);
+    });
     (void)TransferDataToWindow();  // spec §5.1: the values when created
 }
 
@@ -493,11 +477,9 @@ FilesSettingsPage::FilesSettingsPage(wxWindow* parent, MainFrame& frame, Setting
     sizer->Add(file_row, wxSizerFlags().Expand().Border(wxALL));
 
     SetSizerAndFit(sizer);
-#if defined(__WXGTK__)
-    if (wxWindow* top = wxGetTopLevelParent(this); top != nullptr) {
-        top->Bind(wxEVT_SHOW, &FilesSettingsPage::onTopLevelShown, this);
-    }
-#endif
+    nativePolicy::applySettingsPageStyle(*this, [this](wxWindow& top) {
+        top.Bind(wxEVT_SHOW, &FilesSettingsPage::onTopLevelShown, this);
+    });
     (void)TransferDataToWindow();
 }
 

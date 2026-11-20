@@ -256,10 +256,14 @@ if(NOT DVV_SANITIZE)
         DEPENDS ${rawreel_embedded_pngs} "${rawreel_embed_script}"
         COMMENT "Embedding the rawreel PNGs"
         VERBATIM)
-    target_sources(rawreel_gui PRIVATE src/gui/app_icon.cpp "${rawreel_icon_data}")
+    target_sources(rawreel_gui PRIVATE "${rawreel_icon_data}")
     # The viewport's native window per toolkit (viewport_msw.cpp, viewport_gtk.cpp,
     # viewport_cocoa.mm).
     dvv_os_sources(rawreel_gui src/gui/viewport)
+    # Per toolkit: the window icons and About's logo (app_icon_<msw|gtk|cocoa>), the entry point
+    # (main_win32.cpp, main_posix.cpp), the native choices (native_policy_<msw|gtk|cocoa>) and the
+    # main frame's macOS menu and size (main_frame_cocoa.mm; main_frame_stub.cpp elsewhere).
+    dvv_os_sources(rawreel_gui src/gui/app_icon src/gui/main src/gui/native_policy src/gui/main_frame)
     if(WIN32)
         # The rawreel icon as the first icon group (Explorer, taskbar), then wx.rc.
         rawreel_icon_resource(rawreel_gui src/gui/rawreel-gui.rc)

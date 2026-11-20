@@ -178,9 +178,7 @@ private:
     std::optional<Drag> drag_;  // during a drag
     // The zoom shown at the current pinch's start; 0 between gestures.
     double pinch_start_zoom_ = 0;
-#if !defined(__WXOSX__)
     double wheel_zoom_ = 0;  // Ctrl+wheel rotation not yet a whole notch (takeWheelNotches)
-#endif
 };
 
 }  // namespace rawreel

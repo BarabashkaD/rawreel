@@ -4,8 +4,6 @@
 #include <wx/wx.h>  // first (R11)
 // clang-format on
 
-#include "gui/app_icon.h"
-
 #include <algorithm>
 #include <cstddef>
 #include <format>
@@ -13,6 +11,7 @@
 #include <string_view>
 
 #include "dvv/base/log.h"
+#include "gui/app_icon.h"
 #include "gui/app_icon_data.h"
 #include "gui/app_icon_detail.h"
 

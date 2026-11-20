@@ -4,11 +4,10 @@
 #include <wx/wx.h>  // first (R11)
 // clang-format on
 
-#include "gui/app_icon.h"
-
 #include <string>
 
 #include "dvv/base/log.h"
+#include "gui/app_icon.h"
 #include "gui/app_icon_detail.h"
 
 #if !wxUSE_ICO_CUR

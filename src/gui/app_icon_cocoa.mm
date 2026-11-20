@@ -4,13 +4,12 @@
 #include <wx/wx.h>  // first (R11)
 // clang-format on
 
-#include "gui/app_icon.h"
-
 #include <string>
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <wx/osx/core/cfstring.h>
 
+#include "gui/app_icon.h"
 #include "gui/app_icon_detail.h"
 
 namespace rawreel {

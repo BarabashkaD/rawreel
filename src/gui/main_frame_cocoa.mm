@@ -5,10 +5,9 @@
 #include <wx/wx.h>  // first (R11)
 // clang-format on
 
-#include "gui/main_frame.h"
-
 #include <algorithm>
 
+#include "gui/main_frame.h"
 #include "gui/settings.h"
 
 namespace rawreel {

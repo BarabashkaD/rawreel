@@ -25,8 +25,7 @@
 wxIMPLEMENT_APP_NO_MAIN(rawreel::App);
 
 // Declared in gui/gui_main.h; the per-OS entries call it.
-int rawreel::runGui(std::span<const std::string_view> args,
-                    dvv::MoveOnlyFunction<int()> start_wx) {
+int rawreel::runGui(std::span<const std::string_view> args, dvv::MoveOnlyFunction<int()> start_wx) {
     // First: before anything can open the Vulkan loader.
     dvv::Result<dvv::gpu::DriverChoice> driver = rawreel::applyBundledDriver();
     dvv::Result<rawreel::GuiArguments> arguments = rawreel::parseGuiArguments(args);
