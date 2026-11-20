@@ -151,9 +151,8 @@ wxString dialogFolder(const std::filesystem::path& folder) {
 // the stream was opened with colour keys).
 FormatDialogContext streamContext(const StreamInfo& stream, const FileColourMemory& memory,
                                   bool auto_detect) {
-    // D5 design §1.6: a Y4M header or a container gives format, size and fps; raw and synthetic
-    // streams lock nothing.
-    const bool locked = stream.info.provider == "y4m" || stream.info.provider == "ffmpeg";
+    // The source's header, container or graph fixes format, size and fps (SourceInfo::fixed).
+    const bool locked = stream.info.fixed.covers(dvv::media::FixedFields::all());
     return FormatDialogContext{.locked = locked,
                                .base = memory.colourBase(stream),
                                .uri = {},

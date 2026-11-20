@@ -8725,6 +8725,42 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                 seen = std::format("playing {}", status().playing);
                 return !status().playing;
             }));
+        // §9.2: the dialog locks what SourceInfo::fixed fixes (an MKV), and not a raw file's.
+        struct Lock {
+            bool mkvSeen = false;
+            bool mkvLocked = false;
+            bool rawAsked = false;
+            bool rawSeen = false;
+            bool rawLocked = true;
+        };
+        auto lock = std::make_shared<Lock>();
+        auto read_lock = [&frame](bool& seen, bool& locked) {
+            dialogHooks().format = [&seen, &locked](FormatDialog& dialog) {
+                seen = true;
+                locked = dialog.fieldsLocked();
+            };
+            frame.execute(Command::Format);
+            dialogHooks().format = nullptr;
+        };
+        steps.push_back(step(
+            "format dialog: locked for an MKV, editable for a raw file",
+            [&frame, st, lock, read_lock] {
+                st->dialogs0 = frame.formatDialogsShown();
+                read_lock(lock->mkvSeen, lock->mkvLocked);
+                const auto file = st->dir / "fixed_16x16_gray.yuv";
+                writeFile(file, 512, '\x40');  // 2 frames of gray 16x16
+                dropFiles(frame.viewport(), {file});
+            },
+            [&frame, st, lock, read_lock, stream_is](std::string& seen) {
+                if (stream_is(16, 16, "gray") && !lock->rawAsked) {
+                    lock->rawAsked = true;
+                    read_lock(lock->rawSeen, lock->rawLocked);
+                }
+                seen = std::format("MKV dialog {} locked {}, raw dialog {} locked {}",
+                                   lock->mkvSeen, lock->mkvLocked, lock->rawSeen, lock->rawLocked);
+                return lock->mkvSeen && lock->mkvLocked && lock->rawSeen && !lock->rawLocked &&
+                       frame.formatDialogsShown() >= st->dialogs0 + 2;
+            }));
     } else if (ffmpegRequired()) {
         std::string reason;
         if (!test.app().startup().ffmpeg.core) {
