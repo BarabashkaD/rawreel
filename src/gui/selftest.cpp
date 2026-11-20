@@ -8776,9 +8776,8 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             bool mkvLocked = false;
             bool rawAsked = false;
             bool rawSeen = false;
-            bool rawFormat = false;  // the format list is enabled
-            bool rawSize = false;    // the size list and both spins are enabled
-            bool rawFps = false;     // the fps box is enabled
+            FormatDialog::FieldsEnabled mkv;  // every field disabled
+            FormatDialog::FieldsEnabled raw;  // every field enabled
         };
         auto lock = std::make_shared<Lock>();
         auto read_lock = [&frame](bool& seen, const std::function<void(FormatDialog&)>& read) {
@@ -8795,6 +8794,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                 st->dialogs0 = frame.formatDialogsShown();
                 read_lock(lock->mkvSeen, [lock](FormatDialog& dialog) {
                     lock->mkvLocked = dialog.fieldsLocked();
+                    lock->mkv = dialog.fieldsEnabled();
                 });
                 const auto file = st->dir / "fixed_16x16_gray.yuv";
                 writeFile(file, 512, '\x40');  // 2 frames of gray 16x16
@@ -8803,36 +8803,24 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             [&frame, st, lock, read_lock, stream_is](std::string& seen) {
                 if (stream_is(16, 16, "gray") && !lock->rawAsked) {
                     lock->rawAsked = true;
-                    read_lock(lock->rawSeen, [lock](FormatDialog& dialog) {
-                        // The format, size and fps controls are the dialog's children in creation
-                        // order: two lists (format, size), two spins, the fps box.
-                        std::vector<const wxChoice*> lists;
-                        std::vector<const wxSpinCtrl*> spins;
-                        const wxComboBox* fps = nullptr;
-                        for (const wxWindow* child : dialog.GetChildren()) {
-                            if (const auto* list = dynamic_cast<const wxChoice*>(child)) {
-                                lists.push_back(list);
-                            } else if (const auto* spin = dynamic_cast<const wxSpinCtrl*>(child)) {
-                                spins.push_back(spin);
-                            } else if (const auto* box = dynamic_cast<const wxComboBox*>(child)) {
-                                fps = box;
-                            }
-                        }
-                        if (lists.size() >= 2 && spins.size() == 2 && fps != nullptr) {
-                            lock->rawFormat = lists[0]->IsEnabled();
-                            lock->rawSize = lists[1]->IsEnabled() && spins[0]->IsEnabled() &&
-                                            spins[1]->IsEnabled();
-                            lock->rawFps = fps->IsEnabled();
-                        }
-                    });
+                    read_lock(lock->rawSeen,
+                              [lock](FormatDialog& dialog) { lock->raw = dialog.fieldsEnabled(); });
                 }
-                seen = std::format(
-                    "MKV dialog {} locked {}, raw dialog {} enabled: format {} size {} fps {}",
-                    lock->mkvSeen, lock->mkvLocked, lock->rawSeen, lock->rawFormat, lock->rawSize,
-                    lock->rawFps);
-                return lock->mkvSeen && lock->mkvLocked && lock->rawSeen && lock->rawFormat &&
-                       lock->rawSize && lock->rawFps &&
-                       frame.formatDialogsShown() >= st->dialogs0 + 2;
+                const auto text = [](const FormatDialog::FieldsEnabled& fields) {
+                    return std::format("format {} size {} width {} height {} fps {}", fields.format,
+                                       fields.size, fields.width, fields.height, fields.fps);
+                };
+                const FormatDialog::FieldsEnabled& mkv = lock->mkv;
+                const FormatDialog::FieldsEnabled& raw = lock->raw;
+                seen = std::format("MKV dialog {} locked {} enabled: {}; raw dialog {} enabled: {}",
+                                   lock->mkvSeen, lock->mkvLocked, text(mkv), lock->rawSeen,
+                                   text(raw));
+                const bool mkv_disabled =
+                    !mkv.format && !mkv.size && !mkv.width && !mkv.height && !mkv.fps;
+                const bool raw_enabled =
+                    raw.format && raw.size && raw.width && raw.height && raw.fps;
+                return lock->mkvSeen && lock->mkvLocked && mkv_disabled && lock->rawSeen &&
+                       raw_enabled && frame.formatDialogsShown() >= st->dialogs0 + 2;
             }));
     } else if (ffmpegRequired()) {
         std::string reason;

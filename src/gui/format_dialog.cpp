@@ -646,6 +646,14 @@ bool FormatDialog::fieldsLocked() const {
            size_text_->IsShown() && !fps_->IsShown();
 }
 
+FormatDialog::FieldsEnabled FormatDialog::fieldsEnabled() const {
+    return {.format = format_->IsEnabled(),
+            .size = size_->IsEnabled(),
+            .width = width_->IsEnabled(),
+            .height = height_->IsEnabled(),
+            .fps = fps_->IsEnabled()};
+}
+
 wxString FormatDialog::lockedText() const {
     if (!context_.locked) {
         return {};

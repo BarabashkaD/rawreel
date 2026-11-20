@@ -87,6 +87,16 @@ public:
     [[nodiscard]] wxString noteText() const;
     // True when Format, Size and Frame rate are read-only "(from file)" rows (D5 design §1.6).
     [[nodiscard]] bool fieldsLocked() const;
+    // Whether each field's control is enabled. It exists for the selftest: a scan of the children
+    // by type cannot tell them apart (wxGTK's wxComboBox is a wxChoice).
+    struct FieldsEnabled {
+        bool format = false;
+        bool size = false;
+        bool width = false;
+        bool height = false;
+        bool fps = false;
+    };
+    [[nodiscard]] FieldsEnabled fieldsEnabled() const;
     // The read-only rows of a locked stream, "<format>  (from file)|<WxH> @ <fps>  (from file)";
     // empty when not locked.
     [[nodiscard]] wxString lockedText() const;
