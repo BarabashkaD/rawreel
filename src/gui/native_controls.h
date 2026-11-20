@@ -55,19 +55,18 @@ inline constexpr bool SLIDER_PAGES_ON_TRACK_CLICK =
 
 // The ghost thumb of a skim (spec §6.4): the slider's knob drawn grey at 50 % opacity on the
 // native slider, centred at the wx client x `x`; nullopt removes it. macOS: a CALayer on the
-// NSSlider's layer, sized from the cell's knob rect. GTK, Windows and other toolkits: not drawn
-// yet.
+// NSSlider's layer, sized from the cell's knob rect. GTK and Windows: not drawn yet.
 void showSliderGhost(wxSlider& slider, std::optional<int> x);
 
 // The name screen readers announce for `window` (spec §7): macOS setAccessibilityLabel: on its
 // NSView; GTK atk_object_set_name on its widget's AtkObject; Windows a wxAccessible returning the
-// name (wxUSE_ACCESSIBILITY; without it, nothing). Other toolkits: nothing.
+// name (wxUSE_ACCESSIBILITY; without it, nothing).
 void setAccessibleName(wxWindow& window, const wxString& name);
 
 // A label in the OS's secondary text colour (window title and Info design §11): macOS
 // NSColor.secondaryLabelColor resolved for the window's effective appearance (call it again on
-// wxEVT_SYS_COLOUR_CHANGED); GTK the "dim-label" style class; Windows and other toolkits: nothing
-// (the normal window text).
+// wxEVT_SYS_COLOUR_CHANGED); GTK the "dim-label" style class; Windows: nothing (the normal window
+// text).
 void setSecondaryText(wxWindow& label);
 
 // A Settings page icon (Log pane and Settings design §5.1): on macOS the SF Symbol `sf_symbol` (a
@@ -77,8 +76,8 @@ void setSecondaryText(wxWindow& label);
 
 // Show in Finder, Show in Explorer, Open Folder (§5.2): the OS file manager with `file_or_folder`
 // selected where the OS can (macOS activateFileViewerSelectingURLs:, Windows explorer /select,),
-// else the folder (GTK and other toolkits: wxLaunchDefaultApplication on the folder). Selftests
-// never call it (selftest.h revealFile).
+// else the folder (GTK: wxLaunchDefaultApplication on the folder). Selftests never call it
+// (selftest.h revealFile).
 void revealInFileManager(const std::filesystem::path& file_or_folder);
 
 // Edit -> Undo and Redo in a text field (Log pane and Settings design §4.2); `window` is the text
@@ -101,13 +100,13 @@ bool undoText(wxWindow& window, wxTextEntry& entry, bool redo);
 // with the row aligned to the top. wxGTK's EnsureVisible scrolls as little as it can (no
 // alignment), and GTK 3 can animate the scroll, so a pair of them (to the end, then back up) may
 // not be exact. MSW and macOS: EnsureVisible, so a row below the view first goes to the end and
-// then back up to the top edge.
+// then back up to the top edge; nothing unless the view's model is a wxDataViewVirtualListModel.
 void scrollDataViewRowToTop(wxDataViewCtrl& view, std::size_t row);
 // The top row of a list wxDataViewCtrl. GTK: the first row of gtk_tree_view_get_visible_range
 // (what wxGTK's GetTopItem returns), or the row after it when that row's middle is above the view.
 // With the view starting exactly on a row's top edge, GTK can name the hidden row above as the
-// first visible one (measured on CI). MSW and macOS: the row of GetTopItem(). nullopt: no row in
-// view.
+// first visible one (measured on CI). MSW and macOS: the row of GetTopItem(), nullopt unless the
+// view's model is a wxDataViewVirtualListModel. nullopt: no row in view.
 [[nodiscard]] std::optional<std::size_t> dataViewTopRow(wxDataViewCtrl& view);
 
 }  // namespace rawreel

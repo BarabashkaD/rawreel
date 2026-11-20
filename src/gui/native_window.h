@@ -33,15 +33,15 @@ struct ViewportWindow {
 // bounds, never takes clicks or drops (they reach the window's view) and lives as long as
 // `connection`; while it lives, a backing scale change (the window moved to another display)
 // updates the layer's contentsScale and calls Viewport::resizePresenter() on the main thread when
-// `window` is a Viewport. Other toolkits: an error, so the viewport reports a failure.
+// `window` is a Viewport.
 [[nodiscard]] dvv::Result<ViewportWindow> nativeWindowOf(wxWindow& window);
 
 // Call before the presenter is told the new size. wxGTK: waits until the X server has processed
 // every pending request of GDK's connection (the window's new geometry among them), so the
 // presenter's own connection reads the new size and its first swapchain fits. wxOSX: sets the
 // child view's frame to the window's bounds and its layer's contentsScale to the backing scale
-// (drawableSize is left to the swapchain). MSW and other toolkits: nothing (the presenter shares
-// the window's state directly).
+// (drawableSize is left to the swapchain). MSW: nothing (the presenter shares the window's state
+// directly).
 void syncNativeWindow(wxWindow& window);
 
 // The presenter's extent. wxOSX: physicalPixelSize() of the child view's size in points and its

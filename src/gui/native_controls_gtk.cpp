@@ -22,6 +22,7 @@
 #include "dvv/base/uri.h"
 #include "dvv/base/utf8.h"
 #include "gui/native_controls.h"
+#include "gui/native_controls_wx.h"
 
 namespace rawreel {
 
@@ -128,21 +129,15 @@ void revealInFileManager(const std::filesystem::path& file_or_folder) {
 
 // wx's own undo of the entry: `window` is the same control.
 bool canUndoText(wxWindow& /*window*/, const wxTextEntry& entry, bool redo) {
-    return redo ? entry.CanRedo() : entry.CanUndo();
+    return wx_generic::canUndoText(entry, redo);
 }
 
 bool undoText(wxWindow& /*window*/, wxTextEntry& entry, bool redo) {
-    if (redo) {
-        entry.Redo();
-    } else {
-        entry.Undo();
-    }
-    return true;
+    return wx_generic::undoText(entry, redo);
 }
 
-// No represented file on this toolkit.
 wxString representedFilename(wxTopLevelWindow& /*window*/) {
-    return {};
+    return wx_generic::representedFilename();
 }
 
 // A list model's path is the row alone. Aligned scrolls are deferred by GtkTreeView itself until

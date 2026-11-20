@@ -1,7 +1,7 @@
 // The viewport's native window on wxOSX (Cocoa): a layer-backed child NSView of the viewport's own
 // view whose backing layer is a CAMetalLayer; the presenter's Vulkan surface (KosmicKrisp) is made
-// on that layer. Compiled with ARC (-fobjc-arc, CMakeLists.txt). Every function here runs on the
-// main thread (wx's GUI thread); the presenter thread only presents to the layer.
+// on that layer. Compiled with ARC (dvv_os_sources adds -fobjc-arc). Every function here runs on
+// the main thread (wx's GUI thread); the presenter thread only presents to the layer.
 //
 // Geometry (dvv-gpu on KosmicKrisp, Task 10): this file sets the view's frame (AppKit sets the
 // backing layer's bounds from it) and the layer's contentsScale; nothing here writes drawableSize,

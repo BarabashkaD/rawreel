@@ -40,33 +40,27 @@
 #include "core/player.h"
 #include "core/timeline.h"
 #include "dvv/base/log.h"
-#include "dvv/base/move_only_function.h"
 #include "gui/gui_platform.h"
 #include "gui/native_controls.h"
 #include "gui/skim_key.h"
 #include "gui/transport_bar.h"
+#include "panel_lab_main.h"
 
 namespace {
 
-constexpr int FAILED = 1;
+using panel_lab::FAILED;
 constexpr int BAD_ARGUMENTS = 2;
 constexpr int INITIAL_CLIENT_WIDTH_DIP = 800;
 constexpr int REPORT_SLIDER_WIDTH_DIP = 400;
 constexpr int STAGE_TIMEOUT_MS = 5000;
 constexpr int MAX_ERROR_PX = 2;
-// The toolkits with a native slider query (native_controls_*.cpp): --report fails without one.
-#if defined(__WXMSW__) || defined(__WXGTK__) || defined(__WXOSX_COCOA__)
-constexpr bool NATIVE_QUERY = true;
-#else
-constexpr bool NATIVE_QUERY = false;
-#endif
 // Whether a stage waits for a paint before measuring. The Windows trackbar answers its geometry
 // messages at once after TBM_SETPOS, and wx sends no wxEVT_PAINT for it after a SetValue (seen in
 // CI: the report timed out waiting), so there the two CallAfter hops are enough.
 #if defined(__WXMSW__)
 constexpr bool WAIT_FOR_PAINT = false;
 #else
-constexpr bool WAIT_FOR_PAINT = NATIVE_QUERY;
+constexpr bool WAIT_FOR_PAINT = true;
 #endif
 
 constexpr char USAGE[] =
@@ -406,7 +400,7 @@ private:
             }
         } else {
             print("track none");
-            failed_ = failed_ || NATIVE_QUERY;
+            failed_ = true;
         }
         const int min = slider().GetMin();
         const int max = slider().GetMax();
@@ -440,7 +434,7 @@ private:
         const std::optional<double> computed = computedThumbX(value);
         if (!native || !computed) {
             print(std::format("value {} native none computed none", value));
-            failed_ = failed_ || NATIVE_QUERY;
+            failed_ = true;
             return;
         }
         const int rounded = static_cast<int>(std::lround(*computed));
@@ -501,9 +495,8 @@ public:
 
 wxIMPLEMENT_APP_NO_MAIN(LabApp);
 
-// The lab's per-OS entries (panel_lab_win32.cpp, panel_lab_posix.cpp) call it with the arguments
-// after the program name: parses, then runs wx through `start_wx`; returns the process exit code.
-int run(std::span<const std::string_view> args, dvv::MoveOnlyFunction<int()> start_wx) {
+// Declared in panel_lab_main.h; the per-OS entries call it.
+int panel_lab::run(std::span<const std::string_view> args, dvv::MoveOnlyFunction<int()> start_wx) {
     if (const std::optional<int> code = parseOptions(args, labOptions()); code) {
         return *code;
     }
