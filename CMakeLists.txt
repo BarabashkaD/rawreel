@@ -266,6 +266,8 @@ if(NOT DVV_SANITIZE)
     # app's macOS menu name and opened files (app_cocoa.mm; app_stub.cpp elsewhere).
     dvv_os_sources(rawreel_gui src/gui/app_icon src/gui/main src/gui/native_policy src/gui/main_frame
                    src/gui/app)
+    # The selftest's toolkit-only steps (selftest_msw.cpp, selftest_gtk.cpp, selftest_cocoa.mm).
+    dvv_os_sources(rawreel_gui OPTIONAL src/gui/selftest)
     if(WIN32)
         # The rawreel icon as the first icon group (Explorer, taskbar), then wx.rc.
         rawreel_icon_resource(rawreel_gui src/gui/rawreel-gui.rc)

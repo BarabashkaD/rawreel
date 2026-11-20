@@ -97,8 +97,10 @@
 #include "gui/log_panel.h"
 #include "gui/main_frame.h"
 #include "gui/native_controls.h"
+#include "gui/native_policy.h"
 #include "gui/native_window.h"
 #include "gui/player_panel.h"
+#include "gui/selftest_detail.h"
 #include "gui/settings.h"
 #include "gui/timeline_strip.h"
 #include "gui/transport_bar.h"
@@ -125,14 +127,18 @@ private:
     bool* flag_;
 };
 
+}  // namespace
+
 SelfTestStep step(std::string name, dvv::MoveOnlyFunction<void()> start,
                   dvv::MoveOnlyFunction<bool(std::string&)> passed,
-                  std::chrono::milliseconds deadline = std::chrono::seconds(5)) {
+                  std::chrono::milliseconds deadline) {
     return {.name = std::move(name),
             .start = std::move(start),
             .passed = std::move(passed),
             .deadline = deadline};
 }
+
+namespace {
 
 // Set while the script injects an event (injectInput).
 bool& injecting() {
@@ -357,50 +363,6 @@ constexpr std::string_view SMOKE_STREAM = "synthetic:gradient?w=64&h=48&fmt=yuv4
 // events at once).
 constexpr std::string_view REFUSED_STREAM = "synthetic:gradient?w=64&h=48&fmt=yuv420p&frames=4";
 
-struct SmokeState {
-    std::uint64_t startFrames = 0;
-    wxSize logBestSize;  // moved pane: the Log pane's BestSize before it docked on the right
-    std::uint64_t startSwapchains = 0;
-    std::uint64_t startShows = 0;  // Viewport::presenterShows() at the step start
-    dvv::platform::PixelSize previousSize{};
-    int ticks = 0;
-    std::optional<std::uint64_t> framesWhenShown;   // open stream: when the frame was first seen
-    std::optional<std::uint64_t> framesWhenHidden;  // hide: when the presenter was first hidden
-    std::uint64_t logNext = 0;                      // logNext() at the step start
-    std::size_t streamsBefore = 0;                  // D3: streams shown when the open started
-    bool aboutHookRan = false;                      // about: the About hook ran
-    bool aboutButtonsOk = false;                    // about: notices and copy buttons found
-    bool aboutParentOk = false;                     // about: the dialog's parent is the frame
-    int aboutWidth = 0;             // about: the dialog's width before the Components pane opens
-    int aboutWidthExpanded = 0;     // about: its width (or wanted width) with the pane open
-    int aboutHeightOpen = 0;        // about: its client height with the pane open the first time
-    int aboutHeightClosed = 0;      // about: its client height with the pane closed again
-    int aboutHeightReopen = 0;      // about: its client height with the pane open again
-    wxSize aboutListReopen;         // about: the Components list size with the pane open again
-    int aboutListMin = 0;           // about: the list's minimum height (all its lines)
-    bool aboutListShown = false;    // about: the list is shown on screen with the pane open again
-    std::uint64_t about0 = 0;       // about: aboutShown() at the step start
-    int aboutShows = 0;             // about: times it was shown before the hook's clicks
-    int aboutSizeChanges = 0;       // about: size changes after it was first shown
-    bool aboutClosedEarly = false;  // about: it was hidden before the hook's clicks
-    wxSize aboutAtShow;             // about: its size when it was first shown
-    wxSize aboutAtHook;             // about: its size 1 s later
-    std::vector<std::string> aboutLinks;  // about: the URLs of its links
-    int aboutBitmaps = 0;                 // about: its wxStaticBitmaps (1: the logo, no stock icon)
-    bool aboutLogoFound = false;          // about: a wxStaticBitmap named ABOUT_LOGO_NAME
-    wxSize aboutLogoSize;                 // about: the logo bitmap's logical size
-    wxSize aboutLogoWant;                 // about: FromDIP(ABOUT_LOGO_DIP x ABOUT_LOGO_DIP)
-    wxSize aboutLogoPixels;               // about: the logo bitmap's size
-    wxSize aboutBundlePixels;      // about: aboutLogo()'s bitmap for the logo's scale, its size
-    wxSize aboutBundleSize;        // about: aboutLogo()'s default size
-    int aboutCornerAlpha = -1;     // about: the shown bitmap's largest corner alpha (-1: none)
-    int aboutEdgeAlpha = -1;       // about: its largest alpha at the 4 edge middles
-    int aboutCentreAlpha = -1;     // about: the alpha at its centre
-    std::uint64_t presented0 = 0;  // lavfi: frames presented at the step start
-    std::string streamUri;         // Format... on lavfi: the stream's URI
-    std::uint64_t dialogs0 = 0;    // Format... on lavfi: format dialogs shown
-};
-
 // The store's next sequence: a step remembers it at its start (the store is capped, so steps
 // compare sequence numbers, not text lengths; spec §7.1). After Logger::flush(), so a line logged
 // before the call is below it.
@@ -419,12 +381,16 @@ std::string loggedSince(const App& app, std::uint64_t since) {
     return logRecordsText(std::span<const LogEntry>(first, entries.end()));
 }
 
+}  // namespace
+
 std::optional<dvv::gpu::PresenterStats> statsOf(const Viewport& viewport) {
     if (const dvv::gpu::Presenter* presenter = viewport.presenter(); presenter != nullptr) {
         return presenter->stats();
     }
     return std::nullopt;
 }
+
+namespace {
 
 // Frames presented so far (0 without a presenter); smoke, lost and player use it.
 std::uint64_t presented(Viewport& viewport) {
@@ -449,6 +415,8 @@ SelfTestStep ffmpegRequiredStep(std::string reason) {
         },
         std::chrono::seconds(1));
 }
+
+}  // namespace
 
 std::string describe(const Viewport& viewport, const SmokeState& state) {
     const std::optional<dvv::gpu::PresenterStats> stats = statsOf(viewport);
@@ -479,7 +447,7 @@ void markStart(const Viewport& viewport, SmokeState& state) {
     state.framesWhenHidden.reset();
 }
 
-using SharedState = std::shared_ptr<SmokeState>;
+namespace {
 
 // 1. The empty Session's background is presented at the client size.
 SelfTestStep firstFramesStep(SelfTest* test, const SharedState& state) {
@@ -660,6 +628,8 @@ SelfTestStep restoreStep(SelfTest* test, const SharedState& state) {
     return {.name = "restore", .start = std::move(start), .passed = std::move(passed)};
 }
 
+}  // namespace
+
 // Opens SMOKE_STREAM in slot 0 through the Session (no dialog).
 void openSmokeStream(SelfTest* test) {
     Session* session = test->app().session();
@@ -670,6 +640,8 @@ void openSmokeStream(SelfTest* test) {
     }
     session->open(0, dvv::media::SourceRequest{.uri = std::move(*uri), .hint = {}});
 }
+
+namespace {
 
 // 6. One stream: its frame 0 is shown for the current epoch, and a frame is presented after the
 // snapshot first showed it.
@@ -846,12 +818,12 @@ SelfTestStep appearanceStep(SelfTest* test) {
         const bool dark = wxSystemSettings::GetAppearance().IsDark();
         seen = std::format("requested dark {}, SetAppearance Ok {}, dark now {}",
                            requested == Appearance::Dark, ok, dark);
-#if defined(_WIN32) || defined(__WXOSX__)
-        // wxOSX sets the application's NSAppearance, which wxSystemSettings reads back.
-        if (ok) {
-            return dark == (requested == Appearance::Dark);
+        if constexpr (NATIVE_OS != Os::Linux) {
+            // wxOSX sets the application's NSAppearance, which wxSystemSettings reads back.
+            if (ok) {
+                return dark == (requested == Appearance::Dark);
+            }
         }
-#endif
         // GTK: SetAppearance switches the GTK theme variant, but whether the theme has a dark
         // variant and what wxSystemSettings then reports depend on the installed theme, so only
         // the request is checked there (lenient by design).
@@ -1356,22 +1328,24 @@ SelfTestStep windowIconsStep(SelfTest* test) {
         for (const int width : widths) {
             list += std::format("{}{}", list.empty() ? "" : " ", width);
         }
-#if defined(__WXOSX__)
-        const std::string file = bundleIconFile();
-        const bool icns =
-            wxFileName::FileExists(wxStandardPaths::Get().GetResourcesDir() + wxS("/rawreel.icns"));
-        seen = std::format("icons [{}], CFBundleIconFile '{}', Resources/rawreel.icns {}", list,
-                           file, icns);
-        return widths.empty() && file == "rawreel" && icns;
-#else
-#if defined(__WXMSW__)
-        constexpr std::array<int, 10> WANTED{16, 20, 24, 32, 40, 48, 64, 96, 128, 256};
-#else
-        constexpr std::array<int, 11> WANTED{16, 22, 24, 32, 48, 64, 96, 128, 192, 256, 512};
-#endif
-        seen = std::format("icons [{}]", list);
-        return std::ranges::equal(widths, WANTED);
-#endif
+        if constexpr (NATIVE_OS == Os::MacOs) {
+            const std::string file = bundleIconFile();
+            const bool icns = wxFileName::FileExists(wxStandardPaths::Get().GetResourcesDir() +
+                                                     wxS("/rawreel.icns"));
+            seen = std::format("icons [{}], CFBundleIconFile '{}', Resources/rawreel.icns {}", list,
+                               file, icns);
+            return widths.empty() && file == "rawreel" && icns;
+        } else {
+            seen = std::format("icons [{}]", list);
+            if constexpr (NATIVE_OS == Os::Windows) {
+                constexpr std::array<int, 10> WANTED{16, 20, 24, 32, 40, 48, 64, 96, 128, 256};
+                return std::ranges::equal(widths, WANTED);
+            } else {
+                constexpr std::array<int, 11> WANTED{16, 22,  24,  32,  48, 64,
+                                                     96, 128, 192, 256, 512};
+                return std::ranges::equal(widths, WANTED);
+            }
+        }
     };
     return step("window icons", {}, std::move(passed));
 }
@@ -1392,15 +1366,14 @@ bool logItemFollows(MainFrame& frame, bool shown, std::string& text) {
         text = "no View -> Log item";
         return false;
     }
-#if defined(__WXOSX__)
-    const wxString title = item->GetItemLabelText();
-    text = std::format("item '{}'", title.utf8_string());
-    return title == (shown ? "Hide Log" : "Show Log");
-#else
+    if (native_policy::logItemHasChangingTitle()) {
+        const wxString title = item->GetItemLabelText();
+        text = std::format("item '{}'", title.utf8_string());
+        return title == (shown ? "Hide Log" : "Show Log");
+    }
     text = std::format("item '{}' checkable {} checked {}", item->GetItemLabelText().utf8_string(),
                        item->IsCheckable(), item->IsChecked());
     return item->IsCheckable() && item->IsChecked() == shown;
-#endif
 }
 
 // Spec §2: a warning logged while the pane is hidden shows in the status bar's notice, counted
@@ -1859,6 +1832,8 @@ bool sendKey(wxWindow& target, int keycode, bool shift = false, bool ctrl = fals
     return injectInput(*target.GetEventHandler(), event);
 }
 
+}  // namespace
+
 // A menu item of the frame (the Edit items on Windows and Linux, or on macOS when the responder
 // chain did not handle it): the frame's wxEVT_MENU handler.
 bool sendMenu(wxFrame& frame, int id) {
@@ -1866,6 +1841,8 @@ bool sendMenu(wxFrame& frame, int id) {
     event.SetEventObject(&frame);
     return injectInput(*frame.GetEventHandler(), event);
 }
+
+namespace {
 
 // A file's bytes; nullopt when it cannot be read.
 std::optional<std::string> fileText(const std::filesystem::path& file) {
@@ -2023,16 +2000,7 @@ SelfTestStep logCopyStep(SelfTest* test, const std::shared_ptr<EditState>& state
 
 // --- The Info window's keys, Copy and ⌘W (window title and Info design §10) ---
 
-struct InfoKeysState {
-    int phase = 0;
-    bool consumed = false;       // the Info window's char hook took the key
-    bool consumedAgain = false;  // ... and the second key of a two-part step
-    bool available = false;      // macOS ⌘W: Close stream enabled with the focus in the window
-    bool availableAgain = false;
-    bool hiddenAgain = false;  // macOS ⌘W: the second ⌘W (no stream) closed the window
-    bool copyEnabled = false;  // macOS: Edit -> Copy enabled with the focus in the window
-    std::uint32_t streamsBefore = 0;
-};
+}  // namespace
 
 // The Info window's content panel (it takes the focus, §10), shown first; null without a window.
 wxWindow* shownInfoContent(MainFrame& frame) {
@@ -2043,7 +2011,7 @@ wxWindow* shownInfoContent(MainFrame& frame) {
 
 // A char-hook key event at the Info window's panel, with the focus there: whether a handler took
 // it.
-bool sendInfoKey(MainFrame& frame, int keycode, bool ctrl = false) {
+bool sendInfoKey(MainFrame& frame, int keycode, bool ctrl) {
     wxWindow* const panel = shownInfoContent(frame);
     if (panel == nullptr) {
         return false;
@@ -2053,6 +2021,8 @@ bool sendInfoKey(MainFrame& frame, int keycode, bool ctrl = false) {
     frame.setFocusForTest(nullptr);
     return consumed;
 }
+
+namespace {
 
 // §10 Keys: Space in the Info window plays, and again pauses, as in the main window.
 SelfTestStep infoWindowKeysStep(SelfTest* test, const std::shared_ptr<InfoKeysState>& state) {
@@ -2150,19 +2120,7 @@ SelfTestStep infoWindowCopyStep(SelfTest* test, const std::shared_ptr<EditState>
             frame.streams().empty() ? std::string() : infoCopyText(&frame.streams().front());
         edit->copied.reset();
         dialogHooks().clipboard = [edit](std::string text) { edit->copied = std::move(text); };
-#if defined(__WXOSX__)
-        wxWindow* const panel = shownInfoContent(frame);
-        frame.setFocusForTest(panel);
-        wxUpdateUIEvent update(wxID_COPY);
-        update.SetEventObject(&frame);
-        (void)frame.ProcessWindowEvent(update);
-        state->copyEnabled = update.GetSetEnabled() && update.GetEnabled();
-        state->consumed = panel != nullptr && sendMenu(frame, wxID_COPY);
-        frame.setFocusForTest(nullptr);
-#else
-        state->copyEnabled = true;  // no Edit menu path here: the main window's menu activates it
-        state->consumed = sendInfoKey(frame, 'C', true);
-#endif
+        copyInInfoWindow(frame, state);
     };
     auto passed = [test, edit, state](std::string& seen) {
         seen = std::format("Copy enabled {}, taken {}, infoShown {}, copied '{}' (want '{}')",
@@ -2173,63 +2131,6 @@ SelfTestStep infoWindowCopyStep(SelfTest* test, const std::shared_ptr<EditState>
     };
     return step("info window copy", std::move(start), std::move(passed));
 }
-
-#if defined(__WXOSX__)
-// §10 Cmd+W: with the focus in the Info window, File -> Close stream (⌘W) closes the window, not
-// the stream; with no stream it is still available there and closes the window. Ends with the
-// smoke stream open again and the window shown.
-SelfTestStep infoWindowCloseKeyStep(SelfTest* test, const std::shared_ptr<InfoKeysState>& state) {
-    // ⌘W with the focus in the (shown) Info window: whether Close stream was available.
-    const auto close_key = [test] {
-        MainFrame& frame = test->frame();
-        frame.setFocusForTest(shownInfoContent(frame));
-        const bool available = frame.isAvailable(Command::CloseStreams);
-        frame.execute(Command::CloseStreams, CommandSource::Menu);
-        frame.setFocusForTest(nullptr);
-        return available;
-    };
-    auto start = [test, state, close_key] {
-        state->phase = 0;
-        state->availableAgain = false;
-        state->hiddenAgain = false;
-        state->streamsBefore = test->frame().session().status().streams;
-        state->available = close_key();
-    };
-    auto passed = [test, state, close_key](std::string& seen) {
-        MainFrame& frame = test->frame();
-        const std::uint32_t streams = frame.session().status().streams;
-        seen = std::format(
-            "phase {}: available {} (no stream {}), closed by the second ⌘W {}, infoShown {}, {} "
-            "session streams (was {}), {} frame streams",
-            state->phase, state->available, state->availableAgain, state->hiddenAgain,
-            frame.infoShown(), streams, state->streamsBefore, frame.streams().size());
-        switch (state->phase) {
-            case 0:
-                if (state->available && !frame.infoShown() && state->streamsBefore == 1 &&
-                    streams == 1 && frame.streams().size() == 1) {
-                    DVV_LOG_INFO("selftest: info window close key: {}", seen);
-                    state->phase = 1;
-                    frame.execute(Command::CloseStreams);  // the stream itself (no window in front)
-                }
-                return false;
-            case 1:
-                if (streams == 0 && frame.streams().empty()) {
-                    state->availableAgain = close_key();
-                    state->hiddenAgain = !frame.infoShown();
-                    DVV_LOG_INFO("selftest: info window close key: {}", seen);
-                    state->phase = 2;
-                    openSmokeStream(test);     // checked in a later turn
-                    frame.setInfoShown(true);  // the scenario's close covers quitting with it open
-                }
-                return false;
-            default:
-                return state->availableAgain && state->hiddenAgain && frame.infoShown() &&
-                       streams == 1 && frame.streams().size() == 1;
-        }
-    };
-    return step("⌘W closes the Info window", std::move(start), std::move(passed));
-}
-#endif
 
 // The selftest config folder (spec §7.1), where the save steps write.
 std::filesystem::path saveFolder(const SelfTest* test) {
@@ -2510,9 +2411,7 @@ void addEditSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     steps.push_back(infoWindowCtrlIStep(test, info_keys));
     steps.push_back(infoWindowCloseBoxStep(test, info_keys));
     steps.push_back(infoWindowCopyStep(test, state, info_keys));
-#if defined(__WXOSX__)
-    steps.push_back(infoWindowCloseKeyStep(test, info_keys));
-#endif
+    addInfoWindowCloseKeySteps(steps, test, info_keys);
     // The Info window stays shown: the scenario's close covers quitting with it open.
     steps.push_back(saveLogStep(test, state));
     steps.push_back(saveLogFolderStep(test, state));
@@ -2609,15 +2508,15 @@ SelfTestStep selftestConfigStep(SelfTest* test) {
         const bool logs_used =
             !logs.empty() && std::filesystem::equivalent(logs, folder / "logs", error) && !error;
         bool private_folders = true;  // 0700 on POSIX
-#if !defined(_WIN32)
-        for (const std::filesystem::path& made : {folder, folder / "logs"}) {
-            const std::filesystem::file_status status =
-                std::filesystem::symlink_status(made, error);
-            private_folders = private_folders && !error &&
-                              status.type() == std::filesystem::file_type::directory &&
-                              status.permissions() == std::filesystem::perms::owner_all;
+        if constexpr (NATIVE_OS != Os::Windows) {
+            for (const std::filesystem::path& made : {folder, folder / "logs"}) {
+                const std::filesystem::file_status status =
+                    std::filesystem::symlink_status(made, error);
+                private_folders = private_folders && !error &&
+                                  status.type() == std::filesystem::file_type::directory &&
+                                  status.permissions() == std::filesystem::perms::owner_all;
+            }
         }
-#endif
         seen = std::format(
             "config '{}' in '{}' {}, log folder '{}' its logs/ {}, 0700 folders {}, system log {}",
             dvv::pathDisplayText(app.configPath()), dvv::pathDisplayText(folder), in_folder,
@@ -2867,106 +2766,6 @@ SelfTestStep menusStep(SelfTest* test, const SharedState& state) {
     };
     return step("menus", std::move(start), std::move(passed));
 }
-
-#if defined(__WXOSX__)
-// Design C5: About and Quit carry the standard ids, so wxOSX shows them in the application menu
-// as "About rawreel" and "Quit rawreel" (and hides them in Help and File); the application menu's
-// About opens Help -> About.
-SelfTestStep appMenuStep(SelfTest* test, bool opens_about) {
-    struct Seen {
-        std::uint64_t about0 = 0;
-        bool hookRan = false;
-    };
-    auto seen_state = std::make_shared<Seen>();
-    auto start = [test, seen_state, opens_about] {
-        if (!opens_about) {
-            return;  // smoke: the menu only, no About window
-        }
-        MainFrame& frame = test->frame();
-        seen_state->about0 = frame.aboutShown();
-        dialogHooks().about = [seen_state](wxGenericAboutDialog& /*dialog*/) {
-            seen_state->hookRan = true;
-        };
-        wxCommandEvent about(wxEVT_MENU, wxID_ABOUT);  // what the application menu's item sends
-        about.SetEventObject(&frame);
-        injectInput(*frame.GetEventHandler(), about);
-    };
-    auto passed = [test, seen_state, opens_about](std::string& seen) {
-        const MainFrame& frame = test->frame();
-        const wxMenuBar* bar = frame.GetMenuBar();
-        const wxMenu* apple = bar != nullptr ? bar->OSXGetAppleMenu() : nullptr;
-        if (apple == nullptr) {
-            seen = "no application menu";
-            return false;
-        }
-        const auto label = [](const wxMenuItem* item) {
-            return item != nullptr ? item->GetItemLabelText().utf8_string() : std::string("-");
-        };
-        const std::string about = label(apple->FindItem(wxID_ABOUT));
-        const std::string quit = label(apple->FindItem(wxID_EXIT));
-        const std::string settings = label(apple->FindItem(wxID_PREFERENCES));
-        // The frame's own items carry the standard ids; none is left on the old ones.
-        const bool ids =
-            bar->FindItem(wxID_ABOUT) != nullptr && bar->FindItem(wxID_EXIT) != nullptr &&
-            bar->FindItem(COMMAND_ID_BASE + static_cast<int>(Command::About)) == nullptr &&
-            bar->FindItem(COMMAND_ID_BASE + static_cast<int>(Command::Quit)) == nullptr;
-        const bool shown = frame.aboutShown() > seen_state->about0 && seen_state->hookRan;
-        seen = opens_about
-                   ? std::format("application menu '{}' '{}' '{}', standard ids {}, About shown {}",
-                                 about, settings, quit, ids, shown)
-                   : std::format("application menu '{}' '{}' '{}', standard ids {}", about,
-                                 settings, quit, ids);
-        return about == "About rawreel" && settings == "Settings..." && quit == "Quit rawreel" &&
-               ids && (shown || !opens_about);
-    };
-    return step("application menu", std::move(start), std::move(passed));
-}
-
-// Review Focus 1 and 5: a window moved to a display of another backing scale keeps its size in
-// points, so wx sends no size event. The test hook gives the viewport's child view another scale
-// (Retina 2 <-> 1) and runs its viewDidChangeBackingProperties, Cocoa's own entry: the same
-// presenter (the hook's scale lives on its child view) gets a swapchain of physicalPixelSize() of
-// the unchanged point size. `restore`: the hook gives the window's own scale back.
-SelfTestStep backingScaleStep(SelfTest* test, const SharedState& state, bool restore) {
-    struct Probe {
-        const dvv::gpu::Presenter* presenter = nullptr;
-        wxSize points;
-        double scale = 0;
-        bool hooked = false;
-    };
-    auto probe = std::make_shared<Probe>();
-    auto start = [test, state, probe, restore] {
-        Viewport& viewport = test->frame().viewport();
-        markStart(viewport, *state);
-        probe->presenter = viewport.presenter();   // the hook needs it: it sets the child's scale
-        probe->points = viewport.GetClientSize();  // points on wxOSX
-        const double window_scale = viewport.GetContentScaleFactor();
-        probe->scale = restore ? window_scale : (window_scale >= 2 ? 1.0 : 2.0);
-        probe->hooked = setBackingScaleForTest(viewport, restore ? 0.0 : probe->scale);
-    };
-    auto passed = [test, state, probe](std::string& seen) {
-        const Viewport& viewport = test->frame().viewport();
-        const std::optional<dvv::gpu::PresenterStats> stats = statsOf(viewport);
-        const dvv::platform::PixelSize expected =
-            physicalPixelSize(probe->points.x, probe->points.y, probe->scale);
-        const wxSize points = viewport.GetClientSize();
-        const bool same_presenter =
-            probe->presenter != nullptr && viewport.presenter() == probe->presenter;
-        seen = std::format(
-            "{}; hook {}, scale {}, points {}x{} (at the start {}x{}), expected extent {}x{}, "
-            "same presenter {}",
-            describe(viewport, *state), probe->hooked, probe->scale, points.x, points.y,
-            probe->points.x, probe->points.y, expected.width, expected.height, same_presenter);
-        return probe->hooked && stats && same_presenter && points == probe->points &&
-               viewport.physicalClientSize() == expected && stats->presentedExtent == expected &&
-               stats->swapchainsCreated > state->startSwapchains &&
-               stats->framesPresented > state->startFrames;
-    };
-    return {.name = restore ? "backing scale restored" : "backing scale change",
-            .start = std::move(start),
-            .passed = std::move(passed)};
-}
-#endif
 
 // Design §7: a Session error reaches the infobar; slot 1 is refused.
 SelfTestStep infobarStep(SelfTest* test) {
@@ -3353,25 +3152,6 @@ void addOpenUriSteps(std::vector<SelfTestStep>& steps, SelfTest* test,
 }
 
 // --- the Settings window (Log pane and Settings design §5, §7.3) --------------------------------
-
-struct SettingsState {
-    bool hookRan = false;
-    bool pagesCreated = false;
-    bool shown = false;
-    wxString configPathText;
-    wxString folderText;
-    wxString folderBefore;  // folder failure: the field before Choose...
-    bool useDefaultEnabled = false;
-    bool revealEnabled = false;
-    std::filesystem::path inUse;    // logFolderInUse() before the step's action
-    std::filesystem::path target;   // the folder the chooseFolder hook returns
-    std::filesystem::path oldFile;  // currentLogFile() before the step's action
-    std::optional<std::string> message;
-    std::optional<std::filesystem::path> revealed;
-    bool systemOn = false;              // system log: after "on"
-    std::optional<bool> savedSystemOn;  // system log: the scratch file after "on"
-    std::size_t streamsBefore = 0;      // close key
-};
 
 // The selftest's rawreel.json as it is now; nullopt when it cannot be read or parsed.
 std::optional<Config> scratchConfig(const App& app) {
@@ -3908,72 +3688,6 @@ SelfTestStep settingsLevelEndsRunStep(SelfTest* test, const std::shared_ptr<Sett
     return step("settings level ends the run level", std::move(start), std::move(passed));
 }
 
-#if defined(__WXOSX__)
-// Spec §5.1: ⌘W (File -> Close stream) with the Settings window in front closes that window; the
-// stream stays open.
-SelfTestStep settingsCloseKeyStep(SelfTest* test, const std::shared_ptr<SettingsState>& state) {
-    auto start = [test, state] {
-        state->streamsBefore = test->frame().streams().size();
-        runSettings(test, state, [test](SettingsWindow& settings) {
-            MainFrame& frame = test->frame();
-            wxWindowList& controls = settings.logPage().GetChildren();
-            frame.setFocusForTest(controls.empty() ? static_cast<wxWindow*>(&settings.logPage())
-                                                   : controls.front());
-            frame.execute(Command::CloseStreams);
-            frame.setFocusForTest(nullptr);
-        });
-    };
-    auto passed = [test, state](std::string& seen) {
-        MainFrame& frame = test->frame();
-        const SettingsWindow* settings = frame.settingsWindow();
-        const bool shown = settings == nullptr || settings->shown();
-        const std::uint32_t streams = frame.session().status().streams;
-        seen = std::format("hook ran {}, Settings shown {}, {} streams (was {}), session {}",
-                           state->hookRan, shown, frame.streams().size(), state->streamsBefore,
-                           streams);
-        return state->hookRan && !shown && state->streamsBefore == 1 &&
-               frame.streams().size() == 1 && streams == 1;
-    };
-    return step("settings close key", std::move(start), std::move(passed));
-}
-
-// Spec §5.1: only the Settings window takes ⌘W. With the focus in another top-level window of
-// the frame (a hidden stand-in for a floating Log pane, a wxAuiFloatingFrame), the item
-// stays File -> Close stream: the stream closes and that window is not closed.
-SelfTestStep closeKeyOtherWindowStep(SelfTest* test, const std::shared_ptr<SettingsState>& state) {
-    struct Seen {
-        bool closeAsked = false;  // the other window got wxEVT_CLOSE_WINDOW
-        bool available = false;   // Close stream was enabled with the focus there
-    };
-    auto seen_state = std::make_shared<Seen>();
-    auto start = [test, state, seen_state] {
-        MainFrame& frame = test->frame();
-        state->streamsBefore = frame.streams().size();
-        auto* other = new wxFrame(&frame, wxID_ANY, "rawreel selftest stand-in");  // never shown
-        other->Bind(wxEVT_CLOSE_WINDOW, [seen_state](wxCloseEvent& event) {
-            seen_state->closeAsked = true;
-            event.Veto();
-        });
-        auto* child = new wxPanel(other);
-        frame.setFocusForTest(child);
-        seen_state->available = frame.isAvailable(Command::CloseStreams);
-        frame.execute(Command::CloseStreams);
-        frame.setFocusForTest(nullptr);
-        other->Destroy();
-    };
-    auto passed = [test, state, seen_state](std::string& seen) {
-        const std::uint32_t streams = test->frame().session().status().streams;
-        seen = std::format(
-            "Close stream enabled {}, the other window asked to close {}, {} session streams (was "
-            "{})",
-            seen_state->available, seen_state->closeAsked, streams, state->streamsBefore);
-        return seen_state->available && !seen_state->closeAsked && state->streamsBefore == 1 &&
-               streams == 0;
-    };
-    return step("close key with another window", std::move(start), std::move(passed));
-}
-#endif
-
 void addSettingsSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     const auto state = std::make_shared<SettingsState>();
     steps.push_back(settingsOpensStep(test, state));
@@ -3992,10 +3706,7 @@ void addSettingsSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     steps.push_back(menuLevelReopenStep(test, state, level));
     steps.push_back(menuLevelDropsStep(test, level));
     steps.push_back(settingsLevelEndsRunStep(test, state, level));
-#if defined(__WXOSX__)
-    steps.push_back(settingsCloseKeyStep(test, state));
-    steps.push_back(closeKeyOtherWindowStep(test, state));  // closes the stream (last)
-#endif
+    addSettingsCloseKeySteps(steps, test, state);  // closes the stream (last)
 }
 
 std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
@@ -4030,10 +3741,7 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
     steps.push_back(cutFieldTooltipStep(t));
     steps.push_back(resizeStep(t, state, "resize with a stream", wxSize(1024, 640)));
     steps.push_back(titleAndFileFieldStep(t));  // at a size where the name fits on every OS
-#if defined(__WXOSX__)
-    steps.push_back(backingScaleStep(t, state, false));
-    steps.push_back(backingScaleStep(t, state, true));
-#endif
+    addBackingScaleSteps(steps, t, state);
     steps.push_back(panesStep(t));
     const auto info_window = std::make_shared<InfoWindowState>();
     steps.push_back(infoWindowOpensStep(t, info_window));
@@ -4060,9 +3768,7 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
     steps.push_back(diagnosticsStep(t, state));
     steps.push_back(menusStep(t, state));
     steps.push_back(infobarStep(t));
-#if defined(__WXOSX__)
-    steps.push_back(appMenuStep(t, false));
-#endif
+    addApplicationMenuSteps(steps, t, false);
     if (test.app().startup().components->capabilities().has(
             dvv::components::FFMPEG_LAVFI_CAPABILITY)) {
         steps.push_back(lavfiUriStep(t, state));
@@ -4085,9 +3791,7 @@ std::vector<SelfTestStep> aboutScenario(SelfTest& test) {
     const auto state = std::make_shared<SmokeState>();
     std::vector<SelfTestStep> steps;
     steps.push_back(firstFramesStep(t, state));
-#if defined(__WXOSX__)
-    steps.push_back(appMenuStep(t, true));
-#endif
+    addApplicationMenuSteps(steps, t, true);
     steps.push_back(aboutStep(t, state));
     return steps;
 }
@@ -5242,13 +4946,8 @@ void addDragSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
 
 // One wheel notch as each toolkit reports it: wxOSX delta 10 and one line, wxMSW and wxGTK delta
 // 120 and three lines.
-#if defined(__WXOSX__)
-constexpr int TEST_WHEEL_DELTA = 10;
-constexpr int TEST_WHEEL_LINES = 1;
-#else
-constexpr int TEST_WHEEL_DELTA = 120;
-constexpr int TEST_WHEEL_LINES = 3;
-#endif
+constexpr int TEST_WHEEL_DELTA = NATIVE_OS == Os::MacOs ? 10 : 120;
+constexpr int TEST_WHEEL_LINES = NATIVE_OS == Os::MacOs ? 1 : 3;
 
 // A wheel event of `rotation` on `axis` on the viewport at the client point `at` (window units),
 // with Ctrl (Cmd on macOS) down when `control`.
@@ -5351,94 +5050,96 @@ void addWheelSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
                    view.centre.y == st->from.centre.y;
         }));
 
-#if defined(__WXOSX__)
-    steps.push_back(step(
-        "wheel: Cmd+wheel pans",
-        [&frame, st] {
-            Viewport& viewport = frame.viewport();
-            st->from = centredView(viewport, 2);
-            viewport.setView(st->from);
-            sendViewportWheel(viewport, viewportCentre(viewport), TEST_WHEEL_DELTA, true);
-        },
-        panned));
-#else
-    // The Ctrl+wheel steps start from 400 % centred, with no Ctrl+wheel rotation left from an
-    // earlier step: a wheel without Ctrl drops it.
-    const auto ctrl_start = [](Viewport& viewport) {
-        viewport.setView(centredView(viewport, 4));
-        sendViewportWheel(viewport, viewportCentre(viewport), 0, false);
-    };
-    // After two Ctrl+wheel half notches with `between` sent between them.
-    const auto halves = [&frame, st, ctrl_start](
-                            std::string name, std::function<void(Viewport&)> between, double zoom) {
-        return step(
-            std::move(name),
-            [&frame, st, ctrl_start, between = std::move(between)] {
+    if (native_policy::ctrlWheelZooms()) {
+        // The Ctrl+wheel steps start from 400 % centred, with no Ctrl+wheel rotation left from an
+        // earlier step: a wheel without Ctrl drops it.
+        const auto ctrl_start = [](Viewport& viewport) {
+            viewport.setView(centredView(viewport, 4));
+            sendViewportWheel(viewport, viewportCentre(viewport), 0, false);
+        };
+        // After two Ctrl+wheel half notches with `between` sent between them.
+        const auto halves = [&frame, st, ctrl_start](std::string name,
+                                                     std::function<void(Viewport&)> between,
+                                                     double zoom) {
+            return step(
+                std::move(name),
+                [&frame, st, ctrl_start, between = std::move(between)] {
+                    Viewport& viewport = frame.viewport();
+                    ctrl_start(viewport);
+                    const wxPoint at = viewportCentre(viewport);
+                    sendViewportWheel(viewport, at, TEST_WHEEL_DELTA / 2, true);
+                    st->firstZoom = viewport.view().zoom;
+                    if (between) {
+                        between(viewport);
+                    }
+                    sendViewportWheel(viewport, at, TEST_WHEEL_DELTA / 2, true);
+                },
+                [&frame, st, zoom](std::string& seen) {
+                    const bool matches = viewMatches(frame, seen);
+                    const ViewRequest& view = frame.viewport().view();
+                    seen =
+                        std::format("zoom after one half {}, after two {} {} (wanted {}); {}",
+                                    st->firstZoom, viewModeName(view.mode), view.zoom, zoom, seen);
+                    return matches && st->firstZoom == 4 && view.mode == ViewMode::Zoom &&
+                           view.zoom == zoom;
+                });
+        };
+
+        steps.push_back(step(
+            "wheel: Ctrl+wheel zooms one step at the pointer",
+            [&frame, st, ctrl_start] {
                 Viewport& viewport = frame.viewport();
                 ctrl_start(viewport);
-                const wxPoint at = viewportCentre(viewport);
-                sendViewportWheel(viewport, at, TEST_WHEEL_DELTA / 2, true);
-                st->firstZoom = viewport.view().zoom;
-                if (between) {
-                    between(viewport);
-                }
-                sendViewportWheel(viewport, at, TEST_WHEEL_DELTA / 2, true);
+                const wxSize client = viewport.GetClientSize();
+                st->at = wxPoint(client.x / 4, client.y / 4);
+                const double scale = viewport.contentScale();
+                st->before = imagePointAt(viewport.shownView(),
+                                          {.x = st->at.x * scale, .y = st->at.y * scale});
+                sendViewportWheel(viewport, st->at, TEST_WHEEL_DELTA, true);
             },
-            [&frame, st, zoom](std::string& seen) {
+            [&frame, st](std::string& seen) {
                 const bool matches = viewMatches(frame, seen);
-                const ViewRequest& view = frame.viewport().view();
-                seen = std::format("zoom after one half {}, after two {} {} (wanted {}); {}",
-                                   st->firstZoom, viewModeName(view.mode), view.zoom, zoom, seen);
-                return matches && st->firstZoom == 4 && view.mode == ViewMode::Zoom &&
-                       view.zoom == zoom;
-            });
-    };
-
-    steps.push_back(step(
-        "wheel: Ctrl+wheel zooms one step at the pointer",
-        [&frame, st, ctrl_start] {
-            Viewport& viewport = frame.viewport();
-            ctrl_start(viewport);
-            const wxSize client = viewport.GetClientSize();
-            st->at = wxPoint(client.x / 4, client.y / 4);
-            const double scale = viewport.contentScale();
-            st->before =
-                imagePointAt(viewport.shownView(), {.x = st->at.x * scale, .y = st->at.y * scale});
-            sendViewportWheel(viewport, st->at, TEST_WHEEL_DELTA, true);
-        },
-        [&frame, st](std::string& seen) {
-            const bool matches = viewMatches(frame, seen);
-            const Viewport& viewport = frame.viewport();
-            const ViewRequest& view = viewport.view();
-            const double scale = viewport.contentScale();
-            const PointD after =
-                imagePointAt(viewport.shownView(), {.x = st->at.x * scale, .y = st->at.y * scale});
-            // Offsets are whole backing pixels: the clip point may move by half a pixel.
-            const double tolerance = (0.5 / view.zoom) + 1e-9;
-            seen = std::format("view {} {}, clip point under q ({}, {}) (before ({}, {})); {}",
-                               viewModeName(view.mode), view.zoom, after.x, after.y, st->before.x,
-                               st->before.y, seen);
-            return matches && view.mode == ViewMode::Zoom && view.zoom == 8 &&
-                   std::abs(after.x - st->before.x) <= tolerance &&
-                   std::abs(after.y - st->before.y) <= tolerance;
-        }));
-    steps.push_back(halves("wheel: two half notches make one step", {}, 8));
-    steps.push_back(halves(
-        "wheel: a wheel without Ctrl drops a half notch",
-        [](Viewport& viewport) {
-            sendViewportWheel(viewport, viewportCentre(viewport), TEST_WHEEL_DELTA, false);
-        },
-        4));
-    // A new clip of another size: the frame size changes and changes back at once.
-    steps.push_back(halves(
-        "wheel: a new frame size drops a half notch",
-        [](Viewport& viewport) {
-            const dvv::platform::PixelSize image = viewport.imageSize();
-            viewport.setImageSize({.width = image.width + 2, .height = image.height});
-            viewport.setImageSize(image);
-        },
-        4));
-#endif
+                const Viewport& viewport = frame.viewport();
+                const ViewRequest& view = viewport.view();
+                const double scale = viewport.contentScale();
+                const PointD after = imagePointAt(viewport.shownView(),
+                                                  {.x = st->at.x * scale, .y = st->at.y * scale});
+                // Offsets are whole backing pixels: the clip point may move by half a pixel.
+                const double tolerance = (0.5 / view.zoom) + 1e-9;
+                seen = std::format("view {} {}, clip point under q ({}, {}) (before ({}, {})); {}",
+                                   viewModeName(view.mode), view.zoom, after.x, after.y,
+                                   st->before.x, st->before.y, seen);
+                return matches && view.mode == ViewMode::Zoom && view.zoom == 8 &&
+                       std::abs(after.x - st->before.x) <= tolerance &&
+                       std::abs(after.y - st->before.y) <= tolerance;
+            }));
+        steps.push_back(halves("wheel: two half notches make one step", {}, 8));
+        steps.push_back(halves(
+            "wheel: a wheel without Ctrl drops a half notch",
+            [](Viewport& viewport) {
+                sendViewportWheel(viewport, viewportCentre(viewport), TEST_WHEEL_DELTA, false);
+            },
+            4));
+        // A new clip of another size: the frame size changes and changes back at once.
+        steps.push_back(halves(
+            "wheel: a new frame size drops a half notch",
+            [](Viewport& viewport) {
+                const dvv::platform::PixelSize image = viewport.imageSize();
+                viewport.setImageSize({.width = image.width + 2, .height = image.height});
+                viewport.setImageSize(image);
+            },
+            4));
+    } else {
+        steps.push_back(step(
+            "wheel: Cmd+wheel pans",
+            [&frame, st] {
+                Viewport& viewport = frame.viewport();
+                st->from = centredView(viewport, 2);
+                viewport.setView(st->from);
+                sendViewportWheel(viewport, viewportCentre(viewport), TEST_WHEEL_DELTA, true);
+            },
+            panned));
+    }
 }
 
 // A zoom gesture event of `factor` on the viewport at the client point `at` (window units).
@@ -6072,20 +5773,20 @@ void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
             int flags;
             int key;
         };
-#if defined(__WXOSX__)
-        const std::array<Wanted, 5> wanted{
+        // The keys of commands.cpp's MAC_VIEW_KEYS and PC_VIEW_KEYS, chosen the same way.
+        constexpr std::array<Wanted, 5> MAC_WANTED{
             {{Command::FitToWindow, wxACCEL_CTRL, '9'},
              {Command::ActualSize, wxACCEL_CTRL, '0'},
              {Command::ZoomIn, wxACCEL_CTRL, '+'},
              {Command::ZoomOut, wxACCEL_CTRL, '-'},
              {Command::ResizeWindowToActualSize, wxACCEL_CTRL, '1'}}};
-#else
-        const std::array<Wanted, 5> wanted{{{Command::FitToWindow, wxACCEL_CTRL, '0'},
-                                            {Command::ActualSize, wxACCEL_CTRL, '1'},
-                                            {Command::ZoomIn, wxACCEL_CTRL, '+'},
-                                            {Command::ZoomOut, wxACCEL_CTRL, '-'},
-                                            {Command::ResizeWindowToActualSize, wxACCEL_ALT, '1'}}};
-#endif
+        constexpr std::array<Wanted, 5> PC_WANTED{
+            {{Command::FitToWindow, wxACCEL_CTRL, '0'},
+             {Command::ActualSize, wxACCEL_CTRL, '1'},
+             {Command::ZoomIn, wxACCEL_CTRL, '+'},
+             {Command::ZoomOut, wxACCEL_CTRL, '-'},
+             {Command::ResizeWindowToActualSize, wxACCEL_ALT, '1'}}};
+        const std::array<Wanted, 5>& wanted = NATIVE_OS == Os::MacOs ? MAC_WANTED : PC_WANTED;
         bool ok = true;
         seen.clear();
         for (const Wanted& item : wanted) {
@@ -6098,44 +5799,44 @@ void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
         }
         return ok;
     }));
-#if !defined(__WXOSX__)
-    // Windows and Linux: the char hook also dispatches the view keys (normaliseKey).
-    steps.push_back(step(
-        "view: Ctrl+Shift+= zooms in",
-        [&frame] {
-            frame.viewport().setView(centredView(frame.viewport(), 1));
-            sendKey(frame, '=', true, true);
-        },
-        [&frame, shown](std::string& seen) {
-            const bool matches = viewMatches(frame, seen);
-            seen = shown() + "; " + seen;
-            return matches && frame.viewport().view().mode == ViewMode::Zoom &&
-                   frame.viewport().view().zoom == 2;
-        }));
-    steps.push_back(step(
-        "view: Ctrl+0 fits",
-        [&frame] {
-            frame.viewport().setView(centredView(frame.viewport(), 2));
-            sendKey(frame, '0', false, true);
-        },
-        [&frame, shown](std::string& seen) {
-            const bool matches = viewMatches(frame, seen);
-            seen = shown() + "; " + seen;
-            return matches && frame.viewport().view().mode == ViewMode::Fit;
-        }));
-    steps.push_back(step(
-        "view: keypad Ctrl+1 shows 100 %",
-        [&frame] {
-            frame.viewport().setView({});
-            sendKey(frame, WXK_NUMPAD1, false, true);
-        },
-        [&frame, shown](std::string& seen) {
-            const bool matches = viewMatches(frame, seen);
-            seen = shown() + "; " + seen;
-            return matches && frame.viewport().view().mode == ViewMode::Zoom &&
-                   frame.viewport().view().zoom == 1;
-        }));
-#endif
+    if constexpr (NATIVE_OS != Os::MacOs) {
+        // Windows and Linux: the char hook also dispatches the view keys (normaliseKey).
+        steps.push_back(step(
+            "view: Ctrl+Shift+= zooms in",
+            [&frame] {
+                frame.viewport().setView(centredView(frame.viewport(), 1));
+                sendKey(frame, '=', true, true);
+            },
+            [&frame, shown](std::string& seen) {
+                const bool matches = viewMatches(frame, seen);
+                seen = shown() + "; " + seen;
+                return matches && frame.viewport().view().mode == ViewMode::Zoom &&
+                       frame.viewport().view().zoom == 2;
+            }));
+        steps.push_back(step(
+            "view: Ctrl+0 fits",
+            [&frame] {
+                frame.viewport().setView(centredView(frame.viewport(), 2));
+                sendKey(frame, '0', false, true);
+            },
+            [&frame, shown](std::string& seen) {
+                const bool matches = viewMatches(frame, seen);
+                seen = shown() + "; " + seen;
+                return matches && frame.viewport().view().mode == ViewMode::Fit;
+            }));
+        steps.push_back(step(
+            "view: keypad Ctrl+1 shows 100 %",
+            [&frame] {
+                frame.viewport().setView({});
+                sendKey(frame, WXK_NUMPAD1, false, true);
+            },
+            [&frame, shown](std::string& seen) {
+                const bool matches = viewMatches(frame, seen);
+                seen = shown() + "; " + seen;
+                return matches && frame.viewport().view().mode == ViewMode::Zoom &&
+                       frame.viewport().view().zoom == 1;
+            }));
+    }
     addDragSteps(steps, frame);
     addWheelSteps(steps, frame);
     addPinchSteps(steps, frame);
@@ -8015,26 +7716,27 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                 st->textsRead.push_back(
                     (dialog.colourText() + "|" + dialog.colourOptionsText()).utf8_string());
                 st->colourRead = dialog.choice().colour;  // OK writes the same keys
-#if defined(__WXGTK__)
-                // A window manager that resizes the dialog anyway (as WSLg's does): the dialog
-                // goes back to its own size, as it cannot be resized on Windows.
-                const wxSize fixed = dialog.GetClientSize();
-                dialog.SetClientSize(wxSize(fixed.x + 50, 1));
-                wxSizeEvent resized(dialog.GetSize(), dialog.GetId());
-                resized.SetEventObject(&dialog);
-                dialog.HandleWindowEvent(resized);
-                for (int i = 0; i < 50 && dialog.GetClientSize() != fixed; ++i) {
-                    wxTheApp->Yield(true);
-                    wxMilliSleep(10);
+                if (native_policy::undoesForeignResize()) {
+                    // A window manager that resizes the dialog anyway (as WSLg's does): the dialog
+                    // goes back to its own size, as it cannot be resized on Windows.
+                    const wxSize fixed = dialog.GetClientSize();
+                    dialog.SetClientSize(wxSize(fixed.x + 50, 1));
+                    wxSizeEvent resized(dialog.GetSize(), dialog.GetId());
+                    resized.SetEventObject(&dialog);
+                    dialog.HandleWindowEvent(resized);
+                    for (int i = 0; i < 50 && dialog.GetClientSize() != fixed; ++i) {
+                        wxTheApp->Yield(true);
+                        wxMilliSleep(10);
+                    }
+                    const wxSize now = dialog.GetClientSize();
+                    st->textsRead.push_back(now == fixed
+                                                ? std::string("fixed size")
+                                                : std::format("client {}x{} (fixed {}x{})", now.x,
+                                                              now.y, fixed.x, fixed.y));
+                } else {
+                    // MSW and macOS: a dialog without a resize border.
+                    st->textsRead.push_back("fixed size");
                 }
-                const wxSize now = dialog.GetClientSize();
-                st->textsRead.push_back(now == fixed ? std::string("fixed size")
-                                                     : std::format("client {}x{} (fixed {}x{})",
-                                                                   now.x, now.y, fixed.x, fixed.y));
-#else
-                // MSW and macOS: a dialog without a resize border.
-                st->textsRead.push_back("fixed size");
-#endif
             };
             frame.execute(Command::Format);
         },
@@ -8506,35 +8208,35 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             return st->lockedRead && st->flagRead && st->textsRead == expected && colour_only &&
                    uri.contains("colour=bt2020") && stream_is(16, 16, "yuv420p");
         }));
-#if defined(__WXOSX__)
-    // Design C5: a file opened from Finder or the Dock (wxApp::MacOpenFiles) takes the route of a
-    // drop and gives the drop step's state: a new Y4M file opens without a format dialog.
-    steps.push_back(step(
-        "open a Y4M file from Finder (MacOpenFiles)",
-        [&frame, st] {
-            const auto file = st->dir / "finder_clip.y4m";
-            std::string y4m = "YUV4MPEG2 W32 H16 F25:1 Ip A1:1 C420jpeg\n";
-            for (int i = 0; i < 2; ++i) {
-                y4m += "FRAME\n" + std::string(768, '\x50');
-            }
-            std::ofstream(file, std::ios::binary)
-                .write(y4m.data(), static_cast<std::streamsize>(y4m.size()));
-            st->dialogs0 = frame.formatDialogsShown();
-            wxArrayString names;
-            names.Add(wxString::FromUTF8(dvv::pathDisplayText(file)));
-            wxGetApp().MacOpenFiles(names);
-        },
-        [&frame, st, stream_is, stream_uri](std::string& seen) {
-            const auto& streams = frame.streams();
-            const bool y4m = streams.size() == 1 && streams[0].info.provider == "y4m";
-            const std::string uri = stream_uri();
-            seen = std::format("yuv420p 32x16 {}, y4m {}, dialogs {}, URI '{}'",
-                               stream_is(32, 16, "yuv420p"), y4m,
-                               frame.formatDialogsShown() - st->dialogs0, uri);
-            return stream_is(32, 16, "yuv420p") && y4m && uri.contains("finder_clip.y4m") &&
-                   frame.formatDialogsShown() == st->dialogs0;
-        }));
-#endif
+    if constexpr (NATIVE_OS == Os::MacOs) {
+        // Design C5: a file opened from Finder or the Dock (wxApp::MacOpenFiles) takes the route of
+        // a drop and gives the drop step's state: a new Y4M file opens without a format dialog.
+        steps.push_back(step(
+            "open a Y4M file from Finder (MacOpenFiles)",
+            [&frame, st] {
+                const auto file = st->dir / "finder_clip.y4m";
+                std::string y4m = "YUV4MPEG2 W32 H16 F25:1 Ip A1:1 C420jpeg\n";
+                for (int i = 0; i < 2; ++i) {
+                    y4m += "FRAME\n" + std::string(768, '\x50');
+                }
+                std::ofstream(file, std::ios::binary)
+                    .write(y4m.data(), static_cast<std::streamsize>(y4m.size()));
+                st->dialogs0 = frame.formatDialogsShown();
+                wxArrayString names;
+                names.Add(wxString::FromUTF8(dvv::pathDisplayText(file)));
+                openFilesFromFinder(names);
+            },
+            [&frame, st, stream_is, stream_uri](std::string& seen) {
+                const auto& streams = frame.streams();
+                const bool y4m = streams.size() == 1 && streams[0].info.provider == "y4m";
+                const std::string uri = stream_uri();
+                seen = std::format("yuv420p 32x16 {}, y4m {}, dialogs {}, URI '{}'",
+                                   stream_is(32, 16, "yuv420p"), y4m,
+                                   frame.formatDialogsShown() - st->dialogs0, uri);
+                return stream_is(32, 16, "yuv420p") && y4m && uri.contains("finder_clip.y4m") &&
+                       frame.formatDialogsShown() == st->dialogs0;
+            }));
+    }
     // A gray Y4M with XCOLORRANGE=LIMITED keeps its range under BT.709 (the default
     // range of gray is full).
     steps.push_back(step(
