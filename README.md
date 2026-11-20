@@ -802,8 +802,9 @@ and the crash lines are on its stderr. Attach the files, the `rawreel: crash ...
 log`, `crash dump`, `crash signal` or `crash exception`) and the output of `rawreel-cli
 --version`. The first start after a crash shows the last log lines of `rawreel-gui` in the Log
 pane. On start, each app renames the `.dvvlog` files of its earlier crashes to
-`<exe>-<yyyymmdd-hhmmss>-<pid>.reported.dvvlog`, so the newest crash's files are the ones without
-`.reported`; attach those.
+`<exe>-<yyyymmdd-hhmmss>-<pid>.reported.dvvlog`; the `.dmp` files keep their names. The date and
+time in a file's name tell which crash it belongs to: attach the newest `.dvvlog`, with or without
+`.reported`, and on Windows the `.dmp` of the same name.
 
 On Windows, the maintainer reads the dump with the symbols of the same release,
 `rawreel-<v>-windows-x64-symbols.zip`.
