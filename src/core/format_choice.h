@@ -159,11 +159,12 @@ private:
 // Errc::Format: catalogue name unknown; geometry() of the format at the size fails; "@" with an
 // empty path; width or height 0; fps num <= 0 or den <= 0.
 [[nodiscard]] dvv::Result<void> validateChoice(const FormatChoice& choice);
-// The format dialog's fps field: "25" -> 25/1, "30000/1001", a decimal (up to 6 decimals) reduced
-// by the gcd ("25.5" -> 51/2), except the NTSC decimals 23.976 and 23.98, 29.97, 47.952, 59.94 and
-// 119.88 (by value, trailing zeros allowed), which give N*1000/1001 (D5 design §1.4). nullopt for
-// empty text, 0, negatives, a zero denominator, an overflow or any other character.
-[[nodiscard]] std::optional<dvv::media::Rational> parseFpsText(std::string_view text) noexcept;
+// The format dialog's fps field: dvv-media's grammar ("25" -> 25/1, "30000/1001", a decimal with up
+// to 9 decimals), reduced by the gcd ("25.5" -> 51/2), plus rawreel's NTSC rule: the decimals
+// 23.976 and 23.98, 29.97, 47.952, 59.94 and 119.88 (by value, trailing zeros allowed) give
+// N*1000/1001 (D5 design §1.4). nullopt for empty text, 0, negatives, a zero denominator, an
+// overflow or any other character.
+[[nodiscard]] std::optional<dvv::media::Rational> parseFpsText(std::string_view text);
 
 // What Load JSON... of the format dialog found in a file (D5 design §1.7): the groups it gives.
 struct FormatJson {

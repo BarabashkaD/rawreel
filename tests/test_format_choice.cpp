@@ -403,6 +403,30 @@ TEST_SUITE("core") {
         }
     }
 
+    TEST_CASE("fps text: 9 decimals") {
+        using dvv::media::Rational;
+        CHECK(rawreel::parseFpsText("29.970000000") == Rational{30000, 1001});
+        CHECK(!rawreel::parseFpsText("25.0000000001"));
+    }
+
+    TEST_CASE("prefill: the grammar first, then the first WxH") {
+        const FormatChoice fallback{.format = "nv12", .width = 64, .height = 32};
+        const auto check = [&](std::string_view uri, std::uint32_t width, std::uint32_t height,
+                               std::string_view format) {
+            const FormatChoice choice = rawreel::choiceFromUri(uri, fallback);
+            CHECK_MESSAGE(choice.width == width, uri);
+            CHECK_MESSAGE(choice.height == height, uri);
+            CHECK_MESSAGE(choice.format == format, uri);
+        };
+        check("file:a_640x480_b_1920x1080_yuv420p.yuv", 1920, 1080, "yuv420p");
+        check("file:clip_1920x1080_foo.yuv", 1920, 1080, "nv12");
+        check("file:clip_foo.yuv", 64, 32, "nv12");
+        check("file:clip_70000x1080_foo.yuv", 64, 32, "nv12");
+        check("file:shot_1920x1080_take2.yuv", 1920, 1080, "nv12");
+        check("file:x_70000x10.yuv", 64, 32, "nv12");
+        check("file:shots_640x480/clip_foo.yuv", 64, 32, "nv12");
+    }
+
     TEST_CASE("format choice: lavfi refusal") {
         const auto refusal = rawreel::formatRefusal("lavfi:testsrc2=s=64x48");
         REQUIRE(refusal);
