@@ -61,6 +61,9 @@ public:
     // only (selftests); read under recorded_mutex_.
     [[nodiscard]] RecordedInfo lastRecorded() const;
     [[nodiscard]] std::uint64_t epoch() const noexcept { return epoch_; }
+    [[nodiscard]] const std::shared_ptr<dvv::gpu::ExecutionContext>& context() const noexcept {
+        return context_;
+    }
 
 private:
     [[nodiscard]] dvv::Result<std::shared_ptr<dvv::gpu::GpuImage>> makeOutput(
@@ -89,5 +92,12 @@ private:
     mutable std::mutex recorded_mutex_;
     RecordedInfo recorded_;
 };
+
+// The viewport's presenter: dvv::gpu::createPresenter (presenter_vulkan.h) with a frame provider
+// that takes one display snapshot per frame and records through `renderer`. `fail_for_test`
+// replaces each record function by one that throws (the injected "presenter" fault).
+[[nodiscard]] dvv::Result<std::unique_ptr<dvv::gpu::Presenter>> createViewportPresenter(
+    ViewportRenderer& renderer, std::shared_ptr<DisplayState> display,
+    dvv::gpu::PresenterOptions options, bool fail_for_test);
 
 }  // namespace rawreel

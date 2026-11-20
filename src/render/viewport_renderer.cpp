@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <mutex>  // frame.h no longer brings it
 #include <span>
+#include <stdexcept>
 #include <utility>
 
 #include "core/view.h"
@@ -151,6 +152,27 @@ dvv::Result<dvv::gpu::PresentFrame> ViewportRenderer::render(dvv::platform::Pixe
 RecordedInfo ViewportRenderer::lastRecorded() const {
     std::lock_guard lock(recorded_mutex_);
     return recorded_;
+}
+
+dvv::Result<std::unique_ptr<dvv::gpu::Presenter>> createViewportPresenter(
+    ViewportRenderer& renderer, std::shared_ptr<DisplayState> display,
+    dvv::gpu::PresenterOptions options, bool fail_for_test) {
+    return dvv::gpu::createPresenter(
+        *renderer.context(), std::move(options),
+        [display = std::move(display), renderer = &renderer,
+         fail = fail_for_test](const dvv::gpu::PresentFrameParams& params) {
+            // Presenter thread: one consistent read of the state, then record (design §5.3).
+            const DisplaySnapshot snapshot = display->snapshot();
+            dvv::Result<dvv::gpu::PresentFrame> frame = renderer->frame(params, snapshot);
+            if (fail && frame) {
+                // Test only: the renderer's record function is dropped unrun (as after a
+                // failed acquire); the failed recording fails the presenter.
+                frame->record = [](dvv::gpu::CommandRecorder& /*recorder*/) {
+                    throw std::runtime_error("injected presenter failure");
+                };
+            }
+            return frame;
+        });
 }
 
 }  // namespace rawreel

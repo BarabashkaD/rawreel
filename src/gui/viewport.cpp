@@ -10,7 +10,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
-#include <stdexcept>
 #include <utility>
 
 #include <wx/settings.h>
@@ -117,25 +116,11 @@ void Viewport::startPresenting() {
     renderer_ = std::move(*renderer);
     const std::uint64_t serial = ++serial_;
     const bool visible = IsShownOnScreen() && !iconized_;
-    auto presenter = context_->createPresenter(
+    auto presenter = createViewportPresenter(
+        *renderer_, display_,
         {.window = window->window,
          .extent = physicalClientSize(),
          .visible = visible,
-         .frames =
-             [display = display_, renderer = renderer_.get(),
-              fail = fail_presenters_](const dvv::gpu::PresentFrameParams& params) {
-                 // Presenter thread: one consistent read of the state, then record (design §5.3).
-                 const DisplaySnapshot snapshot = display->snapshot();
-                 dvv::Result<dvv::gpu::PresentFrame> frame = renderer->frame(params, snapshot);
-                 if (fail && frame) {
-                     // Test only: the renderer's record function is dropped unrun (as after a
-                     // failed acquire); the failed recording fails the presenter.
-                     frame->record = [](dvv::gpu::CommandRecorder& /*recorder*/) {
-                         throw std::runtime_error("injected presenter failure");
-                     };
-                 }
-                 return frame;
-             },
          .onError =
              [this, serial](const dvv::Error& error) noexcept {
                  // Presenter thread. CallAfter allocates, so it may throw; the handler may not.
@@ -145,7 +130,8 @@ void Viewport::startPresenting() {
                      std::fputs("rawreel-gui: a presenter error could not reach the GUI\n", stderr);
                  }
              },
-         .name = "viewport"});
+         .name = "viewport"},
+        fail_presenters_);
     if (!presenter) {
         renderer_.reset();
         reportFailure(presenter.error());
