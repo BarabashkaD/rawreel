@@ -172,8 +172,10 @@ int fail(const Arguments& arguments, const dvv::Result<void>& failed, int code) 
 void printVersion(bool json) {
     std::string ffmpeg;
     {
-        const Startup startup = startComponents({});
-        ffmpeg = ffmpegStatusLine(startup.ffmpeg);
+        const Startup startup = startComponents();
+        ffmpeg = ffmpegStatusLine(startup.components
+                                      ? startup.components->module(dvv::components::FFMPEG_MODULE)
+                                      : nullptr);
     }
     const VersionReport report{.packages = packageVersions(),
                                .vulkan = vulkanStatusLine(vulkanStatus()),
@@ -501,8 +503,8 @@ int runSource(const Arguments& arguments, Resources& resources) {
     }
     resources.cpu = std::move(*cpu);
 
-    // 2. and 3. The startup (FFmpeg, capabilities, component registry) and the source factory.
-    resources.startup = startComponents({});
+    // 2. and 3. The startup (the component registry and its modules) and the source factory.
+    resources.startup = startComponents();
     auto factory = media::SourceFactory::create(*resources.startup.components, resources.io);
     if (!factory) {
         return fail(arguments, factory.error(), exitCodeFor(factory.error(), false));
@@ -524,11 +526,10 @@ int runSource(const Arguments& arguments, Resources& resources) {
         // With the FFmpeg status line when FFmpeg is the likely reason (design v2 §4.6).
         const dvv::Error& error = opened.error();
         if (arguments.json) {  // error.message, as every other --json error (fail())
-            printJson(errorJson(dvv::errcName(error.code),
-                                openErrorMessage(error, arguments.uri, resources.startup.ffmpeg)));
+            printJson(
+                errorJson(dvv::errcName(error.code), openErrorMessage(error, resources.startup)));
         } else {
-            std::println(stderr, "error: {}",
-                         openErrorText(error, arguments.uri, resources.startup.ffmpeg));
+            std::println(stderr, "error: {}", openErrorText(error, resources.startup));
         }
         return exitCodeFor(error, false);
     }

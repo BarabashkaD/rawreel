@@ -229,13 +229,15 @@ bool App::OnInit() {
     if (!startPools() || !startGpu()) {  // 3., 4.
         return failed();
     }
-    // 5. FFmpeg, the capabilities and the source providers (design M4 v2 §4.6).
-    startup_ = startComponents({});
-    DVV_LOG_INFO("ffmpeg: {}", ffmpegStatusLine(startup_.ffmpeg));
+    // 5. The component registry: every module (FFmpeg among them) and the source providers (design
+    // M4 v2 §4.6).
+    startup_ = startComponents();
     if (!startup_.components) {
         finish(exit_code::BAD_ARGUMENTS, "rawreel-gui: the component registry could not start");
         return failed();
     }
+    DVV_LOG_INFO("ffmpeg: {}",
+                 ffmpegStatusLine(startup_.components->module(dvv::components::FFMPEG_MODULE)));
     // The media clock's timer thread (not a GPU failure: exit 1 like the pools).
     auto timer = makeThreadTimer();
     if (!timer) {

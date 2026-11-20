@@ -123,7 +123,7 @@ target_compile_definitions(rawreel_core PRIVATE ${rawreel_versions})
 target_sources(rawreel_core PRIVATE src/core/startup.cpp src/core/version_text.cpp src/core/vulkan_driver.cpp
                                     src/gui/crash_handler.cpp)
 # One edge per dvv library the headers or sources include. dvv::components: dvv/components/ffmpeg.h
-# (dvv::ffmpeg); no FFmpeg is linked.
+# (the FFmpeg module's constants; ComponentRegistry::load() runs the module); no FFmpeg is linked.
 target_link_libraries(rawreel_core PUBLIC dvv::base dvv::registry dvv::media dvv::gpu dvv::platform
                                           dvv::components)
 

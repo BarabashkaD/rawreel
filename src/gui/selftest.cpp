@@ -85,6 +85,7 @@
 #include "dvv/media/types.h"
 #include "dvv/platform/native_window.h"
 #include "dvv/platform/pixel_size.h"
+#include "dvv/registry/module.h"
 #include "gui/about.h"
 #include "gui/app.h"
 #include "gui/app_icon.h"
@@ -3087,16 +3088,22 @@ SelfTestStep aboutStep(SelfTest* test, const std::shared_ptr<SmokeState>& state)
         const MainFrame& frame = test->frame();
         const std::string& text = frame.lastAboutText();
         const VulkanStatus vulkan = frame.vulkanStatus();
-        const dvv::components::FfmpegStatus& ffmpeg = test->app().startup().ffmpeg;
+        const dvv::ModuleStatus* const ffmpeg =
+            test->app().startup().components->module(dvv::components::FFMPEG_MODULE);
+        const std::optional<std::string_view> directory =
+            ffmpeg != nullptr ? ffmpeg->property(dvv::MODULE_DIRECTORY_PROPERTY) : std::nullopt;
+        const std::optional<std::string_view> version =
+            ffmpeg != nullptr ? ffmpeg->property(dvv::MODULE_VERSION_PROPERTY) : std::nullopt;
         // The status only: no FFmpeg directory in About (users share its text).
-        const bool no_path = !ffmpeg.core || !text.contains(dvv::pathDisplayText(ffmpeg.directory));
+        const bool no_path =
+            !directory || !text.contains(dvv::pathDisplayText(dvv::pathFromText(*directory)));
         // About: the name and version once, the licence, the FFmpeg version, the components, no
         // GPU (Help -> GPU info); the copied text is the full aboutText().
         const std::string heading = std::format("rawreel {}", packageVersions().front().second);
         const bool lines =
             text.find(heading) != std::string::npos && text.find(heading) == text.rfind(heading) &&
             text.contains("MIT licence") && vulkan.available && !text.contains(vulkan.device) &&
-            !text.contains("Vulkan") && (!ffmpeg.core || text.contains(ffmpeg.version)) &&
+            !text.contains("Vulkan") && (!version || text.contains(*version)) &&
             text.contains("dvv-base ") && no_path;
         // Every link of the About content is a link in the dialog.
         bool links = true;
@@ -4006,11 +4013,13 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
 #if defined(__WXOSX__)
     steps.push_back(appMenuStep(t, false));
 #endif
-    if (test.app().startup().ffmpeg.lavfi) {
+    if (test.app().startup().components->capabilities().has(
+            dvv::components::FFMPEG_LAVFI_CAPABILITY)) {
         steps.push_back(lavfiUriStep(t, state));
         steps.push_back(lavfiFormatStep(t, state));
     } else if (ffmpegRequired()) {
-        steps.push_back(ffmpegRequiredStep(ffmpegStatusLine(test.app().startup().ffmpeg)));
+        steps.push_back(ffmpegRequiredStep(ffmpegStatusLine(
+            test.app().startup().components->module(dvv::components::FFMPEG_MODULE))));
     } else {
         DVV_LOG_INFO("selftest: FFmpeg not available, lavfi steps skipped");
     }
@@ -8652,7 +8661,8 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
         mkv_named ? dvv::pathFromText(mkv_text.utf8_string()) : std::filesystem::path{};
     std::error_code mkv_error;
     const bool mkv_exists = mkv_named && std::filesystem::is_regular_file(mkv, mkv_error);
-    if (test.app().startup().ffmpeg.core && mkv_exists) {
+    if (test.app().startup().components->capabilities().has(dvv::components::FFMPEG_CAPABILITY) &&
+        mkv_exists) {
         steps.push_back(step(
             "drop the FFV1 MKV",
             [&frame, st, mkv] {
@@ -8763,8 +8773,10 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             }));
     } else if (ffmpegRequired()) {
         std::string reason;
-        if (!test.app().startup().ffmpeg.core) {
-            reason = ffmpegStatusLine(test.app().startup().ffmpeg);
+        if (!test.app().startup().components->capabilities().has(
+                dvv::components::FFMPEG_CAPABILITY)) {
+            reason = ffmpegStatusLine(
+                test.app().startup().components->module(dvv::components::FFMPEG_MODULE));
         } else if (!mkv_named) {
             reason = "RAWREEL_TEST_MKV is not set";
         } else {
@@ -8845,7 +8857,9 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                                                              status().length == 60 &&
                                                              status().position == 0);
                              }));
-        if (test.app().startup().ffmpeg.core && mkv_exists) {
+        if (test.app().startup().components->capabilities().has(
+                dvv::components::FFMPEG_CAPABILITY) &&
+            mkv_exists) {
             steps.push_back(step("another clip during a drag resets",
                                  drag_then([&frame, mkv] { dropFiles(frame.viewport(), {mkv}); }),
                                  [&frame, reset_done, status](std::string& seen) {

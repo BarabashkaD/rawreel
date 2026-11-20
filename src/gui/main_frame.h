@@ -398,7 +398,7 @@ private:
     bool stack_lost_ = false;                            // the last stackChanged had no context
     bool reopen_offered_ = false;  // the current message carries the Reopen button
     bool loop_ = false;            // mirrors the Session's loop flag (Command::Loop)
-    std::string last_open_uri_;    // of the last openUri (onError's FFmpeg status, design v2 §4.6)
+    std::string last_open_uri_;    // of the last openUri (onError's scheme hint and Format...)
     // The folder of the last opened file (drop, File -> Open, a file: URI): the file dialogs'
     // start folder (M4 GUI D6). Empty until a file is opened.
     std::filesystem::path last_dir_;

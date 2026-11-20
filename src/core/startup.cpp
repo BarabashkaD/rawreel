@@ -6,6 +6,7 @@
 #include <format>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -14,15 +15,12 @@
 #include "dvv/base/environment.h"
 #include "dvv/base/paths.h"
 #include "dvv/base/utf8.h"
+#include "dvv/media/source_factory.h"
 
 namespace rawreel {
 
-Startup startComponents(const dvv::components::FfmpegLoadOptions& options) {
-    Startup startup;
-    startup.ffmpeg = dvv::components::loadFfmpeg(options);
-    dvv::components::addFfmpegCapabilities(startup.ffmpeg, startup.caps);
-    startup.components = dvv::ComponentRegistry::create(startup.caps);
-    return startup;
+Startup startComponents() {
+    return Startup{.components = dvv::ComponentRegistry::load()};
 }
 
 FfmpegOrigin currentFfmpegOrigin() {
@@ -97,34 +95,43 @@ std::string maskFolders(std::string text, const FfmpegOrigin& origin) {
     return masked;
 }
 
-std::string ffmpegStatusLine(const dvv::components::FfmpegStatus& status, StatusPaths paths) {
-    return ffmpegStatusLine(status, paths, currentFfmpegOrigin());
+std::string ffmpegStatusLine(const dvv::ModuleStatus* module, StatusPaths paths) {
+    return ffmpegStatusLine(module, paths, currentFfmpegOrigin());
 }
 
-std::string ffmpegStatusLine(const dvv::components::FfmpegStatus& status, StatusPaths paths,
+std::string ffmpegStatusLine(const dvv::ModuleStatus* module, StatusPaths paths,
                              const FfmpegOrigin& origin) {
+    if (module == nullptr) {
+        return "FFmpeg: not available (not in this build)";
+    }
     const bool hidden = paths == StatusPaths::Hidden;
-    if (!status.core) {
+    if (!std::ranges::contains(module->provides, dvv::components::FFMPEG_CAPABILITY)) {
         return std::format("FFmpeg: not available ({})", hidden
                                                              ? std::string("details in the log")
-                                                             : maskFolders(status.reason, origin));
+                                                             : maskFolders(module->reason, origin));
     }
     // Where the build comes from, never the folder it was loaded from (users share this line, and
     // the folder names their machine). The repository only for a bundled folder: any other build
-    // would send bug reports to the wrong place.
+    // would send bug reports to the wrong place. The module says when DVV_FFMPEG_DIR chose the
+    // folder; the environment is not read for this.
     std::string from;
-    if (!origin.ffmpegDirVariable.empty()) {
+    if (module->property(dvv::MODULE_VARIABLE_PROPERTY).has_value()) {
         from = " from DVV_FFMPEG_DIR";
-    } else if (!origin.appFolder.empty()) {
-        const std::filesystem::path directory = status.directory.lexically_normal();
+    } else if (const std::optional<std::string_view> folder =
+                   module->property(dvv::MODULE_DIRECTORY_PROPERTY);
+               folder && !origin.appFolder.empty()) {
+        const std::filesystem::path directory = dvv::pathFromText(*folder).lexically_normal();
         if (directory == (origin.appFolder / "ffmpeg").lexically_normal() ||
             directory == (origin.appFolder / ".." / "lib" / "ffmpeg").lexically_normal() ||
             directory == (origin.appFolder / ".." / "Frameworks" / "ffmpeg").lexically_normal()) {
             from = std::format(" from {}", CUSTOM_FFMPEG_URL);
         }
     }
-    std::string line = std::format("FFmpeg {} ({}){}", status.version, status.licence, from);
-    if (!status.lavfi) {
+    const std::optional<std::string_view> version = module->property(dvv::MODULE_VERSION_PROPERTY);
+    const std::optional<std::string_view> licence = module->property(dvv::MODULE_LICENCE_PROPERTY);
+    std::string line = std::format("FFmpeg {} ({}){}", version.value_or(std::string_view{}),
+                                   licence.value_or(std::string_view{}), from);
+    if (!std::ranges::contains(module->provides, dvv::components::FFMPEG_LAVFI_CAPABILITY)) {
         line += ", lavfi not available";
     }
     return line;
@@ -132,26 +139,63 @@ std::string ffmpegStatusLine(const dvv::components::FfmpegStatus& status, Status
 
 namespace {
 
-// `text` + "; " + the FFmpeg status line when FFmpeg is the likely reason (design v2 §4.6).
-std::string withFfmpegStatus(std::string text, const dvv::Error& error, std::string_view uri,
-                             const dvv::components::FfmpegStatus& status, StatusPaths paths) {
-    const bool missing = !status.core || (uri.starts_with("lavfi:") && !status.lavfi);
-    if (error.code == dvv::Errc::Unsupported && missing) {
-        text += "; " + ffmpegStatusLine(status, paths);
+// "; " + the status line of each module that withholds a capability an unavailable Source
+// provider misses, when `error` is the factory's no-match (design v2 §4.6); empty otherwise.
+std::string moduleSuffix(const dvv::Error& error, std::span<const dvv::ModuleStatus> modules,
+                         std::span<const dvv::ComponentStatus> providers, StatusPaths paths) {
+    std::string suffix;
+    if (!dvv::media::isNoProviderMatch(error)) {
+        return suffix;
     }
-    return text;
+    for (const dvv::ModuleStatus& module : modules) {
+        const bool withholds =
+            std::ranges::any_of(providers, [&module](const dvv::ComponentStatus& provider) {
+                return provider.unavailable &&
+                       std::ranges::contains(module.withheld, provider.unavailable->capability);
+            });
+        if (withholds) {
+            suffix += "; " + ffmpegStatusLine(&module, paths);
+        }
+    }
+    return suffix;
+}
+
+// The Source providers of `startup`'s registry, available or not; empty without a registry.
+std::vector<dvv::ComponentStatus> sourceProviders(const Startup& startup) {
+    if (!startup.components) {
+        return {};
+    }
+    return startup.components->list<dvv::media::ISourceProvider>();
+}
+
+// The modules of `startup`'s registry; empty without a registry.
+std::span<const dvv::ModuleStatus> modulesOf(const Startup& startup) {
+    if (!startup.components) {
+        return {};
+    }
+    return startup.components->modules();
 }
 
 }  // namespace
 
-std::string openErrorText(const dvv::Error& error, std::string_view uri,
-                          const dvv::components::FfmpegStatus& status, StatusPaths paths) {
-    return withFfmpegStatus(error.describe(), error, uri, status, paths);
+std::string openErrorText(const dvv::Error& error, std::span<const dvv::ModuleStatus> modules,
+                          std::span<const dvv::ComponentStatus> providers, StatusPaths paths) {
+    return error.describe() + moduleSuffix(error, modules, providers, paths);
 }
 
-std::string openErrorMessage(const dvv::Error& error, std::string_view uri,
-                             const dvv::components::FfmpegStatus& status) {
-    return withFfmpegStatus(error.message, error, uri, status, StatusPaths::Shown);
+std::string openErrorText(const dvv::Error& error, const Startup& startup, StatusPaths paths) {
+    const std::vector<dvv::ComponentStatus> providers = sourceProviders(startup);
+    return openErrorText(error, modulesOf(startup), providers, paths);
+}
+
+std::string openErrorMessage(const dvv::Error& error, std::span<const dvv::ModuleStatus> modules,
+                             std::span<const dvv::ComponentStatus> providers) {
+    return error.message + moduleSuffix(error, modules, providers, StatusPaths::Shown);
+}
+
+std::string openErrorMessage(const dvv::Error& error, const Startup& startup) {
+    const std::vector<dvv::ComponentStatus> providers = sourceProviders(startup);
+    return openErrorMessage(error, modulesOf(startup), providers);
 }
 
 }  // namespace rawreel

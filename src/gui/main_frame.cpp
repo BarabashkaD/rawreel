@@ -55,6 +55,7 @@
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/gpu_info_json.h"
 #include "dvv/media/types.h"
+#include "dvv/registry/module.h"
 #include "gui/about.h"
 #include "gui/app.h"
 #include "gui/app_icon.h"
@@ -1627,8 +1628,11 @@ void MainFrame::onFormatNeeded(std::uint32_t slot, const dvv::media::SourceReque
                  openDetection(uri, candidates.candidates, reason).text);
     // Design v2 §4.6: a container file without FFmpeg is any unknown file (the M3 D21 dialog),
     // plus the FFmpeg status in the log.
-    if (const Startup& startup = wxGetApp().startup(); !startup.ffmpeg.core) {
-        DVV_LOG_TEXT(dvv::LogLevel::Info, ffmpegStatusLine(startup.ffmpeg));
+    if (const dvv::ModuleStatus* const ffmpeg =
+            wxGetApp().startup().components->module(dvv::components::FFMPEG_MODULE);
+        ffmpeg == nullptr ||
+        std::ranges::contains(ffmpeg->withheld, dvv::components::FFMPEG_CAPABILITY)) {
+        DVV_LOG_TEXT(dvv::LogLevel::Info, ffmpegStatusLine(ffmpeg));
     }
     // D21: one dialog at a time; the next one after the current one closes.
     // Open Recent spec §5: the dialog's OK opens with the entry of the open that asked.
@@ -1644,10 +1648,10 @@ void MainFrame::onError(const dvv::Error& error) {
     if (closing_) {
         return;
     }
-    // Design v2 §4.6: the FFmpeg status is appended when FFmpeg is unavailable. The event carries
-    // no URI, so the last open request's URI stands in (a lavfi: open without avfilter). The log
-    // keeps the full status line; the infobar shows no directory or path.
-    const dvv::components::FfmpegStatus& ffmpeg = wxGetApp().startup().ffmpeg;
+    // Design v2 §4.6: the FFmpeg status is appended when FFmpeg withholds what an unavailable
+    // Source provider misses. The log keeps the full status line; the infobar shows no directory
+    // or path.
+    const Startup& startup = wxGetApp().startup();
     // M4 GUI D7 C: a scheme-less text that failed as a missing file was probably meant as a URI.
     // The hint and the Format... button are for open errors only; an open closes the
     // stream first (D3), so an error while a stream is shown is a playback error.
@@ -1656,10 +1660,9 @@ void MainFrame::onError(const dvv::Error& error) {
         sizing_uri_.clear();  // view zoom design §3.3: the failed open sizes nothing
     }
     const std::string_view typed = open_error ? std::string_view(last_open_uri_) : "";
-    DVV_LOG_TEXT(dvv::LogLevel::Warn,
-                 withSchemeHint(openErrorText(error, last_open_uri_, ffmpeg), typed, error));
-    const std::string text = withSchemeHint(
-        openErrorText(error, last_open_uri_, ffmpeg, StatusPaths::Hidden), typed, error);
+    DVV_LOG_TEXT(dvv::LogLevel::Warn, withSchemeHint(openErrorText(error, startup), typed, error));
+    const std::string text =
+        withSchemeHint(openErrorText(error, startup, StatusPaths::Hidden), typed, error);
     // A loss, or a failed makeStack while no stack is installed (§7 "infobar keeps Reopen").
     // Session events arrive in the Session's order and stackChanged({}, 0) comes before
     // error(DeviceLost), so stack_lost_ is current.
