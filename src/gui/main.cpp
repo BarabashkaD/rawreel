@@ -20,7 +20,9 @@
 #include "dvv/base/leak_check.h"
 #include "dvv/base/log.h"
 #include "gui/app.h"
-#if !defined(_WIN32) && !defined(__APPLE__)
+#if defined(_WIN32)
+#include "core/utf8_arguments_win32.h"
+#elif !defined(__APPLE__)
 #include "gui/gui_platform.h"
 #endif
 
@@ -74,11 +76,12 @@ int run(std::span<const std::string_view> args, StartWx start_wx) {
 // wmain with /ENTRY:wmainCRTStartup: a GUI-subsystem program with wide arguments (§5.6).
 int wmain(int argc, wchar_t** argv) {
     try {
-        std::vector<std::string> utf8;
-        for (int i = 1; i < argc; ++i) {
-            utf8.push_back(wxString(argv[i]).utf8_string());
+        const dvv::Result<std::vector<std::string>> utf8 = rawreel::utf8Arguments(argc, argv);
+        if (!utf8) {
+            std::fprintf(stderr, "rawreel-gui: %s\n", utf8.error().message.c_str());
+            return rawreel::exit_code::BAD_ARGUMENTS;
         }
-        const std::vector<std::string_view> args(utf8.begin(), utf8.end());
+        const std::vector<std::string_view> args(utf8->begin() + 1, utf8->end());
         return run(args, [&argc, argv] { return wxEntry(argc, argv); });
     } catch (const std::exception& error) {
         std::fprintf(stderr, "rawreel-gui: %s\n", error.what());

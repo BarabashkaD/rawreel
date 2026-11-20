@@ -1,7 +1,5 @@
 # os-blocks baseline, written by dvv-build tools/os-blocks.cmake; it may only shrink
 1	src/cli/main.cpp
-1	src/cli/utf8_arguments.cpp
-1	src/cli/utf8_arguments.h
 1	src/core/commands.cpp
 1	src/core/gui_arguments.cpp
 2	src/core/settings_claim.cpp

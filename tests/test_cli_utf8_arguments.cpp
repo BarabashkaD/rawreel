@@ -4,14 +4,14 @@
 #include <array>
 #include <string>
 
-#include "cli/utf8_arguments.h"
+#include "core/utf8_arguments_win32.h"
 #include "dvv/base/error.h"
 
 TEST_CASE("utf8 arguments: conversion") {
     std::wstring program = L"rawreel-cli";
     std::wstring text = L"ä日本\U0001F39E";  // ä日本🎞
     std::array<wchar_t*, 2> argv{program.data(), text.data()};
-    const auto converted = rawreel::cli::utf8Arguments(2, argv.data());
+    const auto converted = rawreel::utf8Arguments(2, argv.data());
     REQUIRE(converted.has_value());
     REQUIRE(converted->size() == 2);
     CHECK((*converted)[0] == "rawreel-cli");
@@ -19,7 +19,7 @@ TEST_CASE("utf8 arguments: conversion") {
 
     std::wstring unpaired = L"\xD800";
     std::array<wchar_t*, 1> bad{unpaired.data()};
-    const auto failed = rawreel::cli::utf8Arguments(1, bad.data());
+    const auto failed = rawreel::utf8Arguments(1, bad.data());
     REQUIRE_FALSE(failed.has_value());
     CHECK(failed.error().code == dvv::Errc::Format);
 }

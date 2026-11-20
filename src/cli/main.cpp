@@ -14,7 +14,7 @@
 #include "cli/arguments.h"
 #include "cli/commands.h"
 #include "cli/output.h"
-#include "cli/utf8_arguments.h"
+#include "core/utf8_arguments_win32.h"
 #include "core/vulkan_driver.h"
 #include "dvv/base/json.h"
 #include "dvv/base/leak_check.h"
@@ -84,7 +84,7 @@ int wmain(int argc, wchar_t** argv) {
             DVV_LOG_TEXT(dvv::LogLevel::Warn, crash_warning);  // now that the sinks exist
         }
         rawreel::CrashHandler::crashIfRequested();
-        auto all = rawreel::cli::utf8Arguments(argc, argv);
+        auto all = rawreel::utf8Arguments(argc, argv);
         if (!all) {
             std::println(stderr, "error: {}", all.error().message);
             return rawreel::cli::exit_code::BAD_ARGUMENTS;

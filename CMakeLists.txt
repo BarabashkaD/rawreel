@@ -72,6 +72,8 @@ add_library(rawreel_core STATIC
     src/core/svg_colour.cpp
     src/core/timer.cpp
     src/core/view.cpp)
+# The UTF-16 to UTF-8 arguments of the Windows entries: src/core/utf8_arguments_win32.cpp.
+dvv_os_sources(rawreel_core OPTIONAL src/core/utf8_arguments)
 target_include_directories(rawreel_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # core/native_os.h: the OS this build targets, from the system name (dvv-build's split).
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
@@ -101,7 +103,7 @@ endfunction()
 
 # rawreel_cli_core: everything of rawreel-cli but its entry point, so the unit tests use it.
 add_library(rawreel_cli_core STATIC
-    src/cli/arguments.cpp src/cli/commands.cpp src/cli/output.cpp src/cli/utf8_arguments.cpp)
+    src/cli/arguments.cpp src/cli/commands.cpp src/cli/output.cpp)
 target_include_directories(rawreel_cli_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # rawreel_core: the config file loader (core/config.h).
 target_link_libraries(rawreel_cli_core PUBLIC rawreel_core dvv::base dvv::media
