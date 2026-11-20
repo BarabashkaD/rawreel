@@ -3397,8 +3397,8 @@ SelfTestStep settingsNonUtf8FolderStep(SelfTest* test,
     };
     auto passed = [test, state, bytes](std::string& seen) {
         App& app = test->app();
-        const std::string kept = app.config().log.file.folder.native();
-        const bool same = kept == bytes;
+        const bool same =
+            app.config().log.file.folder.native() == dvv::pathFromText(bytes).native();
         app.setLogFileConfig(app.config().log.file.enabled, state->target);
         seen = std::format("hook ran {}, the stored folder has the same bytes {}", state->hookRan,
                            same);

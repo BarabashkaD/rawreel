@@ -51,8 +51,10 @@ TEST_SUITE("vulkan_driver") {
         const Bundle bundle;
         bundle.install();
         const std::optional<fs::path> result = rawreel::bundledDriverManifest(bundle.exeDir);
-        REQUIRE(result.has_value());
-        CHECK(result->lexically_normal() == bundle.manifest.lexically_normal());
+        CHECK(result.has_value());
+        if (result) {
+            CHECK(result->lexically_normal() == bundle.manifest.lexically_normal());
+        }
     }
 
     TEST_CASE("no manifest, no path") {
