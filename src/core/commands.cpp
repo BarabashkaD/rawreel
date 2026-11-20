@@ -23,14 +23,14 @@ constexpr auto HOOK = KeyRoute::CharHook;
 // hook (the keys '=', '+' and the keypad need normaliseKey).
 struct ViewKeys {
     KeyRoute route;
-    std::string_view fit_label;
-    std::string_view actual_label;
-    std::string_view zoom_in_label;
-    std::string_view zoom_out_label;
-    std::string_view resize_label;
-    KeyChord fit_key;
-    KeyChord actual_key;
-    KeyChord resize_key;
+    std::string_view fitLabel;
+    std::string_view actualLabel;
+    std::string_view zoomInLabel;
+    std::string_view zoomOutLabel;
+    std::string_view resizeLabel;
+    KeyChord fitKey;
+    KeyChord actualKey;
+    KeyChord resizeKey;
 };
 constexpr ViewKeys MAC_VIEW_KEYS{KeyRoute::Accelerator,
                                  "Zoom to Fit",
@@ -91,16 +91,16 @@ constexpr std::array<CommandInfo, COMMAND_COUNT> TABLE{{
      false},
     {Command::Loop, "loop", "Playback", "Loop", "Turn looping at the end on or off", plainKey('L'),
      HOOK, false},
-    {Command::FitToWindow, "fit_to_window", "View", VIEW_KEYS.fit_label,
-     "Fit the clip to the window", VIEW_KEYS.fit_key, VIEW_KEYS.route, false},
-    {Command::ActualSize, "actual_size", "View", VIEW_KEYS.actual_label,
-     "Show one clip pixel per screen pixel", VIEW_KEYS.actual_key, VIEW_KEYS.route, false},
-    {Command::ZoomIn, "zoom_in", "View", VIEW_KEYS.zoom_in_label, "Zoom in", chord(Key::Plus, true),
+    {Command::FitToWindow, "fit_to_window", "View", VIEW_KEYS.fitLabel,
+     "Fit the clip to the window", VIEW_KEYS.fitKey, VIEW_KEYS.route, false},
+    {Command::ActualSize, "actual_size", "View", VIEW_KEYS.actualLabel,
+     "Show one clip pixel per screen pixel", VIEW_KEYS.actualKey, VIEW_KEYS.route, false},
+    {Command::ZoomIn, "zoom_in", "View", VIEW_KEYS.zoomInLabel, "Zoom in", chord(Key::Plus, true),
      VIEW_KEYS.route, false},
-    {Command::ZoomOut, "zoom_out", "View", VIEW_KEYS.zoom_out_label, "Zoom out",
+    {Command::ZoomOut, "zoom_out", "View", VIEW_KEYS.zoomOutLabel, "Zoom out",
      chord(Key::Minus, true), VIEW_KEYS.route, false},
     {Command::ResizeWindowToActualSize, "resize_window_to_actual_size", "View",
-     VIEW_KEYS.resize_label, "Resize the window to the clip at actual size", VIEW_KEYS.resize_key,
+     VIEW_KEYS.resizeLabel, "Resize the window to the clip at actual size", VIEW_KEYS.resizeKey,
      VIEW_KEYS.route, false},
     {Command::Format, "format", "View", "Format...",
      "Choose the pixel format, size, frame rate and colour of the stream", std::nullopt, ACC,
