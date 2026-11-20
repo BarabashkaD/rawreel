@@ -32,7 +32,6 @@
 #include "dvv/registry/capabilities.h"
 #include "dvv/registry/component_info.h"
 #include "dvv/registry/component_registry.h"
-#include "dvv/registry/parameters.h"
 
 namespace rawreel::testing {
 
@@ -197,17 +196,11 @@ private:
 class TestSourceProvider final : public dvv::media::ISourceProvider,
                                  public dvv::Managed<TestSourceProvider> {
 public:
-    TestSourceProvider(dvv::CreationKey<dvv::ComponentRegistry> key,
-                       const dvv::ParameterValues& /*values*/) noexcept
+    explicit TestSourceProvider(dvv::CreationKey<dvv::ComponentRegistry> key) noexcept
         : Managed(std::move(key)) {}
 
     static dvv::ComponentInfo info() noexcept {
-        return {
-            .id = "test", .name = "Session test sources", .kind = dvv::Kind::Source, .version = 1};
-    }
-    static const dvv::ParameterSchema& schema() {
-        static const dvv::ParameterSchema SCHEMA;
-        return SCHEMA;
+        return {.id = "test", .name = "Session test sources", .version = 1};
     }
     static std::expected<void, dvv::Unavailable> probe(const dvv::Capabilities& /*caps*/) {
         return {};

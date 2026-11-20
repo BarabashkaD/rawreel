@@ -35,7 +35,8 @@ add_library(rawreel_render STATIC
     src/render/display_state.cpp
     src/render/viewport_renderer.cpp)
 target_include_directories(rawreel_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(rawreel_render PUBLIC rawreel_core dvv::gpu dvv::base)
+target_link_libraries(rawreel_render PUBLIC rawreel_core dvv::base dvv::gpu dvv::platform
+                                            PRIVATE dvv::media)
 dvv_add_shaders(rawreel_render NAMESPACE rawreel_shaders SHADERS shaders/composite.slang)
 dvv_set_compiler_options(rawreel_render)
 
@@ -71,7 +72,6 @@ add_library(rawreel_core STATIC
     src/core/timer.cpp
     src/core/view.cpp)
 target_include_directories(rawreel_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(rawreel_core PUBLIC dvv::media)
 dvv_set_compiler_options(rawreel_core)
 
 # rawreel_dvv_version(<package> <out>): the version of a dvv package with its release stage
@@ -94,7 +94,8 @@ add_library(rawreel_cli_core STATIC
     src/cli/arguments.cpp src/cli/commands.cpp src/cli/output.cpp src/cli/utf8_arguments.cpp)
 target_include_directories(rawreel_cli_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # rawreel_core: the config file loader (core/config.h).
-target_link_libraries(rawreel_cli_core PUBLIC rawreel_core dvv::media)
+target_link_libraries(rawreel_cli_core PUBLIC rawreel_core dvv::base dvv::media
+                                       PRIVATE dvv::gpu dvv::registry dvv::components)
 dvv_set_compiler_options(rawreel_cli_core)
 
 # Versions for rawreel-cli --version and About (design M4 v2 D23), on rawreel_core so both use them.
@@ -109,8 +110,10 @@ target_compile_definitions(rawreel_core PRIVATE ${rawreel_versions})
 # handler (wx-free, so rawreel-cli uses it too).
 target_sources(rawreel_core PRIVATE src/core/startup.cpp src/core/version_text.cpp src/core/vulkan_driver.cpp
                                     src/gui/crash_handler.cpp)
-# dvv::components: dvv/components/ffmpeg.h and loadFfmpeg (dvv::ffmpeg); no FFmpeg is linked.
-target_link_libraries(rawreel_core PUBLIC dvv::components PRIVATE dvv::platform)
+# One edge per dvv library the headers or sources include. dvv::components: dvv/components/ffmpeg.h
+# (dvv::ffmpeg); no FFmpeg is linked.
+target_link_libraries(rawreel_core PUBLIC dvv::base dvv::registry dvv::media dvv::gpu dvv::platform
+                                          dvv::components)
 
 # rawreel_icon_resource(<target> <rc>), Windows: adds the resource script <rc>, which declares the
 # rawreel ICO group (app icon plan D4), to <target>. rc.exe finds
@@ -136,10 +139,10 @@ endfunction()
 # rawreel-cli (spec §10.3): console, no wx; built under every preset including the sanitizers.
 add_executable(rawreel_cli src/cli/main.cpp)
 set_target_properties(rawreel_cli PROPERTIES OUTPUT_NAME rawreel-cli)
-target_link_libraries(rawreel_cli PRIVATE rawreel_cli_core rawreel_core)
+target_link_libraries(rawreel_cli PRIVATE rawreel_cli_core rawreel_core dvv::base)
 dvv_link_components(rawreel_cli dvv::media_sources)
 # The dvv-components libraries (the ffmpeg component: providers ffmpeg and lavfi).
-dvv_components_link(rawreel_cli)
+dvv_link_enabled_components(rawreel_cli)
 dvv_set_compiler_options(rawreel_cli)
 if(WIN32)
     # The rawreel icon, the exe's only icon group (Explorer).
@@ -163,7 +166,8 @@ if(NOT DVV_SANITIZE)
     # §5.3) and the skim key (§6.4), shared by rawreel-gui and the panel lab.
     add_library(rawreel_panel STATIC src/gui/icons.cpp src/gui/skim_key.cpp
                 src/gui/timeline_strip.cpp src/gui/transport_bar.cpp)
-    target_link_libraries(rawreel_panel PUBLIC rawreel_core wx::core dvv::base)
+    target_link_libraries(rawreel_panel PUBLIC rawreel_core wx::core dvv::base
+                                         PRIVATE dvv::media)
     if(WIN32)
         target_sources(rawreel_panel PRIVATE src/gui/native_controls_msw.cpp)
         # native_controls_msw.cpp calls ShellExecuteW; dvv-base no longer links shell32.
@@ -200,8 +204,9 @@ if(NOT DVV_SANITIZE)
         src/gui/viewport.cpp)
     set_target_properties(rawreel_gui PROPERTIES OUTPUT_NAME rawreel-gui)
     # wx is an imported target, so its headers are SYSTEM includes (our /WX does not apply to them).
-    target_link_libraries(rawreel_gui PRIVATE rawreel_panel rawreel_render rawreel_core dvv::platform
-                                              dvv::gpu dvv::base wx::aui wx::core wx::base)
+    target_link_libraries(rawreel_gui PRIVATE rawreel_panel rawreel_render rawreel_core dvv::base
+                                              dvv::registry dvv::media dvv::gpu dvv::platform
+                                              dvv::components wx::aui wx::core wx::base)
     # The source providers (file, synthetic) are components linked into the program.
     dvv_link_components(rawreel_gui dvv::media_sources)
     dvv_set_compiler_options(rawreel_gui)
@@ -286,7 +291,7 @@ if(NOT DVV_SANITIZE)
     # player, for the manual checks and its --report self-check. A console program; no install()
     # rule: the lab is never packaged.
     add_executable(rawreel_panel_lab tools/panel_lab/panel_lab.cpp)
-    target_link_libraries(rawreel_panel_lab PRIVATE rawreel_panel)
+    target_link_libraries(rawreel_panel_lab PRIVATE rawreel_panel dvv::base)
     set_target_properties(rawreel_panel_lab PROPERTIES OUTPUT_NAME rawreel-panel-lab)
     if(WIN32)
         # The manifest (common controls v6, per-monitor DPI awareness v2) comes from wx.rc.
@@ -307,7 +312,7 @@ else()
     target_compile_definitions(rawreel_core PRIVATE RAWREEL_WX_VERSION="not part of this build")
 endif()
 if(TARGET rawreel_gui)
-    dvv_components_link(rawreel_gui)
+    dvv_link_enabled_components(rawreel_gui)
 endif()
 # Release symbols: the PDB named by file name only on Windows, a split .debug file on Linux
 # (packaging/symbols.cmake).
