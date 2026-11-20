@@ -24,14 +24,17 @@
 
 #include "core/session_types.h"
 #include "core/view.h"
+#include "dvv/base/log.h"
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
 #include "dvv/gpu/context_vulkan.h"
 #include "dvv/gpu/gpu_instance.h"
 #include "dvv/gpu/presenter_vulkan.h"
 #include "dvv/media/display.h"
+#include "dvv/media/display_vulkan.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/source_factory.h"
 #include "gpu_support.h"
 #include "render/composite_reference.h"
@@ -64,7 +67,7 @@ constexpr Rgba8 LIGHT_BG{217, 217, 217, 255};
 
 // A display view made by the GPU FrameStore through ToDisplay, and its host copy.
 struct DisplayFrame {
-    std::shared_ptr<const dvv::media::ReadLease> lease;
+    dvv::media::ReadLease lease;
     std::vector<std::uint16_t> host;
     PixelSize size{};
     [[nodiscard]] HostDisplayImage image() const {
@@ -73,7 +76,7 @@ struct DisplayFrame {
 };
 
 FrameSet frameSet(const DisplayFrame& frame, std::int64_t index, std::uint64_t epoch) {
-    return FrameSet{.index = index, .count = 1, .views = {frame.lease}, .epoch = epoch};
+    return FrameSet{.index = index, .count = 1, .views = {frame.lease.share()}, .epoch = epoch};
 }
 
 dvv::gpu::PresentFrameParams frameParams(PixelSize extent, dvv::gpu::PresentEncoding encoding,
@@ -164,8 +167,12 @@ public:
 
     [[nodiscard]] std::shared_ptr<dvv::gpu::ExecutionContext> context() const { return context_; }
 
-    // Frame 0 of `uri` as a display view, with its host copy.
-    [[nodiscard]] DisplayFrame displayFrame(std::string_view uri) {
+    [[nodiscard]] std::vector<dvv::media::LeaseInfo> outstandingLeases() const {
+        return store_->outstandingLeases();
+    }
+
+    // A source for `uri`, attached to the store.
+    [[nodiscard]] dvv::media::OriginId attach(std::string_view uri) {
         INFO("uri ", uri);
         auto parsed = dvv::parseUri(uri);
         REQUIRE(parsed);
@@ -177,29 +184,51 @@ public:
         REQUIRE(*source != nullptr);
         auto origin = store_->attach(std::shared_ptr<dvv::media::ISource>(std::move(*source)));
         REQUIRE_MESSAGE(origin, (origin ? std::string() : origin.error().describe()));
+        return *origin;
+    }
+
+    // Frame 0 of `uri` as a display view, with its host copy.
+    [[nodiscard]] DisplayFrame displayFrame(std::string_view uri) {
+        const dvv::media::OriginId origin = attach(uri);
         const std::optional<dvv::media::Domain> domain = store_->deviceDomain();
         REQUIRE(domain.has_value());
         DisplayFrame frame;
         if (domain) {
             auto lease =
-                dvv::syncWait(store_->acquire(dvv::media::FrameKey{.origin = *origin, .index = 0},
+                dvv::syncWait(store_->acquire(dvv::media::FrameKey{.origin = origin, .index = 0},
                                               dvv::media::displayView(*domain), *env_.cpu));
             REQUIRE_MESSAGE(lease, (lease ? std::string() : lease.error().describe()));
-            frame.lease = std::make_shared<const dvv::media::ReadLease>(std::move(*lease));
+            frame.lease = std::move(*lease);
         }
-        const auto* binding = std::get_if<dvv::media::VkImageB>(&frame.lease->binding());
-        REQUIRE(binding != nullptr);
-        REQUIRE(binding->planeCount == 1);
-        const std::shared_ptr<dvv::gpu::GpuImage>& plane = binding->planes[0];
-        REQUIRE(plane != nullptr);
-        REQUIRE(dvv::gpu::vulkanFormat(*plane) == VK_FORMAT_R16G16B16A16_SFLOAT);
-        frame.size = {plane->width(), plane->height()};
+        dvv::gpu::GpuImage* const image = dvv::media::vulkan::image(frame.lease, 0);
+        REQUIRE(image != nullptr);
+        REQUIRE(dvv::media::vulkan::image(frame.lease, 1) == nullptr);  // one plane
+        REQUIRE(dvv::gpu::vulkanFormat(*image) == dvv::media::DISPLAY_IMAGE_FORMAT);
+        frame.size = {image->width(), image->height()};
         REQUIRE(frame.size == IMAGE);
+        // No owner: frame.lease keeps the image alive while it is read.
+        const std::shared_ptr<dvv::gpu::GpuImage> plane(std::shared_ptr<void>(), image);
         auto bytes = rawreel::testing::readImage(*context_, *env_.cpu, plane, 8);
         REQUIRE_MESSAGE(bytes, (bytes ? std::string() : bytes.error().describe()));
         frame.host.resize(bytes->size() / sizeof(std::uint16_t));
         std::memcpy(frame.host.data(), bytes->data(), frame.host.size() * sizeof(std::uint16_t));
         return frame;
+    }
+
+    // Frame 0 of `uri` as host planes (its original's unpacked planes in host memory): a view
+    // that is not a display view.
+    [[nodiscard]] dvv::media::ReadLease hostPlanesLease(std::string_view uri) {
+        const dvv::media::OriginId origin = attach(uri);
+        auto read = dvv::syncWait(store_->acquireOriginal(
+            dvv::media::FrameKey{.origin = origin, .index = 0},
+            dvv::media::OriginalRequest{.domain = store_->hostDomain()}, *env_.cpu));
+        REQUIRE_MESSAGE(read, (read ? std::string() : read.error().describe()));
+        dvv::media::ReadLease lease;
+        if (read) {
+            lease = read->lease().share();
+        }
+        REQUIRE(lease.planes() != nullptr);
+        return lease;
     }
 
     void submit(dvv::gpu::RecordFunction record) {
@@ -241,6 +270,25 @@ std::unique_ptr<ViewportRenderer> makeRenderer(
     REQUIRE_MESSAGE(renderer, (renderer ? std::string() : renderer.error().describe()));
     return std::move(*renderer);
 }
+
+// Collects the Error lines logged while it lives; the other sinks stay.
+class ErrorLog {
+public:
+    ErrorLog() { dvv::Logger::instance().addSink(sink_, dvv::LogLevel::Error); }
+    ErrorLog(const ErrorLog&) = delete;
+    ErrorLog& operator=(const ErrorLog&) = delete;
+    ErrorLog(ErrorLog&&) = delete;
+    ErrorLog& operator=(ErrorLog&&) = delete;
+    ~ErrorLog() { dvv::Logger::instance().setSinkLevel(*sink_, dvv::LogLevel::Off); }
+
+    [[nodiscard]] std::vector<std::string> lines() const {
+        dvv::Logger::instance().flush();
+        return sink_->lines();
+    }
+
+private:
+    std::shared_ptr<dvv::MemorySink> sink_ = std::make_shared<dvv::MemorySink>();
+};
 
 }  // namespace
 
@@ -456,6 +504,54 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a FrameSet of another epoch draws
     CHECK(wrong == 0);
     CHECK(renderer->lastRecorded().index == -1);
     CHECK(renderer->lastRecorded().zoom == 0.0);
+}
+
+TEST_CASE_FIXTURE(CompositorTest,
+                  "compositor: a non-display view draws the background without an error") {
+    const auto renderer = makeRenderer(context(), 1);
+    const dvv::media::ReadLease planes = hostPlanesLease(G);
+    const ErrorLog errors;
+    const PixelSize viewport{211, 97};
+    const FrameSet frames{.index = 0, .count = 1, .views = {planes.share()}, .epoch = 1};
+    const std::vector<std::byte> bytes = renderAndRead(*renderer, viewport, frames, DARK);
+    std::size_t wrong = 0;
+    for (std::uint32_t y = 0; y < viewport.height; ++y) {
+        for (std::uint32_t x = 0; x < viewport.width; ++x) {
+            wrong += pixelAt(bytes, viewport, x, y) == DARK_BG ? 0 : 1;
+        }
+    }
+    CHECK(wrong == 0);
+    CHECK(renderer->lastRecorded().index == -1);
+    CHECK(errors.lines().empty());
+}
+
+TEST_CASE_FIXTURE(CompositorTest,
+                  "the record function keeps the shown image through its lease share") {
+    const auto renderer = makeRenderer(context(), 1);
+    dvv::gpu::RecordFunction record;
+    std::shared_ptr<dvv::gpu::GpuImage> output;
+    std::vector<std::uint16_t> host;
+    {
+        const DisplayFrame g = displayFrame(G);
+        host = g.host;
+        auto frame = renderer->render(IMAGE, frameSet(g, 0, 1), DARK);
+        REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
+        if (frame) {
+            record = std::move(frame->record);
+            output = frame->image;
+        }
+    }  // the FrameSet and the frame's own lease are gone; the record function holds a share
+    const std::vector<dvv::media::LeaseInfo> leases = outstandingLeases();
+    REQUIRE(leases.size() == 1);
+    CHECK(std::string_view(leases.front().where.file_name()).ends_with("viewport_renderer.cpp"));
+    REQUIRE(static_cast<bool>(record));
+    REQUIRE(output != nullptr);
+    submit(std::move(record));
+    const std::vector<std::byte> bytes = read(output);
+    const HostDisplayImage shown{.width = IMAGE.width, .height = IMAGE.height, .rgba16f = host};
+    CHECK(mismatches(bytes,
+                     rawreel::compositeConstants(DARK, ViewTransform::fit(IMAGE, IMAGE), false),
+                     shown) == 0);
 }
 
 TEST_CASE_FIXTURE(CompositorTest, "an sRGB-encoding presenter skips the compositor's encode") {

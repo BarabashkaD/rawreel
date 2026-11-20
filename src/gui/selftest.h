@@ -135,7 +135,7 @@ public:
                         .at = Clock::now()};
         for (std::uint32_t k = 0; k < frames.count; ++k) {
             const auto& view = frames.views[k];
-            record.viewsMatch = record.viewsMatch && view && view->key().index == frames.index;
+            record.viewsMatch = record.viewsMatch && view && view.key().index == frames.index;
         }
         {
             const std::scoped_lock lock(mutex_);

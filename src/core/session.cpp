@@ -89,7 +89,7 @@ struct RequestSlot {
     dvv::media::ViewSpec view{};
 };
 
-using Leases = std::array<std::shared_ptr<const dvv::media::ReadLease>, MAX_STREAMS>;
+using Leases = std::array<dvv::media::ReadLease, MAX_STREAMS>;
 using OpenResult =
     dvv::Result<std::variant<std::unique_ptr<dvv::media::ISource>, dvv::media::Ambiguous>>;
 
@@ -412,8 +412,7 @@ public:
         if (kept && !ready_.contains(index)) {
             Leases leases{};
             for (std::size_t slot = 0; slot < results.size() && slot < leases.size(); ++slot) {
-                leases[slot] =
-                    std::make_shared<const dvv::media::ReadLease>(std::move(*results[slot]));
+                leases[slot] = std::move(*results[slot]);
             }
             ready_.emplace(index, std::move(leases));
         }
@@ -600,7 +599,9 @@ private:
         FrameSet frames;
         frames.index = index;
         frames.count = static_cast<std::uint32_t>(streams_.size());
-        frames.views = entry->second;
+        for (std::size_t s = 0; s < MAX_STREAMS; ++s) {
+            frames.views[s] = entry->second[s].share();
+        }
         frames.epoch = stack_epoch_;
         ++shown_;
         options_.sink->show(std::move(frames));
@@ -1036,6 +1037,14 @@ dvv::Task<void> requestFrames(std::shared_ptr<SessionCore> core,
 }
 
 }  // namespace detail
+
+FrameSet FrameSet::share(std::source_location where) const {
+    FrameSet shared{.index = index, .count = count, .views = {}, .epoch = epoch};
+    for (std::size_t s = 0; s < MAX_STREAMS; ++s) {
+        shared.views[s] = views[s].share(where);
+    }
+    return shared;
+}
 
 namespace {
 

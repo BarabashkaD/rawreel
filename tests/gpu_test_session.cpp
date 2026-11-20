@@ -16,10 +16,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
-#include <variant>
 #include <vector>
-
-#include <vulkan/vulkan_core.h>
 
 #include "core/session.h"
 #include "core/session_types.h"
@@ -30,8 +27,10 @@
 #include "dvv/gpu/gpu_instance.h"
 #include "dvv/gpu/testing/fault_injection.h"
 #include "dvv/media/display.h"
+#include "dvv/media/display_vulkan.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
+#include "dvv/media/frame_vulkan.h"
 #include "gpu_support.h"
 #include "session_fixture.h"
 
@@ -52,16 +51,16 @@ constexpr std::int64_t S_FRAMES = 120;
 
 // The shown views are ToDisplay's images: one RGBA16F storage image per frame.
 bool isDisplayImage(const FrameSet& frames) {
-    if (frames.count != 1 || !frames.views[0] || !*frames.views[0]) {
+    if (frames.count != 1 || !frames.views[0]) {
         return false;
     }
-    const dvv::media::ReadLease& lease = *frames.views[0];
+    const dvv::media::ReadLease& lease = frames.views[0];
     if (lease.view().format != dvv::media::displayFormat()) {
         return false;
     }
-    const auto* image = std::get_if<dvv::media::VkImageB>(&lease.binding());
-    return image != nullptr && image->planeCount == 1 && image->planes[0] != nullptr &&
-           dvv::gpu::vulkanFormat(*image->planes[0]) == VK_FORMAT_R16G16B16A16_SFLOAT;
+    const dvv::gpu::GpuImage* const image = dvv::media::vulkan::image(lease, 0);
+    return image != nullptr && dvv::media::vulkan::image(lease, 1) == nullptr &&
+           dvv::gpu::vulkanFormat(*image) == dvv::media::DISPLAY_IMAGE_FORMAT;
 }
 
 bool waitUntil(const std::function<bool()>& predicate, std::chrono::milliseconds timeout) {

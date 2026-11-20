@@ -1,8 +1,8 @@
 #pragma once
 
-// Value types and interfaces of the Session (design M3 v2 §4.3). Leases are shared, so the
-// presenter thread can keep using a FrameSet while a newer one arrives; events never carry strong
-// references to managed objects (D10).
+// Value types and interfaces of the Session (design M3 v2 §4.3). Each holder of a FrameSet has
+// its own counted lease shares, so the presenter thread can keep using a FrameSet while a newer
+// one arrives; events never carry strong references to managed objects (D10).
 
 #include <array>
 #include <atomic>
@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <source_location>
 #include <string>
 #include <vector>
 
@@ -43,8 +44,12 @@ struct StreamInfo {
 struct FrameSet {
     std::int64_t index = -1;
     std::uint32_t count = 0;
-    std::array<std::shared_ptr<const dvv::media::ReadLease>, MAX_STREAMS> views{};
-    std::uint64_t epoch = 0;  // the Session's stackEpoch (D7)
+    std::array<dvv::media::ReadLease, MAX_STREAMS> views{};  // each holder has its own lease
+    std::uint64_t epoch = 0;                                 // the Session's stackEpoch (D7)
+    // A second, counted set on the same views (index, count, epoch copied), listed in
+    // outstandingLeases() at `where`. FrameSet is move-only (ReadLease is).
+    [[nodiscard]] FrameSet share(
+        std::source_location where = std::source_location::current()) const;
 };
 struct SessionStatus {
     PlayerStatus player;

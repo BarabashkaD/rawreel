@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 
 #include <vulkan/vulkan_core.h>
 
@@ -49,7 +50,7 @@ public:
     // Records again only when the snapshot version, the extent or the sRGB rule changed, or
     // !params.previousFrameCompleted; otherwise the same image and no commands. FrameSets of
     // another epoch (or without a usable display view) draw the background only. The record
-    // function holds the FrameSet's leases until the submission has completed.
+    // function holds a share of the FrameSet's leases until the submission has completed.
     [[nodiscard]] dvv::Result<dvv::gpu::PresentFrame> frame(
         const dvv::gpu::PresentFrameParams& params, const DisplaySnapshot& snapshot);
     // Tests: always records, into a new image of `extent`, and returns it (no sRGB rule).
@@ -67,6 +68,12 @@ private:
     [[nodiscard]] dvv::gpu::RecordFunction recordComposite(
         const std::shared_ptr<dvv::gpu::GpuImage>& output, dvv::platform::PixelSize extent,
         const FrameSet& frames, const CompositeParams& params, bool skip_encode);
+    // The display image of a lease, or null when the lease is not a display view (one
+    // DISPLAY_IMAGE_FORMAT plane in GENERAL). A display view bound otherwise logs one Error per
+    // `epoch` (FrameSet::epoch). Presenter thread only. The image is valid while the lease (or a
+    // share of it) lives.
+    [[nodiscard]] dvv::gpu::GpuImage* displayImageOf(const dvv::media::ReadLease& lease,
+                                                     std::uint64_t epoch);
 
     std::shared_ptr<dvv::gpu::ExecutionContext> context_;
     std::uint64_t epoch_;
@@ -77,6 +84,8 @@ private:
     std::uint64_t version_ = 0;
     bool skip_encode_ = false;
     bool logged_srgb_ = false;
+    // Presenter thread only (no lock): the epoch whose Error is logged.
+    std::optional<std::uint64_t> reported_binding_epoch_;
     mutable std::mutex recorded_mutex_;
     RecordedInfo recorded_;
 };
