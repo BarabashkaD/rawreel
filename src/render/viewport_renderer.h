@@ -3,15 +3,12 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
-
-#include <vulkan/vulkan_core.h>
+#include <optional>
 
 #include "dvv/base/error.h"
-#include "dvv/gpu/compute_pipeline.h"
-#include "dvv/gpu/execution_context.h"
-#include "dvv/gpu/presenter.h"
-#include "dvv/gpu/resources.h"
-#include "dvv/platform/native_window.h"
+#include "dvv/gpu/context_vulkan.h"
+#include "dvv/gpu/presenter_vulkan.h"
+#include "dvv/platform/pixel_size.h"
 #include "render/display_state.h"
 
 namespace rawreel {
@@ -39,7 +36,7 @@ class ViewportRenderer {
 
 public:
     // `epoch`: the Session stackEpoch of `context` (ISessionEvents::stackChanged). Errors of
-    // createComputePipeline and createImage pass through (DeviceLost on a lost context).
+    // the free createComputePipeline and createImage pass through (DeviceLost on a lost context).
     [[nodiscard]] static dvv::Result<std::unique_ptr<ViewportRenderer>> create(
         std::shared_ptr<dvv::gpu::ExecutionContext> context, std::uint64_t epoch);
     ViewportRenderer(Private key, std::shared_ptr<dvv::gpu::ExecutionContext> context,
@@ -47,13 +44,13 @@ public:
                      std::shared_ptr<dvv::gpu::GpuImage> dummy) noexcept;
 
     // The PresentFrame for the presenter: records the composite of snapshot.frames.views[0] with
-    // resolveView(snapshot.params.view, info.extent, display image size) and snapshot.params.
+    // resolveView(snapshot.params.view, params.extent, display image size) and snapshot.params.
     // Records again only when the snapshot version, the extent or the sRGB rule changed, or
-    // !info.previousFrameCompleted; otherwise the same image and no commands. FrameSets of another
-    // epoch (or without a usable display view) draw the background only. The record function holds
-    // the FrameSet's leases until the submission has completed.
-    [[nodiscard]] dvv::Result<dvv::gpu::PresentFrame> frame(const dvv::gpu::PresentFrameInfo& info,
-                                                            const DisplaySnapshot& snapshot);
+    // !params.previousFrameCompleted; otherwise the same image and no commands. FrameSets of
+    // another epoch (or without a usable display view) draw the background only. The record
+    // function holds a share of the FrameSet's leases until the submission has completed.
+    [[nodiscard]] dvv::Result<dvv::gpu::PresentFrame> frame(
+        const dvv::gpu::PresentFrameParams& params, const DisplaySnapshot& snapshot);
     // Tests: always records, into a new image of `extent`, and returns it (no sRGB rule).
     [[nodiscard]] dvv::Result<dvv::gpu::PresentFrame> render(dvv::platform::PixelSize extent,
                                                              const FrameSet& frames,
@@ -62,6 +59,9 @@ public:
     // only (selftests); read under recorded_mutex_.
     [[nodiscard]] RecordedInfo lastRecorded() const;
     [[nodiscard]] std::uint64_t epoch() const noexcept { return epoch_; }
+    [[nodiscard]] const std::shared_ptr<dvv::gpu::ExecutionContext>& context() const noexcept {
+        return context_;
+    }
 
 private:
     [[nodiscard]] dvv::Result<std::shared_ptr<dvv::gpu::GpuImage>> makeOutput(
@@ -69,6 +69,12 @@ private:
     [[nodiscard]] dvv::gpu::RecordFunction recordComposite(
         const std::shared_ptr<dvv::gpu::GpuImage>& output, dvv::platform::PixelSize extent,
         const FrameSet& frames, const CompositeParams& params, bool skip_encode);
+    // The display image of a lease, or null when the lease is not a display view (one
+    // DISPLAY_IMAGE_FORMAT plane in GENERAL). A display view bound otherwise logs one Error per
+    // `epoch` (FrameSet::epoch). Presenter thread only. The image is valid while the lease (or a
+    // share of it) lives.
+    [[nodiscard]] dvv::gpu::GpuImage* displayImageOf(const dvv::media::ReadLease& lease,
+                                                     std::uint64_t epoch);
 
     std::shared_ptr<dvv::gpu::ExecutionContext> context_;
     std::uint64_t epoch_;
@@ -79,11 +85,17 @@ private:
     std::uint64_t version_ = 0;
     bool skip_encode_ = false;
     bool logged_srgb_ = false;
+    // Presenter thread only (no lock): the epoch whose Error is logged.
+    std::optional<std::uint64_t> reported_binding_epoch_;
     mutable std::mutex recorded_mutex_;
     RecordedInfo recorded_;
 };
 
-// B8G8R8A8_SRGB, R8G8B8A8_SRGB, A8B8G8R8_SRGB_PACK32.
-[[nodiscard]] bool isSrgbFormat(VkFormat format) noexcept;
+// The viewport's presenter: dvv::gpu::createPresenter (presenter_vulkan.h) with a frame provider
+// that takes one display snapshot per frame and records through `renderer`. `fail_for_test`
+// replaces each record function by one that throws (the injected "presenter" fault).
+[[nodiscard]] dvv::Result<std::unique_ptr<dvv::gpu::Presenter>> createViewportPresenter(
+    ViewportRenderer& renderer, std::shared_ptr<DisplayState> display,
+    dvv::gpu::PresenterOptions options, bool fail_for_test);
 
 }  // namespace rawreel

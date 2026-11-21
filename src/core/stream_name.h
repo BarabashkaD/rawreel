@@ -13,21 +13,18 @@
 #include <string>
 #include <string_view>
 
+#include "core/native_os.h"
+
 namespace rawreel {
 
 enum class PathStyle : std::uint8_t { Posix, Windows };
 enum class TitleStyle : std::uint8_t { MacOs, Windows, Linux };
 
-#ifdef _WIN32
-inline constexpr PathStyle NATIVE_PATH_STYLE = PathStyle::Windows;
-inline constexpr TitleStyle NATIVE_TITLE_STYLE = TitleStyle::Windows;
-#elif defined(__APPLE__)
-inline constexpr PathStyle NATIVE_PATH_STYLE = PathStyle::Posix;
-inline constexpr TitleStyle NATIVE_TITLE_STYLE = TitleStyle::MacOs;
-#else
-inline constexpr PathStyle NATIVE_PATH_STYLE = PathStyle::Posix;
-inline constexpr TitleStyle NATIVE_TITLE_STYLE = TitleStyle::Linux;
-#endif
+inline constexpr PathStyle NATIVE_PATH_STYLE =
+    NATIVE_OS == Os::Windows ? PathStyle::Windows : PathStyle::Posix;
+inline constexpr TitleStyle NATIVE_TITLE_STYLE = NATIVE_OS == Os::Windows ? TitleStyle::Windows
+                                                 : NATIVE_OS == Os::MacOs ? TitleStyle::MacOs
+                                                                          : TitleStyle::Linux;
 
 [[nodiscard]] std::string streamName(std::string_view resolved_uri);
 [[nodiscard]] std::string streamFullPath(std::string_view resolved_uri,

@@ -2,15 +2,13 @@
 
 #include <algorithm>
 #include <array>
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <format>
 #include <limits>
-#include <numeric>
 #include <optional>
 #include <string>
-#include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -23,6 +21,7 @@
 #include "dvv/media/file_name.h"
 #include "dvv/media/format_json.h"
 #include "dvv/media/pixel_format.h"
+#include "dvv/media/rate_size_text.h"
 #include "dvv/media/uri_colour.h"
 
 namespace rawreel {
@@ -56,52 +55,44 @@ constexpr std::array<NtscRate, 6> NTSC_RATES{{{.milli = 23976, .num = 24000},
 constexpr std::int64_t NTSC_DEN = 1001;
 constexpr std::int64_t MILLI = 1000;
 
-std::string formatFps(dvv::media::Rational fps) {
-    if (fps.den == 1) {
-        return std::format("{}", fps.num);
-    }
-    return std::format("{}/{}", fps.num, fps.den);
-}
-
-constexpr std::size_t MAX_FPS_DECIMALS = 6;
-
-// A non-empty run of ASCII digits as a positive or zero int64; nullopt on anything else or an
-// overflow.
-std::optional<std::int64_t> parseDigits(std::string_view text) noexcept {
-    if (text.empty() || !std::ranges::all_of(text, [](char c) { return c >= '0' && c <= '9'; })) {
+// The NTSC rate of a reduced decimal rate, by value; nullopt for any other rate.
+std::optional<dvv::media::Rational> ntscRate(dvv::media::Rational rate) {
+    if (rate.num <= 0 || rate.den <= 0 || MILLI % rate.den != 0 ||
+        rate.num > std::numeric_limits<std::int64_t>::max() / MILLI) {
         return std::nullopt;
     }
-    std::int64_t value = 0;
-    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (error != std::errc{} || end != text.data() + text.size()) {
+    const std::int64_t milli = rate.num * (MILLI / rate.den);
+    const auto ntsc = std::ranges::find(NTSC_RATES, milli, &NtscRate::milli);
+    if (ntsc == NTSC_RATES.end()) {
         return std::nullopt;
     }
-    return value;
+    return dvv::media::Rational{ntsc->num, NTSC_DEN};
 }
 
-// A positive dimension (1 .. uint32 max) from digits.
-std::optional<std::uint32_t> parseDimension(std::string_view text) noexcept {
-    const std::optional<std::int64_t> value = parseDigits(text);
-    if (!value || *value <= 0 || *value > std::numeric_limits<std::uint32_t>::max()) {
-        return std::nullopt;
+// The fallback of the prefill: the first "WxH" token of the file name, and a catalogue format
+// right behind it.
+void applyFirstSizeToken(std::string_view path, FormatChoice& choice) {
+    std::string_view name = path;
+    if (const std::size_t slash = name.find_last_of("/\\"); slash != std::string_view::npos) {
+        name.remove_prefix(slash + 1);
     }
-    return static_cast<std::uint32_t>(*value);
-}
-
-// "WxH" as two positive dimensions.
-bool parseSizeText(std::string_view text, FormatChoice& choice) noexcept {
-    const std::size_t x = text.find('x');
-    if (x == std::string_view::npos) {
-        return false;
+    name = name.substr(0, name.rfind('.'));  // the stem: up to the last '.', or the whole name
+    bool sized = false;
+    for (std::size_t begin = 0; begin <= name.size();) {
+        const std::size_t end = std::min(name.find('_', begin), name.size());
+        const std::string_view token = name.substr(begin, end - begin);
+        if (sized) {  // the token right behind the size: a catalogue format, or nothing
+            if (dvv::media::findFormat(token)) {
+                choice.format = std::string(token);
+            }
+            return;
+        }
+        if (const auto size = dvv::media::parseSize(token)) {
+            std::tie(choice.width, choice.height) = *size;
+            sized = true;
+        }
+        begin = end + 1;
     }
-    const std::optional<std::uint32_t> width = parseDimension(text.substr(0, x));
-    const std::optional<std::uint32_t> height = parseDimension(text.substr(x + 1));
-    if (!width || !height) {
-        return false;
-    }
-    choice.width = *width;
-    choice.height = *height;
-    return true;
 }
 
 // The format, size and fps of the clip description of clip=@<path>; nothing when it cannot be
@@ -129,40 +120,35 @@ void applyClipFormat(const dvv::Uri& parsed, FormatChoice& choice) {
     }
 }
 
-// The file name's size and format, then the clip description's (clip=@), then the query's fmt,
-// size, w, h and fps (file: URIs only).
+// The file name's size, format and fps, then the clip description's (clip=@), then the query's
+// fmt, size, w, h and fps (file: URIs only).
 void applyUriFormat(const dvv::Uri& parsed, FormatChoice& choice) {
-    std::string_view name = parsed.path;
-    if (const std::size_t slash = name.find_last_of("/\\"); slash != std::string_view::npos) {
-        name.remove_prefix(slash + 1);
-    }
-    name = name.substr(0, name.rfind('.'));
-    // <name>_WxH[_fmt]: the first size token, then a catalogue format right behind it.
-    bool sized = false;
-    for (std::size_t begin = 0; begin <= name.size();) {
-        const std::size_t end = std::min(name.find('_', begin), name.size());
-        const std::string_view token = name.substr(begin, end - begin);
-        if (sized) {
-            if (dvv::media::findFormat(token)) {
-                choice.format = std::string(token);
-            }
-            break;
+    if (const auto from_name = dvv::media::parseFileName(parsed.path)) {
+        choice.width = from_name->width;
+        choice.height = from_name->height;
+        if (from_name->format) {
+            choice.format = std::string(dvv::media::formatDesc(*from_name->format).name);
         }
-        sized = parseSizeText(token, choice);
-        begin = end + 1;
+        if (from_name->fps) {
+            choice.fps = *from_name->fps;
+        }
+    } else {
+        applyFirstSizeToken(parsed.path, choice);
     }
     applyClipFormat(parsed, choice);
     if (const auto fmt = parsed.param("fmt"); fmt && !fmt->empty()) {
         choice.format = std::string(*fmt);
     }
     if (const auto size = parsed.param("size")) {
-        static_cast<void>(parseSizeText(*size, choice));
+        if (const auto wh = dvv::media::parseSize(*size)) {
+            std::tie(choice.width, choice.height) = *wh;
+        }
     }
     if (const auto w = parsed.param("w")) {
-        choice.width = parseDimension(*w).value_or(choice.width);
+        choice.width = dvv::media::parseDimension("w", *w).value_or(choice.width);
     }
     if (const auto h = parsed.param("h")) {
-        choice.height = parseDimension(*h).value_or(choice.height);
+        choice.height = dvv::media::parseDimension("h", *h).value_or(choice.height);
     }
     if (const auto fps = parsed.param("fps")) {
         choice.fps = parseFpsText(*fps).value_or(choice.fps);
@@ -197,7 +183,7 @@ std::optional<std::string> fileKey(std::string_view uri) {
 }
 
 ColourModel streamModel(const StreamInfo& stream) {
-    return dvv::media::descriptor(stream.info.desc.format).model;
+    return dvv::media::formatDesc(stream.info.desc.format).model;
 }
 
 std::string fileNameOf(std::string_view path) {
@@ -334,7 +320,7 @@ ColourBase FileColourMemory::colourBase(const StreamInfo& stream) const {
     if (entry != entries_.end()) {
         return entry->second.base;
     }
-    const std::string format(dvv::media::descriptor(stream.info.desc.format).name);
+    const std::string format(dvv::media::formatDesc(stream.info.desc.format).name);
     return ColourBase{.standard = dvv::media::ColourPreset::Bt709,
                       .origin = ColourOrigin::Default,
                       .clipName = {},
@@ -355,7 +341,7 @@ FormatChoice choiceFromCandidate(const dvv::media::Candidate& candidate) {
     const dvv::media::FormatGuess& guess = candidate.guess;
     FormatChoice choice;
     if (guess.format) {
-        choice.format = dvv::media::descriptor(*guess.format).name;
+        choice.format = dvv::media::formatDesc(*guess.format).name;
     }
     if (guess.width != 0 && guess.height != 0) {
         choice.width = guess.width;
@@ -369,7 +355,7 @@ FormatChoice choiceFromCandidate(const dvv::media::Candidate& candidate) {
 
 FormatChoice choiceFromInfo(const dvv::media::SourceInfo& info) {
     FormatChoice choice;
-    choice.format = dvv::media::descriptor(info.desc.format).name;
+    choice.format = dvv::media::formatDesc(info.desc.format).name;
     if (const auto uri = dvv::parseUri(info.resolvedUri)) {
         if (const auto fmt = uri->param("fmt"); fmt && fmt->starts_with('@')) {
             choice.format = std::string(*fmt);  // a custom JSON format
@@ -532,7 +518,7 @@ dvv::Result<std::string> applyChoice(std::string_view uri, const FormatChoice& c
     auto& params = parsed->params;
     params.emplace_back("fmt", choice.format);
     params.emplace_back("size", std::format("{}x{}", choice.width, choice.height));
-    params.emplace_back("fps", formatFps(choice.fps));
+    params.emplace_back("fps", dvv::media::formatFps(choice.fps));
     const std::vector<std::pair<std::string, std::string>> colour = dvv::media::colourParameters(
         dvv::media::ColourSpec{.preset = choice.colour.standard, .range = choice.colour.range});
     params.insert(params.end(), colour.begin(), colour.end());
@@ -573,56 +559,17 @@ dvv::Result<void> validateChoice(const FormatChoice& choice) {
     return {};
 }
 
-std::optional<dvv::media::Rational> parseFpsText(std::string_view text) noexcept {
-    std::int64_t num = 0;
-    std::int64_t den = 1;
-    bool decimal = false;
-    if (const std::size_t slash = text.find('/'); slash != std::string_view::npos) {
-        const std::optional<std::int64_t> n = parseDigits(text.substr(0, slash));
-        const std::optional<std::int64_t> d = parseDigits(text.substr(slash + 1));
-        if (!n || !d) {
-            return std::nullopt;
-        }
-        num = *n;
-        den = *d;
-    } else {
-        const std::size_t dot = text.find('.');
-        const std::string_view whole = text.substr(0, dot);
-        const std::string_view decimals =
-            dot == std::string_view::npos ? std::string_view() : text.substr(dot + 1);
-        if (dot != std::string_view::npos &&
-            (decimals.empty() || decimals.size() > MAX_FPS_DECIMALS)) {
-            return std::nullopt;
-        }
-        const std::optional<std::int64_t> w = parseDigits(whole);
-        const std::optional<std::int64_t> f =
-            decimals.empty() ? std::optional<std::int64_t>(0) : parseDigits(decimals);
-        if (!w || !f) {
-            return std::nullopt;
-        }
-        for (std::size_t i = 0; i < decimals.size(); ++i) {
-            den *= 10;  // at most 10^6
-        }
-        if (*w > (std::numeric_limits<std::int64_t>::max() - *f) / den) {
-            return std::nullopt;
-        }
-        num = *w * den + *f;
-        decimal = !decimals.empty();
-    }
-    if (num <= 0 || den <= 0) {
+std::optional<dvv::media::Rational> parseFpsText(std::string_view text) {
+    const dvv::Result<dvv::media::Rational> parsed = dvv::media::parseFps(text);
+    if (!parsed) {
         return std::nullopt;
     }
-    const std::int64_t divisor = std::gcd(num, den);
-    num /= divisor;
-    den /= divisor;
-    if (decimal && MILLI % den == 0 && num <= std::numeric_limits<std::int64_t>::max() / MILLI) {
-        const std::int64_t milli = num * (MILLI / den);
-        if (const auto ntsc = std::ranges::find(NTSC_RATES, milli, &NtscRate::milli);
-            ntsc != NTSC_RATES.end()) {
-            return dvv::media::Rational{ntsc->num, NTSC_DEN};
+    if (text.contains('.')) {  // a decimal text: the NTSC rule (D5 §1.4)
+        if (const auto ntsc = ntscRate(*parsed)) {
+            return ntsc;
         }
     }
-    return dvv::media::Rational{num, den};
+    return *parsed;
 }
 
 dvv::Result<FormatJson> loadFormatJson(std::string_view utf8_path) {

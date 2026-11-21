@@ -1,11 +1,13 @@
 // Startup and version lines (M4 Task 7a): the FFmpeg status line, the open-error text, the Vulkan
-// line, the package list and the --version text and JSON. No FFmpeg is loaded here.
+// line, the package list and the --version text and JSON. No FFmpeg is loaded here: the FFmpeg
+// module's status is built by hand.
 
 #include <doctest/doctest.h>
 
 #include <array>
 #include <cstddef>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -14,21 +16,138 @@
 #include "core/startup.h"
 #include "core/version_text.h"
 #include "dvv/base/error.h"
+#include "dvv/base/executors.h"
 #include "dvv/base/json.h"
+#include "dvv/base/task.h"
+#include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/components/ffmpeg.h"
-#include "dvv/media/types.h"
+#include "dvv/media/source_factory.h"
+#include "dvv/registry/capabilities.h"
+#include "dvv/registry/component_registry.h"
+#include "dvv/registry/module.h"
 
 namespace {
 
-using dvv::components::FfmpegStatus;
 namespace fs = std::filesystem;
 
+constexpr std::array<std::string_view, 2> FFMPEG_PRODUCES{dvv::components::FFMPEG_CAPABILITY,
+                                                          dvv::components::FFMPEG_LAVFI_CAPABILITY};
+constexpr std::array<std::string_view, 1> OTHER_PRODUCES{"other.thing"};
+
 std::string utf8(const fs::path& path) {
-    return dvv::media::utf8FromPath(path);
+    return dvv::pathDisplayText(path);
 }
 
 dvv::Error errorOf(dvv::Errc code, std::string message) {
     return dvv::Error{.code = code, .message = std::move(message), .where = {}, .cause = nullptr};
+}
+
+// The FFmpeg module's status with both capabilities, as ComponentRegistry::load() reports it.
+dvv::ModuleStatus loadedFfmpeg(std::string version, std::string licence,
+                               const fs::path& directory) {
+    return dvv::ModuleStatus{
+        .info = {.id = dvv::components::FFMPEG_MODULE,
+                 .name = "FFmpeg",
+                 .produces = FFMPEG_PRODUCES},
+        .provides = {std::string(dvv::components::FFMPEG_CAPABILITY),
+                     std::string(dvv::components::FFMPEG_LAVFI_CAPABILITY)},
+        .withheld = {},
+        .reason = {},
+        .properties = {dvv::ModuleProperty{.key = std::string(dvv::MODULE_VERSION_PROPERTY),
+                                           .value = std::move(version)},
+                       dvv::ModuleProperty{.key = std::string(dvv::MODULE_LICENCE_PROPERTY),
+                                           .value = std::move(licence)},
+                       dvv::ModuleProperty{.key = std::string(dvv::MODULE_DIRECTORY_PROPERTY),
+                                           .value = dvv::pathText(directory)}}};
+}
+
+// `status` with lavfi withheld (an FFmpeg build without avfilter).
+dvv::ModuleStatus coreOnly(dvv::ModuleStatus status, std::string reason) {
+    status.provides = {std::string(dvv::components::FFMPEG_CAPABILITY)};
+    status.withheld = {std::string(dvv::components::FFMPEG_LAVFI_CAPABILITY)};
+    status.reason = std::move(reason);
+    return status;
+}
+
+// No FFmpeg: both capabilities withheld, no properties.
+dvv::ModuleStatus missingFfmpeg(std::string reason) {
+    return dvv::ModuleStatus{.info = {.id = dvv::components::FFMPEG_MODULE,
+                                      .name = "FFmpeg",
+                                      .produces = FFMPEG_PRODUCES},
+                             .provides = {},
+                             .withheld = {std::string(dvv::components::FFMPEG_CAPABILITY),
+                                          std::string(dvv::components::FFMPEG_LAVFI_CAPABILITY)},
+                             .reason = std::move(reason),
+                             .properties = {}};
+}
+
+// `status` as the module reports it when DVV_FFMPEG_DIR chose the folder.
+dvv::ModuleStatus fromVariable(dvv::ModuleStatus status) {
+    status.properties.push_back(dvv::ModuleProperty{
+        .key = std::string(dvv::MODULE_VARIABLE_PROPERTY), .value = "DVV_FFMPEG_DIR"});
+    return status;
+}
+
+// Another module, which withholds a capability no Source provider needs.
+dvv::ModuleStatus otherModule() {
+    return dvv::ModuleStatus{.info = {.id = "other", .name = "Other", .produces = OTHER_PRODUCES},
+                             .provides = {},
+                             .withheld = {"other.thing"},
+                             .reason = "other.thing is missing",
+                             .properties = {}};
+}
+
+// The lavfi provider as the registry lists it without FFmpeg.
+dvv::ComponentStatus lavfiUnavailable() {
+    return dvv::ComponentStatus{
+        .info = {.id = "lavfi", .name = "lavfi"},
+        .unavailable =
+            dvv::Unavailable{.reason = "missing ffmpeg.lavfi",
+                             .capability = std::string(dvv::components::FFMPEG_LAVFI_CAPABILITY)}};
+}
+
+// The FFmpeg container provider as the registry lists it without FFmpeg.
+dvv::ComponentStatus ffmpegUnavailable() {
+    return dvv::ComponentStatus{.info = {.id = "ffmpeg", .name = "ffmpeg"},
+                                .unavailable = dvv::Unavailable{
+                                    .reason = "missing ffmpeg",
+                                    .capability = std::string(dvv::components::FFMPEG_CAPABILITY)}};
+}
+
+// The scheme of the request that `text` opens ("file" for a path).
+std::string schemeOf(std::string_view text) {
+    const dvv::Result<dvv::Uri> uri = dvv::parseUri(text);
+    CHECK(uri.has_value());
+    return uri ? uri->scheme : std::string();
+}
+
+// A real no-match: a SourceFactory on a registry without capabilities opens lavfi:testsrc2.
+dvv::Error noProviderMatch() {
+    dvv::Error error = errorOf(dvv::Errc::Internal, "the open did not run");
+    std::shared_ptr<dvv::ThreadPool> io;
+    if (auto pool = dvv::ExecutorFactory::makeThreadPool(1); pool) {
+        io = std::move(*pool);
+    }
+    REQUIRE(io != nullptr);
+    const std::unique_ptr<dvv::ComponentRegistry> registry =
+        dvv::ComponentRegistry::create(dvv::Capabilities{});
+    REQUIRE(registry != nullptr);
+    auto factory = dvv::media::SourceFactory::create(*registry, io);
+    CHECK(factory.has_value());
+    auto uri = dvv::parseUri("lavfi:testsrc2");
+    CHECK(uri.has_value());
+    if (factory && uri) {
+        const auto opened = dvv::syncWait(
+            (*factory)->open(dvv::media::SourceRequest{.uri = std::move(*uri), .hint = {}}));
+        CHECK_FALSE(opened.has_value());
+        if (!opened) {
+            error = opened.error();
+        }
+    }
+    CAPTURE(error.describe());
+    REQUIRE(dvv::media::isNoProviderMatch(error));
+    return error;
 }
 
 }  // namespace
@@ -39,38 +158,41 @@ TEST_SUITE("core") {
         const fs::path app = fs::path("/") / "opt" / "rawreel";
         const rawreel::FfmpegOrigin origin{
             .appFolder = app, .ffmpegDirVariable = {}, .homeFolder = {}};
-        FfmpegStatus status{.core = true,
-                            .lavfi = true,
-                            .reason = {},
-                            .version = "n8.1.3",
-                            .licence = "LGPL version 2.1 or later",
-                            .directory = (app / "ffmpeg").lexically_normal(),
-                            .libraryVersions = {}};
-        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Shown, origin) ==
+        const dvv::ModuleStatus loaded = loadedFfmpeg("n8.1.3", "LGPL version 2.1 or later",
+                                                      (app / "ffmpeg").lexically_normal());
+        CHECK(rawreel::ffmpegStatusLine(&loaded, StatusPaths::Shown, origin) ==
               "FFmpeg n8.1.3 (LGPL version 2.1 or later) from "
               "https://github.com/BarabashkaD/custom_ffmpeg");
-        status.lavfi = false;
-        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Shown, origin) ==
+        const dvv::ModuleStatus core_only = coreOnly(loaded, "avfilter missing");
+        CHECK(rawreel::ffmpegStatusLine(&core_only, StatusPaths::Shown, origin) ==
               "FFmpeg n8.1.3 (LGPL version 2.1 or later) from "
               "https://github.com/BarabashkaD/custom_ffmpeg, "
               "lavfi not available");
-        FfmpegStatus missing;
-        missing.reason = "DVV_FFMPEG_DIR must be absolute";
-        CHECK(rawreel::ffmpegStatusLine(missing, StatusPaths::Shown, origin) ==
+        const dvv::ModuleStatus missing = missingFfmpeg("not found");
+        CHECK(rawreel::ffmpegStatusLine(&missing, StatusPaths::Shown, origin) ==
+              "FFmpeg: not available (not found)");
+        const dvv::ModuleStatus relative = missingFfmpeg("DVV_FFMPEG_DIR must be absolute");
+        CHECK(rawreel::ffmpegStatusLine(&relative, StatusPaths::Shown, origin) ==
               "FFmpeg: not available (DVV_FFMPEG_DIR must be absolute)");
 
         // About and the GUI infobar: the status only, no directory and no reason.
-        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Hidden, origin) ==
+        CHECK(rawreel::ffmpegStatusLine(&core_only, StatusPaths::Hidden, origin) ==
               "FFmpeg n8.1.3 (LGPL version 2.1 or later) from "
               "https://github.com/BarabashkaD/custom_ffmpeg, "
               "lavfi not available");
-        status.lavfi = true;
-        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Hidden, origin) ==
+        CHECK(rawreel::ffmpegStatusLine(&loaded, StatusPaths::Hidden, origin) ==
               "FFmpeg n8.1.3 (LGPL version 2.1 or later) from "
               "https://github.com/BarabashkaD/custom_ffmpeg");
-        missing.reason = "FFmpeg not found (looked in some/dir)";
-        CHECK(rawreel::ffmpegStatusLine(missing, StatusPaths::Hidden, origin) ==
+        const dvv::ModuleStatus looked = missingFfmpeg("FFmpeg not found (looked in some/dir)");
+        CHECK(rawreel::ffmpegStatusLine(&looked, StatusPaths::Hidden, origin) ==
               "FFmpeg: not available (details in the log)");
+    }
+
+    TEST_CASE("startup: status line: no FFmpeg module") {
+        using rawreel::StatusPaths;
+        CHECK(rawreel::ffmpegStatusLine(nullptr) == "FFmpeg: not available (not in this build)");
+        CHECK(rawreel::ffmpegStatusLine(nullptr, StatusPaths::Hidden) ==
+              "FFmpeg: not available (not in this build)");
     }
 
     TEST_CASE("startup: the macOS bundle's Frameworks/ffmpeg folder") {
@@ -88,15 +210,9 @@ TEST_SUITE("core") {
                   "/libavutil.dylib");
 
         // And recognised as a bundled folder by the status line.
-        const FfmpegStatus status{
-            .core = true,
-            .lavfi = true,
-            .reason = {},
-            .version = "n8.1.3",
-            .licence = "LGPL",
-            .directory = (app / ".." / "Frameworks" / "ffmpeg").lexically_normal(),
-            .libraryVersions = {}};
-        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Shown, origin) ==
+        const dvv::ModuleStatus status = loadedFfmpeg(
+            "n8.1.3", "LGPL", (app / ".." / "Frameworks" / "ffmpeg").lexically_normal());
+        CHECK(rawreel::ffmpegStatusLine(&status, StatusPaths::Shown, origin) ==
               "FFmpeg n8.1.3 (LGPL) from https://github.com/BarabashkaD/custom_ffmpeg");
     }
 
@@ -104,35 +220,40 @@ TEST_SUITE("core") {
         using rawreel::StatusPaths;
         const fs::path app = fs::path("/") / "opt" / "rawreel" / "bin";
         rawreel::FfmpegOrigin origin{.appFolder = app, .ffmpegDirVariable = {}, .homeFolder = {}};
-        FfmpegStatus status{.core = true,
-                            .lavfi = true,
-                            .reason = {},
-                            .version = "n8.1.3",
-                            .licence = "LGPL",
-                            .directory = (app / ".." / "lib" / "ffmpeg").lexically_normal(),
-                            .libraryVersions = {}};
+        const dvv::ModuleStatus bundled_status =
+            loadedFfmpeg("n8.1.3", "LGPL", (app / ".." / "lib" / "ffmpeg").lexically_normal());
         const std::string bundled =
             "FFmpeg n8.1.3 (LGPL) from https://github.com/BarabashkaD/custom_ffmpeg";
-        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Shown, origin) == bundled);
+        CHECK(rawreel::ffmpegStatusLine(&bundled_status, StatusPaths::Shown, origin) == bundled);
 
         // Another folder (an explicit directory): no claim about where the build comes from.
-        status.directory = (fs::path("/") / "elsewhere" / "ffmpeg").lexically_normal();
-        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Shown, origin) ==
+        const fs::path elsewhere_folder =
+            (fs::path("/") / "elsewhere" / "ffmpeg").lexically_normal();
+        const dvv::ModuleStatus elsewhere = loadedFfmpeg("n8.1.3", "LGPL", elsewhere_folder);
+        CHECK(rawreel::ffmpegStatusLine(&elsewhere, StatusPaths::Shown, origin) ==
               "FFmpeg n8.1.3 (LGPL)");
 
         // DVV_FFMPEG_DIR is final for the loader, so it wins even over a bundled folder; the line
-        // names the variable, never its value.
-        origin.ffmpegDirVariable = utf8(status.directory);
-        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Shown, origin) ==
+        // names the variable, never its value. The module says when the variable chose the folder.
+        const dvv::ModuleStatus chosen = fromVariable(elsewhere);
+        CHECK(rawreel::ffmpegStatusLine(&chosen, StatusPaths::Shown, origin) ==
               "FFmpeg n8.1.3 (LGPL) from DVV_FFMPEG_DIR");
-        status.directory = (app / "ffmpeg").lexically_normal();
-        origin.ffmpegDirVariable = utf8(status.directory);
-        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Hidden, origin) ==
+        const dvv::ModuleStatus chosen_bundled =
+            fromVariable(loadedFfmpeg("n8.1.3", "LGPL", (app / "ffmpeg").lexically_normal()));
+        CHECK(rawreel::ffmpegStatusLine(&chosen_bundled, StatusPaths::Hidden, origin) ==
               "FFmpeg n8.1.3 (LGPL) from DVV_FFMPEG_DIR");
 
-        // The executable's folder unknown: no claim either.
-        CHECK(rawreel::ffmpegStatusLine(status, StatusPaths::Shown, rawreel::FfmpegOrigin{}) ==
+        // The environment is not read for this: without the module's property, the variable's
+        // value in the origin claims nothing.
+        origin.ffmpegDirVariable = utf8(elsewhere_folder);
+        CHECK(rawreel::ffmpegStatusLine(&elsewhere, StatusPaths::Shown, origin) ==
               "FFmpeg n8.1.3 (LGPL)");
+
+        // The executable's folder unknown: no claim either.
+        const dvv::ModuleStatus next_to_app =
+            loadedFfmpeg("n8.1.3", "LGPL", (app / "ffmpeg").lexically_normal());
+        CHECK(rawreel::ffmpegStatusLine(&next_to_app, StatusPaths::Shown,
+                                        rawreel::FfmpegOrigin{}) == "FFmpeg n8.1.3 (LGPL)");
     }
 
     TEST_CASE("startup: FFmpeg failure reason without machine folders") {
@@ -143,11 +264,10 @@ TEST_SUITE("core") {
         const std::string hint = "set DVV_FFMPEG_DIR to the folder of an LGPL FFmpeg shared build";
 
         // Not found: the loader's "looked in" list of the bundled folders.
-        FfmpegStatus missing;
-        missing.reason =
+        const dvv::ModuleStatus missing = missingFfmpeg(
             "FFmpeg not found (looked in " + utf8((app / "ffmpeg").lexically_normal()) + " and " +
-            utf8((app / ".." / "lib" / "ffmpeg").lexically_normal()) + "; " + hint + ")";
-        const std::string looked = rawreel::ffmpegStatusLine(missing, StatusPaths::Shown, origin);
+            utf8((app / ".." / "lib" / "ffmpeg").lexically_normal()) + "; " + hint + ")");
+        const std::string looked = rawreel::ffmpegStatusLine(&missing, StatusPaths::Shown, origin);
         CHECK(looked == "FFmpeg: not available (FFmpeg not found (looked in " +
                             utf8(fs::path("<app>") / "ffmpeg") + " and " +
                             utf8(fs::path("<app>") / ".." / "lib" / "ffmpeg") + "; " + hint + "))");
@@ -157,10 +277,11 @@ TEST_SUITE("core") {
         const fs::path variable = home / "builds" / "ffmpeg";
         origin.ffmpegDirVariable = utf8(variable);
         const fs::path where = variable.lexically_normal();
-        missing.reason = "FFmpeg in " + utf8(where) +
-                         " (DVV_FFMPEG_DIR): " + utf8(where / "libavutil.so.60") + ": needs " +
-                         utf8(home / "lib" / "libz.so.1");
-        const std::string refused = rawreel::ffmpegStatusLine(missing, StatusPaths::Shown, origin);
+        const dvv::ModuleStatus refused_status = missingFfmpeg(
+            "FFmpeg in " + utf8(where) + " (DVV_FFMPEG_DIR): " + utf8(where / "libavutil.so.60") +
+            ": needs " + utf8(home / "lib" / "libz.so.1"));
+        const std::string refused =
+            rawreel::ffmpegStatusLine(&refused_status, StatusPaths::Shown, origin);
         CAPTURE(refused);
         CHECK(refused.starts_with(
             "FFmpeg: not available (FFmpeg in $DVV_FFMPEG_DIR (DVV_FFMPEG_DIR): $DVV_FFMPEG_DIR"));
@@ -170,60 +291,84 @@ TEST_SUITE("core") {
         // A relative variable is masked too; a root folder is never replaced.
         origin.ffmpegDirVariable = "relative/ffmpeg";
         origin.homeFolder = fs::path("/");
-        missing.reason = "DVV_FFMPEG_DIR must be absolute (got 'relative/ffmpeg'); /usr/lib";
-        CHECK(rawreel::maskFolders(missing.reason, origin) ==
+        CHECK(rawreel::maskFolders(
+                  "DVV_FFMPEG_DIR must be absolute (got 'relative/ffmpeg'); /usr/lib", origin) ==
               "DVV_FFMPEG_DIR must be absolute (got '$DVV_FFMPEG_DIR'); /usr/lib");
     }
 
+#if !defined(_WIN32)
+    TEST_CASE("masks: a non-UTF-8 home folder is masked") {
+        const rawreel::FfmpegOrigin origin{.appFolder = {},
+                                           .ffmpegDirVariable = {},
+                                           .homeFolder = dvv::pathFromText("/tmp/h\xFF"
+                                                                           "me")};
+        const std::string text =
+            "not found in " + dvv::pathDisplayText(origin.homeFolder / "ffmpeg");
+        CHECK(rawreel::maskFolders(text, origin) == "not found in ~/ffmpeg");
+    }
+#endif
+
     TEST_CASE("startup: open error text") {
+        const dvv::Error no_match = noProviderMatch();
+        const std::vector<dvv::ComponentStatus> providers{lavfiUnavailable()};
+        const fs::path folder = fs::path("ffmpeg");
+        const std::string lavfi = schemeOf("lavfi:testsrc2");
+
+        // A module withholds the capability the unavailable provider misses, and that provider
+        // opens the request's scheme: its line, and only its line, follows the error.
+        const std::vector<dvv::ModuleStatus> core_only{
+            coreOnly(loadedFfmpeg("n8.1.3", "LGPL", folder), "avfilter missing"), otherModule()};
+        CHECK(rawreel::openErrorText(no_match, lavfi, core_only, providers) ==
+              no_match.describe() + "; " + rawreel::ffmpegStatusLine(core_only.data()));
+        CHECK(rawreel::openErrorText(no_match, lavfi, core_only, providers,
+                                     rawreel::StatusPaths::Hidden) ==
+              no_match.describe() + "; " +
+                  rawreel::ffmpegStatusLine(core_only.data(), rawreel::StatusPaths::Hidden));
+
+        // lavfi withheld and a request of another scheme: no suffix.
+        CHECK(rawreel::openErrorText(no_match, schemeOf("synthetc:x"), core_only, providers) ==
+              no_match.describe());
+        CHECK(rawreel::openErrorText(no_match, schemeOf("notes.txt"), core_only, providers) ==
+              no_match.describe());
+
+        // FFmpeg missing: a file or lavfi: request ends with the FFmpeg line, other schemes not.
+        const std::vector<dvv::ModuleStatus> missing{missingFfmpeg("not found")};
+        const std::vector<dvv::ComponentStatus> both{ffmpegUnavailable(), lavfiUnavailable()};
+        CHECK(rawreel::openErrorText(no_match, schemeOf("clip.mkv"), missing, both) ==
+              no_match.describe() + "; FFmpeg: not available (not found)");
+        CHECK(rawreel::openErrorText(no_match, lavfi, missing, both) ==
+              no_match.describe() + "; FFmpeg: not available (not found)");
+        CHECK(rawreel::openErrorText(no_match, schemeOf("synthetc:x"), missing, both) ==
+              no_match.describe());
+
+        // Not a no-match: no suffix.
+        const dvv::Error format = errorOf(dvv::Errc::Format, "bad header");
+        CHECK(rawreel::openErrorText(format, lavfi, core_only, providers) == format.describe());
         const dvv::Error unsupported =
             errorOf(dvv::Errc::Unsupported, "no source provider for scheme 'lavfi'");
-        FfmpegStatus missing;
-        missing.reason = "not found";
-        const std::string lavfi_uri = "lavfi:testsrc2";
-        CHECK(rawreel::openErrorText(unsupported, lavfi_uri, missing) ==
-              unsupported.describe() + "; FFmpeg: not available (not found)");
+        CHECK(rawreel::openErrorText(unsupported, lavfi, missing, both) == unsupported.describe());
 
-        const FfmpegStatus loaded{.core = true,
-                                  .lavfi = true,
-                                  .reason = {},
-                                  .version = "n8.1.3",
-                                  .licence = "LGPL",
-                                  .directory = "ffmpeg",
-                                  .libraryVersions = {}};
-        CHECK(rawreel::openErrorText(unsupported, lavfi_uri, loaded) == unsupported.describe());
-
-        const dvv::Error io = errorOf(dvv::Errc::Io, "cannot read");
-        CHECK(rawreel::openErrorText(io, lavfi_uri, missing) == io.describe());
-
-        FfmpegStatus core_only = loaded;
-        core_only.lavfi = false;
-        core_only.reason = "avfilter missing";
-        CHECK(rawreel::openErrorText(unsupported, lavfi_uri, core_only) ==
-              unsupported.describe() + "; " + rawreel::ffmpegStatusLine(core_only));
-        CHECK(rawreel::openErrorText(unsupported, "file:x.yuv", core_only) ==
-              unsupported.describe());
-        CHECK(rawreel::openErrorText(unsupported, lavfi_uri, core_only,
-                                     rawreel::StatusPaths::Hidden) ==
-              unsupported.describe() + "; " +
-                  rawreel::ffmpegStatusLine(core_only, rawreel::StatusPaths::Hidden));
-
-        // FFmpeg missing: a file open (not only lavfi) gets the status line too (design D21).
-        CHECK(rawreel::openErrorText(unsupported, "file:clip.mkv", missing) ==
-              unsupported.describe() + "; FFmpeg: not available (not found)");
+        // The module provides both: no suffix.
+        const std::vector<dvv::ModuleStatus> loaded{loadedFfmpeg("n8.1.3", "LGPL", folder)};
+        CHECK(rawreel::openErrorText(no_match, lavfi, loaded, providers) == no_match.describe());
     }
 
     TEST_CASE("startup: open error message for --json") {
-        const dvv::Error unsupported =
-            errorOf(dvv::Errc::Unsupported, "no source provider for scheme 'lavfi'");
-        FfmpegStatus missing;
-        missing.reason = "not found";
-        CHECK(rawreel::openErrorMessage(unsupported, "lavfi:testsrc2", missing) ==
-              "no source provider for scheme 'lavfi'; FFmpeg: not available (not found)");
-        CHECK(rawreel::openErrorMessage(unsupported, "file:clip.mkv", missing) ==
-              "no source provider for scheme 'lavfi'; FFmpeg: not available (not found)");
-        const dvv::Error io = errorOf(dvv::Errc::Io, "cannot read");
-        CHECK(rawreel::openErrorMessage(io, "file:x.yuv", missing) == "cannot read");
+        const dvv::Error no_match = noProviderMatch();
+        const std::vector<dvv::ComponentStatus> providers{lavfiUnavailable()};
+        const std::string lavfi = schemeOf("lavfi:testsrc2");
+        const std::vector<dvv::ModuleStatus> core_only{
+            coreOnly(loadedFfmpeg("n8.1.3", "LGPL", fs::path("ffmpeg")), "avfilter missing")};
+        CHECK(rawreel::openErrorMessage(no_match, lavfi, core_only, providers) ==
+              no_match.message + "; " + rawreel::ffmpegStatusLine(core_only.data()));
+        CHECK(rawreel::openErrorMessage(no_match, schemeOf("notes.txt"), core_only, providers) ==
+              no_match.message);
+        const std::vector<dvv::ModuleStatus> missing{missingFfmpeg("not found")};
+        const std::vector<dvv::ComponentStatus> both{ffmpegUnavailable(), lavfiUnavailable()};
+        CHECK(rawreel::openErrorMessage(no_match, schemeOf("clip.mkv"), missing, both) ==
+              no_match.message + "; FFmpeg: not available (not found)");
+        const dvv::Error format = errorOf(dvv::Errc::Format, "bad header");
+        CHECK(rawreel::openErrorMessage(format, lavfi, missing, both) == "bad header");
     }
 
     TEST_CASE("version: Vulkan line") {

@@ -1,7 +1,7 @@
 // The Log list as a wxDataViewCtrl with a virtual list model (Log pane and Settings design §4.1):
 // native on macOS and Linux, built on every OS. A batch resets the model to the mirror's size, then
 // sets the selection, the focus (SetCurrentItem) and the top row (EnsureVisible; on GTK a scroll
-// aligned to the top) from ListRows.
+// aligned to the top) from ListRows. The place it restored counts until the control shows it.
 // Nothing here logs.
 
 // clang-format off
@@ -47,13 +47,13 @@ private:
 
 class DataViewLogList final : public LogList {
 public:
-    DataViewLogList(wxWindow* parent, const LogMirror& mirror, bool with_source)
+    DataViewLogList(wxWindow* parent, const LogMirror& mirror, dvv::SourceSuffix suffix)
         : LogList(parent, mirror),
           model_(new LogListModel(mirror)),
           view_(
               new wxDataViewCtrl(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxDV_MULTIPLE)) {
         view_->AssociateModel(model_.get());
-        for (std::size_t column = 0; column < logListColumns(with_source); ++column) {
+        for (std::size_t column = 0; column < logListColumns(suffix); ++column) {
             const std::string_view title = LOG_LIST_COLUMNS[column];
             view_->AppendTextColumn(wxString::FromUTF8(title.data(), title.size()),
                                     static_cast<unsigned>(column), wxDATAVIEW_CELL_INERT,
@@ -62,6 +62,35 @@ public:
         auto* sizer = new wxBoxSizer(wxVERTICAL);
         sizer->Add(view_, wxSizerFlags(1).Expand());
         SetSizer(sizer);
+        // A user's wheel, scroll bar, key or click: the list stays where the user puts it.
+        const auto user_input = [this](wxEvent& event) {
+            requested_.reset();
+            event.Skip();
+        };
+        const auto bind_user_input = [&user_input](wxWindow& window) {
+            for (const auto& type :
+                 {wxEVT_MOUSEWHEEL, wxEVT_LEFT_DOWN, wxEVT_MIDDLE_DOWN, wxEVT_RIGHT_DOWN}) {
+                window.Bind(type, user_input);
+            }
+            window.Bind(wxEVT_KEY_DOWN, user_input);
+            for (const auto& type :
+                 {wxEVT_SCROLLWIN_TOP, wxEVT_SCROLLWIN_BOTTOM, wxEVT_SCROLLWIN_LINEUP,
+                  wxEVT_SCROLLWIN_LINEDOWN, wxEVT_SCROLLWIN_PAGEUP, wxEVT_SCROLLWIN_PAGEDOWN,
+                  wxEVT_SCROLLWIN_THUMBTRACK, wxEVT_SCROLLWIN_THUMBRELEASE}) {
+                window.Bind(type, user_input);
+            }
+        };
+        bind_user_input(*view_);
+        for (wxWindow* child : view_->GetChildren()) {  // the generic control's row window
+            bind_user_input(*child);
+        }
+        // Once the control shows the requested place, its own place counts again.
+        Bind(wxEVT_IDLE, [this](wxIdleEvent& event) {
+            if (requested_ && showsRequested()) {
+                requested_.reset();
+            }
+            event.Skip();
+        });
     }
 
     void rebuild() override {
@@ -73,6 +102,7 @@ public:
     void applyBatch(const ListRows& rows) override {
         const auto count = static_cast<unsigned>(mirror().size());
         model_->Reset(count);  // no row is deleted one by one
+        requested_.reset();
         if (count == 0) {
             return;
         }
@@ -88,8 +118,12 @@ public:
         }
         if (rows.tail) {
             view_->EnsureVisible(itemAt(count - 1));
+            requested_ = RequestedPlace{.top = std::nullopt, .tail = true};
         } else if (rows.top) {
             showAtTop(*rows.top);
+            if (const std::optional<std::uint64_t> top = sequenceAt(*rows.top)) {
+                requested_ = RequestedPlace{.top = top, .tail = false};
+            }
         }
     }
 
@@ -106,6 +140,12 @@ public:
         }
         place.top = sequenceAt(topRow());
         place.tail = lastRowVisible();
+        if (requested_ && !showsRequested()) {
+            place.top = requested_->top;
+            place.tail = requested_->tail;
+        } else {
+            requested_.reset();
+        }
         return place;
     }
 
@@ -114,6 +154,8 @@ public:
         return count > 0 &&
                logRowInView(view_->GetItemRect(itemAt(count - 1)), view_->GetClientSize());
     }
+
+    [[nodiscard]] bool placeSettled() const override { return showsRequested(); }
 
     [[nodiscard]] std::vector<std::uint64_t> selectedSequences() const override {
         wxDataViewItemArray items;
@@ -141,6 +183,7 @@ public:
     }
 
     void scrollToTop(std::size_t row) override {
+        requested_.reset();  // a scroll of its own, as a user's
         if (row < model_->GetCount()) {
             showAtTop(row);
         }
@@ -179,41 +222,46 @@ private:
         return items;
     }
 
-    [[nodiscard]] std::size_t topRow() const {
-#if defined(__WXGTK__)
-        return dataViewTopRow(*view_).value_or(0);
-#else
-        const wxDataViewItem top = view_->GetTopItem();
-        return top.IsOk() ? model_->GetRow(top) : 0;
-#endif
-    }
+    [[nodiscard]] std::size_t topRow() const { return dataViewTopRow(*view_).value_or(0); }
 
-    // `row` at the top. GTK: a scroll aligned to the top (scrollDataViewRowToTop). Elsewhere
-    // EnsureVisible scrolls as little as it can, so a row below the view first goes to the end and
-    // then back up to the top edge.
+    // `row` at the top, per toolkit (scrollDataViewRowToTop).
     void showAtTop(std::size_t row) {
-        const std::size_t top = topRow();
-        if (top == row) {
+        if (topRow() == row) {
             return;
         }
-#if defined(__WXGTK__)
         scrollDataViewRowToTop(*view_, row);
-#else
-        if (top < row) {
-            view_->EnsureVisible(itemAt(model_->GetCount() - 1));
+    }
+
+    // Whether the control shows requested_ (true when there is none).
+    [[nodiscard]] bool showsRequested() const {
+        if (!requested_) {
+            return true;
         }
-        view_->EnsureVisible(itemAt(row));
-#endif
+        if (requested_->tail) {
+            return lastRowVisible();
+        }
+        return requested_->top.has_value() && sequenceAt(topRow()) == requested_->top;
     }
 
     wxObjectDataPtr<LogListModel> model_;
     wxDataViewCtrl* view_;  // a child window: wx owns it
+    // The top or the tail that applyBatch() restored, until the control shows it. wxGTK scrolls
+    // only on its next layout after a model reset, so a batch before that would read the place of
+    // a list that has not scrolled yet and follow the end. place() reads it while the control does
+    // not show it; an idle event that finds it shown, a new batch and any user input clear it (a
+    // user's scroll is never undone). Other toolkits scroll at once, so the first read clears it.
+    struct RequestedPlace {
+        std::optional<std::uint64_t> top;
+        bool tail = false;
+    };
+    mutable std::optional<RequestedPlace> requested_;  // place() clears it
 };
 
 }  // namespace
 
-LogList* createDataViewLogList(wxWindow* parent, const LogMirror& mirror, bool with_source) {
-    return new DataViewLogList(parent, mirror, with_source);
+LogList* createDataViewLogList(wxWindow* parent, const LogMirror& mirror,
+                               dvv::SourceSuffix suffix) {
+    return new DataViewLogList(parent, mirror, suffix);
 }
 
 }  // namespace rawreel

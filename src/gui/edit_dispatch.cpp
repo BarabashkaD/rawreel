@@ -12,10 +12,8 @@
 #include "gui/app.h"
 #include "gui/log_list.h"
 #include "gui/log_panel.h"
-#include "gui/selftest.h"
-#if defined(__WXOSX__)
 #include "gui/native_controls.h"
-#endif
+#include "gui/selftest.h"
 
 namespace rawreel {
 
@@ -38,22 +36,13 @@ bool clipboardHooked() {
     return App::arguments().selftest != Scenario::None;
 }
 
-bool canUndo(wxWindow& window, const wxTextEntry& entry, bool redo) {
-#if defined(__WXOSX__)
-    // wxOSX's CanUndo() is false for a single-line field (spec §4.2): the native undo manager.
-    (void)entry;
-    return canUndoText(window, redo);
-#else
-    (void)window;
-    return redo ? entry.CanRedo() : entry.CanUndo();
-#endif
-}
-
+// Undo and Redo per toolkit (native_controls.h): wxOSX's CanUndo() is false for a single-line field
+// (spec §4.2), so there they use the native undo manager.
 bool canEditText(int id, wxWindow& window, const wxTextEntry& entry) {
     const bool editable = entry.IsEditable();
     switch (id) {
-        case wxID_UNDO: return editable && canUndo(window, entry, false);
-        case wxID_REDO: return editable && canUndo(window, entry, true);
+        case wxID_UNDO: return editable && canUndoText(window, entry, false);
+        case wxID_REDO: return editable && canUndoText(window, entry, true);
         case wxID_CUT: return editable && entry.CanCut();
         case wxID_COPY: return entry.CanCopy();
         case wxID_PASTE: return editable && entry.CanPaste();
@@ -66,19 +55,7 @@ bool canEditText(int id, wxWindow& window, const wxTextEntry& entry) {
 void runEditText(int id, wxWindow& window, wxTextEntry& entry) {
     switch (id) {
         case wxID_UNDO:
-        case wxID_REDO:
-#if defined(__WXOSX__)
-            (void)entry;
-            (void)undoText(window, id == wxID_REDO);
-#else
-            (void)window;
-            if (id == wxID_REDO) {
-                entry.Redo();
-            } else {
-                entry.Undo();
-            }
-#endif
-            return;
+        case wxID_REDO: (void)undoText(window, entry, id == wxID_REDO); return;
         case wxID_CUT:
             if (clipboardHooked()) {
                 setClipboardText(entry.GetStringSelection().utf8_string());

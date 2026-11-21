@@ -10,19 +10,20 @@
 
 #include "dvv/base/error.h"
 #include "dvv/base/executors.h"
-#include "dvv/gpu/gpu_registry.h"
-#include "dvv/gpu/submission.h"
+#include "dvv/gpu/context_vulkan.h"
+#include "dvv/gpu/gpu_instance.h"
 #include "dvv/registry/component_registry.h"
 
 namespace rawreel::testing {
 
-struct GpuTestEnvironment {                           // members are released in reverse order
-    std::shared_ptr<dvv::gpu::GpuRegistry> registry;  // headless; validation from the environment
-    std::shared_ptr<dvv::ThreadPool> cpu;             // 4 threads
-    std::shared_ptr<dvv::ThreadPool> io;              // 4 threads
+struct GpuTestEnvironment {  // members are released in reverse order
+    std::shared_ptr<dvv::gpu::GpuInstance>
+        gpuInstance;                       // headless; validation from the environment
+    std::shared_ptr<dvv::ThreadPool> cpu;  // 4 threads
+    std::shared_ptr<dvv::ThreadPool> io;   // 4 threads
     std::shared_ptr<dvv::ComponentRegistry> components;
 };
-// REQUIREs every step (GpuRegistry::create({}), the pools,
+// REQUIREs every step (GpuInstance::create({}), the pools,
 // ComponentRegistry::create(Capabilities{})).
 [[nodiscard]] GpuTestEnvironment makeGpuTestEnvironment();
 // Live managed objects whose type name ends with `type` (sum over LifetimeRegistry::typeStats()).
@@ -31,7 +32,7 @@ struct GpuTestEnvironment {                           // members are released in
 [[nodiscard]] dvv::Result<std::uint64_t> submitAndWait(dvv::gpu::ExecutionContext& context,
                                                        dvv::IExecutor& executor,
                                                        dvv::gpu::RecordFunction record);
-// The whole image copied into a HostReadback buffer (copyImageToBuffer, then invalidate), tightly
+// The whole image copied into a HostReadback buffer (copyImageToBuffer, then mapRead), tightly
 // packed, `bytes_per_texel` per texel.
 [[nodiscard]] dvv::Result<std::vector<std::byte>> readImage(
     dvv::gpu::ExecutionContext& context, dvv::IExecutor& executor,

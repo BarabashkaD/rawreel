@@ -11,9 +11,7 @@
 
 #include "dvv/base/lifetime.h"
 #include "dvv/base/task.h"
-#include "dvv/gpu/command_recorder.h"
-#include "dvv/gpu/execution_context.h"
-#include "dvv/gpu/resources.h"
+#include "dvv/gpu/context_vulkan.h"
 #include "dvv/registry/capabilities.h"
 
 namespace rawreel::testing {
@@ -23,16 +21,16 @@ namespace {
 dvv::Task<dvv::Result<std::uint64_t>> submitTask(dvv::gpu::ExecutionContext& context,
                                                  dvv::IExecutor& executor,
                                                  dvv::gpu::RecordFunction record) {
-    co_return co_await context.submit(executor, std::move(record));
+    co_return co_await dvv::gpu::submit(context, executor, std::move(record));
 }
 
 }  // namespace
 
 GpuTestEnvironment makeGpuTestEnvironment() {
     GpuTestEnvironment environment;
-    auto registry = dvv::gpu::GpuRegistry::create({});
-    REQUIRE_MESSAGE(registry, (registry ? std::string() : registry.error().describe()));
-    environment.registry = std::move(*registry);
+    auto gpu_instance = dvv::gpu::GpuInstance::create({});
+    REQUIRE_MESSAGE(gpu_instance, (gpu_instance ? std::string() : gpu_instance.error().describe()));
+    environment.gpuInstance = std::move(*gpu_instance);
     auto cpu = dvv::ExecutorFactory::makeThreadPool(4);
     REQUIRE(cpu);
     environment.cpu = std::move(*cpu);
@@ -70,23 +68,23 @@ dvv::Result<std::vector<std::byte>> readImage(dvv::gpu::ExecutionContext& contex
     const std::uint64_t size =
         std::uint64_t{image->width()} * image->height() * std::uint64_t{bytes_per_texel};
     DVV_TRY(std::shared_ptr<dvv::gpu::GpuBuffer> readback,
-            context.createBuffer({.size = size,
-                                  .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                  .memory = dvv::gpu::MemoryUsage::HostReadback,
-                                  .name = "rawreel test readback"}));
+            dvv::gpu::createBuffer(context, {.size = size,
+                                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                             .memory = dvv::gpu::MemoryUsage::HostReadback,
+                                             .name = "rawreel test readback"}));
     DVV_TRY(
         const std::uint64_t submitted,
         submitAndWait(context, executor, [image, readback](dvv::gpu::CommandRecorder& recorder) {
             recorder.copyImageToBuffer(*image, *readback);
         }));
     static_cast<void>(submitted);
-    DVV_TRY_VOID(readback->invalidate());
-    const std::span<const std::byte> mapped = readback->mapped();
-    if (mapped.size() < size) {
+    DVV_TRY(const dvv::gpu::MappedRead mapped, readback->mapRead());
+    const std::span<const std::byte> bytes_view = mapped.bytes();
+    if (bytes_view.size() < size) {
         return dvv::makeError(dvv::Errc::Internal, "readImage: the readback buffer is too small");
     }
     std::vector<std::byte> bytes(static_cast<std::size_t>(size));
-    std::copy_n(mapped.begin(), bytes.size(), bytes.begin());
+    std::copy_n(bytes_view.begin(), bytes.size(), bytes.begin());
     return bytes;
 }
 

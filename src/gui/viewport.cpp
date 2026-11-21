@@ -10,12 +10,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
-#include <stdexcept>
 #include <utility>
 
 #include <wx/settings.h>
 
 #include "dvv/base/log.h"
+#include "gui/native_policy.h"
 #include "gui/native_window.h"
 
 namespace rawreel {
@@ -117,25 +117,11 @@ void Viewport::startPresenting() {
     renderer_ = std::move(*renderer);
     const std::uint64_t serial = ++serial_;
     const bool visible = IsShownOnScreen() && !iconized_;
-    auto presenter = context_->createPresenter(
+    auto presenter = createViewportPresenter(
+        *renderer_, display_,
         {.window = window->window,
          .extent = physicalClientSize(),
          .visible = visible,
-         .frames =
-             [display = display_, renderer = renderer_.get(),
-              fail = fail_presenters_](const dvv::gpu::PresentFrameInfo& info) {
-                 // Presenter thread: one consistent read of the state, then record (design §5.3).
-                 const DisplaySnapshot snapshot = display->snapshot();
-                 dvv::Result<dvv::gpu::PresentFrame> frame = renderer->frame(info, snapshot);
-                 if (fail && frame) {
-                     // Test only: the renderer's record function is dropped unrun (as after a
-                     // failed acquire); the failed recording fails the presenter.
-                     frame->record = [](dvv::gpu::CommandRecorder& /*recorder*/) {
-                         throw std::runtime_error("injected presenter failure");
-                     };
-                 }
-                 return frame;
-             },
          .onError =
              [this, serial](const dvv::Error& error) noexcept {
                  // Presenter thread. CallAfter allocates, so it may throw; the handler may not.
@@ -145,7 +131,8 @@ void Viewport::startPresenting() {
                      std::fputs("rawreel-gui: a presenter error could not reach the GUI\n", stderr);
                  }
              },
-         .name = "viewport"});
+         .name = "viewport"},
+        fail_presenters_);
     if (!presenter) {
         renderer_.reset();
         reportFailure(presenter.error());
@@ -260,7 +247,11 @@ void Viewport::updateVisible(bool shown, bool old_visible, const char* event) {
     if (visible) {
         ++presenter_shows_;
     }
-    presenter_->setVisible(visible);
+    if (visible) {
+        presenter_->show();
+    } else {
+        presenter_->hide();
+    }
 }
 
 std::optional<RecordedInfo> Viewport::lastRecorded() const {
@@ -268,15 +259,9 @@ std::optional<RecordedInfo> Viewport::lastRecorded() const {
     return renderer_ ? std::optional(renderer_->lastRecorded()) : std::nullopt;
 }
 
+// On macOS the layer's own scale (it follows the backing scale and the backing_scale test hook).
 dvv::platform::PixelSize Viewport::physicalClientSize() const {
-#if defined(__WXOSX__)
-    // The layer's own scale (it follows the backing scale and the backing_scale test hook).
     return nativePixelSize(*this);
-#else
-    const wxSize size = ToPhys(GetClientSize());
-    return {.width = static_cast<std::uint32_t>(std::max(size.x, 0)),
-            .height = static_cast<std::uint32_t>(std::max(size.y, 0))};
-#endif
 }
 
 void Viewport::onPaint(wxPaintEvent& /*event*/) {
@@ -305,13 +290,7 @@ void Viewport::onButtonDown(wxMouseEvent& event) {
     CaptureMouse();
     // The standard wx cursors: the closed hand (macOS), the move cursor (Windows), fleur (wxGTK
     // maps wxCURSOR_SIZENWSE to it).
-#if defined(__WXOSX__)
-    SetCursor(wxCursor(wxCURSOR_CLOSED_HAND));
-#elif defined(__WXMSW__)
-    SetCursor(wxCursor(wxCURSOR_SIZING));
-#elif defined(__WXGTK__)
-    SetCursor(wxCursor(wxCURSOR_SIZENWSE));
-#endif
+    SetCursor(wxCursor(native_policy::panCursor()));
     // Bound to left and middle presses and double-clicks only.
     const wxMouseButton button =
         event.Button(wxMOUSE_BTN_LEFT) ? wxMOUSE_BTN_LEFT : wxMOUSE_BTN_MIDDLE;
@@ -366,9 +345,8 @@ void Viewport::onWheel(wxMouseEvent& event) {
     }
     const dvv::platform::PixelSize extent = physicalClientSize();
     const bool vertical = event.GetWheelAxis() == wxMOUSE_WHEEL_VERTICAL;
-#if !defined(__WXOSX__)
     // macOS has no scroll zoom (design §5): there the wheel pans with Cmd too.
-    if (event.ControlDown() && vertical) {
+    if (native_policy::ctrlWheelZooms() && event.ControlDown() && vertical) {
         const int notches =
             takeWheelNotches(wheel_zoom_, event.GetWheelRotation(), event.GetWheelDelta());
         const double scale = contentScale();  // window units to backing pixels
@@ -385,10 +363,9 @@ void Viewport::onWheel(wxMouseEvent& event) {
         setView(request);
         return;
     }
-    if (!event.ControlDown()) {
+    if (native_policy::ctrlWheelZooms() && !event.ControlDown()) {
         wheel_zoom_ = 0;  // a half notch counts only within one run of Ctrl+wheel
     }
-#endif
     if (!canPan(view_, extent, image_)) {
         return;
     }

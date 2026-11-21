@@ -98,7 +98,7 @@ std::span<const std::string_view> frameRatePresets() noexcept {
     return FRAME_RATES;
 }
 
-std::optional<std::size_t> findFrameRatePreset(dvv::media::Rational fps) noexcept {
+std::optional<std::size_t> findFrameRatePreset(dvv::media::Rational fps) {
     for (std::size_t i = 0; i < FRAME_RATES.size(); ++i) {
         if (parseFpsText(FRAME_RATES.at(i)) == fps) {
             return i;
@@ -124,7 +124,7 @@ ColourModel formatModel(std::string_view format) {
         return jsonModel(format.substr(1)).value_or(ColourModel::Yuv);
     }
     if (const auto id = dvv::media::findFormat(format)) {
-        return dvv::media::descriptor(*id).model;
+        return dvv::media::formatDesc(*id).model;
     }
     return ColourModel::Yuv;
 }

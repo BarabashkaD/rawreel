@@ -38,8 +38,13 @@ struct LocalTime {
     int millis = 0;
 };
 
-[[nodiscard]] LocalTime localTime(std::chrono::system_clock::time_point time);  // localtime_r/_s
-[[nodiscard]] std::string logRowTime(const LocalTime& time);                    // "HH:MM:SS.mmm"
+// The local time of `time` from dvv::localTime; the UTC breakdown (utcBreakdown) when the platform
+// cannot convert it.
+[[nodiscard]] LocalTime localTime(std::chrono::system_clock::time_point time);
+// The calendar fields of `time` in UTC, from std::chrono::year_month_day, year_month_weekday and
+// hh_mm_ss (no gmtime_*): every field of std::tm, with tm_wday, tm_yday and tm_isdst = 0 filled.
+[[nodiscard]] std::tm utcBreakdown(std::chrono::sys_seconds time) noexcept;
+[[nodiscard]] std::string logRowTime(const LocalTime& time);        // "HH:MM:SS.mmm"
 [[nodiscard]] std::string logRowMessage(std::string_view message);  // first line + " …" if more
 // "file.cpp:42": the file name without folders and the line of the entry's call site (the Source
 // column).

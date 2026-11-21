@@ -25,6 +25,8 @@
 
 #include "core/startup.h"
 #include "core/version_text.h"
+#include "dvv/components/ffmpeg.h"
+#include "dvv/registry/module.h"
 #include "gui/app.h"
 #include "gui/app_icon.h"
 #include "gui/main_frame.h"
@@ -288,11 +290,12 @@ private:
 }  // namespace
 
 void showAbout(MainFrame& frame) {
-    const VersionReport report{
-        .packages = packageVersions(),
-        .vulkan = {},  // Help -> GPU information
-        // No directory or path in About (users share its text).
-        .ffmpeg = ffmpegStatusLine(wxGetApp().startup().ffmpeg, StatusPaths::Hidden)};
+    const dvv::ModuleStatus* const ffmpeg =
+        wxGetApp().startup().components->module(dvv::components::FFMPEG_MODULE);
+    const VersionReport report{.packages = packageVersions(),
+                               .vulkan = {},  // Help -> GPU information
+                               // No directory or path in About (users share its text).
+                               .ffmpeg = ffmpegStatusLine(ffmpeg, StatusPaths::Hidden)};
     AboutContent content = aboutContent(report);
     std::string text = aboutText(content);
     wxAboutDialogInfo info;

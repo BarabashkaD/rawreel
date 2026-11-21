@@ -298,13 +298,14 @@ private:
     void logOpenCancelled() const;  // INFO "open cancelled", unless closing
     void showStreamFormat();        // Command::Format (View -> Format...)
     void showSettings();            // Command::Settings: creates the window once, then shows it
-#if defined(__WXOSX__)
     // Spec §5.1: the Settings window when it holds the focus (focusedWindow()) or is the active
-    // window, whose ⌘W closes it instead of the stream; null otherwise. Only that window (and the
-    // Info window, infoInFront()): a floating AUI pane (Log) is a top-level window too, and closing
-    // it would hide the pane for the session.
+    // window, whose ⌘W closes it instead of the stream (macOS); null otherwise, and always null on
+    // the other toolkits. Only that window (and the Info window, infoInFront()): a floating AUI
+    // pane (Log) is a top-level window too, and closing it would hide the pane for the session.
     [[nodiscard]] wxWindow* settingsInFront() const;
-#endif
+    // The application menu's About and Quit go to onMenu and onUpdateUi (macOS); nothing on the
+    // other toolkits.
+    void bindApplicationMenu();
     // The infobar's Format... after an open error of a raw file (D4b): the dialog for that URI.
     void showErrorFormat();
     // Shows the queued formatNeeded dialogs one after the other; returns at once while a format
@@ -350,11 +351,11 @@ private:
     // panel, so a hidden pane, or a wrapper panel with nothing visibly focused, does not hold it.
     // When the pane hides (View -> Log, the caption's close button) and once after the first show.
     void moveFocusOutOfLog();
-#if defined(__WXOSX__)
     // wxGTK and wxMSW keep a top-level window at its minimum size on every resize, wxOSX only on
     // the user's (windowWillResize:toSize:): a SetSize() or SetClientSize() below the minimum
     // shrinks the window, and the viewport below 320x240 DIP (D8). The frame applies its minimum
-    // to those as well.
+    // to those as well (main_frame_cocoa.mm).
+#if defined(__WXOSX__)
     void DoSetSize(int x, int y, int width, int height, int flags) override;
 #endif
     // The minimum client size from the real controls (D8), the client grown to it and the
@@ -398,7 +399,7 @@ private:
     bool stack_lost_ = false;                            // the last stackChanged had no context
     bool reopen_offered_ = false;  // the current message carries the Reopen button
     bool loop_ = false;            // mirrors the Session's loop flag (Command::Loop)
-    std::string last_open_uri_;    // of the last openUri (onError's FFmpeg status, design v2 §4.6)
+    std::string last_open_uri_;    // of the last openUri (onError's scheme hint and Format...)
     // The folder of the last opened file (drop, File -> Open, a file: URI): the file dialogs'
     // start folder (M4 GUI D6). Empty until a file is opened.
     std::filesystem::path last_dir_;

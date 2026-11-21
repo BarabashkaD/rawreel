@@ -50,10 +50,12 @@
 #include "dvv/base/json.h"
 #include "dvv/base/log.h"
 #include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/gpu_info_json.h"
 #include "dvv/media/types.h"
+#include "dvv/registry/module.h"
 #include "gui/about.h"
 #include "gui/app.h"
 #include "gui/app_icon.h"
@@ -61,6 +63,7 @@
 #include "gui/edit_dispatch.h"
 #include "gui/format_dialog.h"
 #include "gui/log_panel.h"
+#include "gui/native_policy.h"
 #include "gui/player_panel.h"
 #include "gui/selftest.h"
 #include "gui/settings.h"
@@ -103,8 +106,8 @@ constexpr int VARIABLE_FIELDS_MINIMUM_DIP = FILE_FIELD_MINIMUM_DIP *
                                              VARIABLE_FIELD_SHARES[2] + VARIABLE_FIELD_SHARES[3]) /
                                             VARIABLE_FIELD_SHARES[0];
 
-#if defined(__WXOSX__)
-// View -> Show Log / Hide Log (spec §2): the macOS item's title.
+// View -> Show Log / Hide Log (spec §2): the item's title where it changes
+// (native_policy::logItemHasChangingTitle).
 wxString logItemTitle(bool shown) {
     return shown ? "Hide Log" : "Show Log";
 }
@@ -116,7 +119,6 @@ wxString infoItemTitle(bool shown) {
     const wxString title = shown ? "Hide Info" : "Show Info";
     return info.key ? title + "\t" + wxString::FromUTF8(keyText(*info.key)) : title;
 }
-#endif
 
 // The wx key codes Task 4's normaliser names (core/commands.cpp, D17).
 static_assert(WXK_ESCAPE == 27 && WXK_SPACE == 32);
@@ -142,7 +144,7 @@ std::string_view sourceName(CommandSource source) noexcept {
 
 // A file dialog's start folder (M4 GUI D6); empty lets the system choose.
 wxString dialogFolder(const std::filesystem::path& folder) {
-    return wxString::FromUTF8(dvv::media::utf8FromPath(folder));
+    return wxString::FromUTF8(dvv::pathDisplayText(folder));
 }
 
 // View > Format's context (D5 design §1.8, D5R §4.4): what applies without a colour key
@@ -150,9 +152,8 @@ wxString dialogFolder(const std::filesystem::path& folder) {
 // the stream was opened with colour keys).
 FormatDialogContext streamContext(const StreamInfo& stream, const FileColourMemory& memory,
                                   bool auto_detect) {
-    // D5 design §1.6: a Y4M header or a container gives format, size and fps; raw and synthetic
-    // streams lock nothing.
-    const bool locked = stream.info.provider == "y4m" || stream.info.provider == "ffmpeg";
+    // The source's header, container or graph fixes format, size and fps (SourceInfo::fixed).
+    const bool locked = stream.info.fixed.covers(dvv::media::FixedFields::all());
     return FormatDialogContext{.locked = locked,
                                .base = memory.colourBase(stream),
                                .uri = {},
@@ -197,12 +198,12 @@ bool isLiveLogFile(const std::filesystem::path& file, const std::filesystem::pat
     if (!std::filesystem::equivalent(file.parent_path(), log_folder, error) || error) {
         return false;
     }
-#if defined(_WIN32) || defined(__APPLE__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
     constexpr bool CASE_INSENSITIVE = true;
 #else
     constexpr bool CASE_INSENSITIVE = false;
 #endif
-    return isLogFileName(dvv::media::utf8FromPath(file.filename()), CASE_INSENSITIVE);
+    return isLogFileName(dvv::pathDisplayText(file.filename()), CASE_INSENSITIVE);
 }
 
 // The reason `text` could not be written to `file` (created or replaced); nullopt once written.
@@ -261,14 +262,9 @@ int menuId(Command command) noexcept {
     if (command == Command::Settings) {
         return wxID_PREFERENCES;
     }
-#if defined(__WXOSX__)
-    if (command == Command::About) {
-        return wxID_ABOUT;
+    if (const std::optional<int> stock = native_policy::stockId(command); stock) {
+        return *stock;
     }
-    if (command == Command::Quit) {
-        return wxID_EXIT;
-    }
-#endif
     return COMMAND_ID_BASE + static_cast<int>(command);
 }
 
@@ -276,14 +272,9 @@ std::optional<Command> commandOfMenuId(int id) noexcept {
     if (id == wxID_PREFERENCES) {
         return Command::Settings;
     }
-#if defined(__WXOSX__)
-    if (id == wxID_ABOUT) {
-        return Command::About;
+    if (const std::optional<Command> stock = native_policy::commandOfStockId(id); stock) {
+        return stock;
     }
-    if (id == wxID_EXIT) {
-        return Command::Quit;
-    }
-#endif
     if (id < COMMAND_ID_BASE || id > LAST_COMMAND_ID) {
         return std::nullopt;
     }
@@ -336,7 +327,7 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     viewport_->SetDropTarget(new DropTarget(open));
     // NOLINTNEXTLINE(cppcoreguidelines-owning-memory): wx takes ownership
     player_->SetDropTarget(new DropTarget(open));
-    log_ = new LogPanel(this, wxGetApp().config().log.source);
+    log_ = new LogPanel(this, wxGetApp().sourceSuffix());
     log_->setSaveHandler([this](bool selected) {  // the list's context menu (spec §4.3)
         execute(selected ? Command::SaveSelectedLines : Command::SaveLog, CommandSource::Menu);
     });
@@ -422,8 +413,9 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     Bind(wxEVT_ICONIZE, &MainFrame::onIconize, this);
     Bind(wxEVT_SHOW, &MainFrame::onShow, this);
     Bind(wxEVT_CLOSE_WINDOW, &MainFrame::onClose, this);
-    // The Log pane's feed (spec §3.2), last, once the status bar exists: the store's notify posts
-    // onLogChanged to the GUI thread (no timer); the first call takes what was logged so far.
+    // The Log pane's feed (spec §3.2), last, once the status bar exists: the store's notify runs on
+    // the log thread and posts onLogChanged to the GUI thread (CallAfter, no timer); the first call
+    // takes what was logged so far.
     if (const std::shared_ptr<LogStore>& store = wxGetApp().logStore(); store != nullptr) {
         store->setNotify([this] { CallAfter([this] { onLogChanged(); }); });
     }
@@ -487,30 +479,26 @@ void MainFrame::buildMenus() {
         // show their key without "\t" (Task 10 dispatches them).
         const wxString label = wxString::FromUTF8(menuLabel(info));
         const wxString help = wxString::FromUTF8(info.help);
-#if defined(__WXGTK__)
-        if (info.command == Command::Settings) {
+        if (native_policy::settingsAtEndOfEdit() && info.command == Command::Settings) {
             continue;  // Edit -> Preferences..., below
         }
-#endif
-#if defined(__WXOSX__)
-        // Spec §2: macOS shows and hides a part of a window with a title that changes, not a
-        // check mark ("checkable" does not apply); onUpdateUi keeps the title.
-        if (info.command == Command::LogPane) {
-            menu->Append(menuId(info.command), logItemTitle(logShown()), help);
-            continue;
-        }
-        if (info.command == Command::InfoWindow) {
-            menu->Append(menuId(info.command), infoItemTitle(infoShown()), help);
-            continue;
-        }
-        menu->Append(menuId(info.command), label, help);
-#else
-        if (info.checkable) {
+        if (native_policy::logItemHasChangingTitle()) {
+            // Spec §2: macOS shows and hides a part of a window with a title that changes, not a
+            // check mark ("checkable" does not apply); onUpdateUi keeps the title.
+            if (info.command == Command::LogPane) {
+                menu->Append(menuId(info.command), logItemTitle(logShown()), help);
+                continue;
+            }
+            if (info.command == Command::InfoWindow) {
+                menu->Append(menuId(info.command), infoItemTitle(infoShown()), help);
+                continue;
+            }
+            menu->Append(menuId(info.command), label, help);
+        } else if (info.checkable) {
             menu->AppendCheckItem(menuId(info.command), label, help);  // onUpdateUi checks it
         } else {
             menu->Append(menuId(info.command), label, help);
         }
-#endif
         if (info.command == Command::ResizeWindowToActualSize) {
             menu->AppendSeparator();
         }
@@ -521,14 +509,14 @@ void MainFrame::buildMenus() {
         }
     }
     buildEditMenu(*bar);  // between File and Playback (spec §4.2)
-#if defined(__WXGTK__)
-    // Spec §5.1: GTK puts Preferences... at the end of Edit, after a separator.
-    const CommandInfo& settings = commandTable()[static_cast<std::size_t>(Command::Settings)];
-    wxMenu* edit = bar->GetMenu(1);
-    edit->AppendSeparator();
-    edit->Append(menuId(Command::Settings), wxString::FromUTF8(menuLabel(settings)),
-                 wxString::FromUTF8(settings.help));
-#endif
+    if (native_policy::settingsAtEndOfEdit()) {
+        // Spec §5.1: GTK puts Preferences... at the end of Edit, after a separator.
+        const CommandInfo& settings = commandTable()[static_cast<std::size_t>(Command::Settings)];
+        wxMenu* edit = bar->GetMenu(1);
+        edit->AppendSeparator();
+        edit->Append(menuId(Command::Settings), wxString::FromUTF8(menuLabel(settings)),
+                     wxString::FromUTF8(settings.help));
+    }
     SetMenuBar(bar);
     Bind(wxEVT_MENU, &MainFrame::onMenu, this, COMMAND_ID_BASE, LAST_COMMAND_ID);
     Bind(wxEVT_UPDATE_UI, &MainFrame::onUpdateUi, this, COMMAND_ID_BASE, LAST_COMMAND_ID);
@@ -550,15 +538,7 @@ void MainFrame::buildMenus() {
     // Settings... carries wxID_PREFERENCES on every OS (spec §5.1).
     Bind(wxEVT_MENU, &MainFrame::onMenu, this, wxID_PREFERENCES);
     Bind(wxEVT_UPDATE_UI, &MainFrame::onUpdateUi, this, wxID_PREFERENCES);
-#if defined(__WXOSX__)
-    // The application menu's About and Quit (wxOSX hides the items in Help and File). Quit closes
-    // the frame through onClose; unhandled, wxOSX would end the main loop without the frame's close
-    // sequence.
-    for (const int id : {wxID_ABOUT, wxID_EXIT}) {
-        Bind(wxEVT_MENU, &MainFrame::onMenu, this, id);
-        Bind(wxEVT_UPDATE_UI, &MainFrame::onUpdateUi, this, id);
-    }
-#endif
+    bindApplicationMenu();
     recentChanged();
 }
 
@@ -848,12 +828,11 @@ bool MainFrame::isAvailable(Command command) const {
         case Command::Diagnostics:
         case Command::Settings:
         case Command::About: return true;
-#if defined(__WXOSX__)
         case Command::CloseStreams:
-            return hasStream() || settingsInFront() != nullptr || infoInFront() != nullptr;
-#else
-        case Command::CloseStreams:
-#endif
+            if (native_policy::closeCommandClosesSettingsFirst()) {
+                return hasStream() || settingsInFront() != nullptr || infoInFront() != nullptr;
+            }
+            [[fallthrough]];
         case Command::PlayPause:
         case Command::Stop:
         case Command::StepBack:
@@ -903,10 +882,9 @@ void MainFrame::execute(Command command, CommandSource source) {
     if (closing_) {
         return;
     }
-#if defined(__WXOSX__)
     // Spec §5.1: ⌘W closes the Settings window when it is in front (it has no menu of its own);
     // otherwise Close stream acts on the main window.
-    if (command == Command::CloseStreams) {
+    if (native_policy::closeCommandClosesSettingsFirst() && command == Command::CloseStreams) {
         if (wxWindow* settings = settingsInFront(); settings != nullptr) {
             settings->Close();
             return;
@@ -917,7 +895,6 @@ void MainFrame::execute(Command command, CommandSource source) {
             return;
         }
     }
-#endif
     if (!isAvailable(command)) {
         DVV_LOG_DEBUG("command {} is not available", commandId(command));
         return;
@@ -1038,22 +1015,6 @@ void MainFrame::showSettings() {
     showSettingsWindow(*settings_, *this);  // the selftest's hook, if any
 }
 
-#if defined(__WXOSX__)
-wxWindow* MainFrame::settingsInFront() const {
-    wxWindow* const settings = settings_ ? settings_->window() : nullptr;
-    if (settings == nullptr) {
-        return nullptr;
-    }
-    // wxOSX FindFocus() is null when the key window's first responder is the NSWindow itself (no
-    // control has the focus), so the Settings window as the active window counts too.
-    auto* const window = wxDynamicCast(settings, wxTopLevelWindow);
-    wxWindow* const focus = focusedWindow();
-    const bool focused = focus != nullptr && wxGetTopLevelParent(focus) == settings;
-    return focused || (window != nullptr && window->IsShown() && window->IsActive()) ? settings
-                                                                                     : nullptr;
-}
-#endif
-
 wxWindow* MainFrame::infoInFront() const {
     InfoWindow* const info = info_window_.get();
     if (info == nullptr) {
@@ -1117,7 +1078,7 @@ void MainFrame::showOpenDialog() {
         logOpenCancelled();
         return;
     }
-    openFiles({dvv::media::pathFromUtf8(dialog.GetPath().utf8_string())});
+    openFiles({dvv::pathFromText(dialog.GetPath().utf8_string())});
 }
 
 void MainFrame::showOpenUriDialog() {
@@ -1500,7 +1461,7 @@ void MainFrame::showStreamName() {
     if (!uri.empty()) {
         std::error_code error;
         const std::filesystem::path folder = std::filesystem::current_path(error);
-        path = streamFullPath(uri, error ? std::string() : dvv::media::utf8FromPath(folder),
+        path = streamFullPath(uri, error ? std::string() : dvv::pathDisplayText(folder),
                               NATIVE_PATH_STYLE);
         const dvv::Result<dvv::Uri> parsed = dvv::parseUri(uri);
         file = parsed && parsed->scheme == "file";
@@ -1627,8 +1588,11 @@ void MainFrame::onFormatNeeded(std::uint32_t slot, const dvv::media::SourceReque
                  openDetection(uri, candidates.candidates, reason).text);
     // Design v2 §4.6: a container file without FFmpeg is any unknown file (the M3 D21 dialog),
     // plus the FFmpeg status in the log.
-    if (const Startup& startup = wxGetApp().startup(); !startup.ffmpeg.core) {
-        DVV_LOG_TEXT(dvv::LogLevel::Info, ffmpegStatusLine(startup.ffmpeg));
+    if (const dvv::ModuleStatus* const ffmpeg =
+            wxGetApp().startup().components->module(dvv::components::FFMPEG_MODULE);
+        ffmpeg == nullptr ||
+        std::ranges::contains(ffmpeg->withheld, dvv::components::FFMPEG_CAPABILITY)) {
+        DVV_LOG_TEXT(dvv::LogLevel::Info, ffmpegStatusLine(ffmpeg));
     }
     // D21: one dialog at a time; the next one after the current one closes.
     // Open Recent spec §5: the dialog's OK opens with the entry of the open that asked.
@@ -1644,10 +1608,10 @@ void MainFrame::onError(const dvv::Error& error) {
     if (closing_) {
         return;
     }
-    // Design v2 §4.6: the FFmpeg status is appended when FFmpeg is unavailable. The event carries
-    // no URI, so the last open request's URI stands in (a lavfi: open without avfilter). The log
-    // keeps the full status line; the infobar shows no directory or path.
-    const dvv::components::FfmpegStatus& ffmpeg = wxGetApp().startup().ffmpeg;
+    // Design v2 §4.6: the FFmpeg status is appended when FFmpeg withholds what an unavailable
+    // Source provider for the request's scheme misses. The log keeps the full status line; the
+    // infobar shows no directory or path.
+    const Startup& startup = wxGetApp().startup();
     // M4 GUI D7 C: a scheme-less text that failed as a missing file was probably meant as a URI.
     // The hint and the Format... button are for open errors only; an open closes the
     // stream first (D3), so an error while a stream is shown is a playback error.
@@ -1656,10 +1620,13 @@ void MainFrame::onError(const dvv::Error& error) {
         sizing_uri_.clear();  // view zoom design §3.3: the failed open sizes nothing
     }
     const std::string_view typed = open_error ? std::string_view(last_open_uri_) : "";
+    // The scheme of the failed open (openUri stores only texts that parse); empty otherwise.
+    const dvv::Result<dvv::Uri> typed_uri = dvv::parseUri(typed);
+    const std::string_view scheme = typed_uri ? std::string_view(typed_uri->scheme) : "";
     DVV_LOG_TEXT(dvv::LogLevel::Warn,
-                 withSchemeHint(openErrorText(error, last_open_uri_, ffmpeg), typed, error));
-    const std::string text = withSchemeHint(
-        openErrorText(error, last_open_uri_, ffmpeg, StatusPaths::Hidden), typed, error);
+                 withSchemeHint(openErrorText(error, scheme, startup), typed, error));
+    const std::string text =
+        withSchemeHint(openErrorText(error, scheme, startup, StatusPaths::Hidden), typed, error);
     // A loss, or a failed makeStack while no stack is installed (§7 "infobar keeps Reopen").
     // Session events arrive in the Session's order and stackChanged({}, 0) comes before
     // error(DeviceLost), so stack_lost_ is current.
@@ -1734,18 +1701,18 @@ void MainFrame::onUpdateUi(wxUpdateUIEvent& event) {
     const std::optional<Command> command = commandOfMenuId(event.GetId());
     event.Enable(!closing_ && command && isAvailable(*command));
     if (command == Command::LogPane) {  // spec §2: the item follows the pane however it changed
-#if defined(__WXOSX__)
-        event.SetText(logItemTitle(logShown()));
-#else
-        event.Check(logShown());
-#endif
+        if (native_policy::logItemHasChangingTitle()) {
+            event.SetText(logItemTitle(logShown()));
+        } else {
+            event.Check(logShown());
+        }
     }
     if (command == Command::InfoWindow) {  // §10: the item follows the window
-#if defined(__WXOSX__)
-        event.SetText(infoItemTitle(infoShown()));
-#else
-        event.Check(infoShown());
-#endif
+        if (native_policy::logItemHasChangingTitle()) {
+            event.SetText(infoItemTitle(infoShown()));
+        } else {
+            event.Check(infoShown());
+        }
     }
 }
 
@@ -1785,8 +1752,8 @@ void MainFrame::saveLog(bool selected) {
     if (showModal(dialog) != wxID_OK || closing_) {
         return;
     }
-    const std::filesystem::path file = dvv::media::pathFromUtf8(chosenPath(dialog));
-    const std::string path = dvv::media::utf8FromPath(file);
+    const std::filesystem::path file = dvv::pathFromText(chosenPath(dialog));
+    const std::string path = dvv::pathDisplayText(file);
     const auto refuse = [this](const std::string& detail) {
         wxMessageDialog message(this, "The log was not saved.", "rawreel", wxOK | wxICON_ERROR);
         message.SetExtendedMessage(wxString::FromUTF8(detail));
@@ -1799,7 +1766,7 @@ void MainFrame::saveLog(bool selected) {
         refuse(
             std::format("'{}' is a log file rawreel writes (the current one is '{}'). Choose "
                         "another file.",
-                        path, dvv::media::utf8FromPath(current)));
+                        path, dvv::pathDisplayText(current)));
         return;
     }
     if (const std::optional<std::string> failure = writeTextFile(file, text)) {
@@ -1904,36 +1871,23 @@ void MainFrame::checkLayoutLimits() {
             return;
         }
         bool stale = aui_.minimumClientSize() != applied_minimum_;
-#if defined(__WXGTK__)
         // wxGTK keeps a minimum as a window size, converted with the decoration size it knew at
         // SetMinClientSize(); the menu bar, status bar and window decorations are known only after
         // the map, so the minimum client size can end up below the one applied: apply it again.
         // MSW and wxOSX know the decorations when the window is created (wxOSX's menu bar is not
         // in the window), so their minimum client size stays as applied.
-        wxSize wanted = applied_minimum_ + FromDIP(wxSize(LAYOUT_MARGIN_DIP, LAYOUT_MARGIN_DIP));
-        wanted.x = std::max(wanted.x, statusMinimumWidth());
-        const wxSize effective = GetMinClientSize();
-        stale = stale || effective.x < wanted.x || effective.y < wanted.y;
-#endif
+        if (native_policy::reappliesMinimumAfterMap()) {
+            wxSize wanted =
+                applied_minimum_ + FromDIP(wxSize(LAYOUT_MARGIN_DIP, LAYOUT_MARGIN_DIP));
+            wanted.x = std::max(wanted.x, statusMinimumWidth());
+            const wxSize effective = GetMinClientSize();
+            stale = stale || effective.x < wanted.x || effective.y < wanted.y;
+        }
         if (stale) {
             applyLayoutLimits();
         }
     });
 }
-
-#if defined(__WXOSX__)
-void MainFrame::DoSetSize(int x, int y, int width, int height, int flags) {
-    // The minimum is a window size (SetMinClientSize converted it); -1 keeps a dimension.
-    const wxSize minimum = GetMinSize();
-    if (width != wxDefaultCoord && minimum.x != wxDefaultCoord) {
-        width = std::max(width, minimum.x);
-    }
-    if (height != wxDefaultCoord && minimum.y != wxDefaultCoord) {
-        height = std::max(height, minimum.y);
-    }
-    wxFrame::DoSetSize(x, y, width, height, flags);
-}
-#endif
 
 void MainFrame::onShow(wxShowEvent& event) {
     if (viewport_ != nullptr) {
@@ -1965,12 +1919,9 @@ void MainFrame::setInfoShown(bool shown) {
                 info_window_ = new InfoWindow(*this);  // a child top-level window: wx owns it
             }
             info_window_->showFor(streams_.empty() ? nullptr : &streams_.front());
-#if defined(__WXGTK__)
             // X11: Hide stands for iconify (onShow).
-            const bool frame_hidden = IsIconized() || !IsShown();
-#else
-            const bool frame_hidden = IsIconized();
-#endif
+            const bool frame_hidden =
+                IsIconized() || (native_policy::hideMeansIconified() && !IsShown());
             if (frame_hidden) {
                 info_hidden_by_iconize_ = true;  // shown with the main window when restored
             } else {

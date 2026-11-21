@@ -2,7 +2,7 @@
 // bar (track) and knob (thumb) rects in the view's bounds. wxOSX places the view so that its
 // alignment rect is the wx window's rect (wxWidgetCocoaImpl::GetLayoutInset, wxWindowMac::
 // MacGetBorderSize), so a wx client x is a bounds x less the left alignment-rect inset. Compiled
-// with ARC (-fobjc-arc, CMakeLists.txt); main thread only.
+// with ARC (dvv_os_sources adds -fobjc-arc); main thread only.
 
 // clang-format off
 #include <wx/wx.h>  // first (R11)
@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -18,8 +19,9 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
 
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 #include "gui/native_controls.h"
+#include "gui/native_controls_wx.h"
 
 // wx's own maker of a bundle that hands wxOSX the NSImage itself (wx/private/bmpbndl.h, which wx
 // does not install; the function is exported from wx core). wxStockPreferencesPage gets its SF
@@ -152,12 +154,12 @@ NSUndoManager* textUndoManager(wxWindow& window) {
 
 }  // namespace
 
-bool canUndoText(wxWindow& window, bool redo) {
+bool canUndoText(wxWindow& window, const wxTextEntry& /*entry*/, bool redo) {
     NSUndoManager* const manager = textUndoManager(window);
     return manager != nil && (redo ? [manager canRedo] : [manager canUndo]);
 }
 
-bool undoText(wxWindow& window, bool redo) {
+bool undoText(wxWindow& window, wxTextEntry& /*entry*/, bool redo) {
     NSUndoManager* const manager = textUndoManager(window);
     if (manager == nil || !(redo ? [manager canRedo] : [manager canUndo])) {
         return false;
@@ -191,7 +193,7 @@ wxBitmapBundle settingsPageIcon(std::string_view sf_symbol) {
 }
 
 void revealInFileManager(const std::filesystem::path& file_or_folder) {
-    const std::string text = dvv::media::utf8FromPath(file_or_folder);
+    const std::string text = dvv::pathText(file_or_folder);
     NSString* const path = [NSString stringWithUTF8String:text.c_str()];
     if (path == nil) {
         return;
@@ -229,6 +231,22 @@ void setSecondaryText(wxWindow& label) {
     label.SetForegroundColour(
         wxColour(channel([colour redComponent]), channel([colour greenComponent]),
                  channel([colour blueComponent]), channel([colour alphaComponent])));
+}
+
+std::optional<std::size_t> dataViewTopRow(wxDataViewCtrl& view) {
+    return wx_generic::dataViewTopRow(view);
+}
+
+void scrollDataViewRowToTop(wxDataViewCtrl& view, std::size_t row) {
+    wx_generic::scrollDataViewRowToTop(view, row);
+}
+
+std::optional<std::size_t> listSelectionMark(const wxListCtrl& /*list*/) {
+    return wx_generic::listSelectionMark();
+}
+
+void setListSelectionMark(wxListCtrl& /*list*/, std::optional<std::size_t> /*row*/) {
+    wx_generic::setListSelectionMark();
 }
 
 }  // namespace rawreel

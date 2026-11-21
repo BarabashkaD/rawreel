@@ -6,7 +6,7 @@
 
 #include <utility>
 
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 
 namespace rawreel {
 
@@ -16,7 +16,7 @@ bool DropTarget::OnDropFiles(wxCoord /*x*/, wxCoord /*y*/, const wxArrayString& 
     std::vector<std::filesystem::path> files;
     files.reserve(names.size());
     for (const wxString& name : names) {
-        files.push_back(dvv::media::pathFromUtf8(name.utf8_string()));  // never the ANSI code page
+        files.push_back(dvv::pathFromText(name.utf8_string()));  // never the ANSI code page
     }
     handler_(std::move(files));
     return true;

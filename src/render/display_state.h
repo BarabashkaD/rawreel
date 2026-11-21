@@ -19,7 +19,7 @@ struct CompositeParams {
     bool operator==(const CompositeParams&) const = default;
 };
 struct DisplaySnapshot {  // one consistent read, taken under one lock
-    FrameSet frames;
+    FrameSet frames;      // a share of the shown FrameSet, with leases of its own
     CompositeParams params;
     std::uint64_t version = 0;  // +1 for every show(), clear() and setParams()
 };
@@ -43,6 +43,9 @@ public:
 private:
     void notify();
 
+    // Lock order: display state, then store. snapshot() takes lease shares under mutex_ (a share
+    // takes the store's mutex); show() and clear() drop the leases they replace outside mutex_
+    // (a release may free the frame and the store).
     mutable std::mutex mutex_;
     FrameSet frames_;
     CompositeParams params_{};

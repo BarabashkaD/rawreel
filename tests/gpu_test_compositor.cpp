@@ -12,6 +12,7 @@
 #include <cstring>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -24,15 +25,17 @@
 
 #include "core/session_types.h"
 #include "core/view.h"
+#include "dvv/base/log.h"
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
-#include "dvv/gpu/execution_context.h"
-#include "dvv/gpu/gpu_registry.h"
-#include "dvv/gpu/presenter.h"
-#include "dvv/gpu/resources.h"
+#include "dvv/gpu/context_vulkan.h"
+#include "dvv/gpu/gpu_instance.h"
+#include "dvv/gpu/presenter_vulkan.h"
 #include "dvv/media/display.h"
+#include "dvv/media/display_vulkan.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/source_factory.h"
 #include "gpu_support.h"
 #include "render/composite_reference.h"
@@ -65,7 +68,7 @@ constexpr Rgba8 LIGHT_BG{217, 217, 217, 255};
 
 // A display view made by the GPU FrameStore through ToDisplay, and its host copy.
 struct DisplayFrame {
-    std::shared_ptr<const dvv::media::ReadLease> lease;
+    dvv::media::ReadLease lease;
     std::vector<std::uint16_t> host;
     PixelSize size{};
     [[nodiscard]] HostDisplayImage image() const {
@@ -74,15 +77,15 @@ struct DisplayFrame {
 };
 
 FrameSet frameSet(const DisplayFrame& frame, std::int64_t index, std::uint64_t epoch) {
-    return FrameSet{.index = index, .count = 1, .views = {frame.lease}, .epoch = epoch};
+    return FrameSet{.index = index, .count = 1, .views = {frame.lease.share()}, .epoch = epoch};
 }
 
-dvv::gpu::PresentFrameInfo frameInfo(PixelSize extent, VkFormat format, std::uint64_t number,
-                                     bool previous_completed) {
+dvv::gpu::PresentFrameParams frameParams(PixelSize extent, dvv::gpu::PresentEncoding encoding,
+                                         std::uint64_t number, bool completed) {
     return {.extent = extent,
-            .format = format,
             .frameNumber = number,
-            .previousFrameCompleted = previous_completed};
+            .previousFrameCompleted = completed,
+            .encoding = encoding};
 }
 
 Rgba8 pixelAt(const std::vector<std::byte>& bytes, PixelSize extent, std::uint32_t x,
@@ -130,15 +133,36 @@ std::string describe(PixelSize extent) {
     return std::to_string(extent.width) + "x" + std::to_string(extent.height);
 }
 
-// One registry, pools and component registry; a context on the best device, a GPU FrameStore and
-// a SourceFactory. Test-case locals (FrameSets, leases, renderer) are released first; then the
+// A display-format frame bound as host planes, with no bytes: a display view whose binding is not
+// the display image, which the renderer must refuse.
+class HostDisplayFrame final : public dvv::media::IFrame {
+public:
+    explicit HostDisplayFrame(const dvv::media::ViewSpec& view)
+        : desc_{.format = view.format, .colour = view.colour, .width = 1, .height = 1},
+          view_(view) {}
+    [[nodiscard]] const dvv::media::FrameDesc& desc() const noexcept override { return desc_; }
+    [[nodiscard]] std::span<const dvv::media::ViewSpec> nativeViews() const noexcept override {
+        return {&view_, 1};
+    }
+    [[nodiscard]] dvv::media::Binding bind(const dvv::media::ViewSpec& /*native*/) const override {
+        return dvv::media::HostPlanesB{};
+    }
+    [[nodiscard]] std::size_t bytes() const noexcept override { return 0; }
+
+private:
+    dvv::media::FrameDesc desc_;
+    dvv::media::ViewSpec view_;
+};
+
+// One GPU instance, pools and component registry; a context on the best device, a GPU FrameStore
+// and a SourceFactory. Test-case locals (FrameSets, leases, renderer) are released first; then the
 // store, the factory and the context; then no validation message may have been counted.
 class CompositorTest {
 public:
     CompositorTest() : env_(rawreel::testing::makeGpuTestEnvironment()) {
         // The dereference stays in the checked branch: clang-tidy does not know that FAIL throws.
-        if (const auto device = env_.registry->bestDevice(); device) {
-            auto context = env_.registry->createContext(*device, {});
+        if (const auto device = env_.gpuInstance->bestDevice(); device) {
+            auto context = env_.gpuInstance->createContext(*device, {});
             REQUIRE_MESSAGE(context, (context ? std::string() : context.error().describe()));
             context_ = std::move(*context);
         } else {
@@ -160,13 +184,29 @@ public:
         store_.reset();
         factory_.reset();
         context_.reset();
-        CHECK(env_.registry->validationMessageCount() == 0);
+        CHECK(env_.gpuInstance->validationMessageCount() == 0);
     }
 
     [[nodiscard]] std::shared_ptr<dvv::gpu::ExecutionContext> context() const { return context_; }
 
-    // Frame 0 of `uri` as a display view, with its host copy.
-    [[nodiscard]] DisplayFrame displayFrame(std::string_view uri) {
+    [[nodiscard]] std::vector<dvv::media::LeaseInfo> outstandingLeases() const {
+        return store_->outstandingLeases();
+    }
+
+    // A display-format view in host memory (HostDisplayFrame), adopted as frame `index`.
+    [[nodiscard]] dvv::media::ReadLease hostDisplayLease(std::int64_t index) {
+        const dvv::media::ViewSpec view{.format = dvv::media::displayFormat(),
+                                        .colour = dvv::media::displayColour(),
+                                        .layout = dvv::media::LayoutPolicy::Tight,
+                                        .domain = store_->hostDomain()};
+        auto lease = store_->adopt(dvv::media::FrameKey{.origin = 1, .index = index},
+                                   std::make_shared<HostDisplayFrame>(view));
+        REQUIRE_MESSAGE(lease, (lease ? std::string() : lease.error().describe()));
+        return lease ? std::move(*lease) : dvv::media::ReadLease{};
+    }
+
+    // A source for `uri`, attached to the store.
+    [[nodiscard]] dvv::media::OriginId attach(std::string_view uri) {
         INFO("uri ", uri);
         auto parsed = dvv::parseUri(uri);
         REQUIRE(parsed);
@@ -178,29 +218,51 @@ public:
         REQUIRE(*source != nullptr);
         auto origin = store_->attach(std::shared_ptr<dvv::media::ISource>(std::move(*source)));
         REQUIRE_MESSAGE(origin, (origin ? std::string() : origin.error().describe()));
+        return *origin;
+    }
+
+    // Frame 0 of `uri` as a display view, with its host copy.
+    [[nodiscard]] DisplayFrame displayFrame(std::string_view uri) {
+        const dvv::media::OriginId origin = attach(uri);
         const std::optional<dvv::media::Domain> domain = store_->deviceDomain();
         REQUIRE(domain.has_value());
         DisplayFrame frame;
         if (domain) {
             auto lease =
-                dvv::syncWait(store_->acquire(dvv::media::FrameKey{.origin = *origin, .index = 0},
+                dvv::syncWait(store_->acquire(dvv::media::FrameKey{.origin = origin, .index = 0},
                                               dvv::media::displayView(*domain), *env_.cpu));
             REQUIRE_MESSAGE(lease, (lease ? std::string() : lease.error().describe()));
-            frame.lease = std::make_shared<const dvv::media::ReadLease>(std::move(*lease));
+            frame.lease = std::move(*lease);
         }
-        const auto* binding = std::get_if<dvv::media::VkImageB>(&frame.lease->binding());
-        REQUIRE(binding != nullptr);
-        REQUIRE(binding->planeCount == 1);
-        const std::shared_ptr<dvv::gpu::GpuImage>& plane = binding->planes[0];
-        REQUIRE(plane != nullptr);
-        REQUIRE(plane->format() == VK_FORMAT_R16G16B16A16_SFLOAT);
-        frame.size = {plane->width(), plane->height()};
+        dvv::gpu::GpuImage* const image = dvv::media::vulkan::image(frame.lease, 0);
+        REQUIRE(image != nullptr);
+        REQUIRE(dvv::media::vulkan::image(frame.lease, 1) == nullptr);  // one plane
+        REQUIRE(dvv::gpu::vulkanFormat(*image) == dvv::media::DISPLAY_IMAGE_FORMAT);
+        frame.size = {image->width(), image->height()};
         REQUIRE(frame.size == IMAGE);
+        // No owner: frame.lease keeps the image alive while it is read.
+        const std::shared_ptr<dvv::gpu::GpuImage> plane(std::shared_ptr<void>(), image);
         auto bytes = rawreel::testing::readImage(*context_, *env_.cpu, plane, 8);
         REQUIRE_MESSAGE(bytes, (bytes ? std::string() : bytes.error().describe()));
         frame.host.resize(bytes->size() / sizeof(std::uint16_t));
         std::memcpy(frame.host.data(), bytes->data(), frame.host.size() * sizeof(std::uint16_t));
         return frame;
+    }
+
+    // Frame 0 of `uri` as host planes (its original's unpacked planes in host memory): a view
+    // that is not a display view.
+    [[nodiscard]] dvv::media::ReadLease hostPlanesLease(std::string_view uri) {
+        const dvv::media::OriginId origin = attach(uri);
+        auto read = dvv::syncWait(store_->acquireOriginal(
+            dvv::media::FrameKey{.origin = origin, .index = 0},
+            dvv::media::OriginalRequest{.domain = store_->hostDomain()}, *env_.cpu));
+        REQUIRE_MESSAGE(read, (read ? std::string() : read.error().describe()));
+        dvv::media::ReadLease lease;
+        if (read) {
+            lease = read->lease().share();
+        }
+        REQUIRE(lease.planes() != nullptr);
+        return lease;
     }
 
     void submit(dvv::gpu::RecordFunction record) {
@@ -224,7 +286,7 @@ public:
         REQUIRE(frame->image != nullptr);
         CHECK(frame->image->width() == extent.width);
         CHECK(frame->image->height() == extent.height);
-        CHECK(frame->image->format() == VK_FORMAT_R8G8B8A8_UNORM);
+        CHECK(dvv::gpu::vulkanFormat(*frame->image) == VK_FORMAT_R8G8B8A8_UNORM);
         submit(std::move(frame->record));
         return read(frame->image);
     }
@@ -242,6 +304,25 @@ std::unique_ptr<ViewportRenderer> makeRenderer(
     REQUIRE_MESSAGE(renderer, (renderer ? std::string() : renderer.error().describe()));
     return std::move(*renderer);
 }
+
+// Collects the Error lines logged while it lives; the other sinks stay.
+class ErrorLog {
+public:
+    ErrorLog() { dvv::Logger::instance().addSink(sink_, dvv::LogLevel::Error); }
+    ErrorLog(const ErrorLog&) = delete;
+    ErrorLog& operator=(const ErrorLog&) = delete;
+    ErrorLog(ErrorLog&&) = delete;
+    ErrorLog& operator=(ErrorLog&&) = delete;
+    ~ErrorLog() { dvv::Logger::instance().setSinkLevel(*sink_, dvv::LogLevel::Off); }
+
+    [[nodiscard]] std::vector<std::string> lines() const {
+        dvv::Logger::instance().flush();
+        return sink_->lines();
+    }
+
+private:
+    std::shared_ptr<dvv::MemorySink> sink_ = std::make_shared<dvv::MemorySink>();
+};
 
 }  // namespace
 
@@ -350,16 +431,16 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: 200 % panned matches the CPU refe
     rawreel::DisplayState state;
     state.show(frameSet(g, 0, 1));
     state.setParams(params);
-    auto panned =
-        renderer->frame(frameInfo(viewport, VK_FORMAT_B8G8R8A8_UNORM, 0, false), state.snapshot());
+    auto panned = renderer->frame(
+        frameParams(viewport, dvv::gpu::PresentEncoding::Linear, 0, false), state.snapshot());
     REQUIRE_MESSAGE(panned, (panned ? std::string() : panned.error().describe()));
     REQUIRE(static_cast<bool>(panned->record));
     CHECK(renderer->lastRecorded().origin == view.origin());
     submit(std::move(panned->record));
     const CompositeParams moved{.dark = true, .view = {ViewMode::Zoom, 4, {20, 14}, IMAGE}};
     state.setParams(moved);
-    auto next =
-        renderer->frame(frameInfo(viewport, VK_FORMAT_B8G8R8A8_UNORM, 1, true), state.snapshot());
+    auto next = renderer->frame(frameParams(viewport, dvv::gpu::PresentEncoding::Linear, 1, true),
+                                state.snapshot());
     REQUIRE_MESSAGE(next, (next ? std::string() : next.error().describe()));
     REQUIRE(static_cast<bool>(next->record));
     const auto moved_view = resolveView(moved.view, viewport, IMAGE);
@@ -380,8 +461,8 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
     CHECK(renderer->lastRecorded() == RecordedInfo{});
 
     const DisplaySnapshot first_snapshot{frameSet(g, 0, 1), DARK, 1};
-    auto first =
-        renderer->frame(frameInfo(wide, VK_FORMAT_B8G8R8A8_UNORM, 0, false), first_snapshot);
+    auto first = renderer->frame(frameParams(wide, dvv::gpu::PresentEncoding::Linear, 0, false),
+                                 first_snapshot);
     REQUIRE_MESSAGE(first, (first ? std::string() : first.error().describe()));
     REQUIRE(static_cast<bool>(first->record));
     REQUIRE(first->image != nullptr);
@@ -394,14 +475,15 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
     submit(std::move(first->record));
 
     // Nothing changed and the previous frame completed: the same image, no commands.
-    auto same = renderer->frame(frameInfo(wide, VK_FORMAT_B8G8R8A8_UNORM, 1, true), first_snapshot);
+    auto same = renderer->frame(frameParams(wide, dvv::gpu::PresentEncoding::Linear, 1, true),
+                                first_snapshot);
     REQUIRE(same);
     CHECK_FALSE(static_cast<bool>(same->record));
     CHECK(same->image == first->image);
     CHECK(renderer->lastRecorded() == first_info);
 
     // A new version (the next FrameSet): recorded into the same image.
-    auto next = renderer->frame(frameInfo(wide, VK_FORMAT_B8G8R8A8_UNORM, 2, true),
+    auto next = renderer->frame(frameParams(wide, dvv::gpu::PresentEncoding::Linear, 2, true),
                                 DisplaySnapshot{frameSet(g, 1, 1), DARK, 2});
     REQUIRE(next);
     REQUIRE(static_cast<bool>(next->record));
@@ -411,8 +493,8 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
 
     // A new extent: a new image.
     const DisplaySnapshot second_snapshot{frameSet(g, 1, 1), DARK, 2};
-    auto resized =
-        renderer->frame(frameInfo(tall, VK_FORMAT_B8G8R8A8_UNORM, 3, true), second_snapshot);
+    auto resized = renderer->frame(frameParams(tall, dvv::gpu::PresentEncoding::Linear, 3, true),
+                                   second_snapshot);
     REQUIRE(resized);
     REQUIRE(static_cast<bool>(resized->record));
     REQUIRE(resized->image != nullptr);
@@ -424,15 +506,15 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
     submit(std::move(resized->record));
 
     // The previous frame was dropped: recorded again.
-    auto dropped =
-        renderer->frame(frameInfo(tall, VK_FORMAT_B8G8R8A8_UNORM, 4, false), second_snapshot);
+    auto dropped = renderer->frame(frameParams(tall, dvv::gpu::PresentEncoding::Linear, 4, false),
+                                   second_snapshot);
     REQUIRE(dropped);
     REQUIRE(static_cast<bool>(dropped->record));
     CHECK(dropped->image == resized->image);
     submit(std::move(dropped->record));
 
     // No frame: the background only.
-    auto cleared = renderer->frame(frameInfo(tall, VK_FORMAT_B8G8R8A8_UNORM, 5, true),
+    auto cleared = renderer->frame(frameParams(tall, dvv::gpu::PresentEncoding::Linear, 5, true),
                                    DisplaySnapshot{FrameSet{}, DARK, 3});
     REQUIRE(cleared);
     REQUIRE(static_cast<bool>(cleared->record));
@@ -458,11 +540,91 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a FrameSet of another epoch draws
     CHECK(renderer->lastRecorded().zoom == 0.0);
 }
 
-TEST_CASE_FIXTURE(CompositorTest, "compositor: an sRGB swapchain skips the encode") {
+TEST_CASE_FIXTURE(CompositorTest,
+                  "compositor: a non-display view draws the background without an error") {
+    const auto renderer = makeRenderer(context(), 1);
+    const dvv::media::ReadLease planes = hostPlanesLease(G);
+    const ErrorLog errors;
+    const PixelSize viewport{211, 97};
+    const FrameSet frames{.index = 0, .count = 1, .views = {planes.share()}, .epoch = 1};
+    const std::vector<std::byte> bytes = renderAndRead(*renderer, viewport, frames, DARK);
+    std::size_t wrong = 0;
+    for (std::uint32_t y = 0; y < viewport.height; ++y) {
+        for (std::uint32_t x = 0; x < viewport.width; ++x) {
+            wrong += pixelAt(bytes, viewport, x, y) == DARK_BG ? 0 : 1;
+        }
+    }
+    CHECK(wrong == 0);
+    CHECK(renderer->lastRecorded().index == -1);
+    CHECK(errors.lines().empty());
+    // The helper sees Error lines, so the empty check above is not vacuous.
+    DVV_LOG_ERROR("compositor test: the error log is live");
+    CHECK(errors.lines().size() == 1);
+}
+
+TEST_CASE_FIXTURE(CompositorTest,
+                  "compositor: a display view with another binding logs one Error per epoch") {
+    const dvv::media::ReadLease view = hostDisplayLease(0);
+    REQUIRE(dvv::media::isDisplay(view.view().format));
+    REQUIRE(dvv::media::vulkan::image(view, 0) == nullptr);
+    const ErrorLog errors;
+    const PixelSize viewport{211, 97};
+    const auto first = makeRenderer(context(), 1);
+    for (int i = 0; i < 3; ++i) {
+        const FrameSet frames{.index = 0, .count = 1, .views = {view.share()}, .epoch = 1};
+        const std::vector<std::byte> bytes = renderAndRead(*first, viewport, frames, DARK);
+        CHECK(pixelAt(bytes, viewport, 0, 0) == DARK_BG);
+        CHECK(first->lastRecorded().index == -1);
+    }
+    std::vector<std::string> lines = errors.lines();
+    REQUIRE(lines.size() == 1);
+    CHECK(lines.front().find("unexpected binding (epoch 1)") != std::string::npos);
+    // A renderer of the next epoch reports it again, once.
+    const auto second = makeRenderer(context(), 2);
+    for (int i = 0; i < 2; ++i) {
+        const FrameSet frames{.index = 0, .count = 1, .views = {view.share()}, .epoch = 2};
+        [[maybe_unused]] const std::vector<std::byte> bytes =
+            renderAndRead(*second, viewport, frames, DARK);
+    }
+    lines = errors.lines();
+    REQUIRE(lines.size() == 2);
+    CHECK(lines.back().find("unexpected binding (epoch 2)") != std::string::npos);
+}
+
+TEST_CASE_FIXTURE(CompositorTest,
+                  "the record function keeps the shown image through its lease share") {
+    const auto renderer = makeRenderer(context(), 1);
+    dvv::gpu::RecordFunction record;
+    std::shared_ptr<dvv::gpu::GpuImage> output;
+    std::vector<std::uint16_t> host;
+    {
+        const DisplayFrame g = displayFrame(G);
+        host = g.host;
+        auto frame = renderer->render(IMAGE, frameSet(g, 0, 1), DARK);
+        REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
+        if (frame) {
+            record = std::move(frame->record);
+            output = frame->image;
+        }
+    }  // the FrameSet and the frame's own lease are gone; the record function holds a share
+    const std::vector<dvv::media::LeaseInfo> leases = outstandingLeases();
+    REQUIRE(leases.size() == 1);
+    CHECK(std::string_view(leases.front().where.file_name()).ends_with("viewport_renderer.cpp"));
+    REQUIRE(static_cast<bool>(record));
+    REQUIRE(output != nullptr);
+    submit(std::move(record));
+    const std::vector<std::byte> bytes = read(output);
+    const HostDisplayImage shown{.width = IMAGE.width, .height = IMAGE.height, .rgba16f = host};
+    CHECK(mismatches(bytes,
+                     rawreel::compositeConstants(DARK, ViewTransform::fit(IMAGE, IMAGE), false),
+                     shown) == 0);
+}
+
+TEST_CASE_FIXTURE(CompositorTest, "an sRGB-encoding presenter skips the compositor's encode") {
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame n = displayFrame(N);
     const PixelSize viewport{211, 97};
-    auto frame = renderer->frame(frameInfo(viewport, VK_FORMAT_B8G8R8A8_SRGB, 0, false),
+    auto frame = renderer->frame(frameParams(viewport, dvv::gpu::PresentEncoding::Srgb, 0, false),
                                  DisplaySnapshot{frameSet(n, 0, 1), DARK, 1});
     REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
     REQUIRE(static_cast<bool>(frame->record));
@@ -501,7 +663,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: lastRecorded() may be read while 
         }
         for (std::uint64_t i = 0; i < 200; ++i) {
             auto frame = renderer->frame(
-                frameInfo(viewport, VK_FORMAT_B8G8R8A8_UNORM, i, true),
+                frameParams(viewport, dvv::gpu::PresentEncoding::Linear, i, true),
                 DisplaySnapshot{frameSet(g, static_cast<std::int64_t>(i % 2), 1), DARK, i + 1});
             REQUIRE(frame);
             CHECK(static_cast<bool>(frame->record));  // dropped unsubmitted

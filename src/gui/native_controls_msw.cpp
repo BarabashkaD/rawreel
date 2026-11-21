@@ -5,6 +5,7 @@
 #include <wx/wx.h>  // first: wx's Windows headers before anything else includes <windows.h> (R11)
 // clang-format on
 
+#include <cstddef>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -14,12 +15,15 @@
 #include <commctrl.h>  // TBM_*; needs <windows.h>, which wx/wx.h has included already
 #include <shellapi.h>  // ShellExecuteW
 #include <windows.h>
-
 #if wxUSE_ACCESSIBILITY
 #include <wx/access.h>
 #endif
 
+#include <wx/listctrl.h>
+#include <wx/msw/wrapcctl.h>  // ListView_GetSelectionMark, ListView_SetSelectionMark
+
 #include "gui/native_controls.h"
+#include "gui/native_controls_wx.h"
 
 namespace rawreel {
 
@@ -128,6 +132,39 @@ void setAccessibleName(wxWindow& window, const wxString& name) {
     static_cast<void>(window);
     static_cast<void>(name);
 #endif
+}
+
+// wx's own undo of the entry: `window` is the same control.
+bool canUndoText(wxWindow& /*window*/, const wxTextEntry& entry, bool redo) {
+    return wx_generic::canUndoText(entry, redo);
+}
+
+bool undoText(wxWindow& /*window*/, wxTextEntry& entry, bool redo) {
+    return wx_generic::undoText(entry, redo);
+}
+
+wxString representedFilename(wxTopLevelWindow& /*window*/) {
+    return wx_generic::representedFilename();
+}
+
+std::optional<std::size_t> dataViewTopRow(wxDataViewCtrl& view) {
+    return wx_generic::dataViewTopRow(view);
+}
+
+void scrollDataViewRowToTop(wxDataViewCtrl& view, std::size_t row) {
+    wx_generic::scrollDataViewRowToTop(view, row);
+}
+
+std::optional<std::size_t> listSelectionMark(const wxListCtrl& list) {
+    if (const int mark = ListView_GetSelectionMark(static_cast<HWND>(list.GetHWND())); mark >= 0) {
+        return static_cast<std::size_t>(mark);
+    }
+    return std::nullopt;
+}
+
+void setListSelectionMark(wxListCtrl& list, std::optional<std::size_t> row) {
+    static_cast<void>(ListView_SetSelectionMark(static_cast<HWND>(list.GetHWND()),
+                                                row ? static_cast<int>(*row) : -1));
 }
 
 }  // namespace rawreel

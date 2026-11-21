@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "core/log_mirror.h"
+#include "dvv/base/log.h"
 
 namespace rawreel {
 
@@ -32,8 +33,9 @@ enum class LogListKind : std::uint8_t { ListCtrl, DataView };
 inline constexpr std::array<std::string_view, 4> LOG_LIST_COLUMNS{"Time (local)", "Level",
                                                                   "Message", "Source"};
 // The columns shown (addendum §4): Source only with log.source.
-[[nodiscard]] constexpr std::size_t logListColumns(bool with_source) noexcept {
-    return with_source ? LOG_LIST_COLUMNS.size() : LOG_LIST_COLUMNS.size() - 1;
+[[nodiscard]] constexpr std::size_t logListColumns(dvv::SourceSuffix suffix) noexcept {
+    return suffix == dvv::SourceSuffix::With ? LOG_LIST_COLUMNS.size()
+                                             : LOG_LIST_COLUMNS.size() - 1;
 }
 
 // Whether a row is in view: `row` is its rectangle in the control's client coordinates (empty when
@@ -54,9 +56,10 @@ inline constexpr std::array<std::string_view, 4> LOG_LIST_COLUMNS{"Time (local)"
 class LogList : public wxPanel {
 public:
     // A new list of `kind`, a child of `parent`, reading `mirror` (which outlives it), with the
-    // Source column only when `with_source` (log.source); empty until rebuild() or applyBatch().
+    // Source column only with SourceSuffix::With (log.source); empty until rebuild() or
+    // applyBatch().
     [[nodiscard]] static LogList* create(wxWindow* parent, const LogMirror& mirror,
-                                         LogListKind kind, bool with_source);
+                                         LogListKind kind, dvv::SourceSuffix suffix);
 
     // The rows from the mirror, no selection, the last row visible.
     virtual void rebuild() = 0;
@@ -65,6 +68,9 @@ public:
     virtual void applyBatch(const ListRows& rows) = 0;
     // Where the list stands, by sequence number (taken before a batch); tail is lastRowVisible().
     [[nodiscard]] virtual ListPlace place() const = 0;
+    // Selftests: whether the control shows the place the last batch restored, so place() reads the
+    // control itself (an adapter whose control scrolls at once is always settled).
+    [[nodiscard]] virtual bool placeSettled() const { return true; }
     // Whether the last row is in view (logRowInView with the control's own row rectangle), not row
     // arithmetic: wxOSX's GetCountPerPage counts only whole rows below the header while its
     // GetTopItem is the partly hidden row under it. False for an empty list.
@@ -97,8 +103,8 @@ private:
 
 // The adapters (log_list_listctrl.cpp, log_list_dataview.cpp).
 [[nodiscard]] LogList* createListCtrlLogList(wxWindow* parent, const LogMirror& mirror,
-                                             bool with_source);
+                                             dvv::SourceSuffix suffix);
 [[nodiscard]] LogList* createDataViewLogList(wxWindow* parent, const LogMirror& mirror,
-                                             bool with_source);
+                                             dvv::SourceSuffix suffix);
 
 }  // namespace rawreel

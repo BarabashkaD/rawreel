@@ -8,7 +8,7 @@
 #include <optional>
 #include <span>
 
-#include "dvv/platform/native_window.h"
+#include "dvv/platform/pixel_size.h"
 #include "render/display_state.h"
 
 namespace rawreel {

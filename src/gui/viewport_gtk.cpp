@@ -2,6 +2,8 @@
 #include <wx/wx.h>  // first (R11)
 // clang-format on
 
+#include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -77,6 +79,16 @@ void syncNativeWindow(wxWindow& window) {
     if (GdkWindow* const gdk_window = window.GTKGetDrawingWindow(); gdk_window != nullptr) {
         gdk_display_sync(gdk_window_get_display(gdk_window));
     }
+}
+
+dvv::platform::PixelSize nativePixelSize(const wxWindow& window) {
+    const wxSize size = window.ToPhys(window.GetClientSize());
+    return {.width = static_cast<std::uint32_t>(std::max(size.x, 0)),
+            .height = static_cast<std::uint32_t>(std::max(size.y, 0))};
+}
+
+bool setBackingScaleForTest(wxWindow& /*window*/, double /*scale*/) {
+    return false;
 }
 
 }  // namespace rawreel

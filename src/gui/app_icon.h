@@ -7,9 +7,7 @@
 #include <wx/wx.h>  // first (R11)
 // clang-format on
 
-#if defined(__WXOSX__)
 #include <string>
-#endif
 
 #include <wx/bmpbndl.h>
 #include <wx/iconbndl.h>
@@ -30,9 +28,7 @@ inline constexpr int ABOUT_LOGO_DIP = 128;
 // ABOUT_LOGO_DIP DIP (cached per size). Empty, with one warning, if the PNG does not load.
 [[nodiscard]] wxBitmapBundle aboutLogo();
 
-#if defined(__WXOSX__)
-// The main bundle's CFBundleIconFile ("" if absent), for the smoke check.
+// The main bundle's CFBundleIconFile ("" if absent; "" off macOS), for the smoke check.
 [[nodiscard]] std::string bundleIconFile();
-#endif
 
 }  // namespace rawreel

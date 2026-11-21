@@ -146,14 +146,14 @@ TEST_SUITE("core") {
         // The line the Logger hands over carries the source; the store formats its own.
         store.write(record, dvv::formatLogRecord(record));
         LogStore with_source;
-        with_source.setWithSource(true);
+        with_source.setSourceSuffix(dvv::SourceSuffix::With);
         with_source.write(record, "ignored");
         const auto plain = store.take(0);
         const auto sourced = with_source.take(0);
         REQUIRE(plain.entries.size() == 1);
         REQUIRE(sourced.entries.size() == 1);
-        CHECK(plain.entries[0].line == dvv::formatLogRecord(record, false));
-        CHECK(sourced.entries[0].line == dvv::formatLogRecord(record, true));
+        CHECK(plain.entries[0].line == dvv::formatLogRecord(record, dvv::SourceSuffix::Without));
+        CHECK(sourced.entries[0].line == dvv::formatLogRecord(record, dvv::SourceSuffix::With));
         CHECK(plain.entries[0].line != sourced.entries[0].line);
     }
 

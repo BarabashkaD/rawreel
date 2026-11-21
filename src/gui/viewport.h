@@ -13,7 +13,7 @@
 #include "dvv/base/error.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/presenter.h"
-#include "dvv/platform/native_window.h"
+#include "dvv/platform/pixel_size.h"
 #include "render/display_state.h"
 #include "render/viewport_renderer.h"
 
@@ -178,9 +178,7 @@ private:
     std::optional<Drag> drag_;  // during a drag
     // The zoom shown at the current pinch's start; 0 between gestures.
     double pinch_start_zoom_ = 0;
-#if !defined(__WXOSX__)
     double wheel_zoom_ = 0;  // Ctrl+wheel rotation not yet a whole notch (takeWheelNotches)
-#endif
 };
 
 }  // namespace rawreel

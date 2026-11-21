@@ -145,7 +145,7 @@ std::string standardText(const dvv::media::SourceInfo& info,
         }
     }
     std::uint8_t unsignalled = dvv::media::AssumedTransfer | dvv::media::AssumedPrimaries;
-    if (dvv::media::descriptor(info.desc.format).model == dvv::media::ColourModel::Yuv) {
+    if (dvv::media::formatDesc(info.desc.format).model == dvv::media::ColourModel::Yuv) {
         unsignalled |= dvv::media::AssumedMatrix;
     }
     const bool fallback = *resolved.standard == dvv::media::ColourPreset::Bt709 &&
@@ -173,7 +173,7 @@ std::string infoText(const dvv::media::SourceInfo& info) {
     std::string text;
     text += std::format("uri: {}\n", info.resolvedUri);
     text += std::format("provider: {}\n", info.provider);
-    text += std::format("format: {}\n", dvv::media::descriptor(info.desc.format).name);
+    text += std::format("format: {}\n", dvv::media::formatDesc(info.desc.format).name);
     text += std::format("size: {}x{}\n", info.desc.width, info.desc.height);
     text += std::format("fps: {}/{}\n", info.fps.num, info.fps.den);
     if (info.frameCount) {

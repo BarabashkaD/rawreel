@@ -18,7 +18,7 @@ are built on the dvv libraries, which this repository pins as git submodules in 
 
 ## Packages
 
-A release has these files (`<v>` is the version, e.g. `0.11.1`):
+A release has these files (`<v>` is the version, e.g. `0.12.0`):
 
 - `rawreel-<v>-windows-x64.zip`: the application. Unzip it anywhere and start `rawreel-gui.exe`;
   nothing is installed. The zip is not code-signed, so Windows SmartScreen may warn at the first
@@ -784,51 +784,52 @@ another file:
   desktop CPU for easy content, far less for noisy content. Raw and Y4M files play 4K at 60 fps.
 - The Windows zip is not code-signed.
 - On Linux, `rawreel-gui` uses X11; on a Wayland desktop it runs through XWayland.
-- On Linux, a crash writes no crash report; use a core dump (see [Bug reports](#bug-reports)).
 - macOS: Apple Silicon and macOS 27 or newer only. The app is not signed with a Developer ID or
   notarized. rawreel pins only the Vulkan driver (the bundled KosmicKrisp); Vulkan implicit
   layers installed system-wide (for example by a Vulkan SDK) can still load into it. The macOS CI
   has no usable Metal device, so it runs the GPU tests on lavapipe (Mesa's software driver, CI
   only); the display tests and the real-GPU check run only on a Mac (see
-  [Building and testing (macOS)](#building-and-testing-macos)). A crash writes no rawreel crash
-  report; use the system's (see [Bug reports](#bug-reports)).
+  [Building and testing (macOS)](#building-and-testing-macos)).
 
 ## Bug reports
 
-When `rawreel-gui` or `rawreel-cli` crashes, it writes a minidump to `%APPDATA%\rawreel\crashes\`
-(`<exe>-<yyyymmdd-hhmmss>-<pid>.dmp`). Attach the `.dmp` file and the log to the bug report: for
-`rawreel-gui` its newest log file in `%APPDATA%\rawreel\` (`rawreel-*.log`); for `rawreel-cli` its console output,
-which includes the `rawreel: crash dump <path>` line. Add the output of `rawreel-cli --version`.
-The maintainer reads the dump with the symbols of the same release,
-`rawreel-<v>-windows-x64-symbols.zip`. `abort` and `__fastfail` end the process without a dump.
+When `rawreel-gui` or `rawreel-cli` crashes, it writes `<exe>-<yyyymmdd-hhmmss>-<pid>.dvvlog` to
+the `crashes` folder of rawreel's data folder on every OS, and on Windows also a minidump,
+`<exe>-<yyyymmdd-hhmmss>-<pid>.dmp`. The data folder is `%APPDATA%\rawreel\` on Windows,
+`~/Library/Application Support/rawreel/` on macOS and `~/.local/share/rawreel/` on Linux. The
+`.dvvlog` of `rawreel-gui` holds its last log lines; the one of `rawreel-cli` names the crash,
+and the crash lines are on its stderr. Attach the files, the `rawreel: crash ...` lines (`crash
+log`, `crash dump`, `crash signal` or `crash exception`) and the output of `rawreel-cli
+--version`. The first start after a crash shows the last log lines of `rawreel-gui` in the Log
+pane. On start, each app renames the `.dvvlog` files of its earlier crashes to
+`<exe>-<yyyymmdd-hhmmss>-<pid>.reported.dvvlog`; the `.dmp` files keep their names. The date and
+time in a file's name tell which crash it belongs to: attach the newest `.dvvlog`, with or without
+`.reported`, and on Windows the `.dmp` of the same name.
 
-On Linux, rawreel writes no crash report; the system can write a core dump instead. Run
-`ulimit -c unlimited` in the shell that starts rawreel. Where the core goes depends on the system
-(`cat /proc/sys/kernel/core_pattern`): on Ubuntu, apport usually stores it below
-`/var/lib/apport/coredump/`; with systemd-coredump, `coredumpctl` lists it. Attach the
-core, the log (the newest `rawreel-*.log` in `~/.local/share/rawreel/` for `rawreel-gui`,
-the console output for `rawreel-cli`) and the output of `rawreel-cli --version`. A core holds the
-program's memory,
-including frames of the open video. The maintainer reads it with the symbols of the same release,
-`rawreel-<v>-linux-x64-symbols.tar.xz`, extracted into the package folder
-(`tar xf rawreel-<v>-linux-x64-symbols.tar.xz -C rawreel-<v>`), so that gdb finds
+On Windows, the maintainer reads the dump with the symbols of the same release,
+`rawreel-<v>-windows-x64-symbols.zip`.
+
+On Linux, the system also writes a core dump when its core size limit allows one. Where it goes
+depends on the system (`cat /proc/sys/kernel/core_pattern`): on Ubuntu, apport usually stores it
+below `/var/lib/apport/coredump/`; with systemd-coredump, `coredumpctl` lists it. A core holds
+the program's memory, including frames of the open video. The maintainer reads it with the
+symbols of the same release, `rawreel-<v>-linux-x64-symbols.tar.xz`, extracted into the package
+folder (`tar xf rawreel-<v>-linux-x64-symbols.tar.xz -C rawreel-<v>`), so that gdb finds
 `rawreel-gui.debug` next to `rawreel-gui`.
 
-On macOS, rawreel has no crash handler; the system writes a crash report for `rawreel-gui` or
-`rawreel-cli` to `~/Library/Logs/DiagnosticReports/`. Attach it, the log
-(the newest `rawreel-*.log` in `~/Library/Application Support/rawreel/` for
-`rawreel-gui`, the console output for `rawreel-cli`; the log names the Vulkan driver) and
-the output of `rawreel-cli --version`, whose
-version line includes `driver KosmicKrisp ...`. The maintainer reads the report with the symbols
-of the same release, `rawreel-<v>-macos-arm64-symbols.zip` (each `.dSYM` matches its executable
-by UUID).
+On macOS, the system writes a crash report for `rawreel-gui` or `rawreel-cli` to
+`~/Library/Logs/DiagnosticReports/`. Attach it too. The `rawreel-gui` log (the newest
+`rawreel-*.log` in `~/Library/Application Support/rawreel/`) names the Vulkan driver, and the
+version line of `rawreel-cli --version` includes `driver KosmicKrisp ...`. The maintainer reads
+the report with the symbols of the same release, `rawreel-<v>-macos-arm64-symbols.zip` (each
+`.dSYM` matches its executable by UUID).
 
 ## Verifying downloads
 
 `SHA256SUMS` lists the SHA256 of every release file. In PowerShell, in the download folder:
 
 ```powershell
-$f = 'rawreel-0.11.1-windows-x64.zip'
+$f = 'rawreel-0.12.0-windows-x64.zip'
 $want = (Select-String -Path SHA256SUMS -SimpleMatch $f).Line.Split(' ')[0]
 (Get-FileHash $f -Algorithm SHA256).Hash -eq $want    # True
 ```
@@ -838,12 +839,12 @@ On Linux (or wherever coreutils exist), and on macOS: `sha256sum -c --ignore-mis
 attestation from the release workflow; with the GitHub CLI:
 
 ```powershell
-gh attestation verify rawreel-0.11.1-windows-x64.zip --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.12.0-windows-x64.zip --repo BarabashkaD/rawreel
 ```
 
 ```sh
-gh attestation verify rawreel-0.11.1-linux-x64.tar.xz --repo BarabashkaD/rawreel
-gh attestation verify rawreel-0.11.1-macos-arm64.dmg --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.12.0-linux-x64.tar.xz --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.12.0-macos-arm64.dmg --repo BarabashkaD/rawreel
 ```
 
 ## Getting the source

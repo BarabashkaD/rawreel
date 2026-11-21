@@ -22,12 +22,12 @@ bool PlayerLogic::active() const noexcept {
 
 Clock::duration PlayerLogic::period() const noexcept {
     // fps.den / fps.num seconds, truncated to the clock tick. A non-positive fps (not a valid
-    // stream) plays at the default 25 fps.
+    // stream) plays at the default FALLBACK_FPS.
     std::int64_t num = config_.fps.num;
     std::int64_t den = config_.fps.den;
     if (num <= 0 || den <= 0) {
-        num = 25;
-        den = 1;
+        num = dvv::media::FALLBACK_FPS.num;
+        den = dvv::media::FALLBACK_FPS.den;
     }
     using Period = Clock::period;
     // ticks = den / num seconds * (Period::den / Period::num) ticks per second.

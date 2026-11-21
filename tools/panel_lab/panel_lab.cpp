@@ -21,7 +21,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <exception>
 #include <format>
 #include <functional>
 #include <memory>
@@ -41,34 +40,27 @@
 #include "core/player.h"
 #include "core/timeline.h"
 #include "dvv/base/log.h"
+#include "gui/gui_platform.h"
 #include "gui/native_controls.h"
 #include "gui/skim_key.h"
 #include "gui/transport_bar.h"
-#if !defined(_WIN32) && !defined(__APPLE__)
-#include "gui/gui_platform.h"
-#endif
+#include "panel_lab_main.h"
 
 namespace {
 
-constexpr int FAILED = 1;
+using panel_lab::FAILED;
 constexpr int BAD_ARGUMENTS = 2;
 constexpr int INITIAL_CLIENT_WIDTH_DIP = 800;
 constexpr int REPORT_SLIDER_WIDTH_DIP = 400;
 constexpr int STAGE_TIMEOUT_MS = 5000;
 constexpr int MAX_ERROR_PX = 2;
-// The toolkits with a native slider query (native_controls_*.cpp): --report fails without one.
-#if defined(__WXMSW__) || defined(__WXGTK__) || defined(__WXOSX_COCOA__)
-constexpr bool NATIVE_QUERY = true;
-#else
-constexpr bool NATIVE_QUERY = false;
-#endif
 // Whether a stage waits for a paint before measuring. The Windows trackbar answers its geometry
 // messages at once after TBM_SETPOS, and wx sends no wxEVT_PAINT for it after a SetValue (seen in
 // CI: the report timed out waiting), so there the two CallAfter hops are enough.
 #if defined(__WXMSW__)
 constexpr bool WAIT_FOR_PAINT = false;
 #else
-constexpr bool WAIT_FOR_PAINT = NATIVE_QUERY;
+constexpr bool WAIT_FOR_PAINT = true;
 #endif
 
 constexpr char USAGE[] =
@@ -408,7 +400,7 @@ private:
             }
         } else {
             print("track none");
-            failed_ = failed_ || NATIVE_QUERY;
+            failed_ = true;
         }
         const int min = slider().GetMin();
         const int max = slider().GetMax();
@@ -442,7 +434,7 @@ private:
         const std::optional<double> computed = computedThumbX(value);
         if (!native || !computed) {
             print(std::format("value {} native none computed none", value));
-            failed_ = failed_ || NATIVE_QUERY;
+            failed_ = true;
             return;
         }
         const int rounded = static_cast<int>(std::lround(*computed));
@@ -503,21 +495,16 @@ public:
 
 wxIMPLEMENT_APP_NO_MAIN(LabApp);
 
-namespace {
-
-// Parses, then runs wx through `start_wx`; returns the process exit code.
-template <class StartWx>
-int run(std::span<const std::string_view> args, StartWx start_wx) {
+// Declared in panel_lab_main.h; the per-OS entries call it.
+int panel_lab::run(std::span<const std::string_view> args, dvv::MoveOnlyFunction<int()> start_wx) {
     if (const std::optional<int> code = parseOptions(args, labOptions()); code) {
         return *code;
     }
-#if !defined(_WIN32) && !defined(__APPLE__)
-    // As rawreel-gui: XInitThreads(), GDK limited to X11, then the DISPLAY check.
-    if (const std::optional<std::string> problem = rawreel::prepareX11StartUp(); problem) {
+    // As rawreel-gui, on Linux: XInitThreads(), GDK limited to X11, then the DISPLAY check.
+    if (const std::optional<std::string> problem = rawreel::prepareGuiStartUp(); problem) {
         std::fprintf(stderr, "rawreel-panel-lab: %s\n", problem->c_str());
         return rawreel::skipExitCode();
     }
-#endif
     if (labOptions().debugTransport) {
         // The trace lines are DVV_LOG_INFO: they reach stderr through a sink, as in rawreel-gui.
         dvv::Logger::instance().addSink(std::make_shared<dvv::StderrSink>());
@@ -528,32 +515,3 @@ int run(std::span<const std::string_view> args, StartWx start_wx) {
     }
     return labExitCode();
 }
-
-}  // namespace
-
-#if defined(_WIN32)
-// A console program with wide arguments: the console entry point calls wmain.
-int wmain(int argc, wchar_t** argv) {
-    try {
-        std::vector<std::string> utf8;
-        for (int i = 1; i < argc; ++i) {
-            utf8.push_back(wxString(argv[i]).utf8_string());
-        }
-        const std::vector<std::string_view> args(utf8.begin(), utf8.end());
-        return run(args, [&argc, argv] { return wxEntry(argc, argv); });
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "rawreel-panel-lab: %s\n", error.what());
-        return FAILED;
-    }
-}
-#else
-int main(int argc, char** argv) {
-    try {
-        const std::vector<std::string_view> args(argv + 1, argv + argc);
-        return run(args, [&argc, argv] { return wxEntry(argc, argv); });
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "rawreel-panel-lab: %s\n", error.what());
-        return FAILED;
-    }
-}
-#endif

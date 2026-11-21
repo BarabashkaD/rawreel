@@ -135,7 +135,7 @@ public:
                         .at = Clock::now()};
         for (std::uint32_t k = 0; k < frames.count; ++k) {
             const auto& view = frames.views[k];
-            record.viewsMatch = record.viewsMatch && view && view->key().index == frames.index;
+            record.viewsMatch = record.viewsMatch && view && view.key().index == frames.index;
         }
         {
             const std::scoped_lock lock(mutex_);
@@ -221,6 +221,31 @@ void revealFile(const std::filesystem::path& file_or_folder);
 // in a --selftest run. Without a hook a selftest on Windows ends the modal dialog with Cancel
 // (logged), so a script never waits for a user.
 void showSettingsWindow(SettingsWindow& settings, wxWindow& parent);
+
+struct InfoKeysState;
+struct SettingsState;
+struct SmokeState;
+
+// The toolkit-only parts of the selftest scenarios. Every backend defines them
+// (selftest_msw.cpp, selftest_gtk.cpp, selftest_cocoa.mm); where a toolkit has no such step, its
+// hook adds none.
+// The Info window's Copy: macOS through Edit -> Copy with the focus in the window, Windows and
+// Linux through Ctrl+C in the window.
+void copyInInfoWindow(MainFrame& frame, const std::shared_ptr<InfoKeysState>& state);
+// macOS: ⌘W with the focus in the Info window closes the window.
+void addInfoWindowCloseKeySteps(std::vector<SelfTestStep>& steps, SelfTest* test,
+                                const std::shared_ptr<InfoKeysState>& state);
+// macOS: a backing scale change of the window, and back.
+void addBackingScaleSteps(std::vector<SelfTestStep>& steps, SelfTest* test,
+                          const std::shared_ptr<SmokeState>& state);
+// macOS: About and Quit in the application menu; `opens_about`: its About opens Help -> About.
+void addApplicationMenuSteps(std::vector<SelfTestStep>& steps, SelfTest* test, bool opens_about);
+// macOS: ⌘W with the Settings window in front, then with another window in front (closes the
+// stream).
+void addSettingsCloseKeySteps(std::vector<SelfTestStep>& steps, SelfTest* test,
+                              const std::shared_ptr<SettingsState>& state);
+// macOS: the files as Finder or the Dock opens them (wxApp::MacOpenFiles). Nothing elsewhere.
+void openFilesFromFinder(const wxArrayString& names);
 
 // The dispatcher: Smoke -> {smokeScenario(test)}, Lost -> {lostScenario(test), false}, Player ->
 // {playerScenario(test)}, Perf -> {perfScenario(test)}, About -> {aboutScenario(test)}; every other

@@ -24,7 +24,7 @@ inline constexpr int UNSUPPORTED = 3;  // also: an ambiguous source
 inline constexpr int GPU_ERROR = 4;
 }  // namespace exit_code
 
-// The exit code of an error. `gpu_stage`: the error comes from the GPU setup (GpuRegistry::create,
+// The exit code of an error. `gpu_stage`: the error comes from the GPU setup (GpuInstance::create,
 // createContext, FrameStore::create with a context) or is OutOfMemory from an acquire in a store
 // with a context.
 [[nodiscard]] int exitCodeFor(const dvv::Error& error, bool gpu_stage) noexcept;

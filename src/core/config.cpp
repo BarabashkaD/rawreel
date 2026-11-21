@@ -18,7 +18,7 @@
 #include "dvv/base/json.h"
 #include "dvv/base/log.h"
 #include "dvv/base/paths.h"
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 #include "dvv/platform/file_reader.h"
 
 namespace rawreel {
@@ -36,8 +36,8 @@ constexpr std::array<std::pair<std::string_view, FileReadMode>, 3> FILE_READS{{
 LoadedConfig ignored(LoadedConfig loaded, std::string reason) {
     loaded.config = Config{};
     loaded.warning = std::move(reason);
-    DVV_LOG_WARN("config '{}' ignored: {}; using the defaults",
-                 dvv::media::utf8FromPath(loaded.path), loaded.warning);
+    DVV_LOG_WARN("config '{}' ignored: {}; using the defaults", dvv::pathDisplayText(loaded.path),
+                 loaded.warning);
     return loaded;
 }
 
@@ -79,7 +79,7 @@ dvv::Result<void> readFolder(const dvv::json::Value& section, std::string_view k
     }
     std::filesystem::path folder;
     if (found->is_string()) {
-        folder = dvv::media::pathFromUtf8(found->get_ref<const std::string&>());
+        folder = dvv::pathFromText(found->get_ref<const std::string&>());
     }
     if (!found->is_string() || (!folder.empty() && !folder.is_absolute())) {
         return dvv::makeError(dvv::Errc::Format,
@@ -240,7 +240,7 @@ namespace {
 // `named`: the file --config names, which must exist (a missing one is a warning).
 LoadedConfig load(const std::filesystem::path& path, bool named) {
     LoadedConfig loaded{.config = {}, .path = path, .found = false, .warning = {}, .text = {}};
-    const std::string shown = dvv::media::utf8FromPath(path);
+    const std::string shown = dvv::pathDisplayText(path);
     std::error_code error;
     const bool exists = std::filesystem::exists(path, error);
     if (error) {
@@ -270,7 +270,7 @@ LoadedConfig load(const std::filesystem::path& path, bool named) {
         "log.level {}, log.source {}",
         shown, fileReadsName(c.io.fileReads), c.gui.showLogPane, c.log.file.enabled ? "on" : "off",
         c.log.file.folder.empty() ? std::string("default")
-                                  : dvv::media::utf8FromPath(c.log.file.folder),
+                                  : dvv::pathDisplayText(c.log.file.folder),
         c.log.system.enabled ? "on" : "off", levelConfigValue(c.log.level), c.log.source);
     return loaded;
 }
@@ -283,7 +283,7 @@ LoadedConfig loadConfig(const std::filesystem::path& path) {
 
 LoadedConfig loadConfig(const std::optional<std::string>& config_utf8) {
     if (config_utf8) {
-        std::filesystem::path path = dvv::media::pathFromUtf8(*config_utf8);
+        std::filesystem::path path = dvv::pathFromText(*config_utf8);
         std::error_code error;
         if (std::filesystem::path absolute = std::filesystem::absolute(path, error); !error) {
             path = std::move(absolute);

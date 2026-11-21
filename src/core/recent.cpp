@@ -20,7 +20,7 @@
 #include "dvv/base/error.h"
 #include "dvv/base/json.h"
 #include "dvv/base/uri.h"
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 
 namespace rawreel {
 namespace {
@@ -132,7 +132,7 @@ std::string prefixOf(std::size_t number, TitleStyle style) {
 }  // namespace
 
 std::string recentEntryOfPath(const std::filesystem::path& path) {
-    std::string text = dvv::media::utf8FromPath(path);
+    std::string text = dvv::pathText(path);
     if (text.find('?') != std::string::npos) {
         return fileUri(path);
     }
@@ -149,7 +149,7 @@ std::string recentEntryOfText(std::string_view text, const std::filesystem::path
         return std::string(text);
     }
     // A plain join: '.' and '..' stay; an absolute part replaces the folder.
-    std::string joined = dvv::media::utf8FromPath(working_folder / dvv::media::pathFromUtf8(part));
+    std::string joined = dvv::pathText(working_folder / dvv::pathFromText(part));
     if (query != std::string_view::npos) {
         joined += text.substr(query);
     }
@@ -235,7 +235,7 @@ RecentFileState recentFileState(std::string_view entry) {
     if (!parsed || parsed->scheme != "file") {
         return RecentFileState::NotChecked;
     }
-    const std::filesystem::path path = dvv::media::pathFromUtf8(parsed->path);
+    const std::filesystem::path path = dvv::pathFromText(parsed->path);
     std::error_code error;
     const std::filesystem::file_status status = std::filesystem::status(path, error);
     if (status.type() == std::filesystem::file_type::not_found) {

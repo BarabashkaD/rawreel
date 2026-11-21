@@ -51,9 +51,9 @@ wxString logCellText(const LogMirror& mirror, std::size_t row, std::size_t colum
 }
 
 LogList* LogList::create(wxWindow* parent, const LogMirror& mirror, LogListKind kind,
-                         bool with_source) {
-    return kind == LogListKind::ListCtrl ? createListCtrlLogList(parent, mirror, with_source)
-                                         : createDataViewLogList(parent, mirror, with_source);
+                         dvv::SourceSuffix suffix) {
+    return kind == LogListKind::ListCtrl ? createListCtrlLogList(parent, mirror, suffix)
+                                         : createDataViewLogList(parent, mirror, suffix);
 }
 
 LogList::LogList(wxWindow* parent, const LogMirror& mirror) : wxPanel(parent), mirror_(&mirror) {}
@@ -83,10 +83,8 @@ constexpr std::array<dvv::LogLevel, 5> MENU_LEVELS{dvv::LogLevel::Error, dvv::Lo
 
 }  // namespace
 
-LogPanel::LogPanel(wxWindow* parent, bool with_source, LogListKind kind)
-    : wxPanel(parent),
-      list_(LogList::create(this, mirror_, kind, with_source)),
-      with_source_(with_source) {
+LogPanel::LogPanel(wxWindow* parent, dvv::SourceSuffix suffix, LogListKind kind)
+    : wxPanel(parent), list_(LogList::create(this, mirror_, kind, suffix)), suffix_(suffix) {
     auto* sizer = new wxBoxSizer(wxVERTICAL);
     sizer->Add(list_, wxSizerFlags(1).Expand());
     SetSizer(sizer);
@@ -115,6 +113,13 @@ void LogPanel::refresh(LogBatch batch, bool shown) {
         before = list_->place();
     }
     const MirrorChange change = mirror_.apply(std::move(batch));
+    ++refreshes_;
+    if (before) {
+        refresh_records_.push_back({.before = *before, .change = change});
+        if (refresh_records_.size() > REFRESH_RECORDS_KEPT) {
+            refresh_records_.pop_front();
+        }
+    }
     if (shown && (change.reset || change.dropped > 0 || change.appended > 0)) {
         list_->applyBatch(rowsAfterBatch(*before, mirror_));
     }
@@ -122,7 +127,7 @@ void LogPanel::refresh(LogBatch batch, bool shown) {
 
 void LogPanel::recreateList(LogListKind kind) {
     GetSizer()->Clear(true);  // deletes the old list
-    list_ = LogList::create(this, mirror_, kind, with_source_);
+    list_ = LogList::create(this, mirror_, kind, suffix_);
     GetSizer()->Add(list_, wxSizerFlags(1).Expand());
     Layout();
     list_->rebuild();

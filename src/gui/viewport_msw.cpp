@@ -2,6 +2,9 @@
 #include <wx/wx.h>  // first (R11)
 // clang-format on
 
+#include <algorithm>
+#include <cstdint>
+
 #include <wx/msw/wrapwin.h>
 
 #include "gui/native_window.h"
@@ -17,5 +20,15 @@ dvv::Result<ViewportWindow> nativeWindowOf(wxWindow& window) {
 }
 
 void syncNativeWindow(wxWindow& /*window*/) {}
+
+dvv::platform::PixelSize nativePixelSize(const wxWindow& window) {
+    const wxSize size = window.ToPhys(window.GetClientSize());
+    return {.width = static_cast<std::uint32_t>(std::max(size.x, 0)),
+            .height = static_cast<std::uint32_t>(std::max(size.y, 0))};
+}
+
+bool setBackingScaleForTest(wxWindow& /*window*/, double /*scale*/) {
+    return false;
+}
 
 }  // namespace rawreel
