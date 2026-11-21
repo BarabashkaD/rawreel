@@ -23,7 +23,7 @@
 #include "core/log_file_switch.h"
 #include "core/log_store.h"
 #include "dvv/base/log.h"
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 #include "temporary_directory.h"
 
 namespace fs = std::filesystem;
@@ -34,7 +34,7 @@ using rawreel::LogFileSwitch;
 namespace {
 
 std::shared_ptr<dvv::SplitFileSink> openIn(const fs::path& folder) {
-    auto sink = rawreel::openLogFile(folder, FolderCreation::LastOnly, false);
+    auto sink = rawreel::openLogFile(folder, FolderCreation::LastOnly, dvv::SplitOpen::NewFile);
     REQUIRE_MESSAGE(sink.has_value(), (sink ? "" : sink.error().describe()));
     return std::move(*sink);
 }
@@ -56,7 +56,7 @@ void writeLine(LogFileSwitch& log, std::string_view text) {
 std::vector<std::string> namesIn(const fs::path& folder) {
     std::vector<std::string> names;
     for (const fs::directory_entry& entry : fs::directory_iterator(folder)) {
-        names.push_back(dvv::media::utf8FromPath(entry.path().filename()));
+        names.push_back(dvv::pathDisplayText(entry.path().filename()));
     }
     return names;
 }
@@ -159,15 +159,15 @@ TEST_SUITE("core") {
         log.write(record, dvv::formatLogRecord(record));
         (void)log.replace(nullptr);
         CHECK(linesOf(tmp.path() / "plain") ==
-              std::vector<std::string>{dvv::formatLogRecord(record, false)});
+              std::vector<std::string>{dvv::formatLogRecord(record, dvv::SourceSuffix::Without)});
 
         LogFileSwitch sourced;
-        sourced.setWithSource(true);
+        sourced.setSourceSuffix(dvv::SourceSuffix::With);
         (void)sourced.replace(openIn(tmp.path() / "sourced"));
         sourced.write(record, "ignored");
         (void)sourced.replace(nullptr);
         CHECK(linesOf(tmp.path() / "sourced") ==
-              std::vector<std::string>{dvv::formatLogRecord(record, true)});
+              std::vector<std::string>{dvv::formatLogRecord(record, dvv::SourceSuffix::With)});
     }
 
     TEST_CASE("log file switch: no file, no write") {
@@ -207,7 +207,7 @@ TEST_SUITE("core") {
             entry.time = record.time;
             entry.message = std::string(text);
             entry.where = record.where;
-            entry.line = dvv::formatLogRecord(record, true);
+            entry.line = dvv::formatLogRecord(record, dvv::SourceSuffix::With);
             entries.push_back(std::move(entry));
         }
         LogFileSwitch log;  // without source: the backfill is written as the entries hold it

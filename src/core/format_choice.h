@@ -58,7 +58,7 @@ struct ColourChoice {
 struct FormatChoice {
     std::string format = "yuv420p";  // catalogue name or "@<UTF-8 path to .json>"
     std::uint32_t width = 1920, height = 1080;
-    dvv::media::Rational fps{25, 1};
+    dvv::media::Rational fps = dvv::media::FALLBACK_FPS;
     ColourChoice colour{};
     bool operator==(const FormatChoice&) const = default;
 };
@@ -69,10 +69,10 @@ struct FormatChoice {
 // the colour keys of info.resolvedUri (colourChoiceFromUri).
 [[nodiscard]] FormatChoice choiceFromInfo(const dvv::media::SourceInfo& info);
 // The format dialog's prefill for a request URI (D5 design §4.4): for a file: URI,
-// `fallback` with the size and catalogue format of the file name (<name>_WxH[_fmt]...), then the
-// format, size and fps of the clip description of clip=@<path> (dvv::media::loadClipJson; an
-// error is ignored, the open names it), then the query's fmt, size (WxH), w, h and
-// fps on top (design §4.2 order); `fallback`'s format, size and fps for other URIs. The colour is
+// `fallback` with the size, catalogue format and fps of the file name (<name>_WxH[_fmt][_fps]...),
+// then the format, size and fps of the clip description of clip=@<path> (dvv::media::loadClipJson;
+// an error is ignored, the open names it), then the query's fmt, size (WxH), w, h and fps on top
+// (design §4.2 order); `fallback`'s format, size and fps for other URIs. The colour is
 // colourChoiceFromUri(uri): no colour key gives none, never the fallback's.
 [[nodiscard]] FormatChoice choiceFromUri(std::string_view uri, FormatChoice fallback);
 // The URI's colour= and range= (D5R §4.4 "Reading a URI"); none for an unparsable URI or colour.
@@ -159,11 +159,12 @@ private:
 // Errc::Format: catalogue name unknown; geometry() of the format at the size fails; "@" with an
 // empty path; width or height 0; fps num <= 0 or den <= 0.
 [[nodiscard]] dvv::Result<void> validateChoice(const FormatChoice& choice);
-// The format dialog's fps field: "25" -> 25/1, "30000/1001", a decimal (up to 6 decimals) reduced
-// by the gcd ("25.5" -> 51/2), except the NTSC decimals 23.976 and 23.98, 29.97, 47.952, 59.94 and
-// 119.88 (by value, trailing zeros allowed), which give N*1000/1001 (D5 design §1.4). nullopt for
-// empty text, 0, negatives, a zero denominator, an overflow or any other character.
-[[nodiscard]] std::optional<dvv::media::Rational> parseFpsText(std::string_view text) noexcept;
+// The format dialog's fps field: dvv-media's grammar ("25" -> 25/1, "30000/1001", a decimal with up
+// to 9 decimals), reduced by the gcd ("25.5" -> 51/2), plus rawreel's NTSC rule: the decimals
+// 23.976 and 23.98, 29.97, 47.952, 59.94 and 119.88 (by value, trailing zeros allowed) give
+// N*1000/1001 (D5 design §1.4). nullopt for empty text, 0, negatives, a zero denominator, an
+// overflow or any other character.
+[[nodiscard]] std::optional<dvv::media::Rational> parseFpsText(std::string_view text);
 
 // What Load JSON... of the format dialog found in a file (D5 design §1.7): the groups it gives.
 struct FormatJson {

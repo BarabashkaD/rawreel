@@ -16,7 +16,7 @@
 #include "core/config.h"
 #include "core/config_writer.h"
 #include "dvv/base/error.h"
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 #include "temporary_directory.h"
 
 namespace fs = std::filesystem;
@@ -264,8 +264,8 @@ TEST_SUITE("core") {
     TEST_CASE("config writer: a string value") {
         const TemporaryDirectory temporary("rawreel-config-writer");
         const fs::path file = temporary.path() / rawreel::CONFIG_FILE_NAME;
-        const fs::path folder = temporary.path() / dvv::media::pathFromUtf8("журнал логов");
-        save(file, {.key = "log.file.folder", .value = dvv::media::utf8FromPath(folder)});
+        const fs::path folder = temporary.path() / dvv::pathFromText("журнал логов");
+        save(file, {.key = "log.file.folder", .value = dvv::pathText(folder)});
         CHECK(parsed(file).log.file.folder == folder);
     }
 }

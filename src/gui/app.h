@@ -2,7 +2,7 @@
 
 // rawreel-gui's wx application (spec §10.2; design M1b §5.6, M3 v2 §5.5 and §7): the log sinks,
 // the config and the settings claim (Log pane and Settings design §5.3, §6.3, §7.1), appearance,
-// pools, GPU registry, the Session and its bridge, the main frame and the exit code.
+// pools, GPU instance, the Session and its bridge, the main frame and the exit code.
 
 // clang-format off
 #include <wx/wx.h>  // first (R11)
@@ -26,10 +26,12 @@
 #include "core/session.h"
 #include "core/settings_claim.h"
 #include "core/startup.h"
+#include "dvv/base/error.h"
 #include "dvv/base/executor.h"
 #include "dvv/base/log.h"
+#include "dvv/gpu/bundled_drivers.h"
 #include "dvv/gpu/device_id.h"
-#include "dvv/gpu/gpu_registry.h"
+#include "dvv/gpu/gpu_instance.h"
 #include "dvv/registry/component_registry.h"
 #include "render/display_state.h"
 
@@ -43,7 +45,9 @@ class App final : public wxApp {
 public:
     // main() passes the parsed arguments and the stderr sink it added to the Logger before
     // wxEntry(); the App sets that sink's level to the active level (log level design §2.1).
-    static void setArguments(GuiArguments arguments, std::shared_ptr<dvv::StderrSink> stderr_sink);
+    // `driver` is what applyBundledDriver() returned; OnInit logs an error once the sinks exist.
+    static void setArguments(GuiArguments arguments, std::shared_ptr<dvv::StderrSink> stderr_sink,
+                             dvv::Result<dvv::gpu::DriverChoice> driver);
     [[nodiscard]] static const GuiArguments& arguments() noexcept;
     // The exit code the App decided (0 after a passed selftest, 1, 4, 6, 77); nullopt otherwise.
     // main() reads it after wxEntry(), which returns -1 when OnInit() fails.
@@ -61,14 +65,14 @@ public:
     bool OnInit() override;
     // A --selftest run first checks that its config file holds the gui.showLogPane value the close
     // saved (a mismatch: exit 6). Then shuts a remaining Session down, checks the validation
-    // messages of a --selftest run, and releases the registry and the pools; last, flushes the
+    // messages of a --selftest run, and releases the GPU instance and the pools; last, flushes the
     // Logger, closes the log file and removes a selftest's own config folder.
     int OnExit() override;
-#if defined(__WXOSX__)
     // Files opened from Finder or the Dock (design C5), also the ones of the launch, which wxOSX
     // passes after OnInit(): the route of a drop on the window (MainFrame::openFiles), so the
     // first file replaces the stream and the others are logged as ignored. Nothing without a main
-    // frame (a failed start) or once it is closing.
+    // frame (a failed start) or once it is closing. Only wxOSX's wxApp has it (app_cocoa.mm).
+#if defined(__WXOSX__)
     void MacOpenFiles(const wxArrayString& names) override;
 #endif
 
@@ -82,8 +86,8 @@ public:
 
     // Null before OnInit() created it and after shutdownSession().
     [[nodiscard]] Session* session() const noexcept { return session_.get(); }
-    [[nodiscard]] const std::shared_ptr<dvv::gpu::GpuRegistry>& registry() const noexcept {
-        return registry_;
+    [[nodiscard]] const std::shared_ptr<dvv::gpu::GpuInstance>& gpuInstance() const noexcept {
+        return gpu_instance_;
     }
     [[nodiscard]] const std::shared_ptr<DisplayState>& display() const noexcept { return display_; }
     // The Log pane's records (spec §3.1): a Logger sink from the start of OnInit() on, never
@@ -127,6 +131,10 @@ public:
     [[nodiscard]] const std::filesystem::path& configPath() const noexcept { return config_path_; }
     // The values in effect for this run.
     [[nodiscard]] const Config& config() const noexcept { return config_; }
+    // log.source as the enum the log chain takes: the one conversion.
+    [[nodiscard]] dvv::SourceSuffix sourceSuffix() const noexcept {
+        return config_.log.source ? dvv::SourceSuffix::With : dvv::SourceSuffix::Without;
+    }
     // This process holds the settings claim of configPath() (spec §6.3): it alone may save.
     [[nodiscard]] bool ownsSettings() const noexcept { return settings_claim_ != nullptr; }
     // The only way rawreel-gui writes its config (spec §5.4, §6.3): false, and nothing written,
@@ -196,14 +204,14 @@ public:
     [[nodiscard]] const std::shared_ptr<dvv::ComponentRegistry>& components() const noexcept {
         return startup_.components;
     }
-    // The FFmpeg status, capabilities and component registry of OnInit step 5 (design M4 v2 §4.6).
+    // The component registry of OnInit step 5 (design M4 v2 §4.6).
     [[nodiscard]] const Startup& startup() const noexcept { return startup_; }
     [[nodiscard]] const std::shared_ptr<dvv::IExecutor>& cpu() const noexcept { return cpu_; }
     [[nodiscard]] const std::shared_ptr<dvv::IExecutor>& io() const noexcept { return io_; }
 
 private:
     // OnInit() steps 2 to 4 of spec §5.3 "At start" and §7.1: the selftest config, the config,
-    // the settings claim (before the log file, whose append_newest is ownsSettings()), the
+    // the settings claim (before the log file, whose open mode follows ownsSettings()), the
     // source flag and the active level (addendum §2.1, §4), the system log, the log file and the
     // start marker (addendum §3.1). False (after finish()) when a selftest's own config folder
     // cannot be made.
@@ -218,8 +226,8 @@ private:
     // the switch first gets the lines the store already holds at or above the active level
     // (addendum §2.3), then the file's "log file: '<path>'" line follows.
     void startLogFile();
-    // openLogFile(folder, creation, ownsSettings()) with the header of each new file (addendum
-    // §5.2): logFileHeader(active level, the previous file's name).
+    // openLogFile with the open mode that ownsSettings() picks, and with the header of each new
+    // file (addendum §5.2): logFileHeader(active level, the previous file's name).
     [[nodiscard]] dvv::Result<std::shared_ptr<dvv::SplitFileSink>> openLogFileIn(
         const std::filesystem::path& folder, FolderCreation creation);
     // The levels of the log file switch, the store and the stderr sink, and activeLevel().
@@ -231,11 +239,15 @@ private:
     // releases the settings claim, then removes the selftest's config folder (a failure is one
     // stderr line, the exit code stays).
     void closeLogAndConfig();
+    // OnInit, early: on macOS the application menu says "About rawreel", "Hide rawreel" and "Quit
+    // rawreel", not the executable's capitalised name (app_cocoa.mm). Nothing on the other
+    // toolkits (app_stub.cpp).
+    void setApplicationMenuName();
     // OnExit step 1 of a selftest: the config file holds `saved`, the value the close saved; a
     // mismatch records exit 6.
     void checkSavedLogPane(bool saved);
     [[nodiscard]] bool startPools();
-    // The registry and the device of --gpu; false (after finish()) when there is none to use.
+    // The GPU instance and the device of --gpu; false (after finish()) when there is none to use.
     [[nodiscard]] bool startGpu();
 
     // Declared in the reverse order of their release (the members' destruction order also covers
@@ -264,9 +276,9 @@ private:
     std::optional<AppearanceResult> appearance_result_;
     std::shared_ptr<dvv::IExecutor> cpu_;
     std::shared_ptr<dvv::IExecutor> io_;
-    std::shared_ptr<dvv::gpu::GpuRegistry> registry_;
+    std::shared_ptr<dvv::gpu::GpuInstance> gpu_instance_;
     std::optional<dvv::gpu::DeviceId> device_;
-    Startup startup_;  // the FFmpeg status and the component registry
+    Startup startup_;  // the component registry
     std::shared_ptr<DisplayState> display_;
     std::shared_ptr<ShowHistory> show_history_;
     std::shared_ptr<ProduceDelay> produce_delay_;

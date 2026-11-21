@@ -19,8 +19,10 @@
 #include <gtk/gtk.h>
 #include <wx/dataview.h>
 
-#include "dvv/media/types.h"
+#include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "gui/native_controls.h"
+#include "gui/native_controls_wx.h"
 
 namespace rawreel {
 
@@ -121,7 +123,21 @@ void revealInFileManager(const std::filesystem::path& file_or_folder) {
     const std::filesystem::path folder = std::filesystem::is_directory(file_or_folder, error)
                                              ? file_or_folder
                                              : file_or_folder.parent_path();
-    (void)wxLaunchDefaultApplication(wxString::FromUTF8(dvv::media::utf8FromPath(folder)));
+    (void)wxLaunchDefaultApplication(
+        wxString::FromUTF8("file://" + dvv::percentEncode(dvv::pathText(folder))));
+}
+
+// wx's own undo of the entry: `window` is the same control.
+bool canUndoText(wxWindow& /*window*/, const wxTextEntry& entry, bool redo) {
+    return wx_generic::canUndoText(entry, redo);
+}
+
+bool undoText(wxWindow& /*window*/, wxTextEntry& entry, bool redo) {
+    return wx_generic::undoText(entry, redo);
+}
+
+wxString representedFilename(wxTopLevelWindow& /*window*/) {
+    return wx_generic::representedFilename();
 }
 
 // A list model's path is the row alone. Aligned scrolls are deferred by GtkTreeView itself until
@@ -169,6 +185,14 @@ std::optional<std::size_t> dataViewTopRow(wxDataViewCtrl& view) {
     gtk_tree_path_free(start);
     gtk_tree_path_free(end);
     return top;
+}
+
+std::optional<std::size_t> listSelectionMark(const wxListCtrl& /*list*/) {
+    return wx_generic::listSelectionMark();
+}
+
+void setListSelectionMark(wxListCtrl& /*list*/, std::optional<std::size_t> /*row*/) {
+    wx_generic::setListSelectionMark();
 }
 
 }  // namespace rawreel

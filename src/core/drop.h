@@ -10,7 +10,7 @@
 
 namespace rawreel {
 
-// "file:" + percentEncode(utf8FromPath(path)) with dvv-base's default keep set "/:\\".
+// "file:" + percentEncode(pathText(path)) with dvv-base's default keep set "/:\\".
 [[nodiscard]] std::string fileUri(const std::filesystem::path& path);
 
 // The first file opens (it replaces the stream); `ignored` = the number of other files (the GUI

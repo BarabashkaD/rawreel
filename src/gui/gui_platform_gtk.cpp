@@ -21,7 +21,7 @@ std::optional<std::string> environment(const char* name) {
 
 }  // namespace
 
-std::optional<std::string> prepareX11StartUp() {
+std::optional<std::string> prepareGuiStartUp() {
     ::XInitThreads();  // the first Xlib call of the process
     // GDK opens only X11 (XWayland on a Wayland desktop) without touching the environment, so the
     // programs rawreel launches keep the user's settings. A GDK_BACKEND the user set takes

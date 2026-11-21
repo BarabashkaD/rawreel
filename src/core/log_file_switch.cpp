@@ -14,7 +14,7 @@
 #include "dvv/base/error.h"
 #include "dvv/base/log.h"
 #include "dvv/base/paths.h"
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 
 namespace rawreel {
 
@@ -58,22 +58,21 @@ dvv::Result<void> prepareLogFolder(const fs::path& folder, FolderCreation creati
     const fs::path parent = folder.parent_path();
     if (!fs::is_directory(parent, error)) {
         return dvv::makeError(dvv::Errc::Io, std::format("the folder {} does not exist",
-                                                         dvv::media::utf8FromPath(parent)));
+                                                         dvv::pathDisplayText(parent)));
     }
     if (!fs::create_directory(folder, error) && error) {
         return dvv::makeError(
             dvv::Errc::Io,
-            std::format("cannot create {}: {}", dvv::media::utf8FromPath(folder), error.message()));
+            std::format("cannot create {}: {}", dvv::pathDisplayText(folder), error.message()));
     }
     return {};
 }
 
 dvv::Result<std::shared_ptr<dvv::SplitFileSink>> openLogFile(const fs::path& folder,
                                                              FolderCreation creation,
-                                                             bool append_newest) {
+                                                             dvv::SplitOpen open) {
     DVV_TRY_VOID(prepareLogFolder(folder, creation));
-    return dvv::SplitFileSink::open(folder, std::string(LOG_FILE_PREFIX), LOG_FILE_BYTES,
-                                    append_newest);
+    return dvv::SplitFileSink::open(folder, std::string(LOG_FILE_PREFIX), LOG_FILE_BYTES, open);
 }
 
 bool isLogFileName(std::string_view name, bool case_insensitive) {
@@ -106,8 +105,7 @@ bool isLogFileName(std::string_view name, bool case_insensitive) {
 void LogFileSwitch::write(const dvv::LogRecord& record, std::string_view /*line*/) {
     const std::scoped_lock lock(mutex_);
     if (file_) {
-        file_->write(record,
-                     dvv::formatLogRecord(record, with_source_.load(std::memory_order_relaxed)));
+        file_->write(record, dvv::formatLogRecord(record, suffix_.load(std::memory_order_relaxed)));
     }
 }
 
@@ -125,8 +123,8 @@ void LogFileSwitch::flush() {
     }
 }
 
-void LogFileSwitch::setWithSource(bool with_source) noexcept {
-    with_source_.store(with_source, std::memory_order_relaxed);
+void LogFileSwitch::setSourceSuffix(dvv::SourceSuffix suffix) noexcept {
+    suffix_.store(suffix, std::memory_order_relaxed);
 }
 
 std::shared_ptr<dvv::SplitFileSink> LogFileSwitch::replace(std::shared_ptr<dvv::SplitFileSink> file,

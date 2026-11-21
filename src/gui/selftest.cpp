@@ -60,6 +60,7 @@
 #include "core/log_mirror.h"
 #include "core/log_store.h"
 #include "core/log_text.h"
+#include "core/native_os.h"
 #include "core/perf_stats.h"
 #include "core/recent.h"
 #include "core/session.h"
@@ -73,6 +74,7 @@
 #include "dvv/base/json.h"
 #include "dvv/base/log.h"
 #include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/gpu_info_json.h"
@@ -82,6 +84,8 @@
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
 #include "dvv/platform/native_window.h"
+#include "dvv/platform/pixel_size.h"
+#include "dvv/registry/module.h"
 #include "gui/about.h"
 #include "gui/app.h"
 #include "gui/app_icon.h"
@@ -93,8 +97,10 @@
 #include "gui/log_panel.h"
 #include "gui/main_frame.h"
 #include "gui/native_controls.h"
+#include "gui/native_policy.h"
 #include "gui/native_window.h"
 #include "gui/player_panel.h"
+#include "gui/selftest_detail.h"
 #include "gui/settings.h"
 #include "gui/timeline_strip.h"
 #include "gui/transport_bar.h"
@@ -121,14 +127,18 @@ private:
     bool* flag_;
 };
 
+}  // namespace
+
 SelfTestStep step(std::string name, dvv::MoveOnlyFunction<void()> start,
                   dvv::MoveOnlyFunction<bool(std::string&)> passed,
-                  std::chrono::milliseconds deadline = std::chrono::seconds(5)) {
+                  std::chrono::milliseconds deadline) {
     return {.name = std::move(name),
             .start = std::move(start),
             .passed = std::move(passed),
             .deadline = deadline};
 }
+
+namespace {
 
 // Set while the script injects an event (injectInput).
 bool& injecting() {
@@ -353,63 +363,25 @@ constexpr std::string_view SMOKE_STREAM = "synthetic:gradient?w=64&h=48&fmt=yuv4
 // events at once).
 constexpr std::string_view REFUSED_STREAM = "synthetic:gradient?w=64&h=48&fmt=yuv420p&frames=4";
 
-struct SmokeState {
-    std::uint64_t startFrames = 0;
-    wxSize logBestSize;  // moved pane: the Log pane's BestSize before it docked on the right
-    std::uint64_t startSwapchains = 0;
-    std::uint64_t startShows = 0;  // Viewport::presenterShows() at the step start
-    dvv::platform::PixelSize previousSize{};
-    int ticks = 0;
-    std::optional<std::uint64_t> framesWhenShown;   // open stream: when the frame was first seen
-    std::optional<std::uint64_t> framesWhenHidden;  // hide: when the presenter was first hidden
-    std::uint64_t logNext = 0;                      // logNext() at the step start
-    std::size_t streamsBefore = 0;                  // D3: streams shown when the open started
-    bool aboutHookRan = false;                      // about: the About hook ran
-    bool aboutButtonsOk = false;                    // about: notices and copy buttons found
-    bool aboutParentOk = false;                     // about: the dialog's parent is the frame
-    int aboutWidth = 0;             // about: the dialog's width before the Components pane opens
-    int aboutWidthExpanded = 0;     // about: its width (or wanted width) with the pane open
-    int aboutHeightOpen = 0;        // about: its client height with the pane open the first time
-    int aboutHeightClosed = 0;      // about: its client height with the pane closed again
-    int aboutHeightReopen = 0;      // about: its client height with the pane open again
-    wxSize aboutListReopen;         // about: the Components list size with the pane open again
-    int aboutListMin = 0;           // about: the list's minimum height (all its lines)
-    bool aboutListShown = false;    // about: the list is shown on screen with the pane open again
-    std::uint64_t about0 = 0;       // about: aboutShown() at the step start
-    int aboutShows = 0;             // about: times it was shown before the hook's clicks
-    int aboutSizeChanges = 0;       // about: size changes after it was first shown
-    bool aboutClosedEarly = false;  // about: it was hidden before the hook's clicks
-    wxSize aboutAtShow;             // about: its size when it was first shown
-    wxSize aboutAtHook;             // about: its size 1 s later
-    std::vector<std::string> aboutLinks;  // about: the URLs of its links
-    int aboutBitmaps = 0;                 // about: its wxStaticBitmaps (1: the logo, no stock icon)
-    bool aboutLogoFound = false;          // about: a wxStaticBitmap named ABOUT_LOGO_NAME
-    wxSize aboutLogoSize;                 // about: the logo bitmap's logical size
-    wxSize aboutLogoWant;                 // about: FromDIP(ABOUT_LOGO_DIP x ABOUT_LOGO_DIP)
-    wxSize aboutLogoPixels;               // about: the logo bitmap's size
-    wxSize aboutBundlePixels;      // about: aboutLogo()'s bitmap for the logo's scale, its size
-    wxSize aboutBundleSize;        // about: aboutLogo()'s default size
-    int aboutCornerAlpha = -1;     // about: the shown bitmap's largest corner alpha (-1: none)
-    int aboutEdgeAlpha = -1;       // about: its largest alpha at the 4 edge middles
-    int aboutCentreAlpha = -1;     // about: the alpha at its centre
-    std::uint64_t presented0 = 0;  // lavfi: frames presented at the step start
-    std::string streamUri;         // Format... on lavfi: the stream's URI
-    std::uint64_t dialogs0 = 0;    // Format... on lavfi: format dialogs shown
-};
-
 // The store's next sequence: a step remembers it at its start (the store is capped, so steps
-// compare sequence numbers, not text lengths; spec §7.1).
+// compare sequence numbers, not text lengths; spec §7.1). After Logger::flush(), so a line logged
+// before the call is below it.
 std::uint64_t logNext(const App& app) {
+    dvv::Logger::instance().flush();
     return app.logStore()->next();
 }
 
-// The lines logged from sequence `since` on, as logRecordsText gives them.
+// The lines logged from sequence `since` on, as logRecordsText gives them (after
+// Logger::flush()).
 std::string loggedSince(const App& app, std::uint64_t since) {
+    dvv::Logger::instance().flush();
     const std::vector<LogEntry> entries = app.logStore()->entries();
     const auto first = std::ranges::find_if(
         entries, [since](const LogEntry& entry) { return entry.sequence >= since; });
     return logRecordsText(std::span<const LogEntry>(first, entries.end()));
 }
+
+}  // namespace
 
 std::optional<dvv::gpu::PresenterStats> statsOf(const Viewport& viewport) {
     if (const dvv::gpu::Presenter* presenter = viewport.presenter(); presenter != nullptr) {
@@ -417,6 +389,8 @@ std::optional<dvv::gpu::PresenterStats> statsOf(const Viewport& viewport) {
     }
     return std::nullopt;
 }
+
+namespace {
 
 // Frames presented so far (0 without a presenter); smoke, lost and player use it.
 std::uint64_t presented(Viewport& viewport) {
@@ -441,6 +415,8 @@ SelfTestStep ffmpegRequiredStep(std::string reason) {
         },
         std::chrono::seconds(1));
 }
+
+}  // namespace
 
 std::string describe(const Viewport& viewport, const SmokeState& state) {
     const std::optional<dvv::gpu::PresenterStats> stats = statsOf(viewport);
@@ -471,7 +447,7 @@ void markStart(const Viewport& viewport, SmokeState& state) {
     state.framesWhenHidden.reset();
 }
 
-using SharedState = std::shared_ptr<SmokeState>;
+namespace {
 
 // 1. The empty Session's background is presented at the client size.
 SelfTestStep firstFramesStep(SelfTest* test, const SharedState& state) {
@@ -599,14 +575,14 @@ SelfTestStep movedPaneStep(SelfTest* test, const SharedState& state, bool back) 
 }
 
 // 4. Hidden: no frames. start() hides the frame; its show or iconize event calls
-// Presenter::setVisible(false) at once, so from the first hidden report on PresenterLogic::next()
+// Presenter::hide() at once, so from the first hidden report on PresenterLogic::next()
 // starts no frame and presents only the one already in flight: one more frame is tolerated. The
 // presenter must not be made visible again before the restore step (a stray show or iconize event
 // would; the likely cause of an earlier rare WSLg failure under load, NOT VERIFIED).
 SelfTestStep hideStep(SelfTest* test, const SharedState& state) {
     auto start = [test, state] {
         markStart(test->frame().viewport(), *state);
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         test->frame().Iconize(true);  // Windows and Cocoa minimise a window themselves
 #else
         test->frame().Hide();  // X11: no WM-independent iconify (Xvfb has no WM); Hide/Show
@@ -637,7 +613,7 @@ SelfTestStep hideStep(SelfTest* test, const SharedState& state) {
 SelfTestStep restoreStep(SelfTest* test, const SharedState& state) {
     auto start = [test, state] {
         markStart(test->frame().viewport(), *state);
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         test->frame().Iconize(false);
 #else
         test->frame().Show();  // X11: no WM-independent iconify; Hide/Show
@@ -652,6 +628,8 @@ SelfTestStep restoreStep(SelfTest* test, const SharedState& state) {
     return {.name = "restore", .start = std::move(start), .passed = std::move(passed)};
 }
 
+}  // namespace
+
 // Opens SMOKE_STREAM in slot 0 through the Session (no dialog).
 void openSmokeStream(SelfTest* test) {
     Session* session = test->app().session();
@@ -662,6 +640,8 @@ void openSmokeStream(SelfTest* test) {
     }
     session->open(0, dvv::media::SourceRequest{.uri = std::move(*uri), .hint = {}});
 }
+
+namespace {
 
 // 6. One stream: its frame 0 is shown for the current epoch, and a frame is presented after the
 // snapshot first showed it.
@@ -838,12 +818,12 @@ SelfTestStep appearanceStep(SelfTest* test) {
         const bool dark = wxSystemSettings::GetAppearance().IsDark();
         seen = std::format("requested dark {}, SetAppearance Ok {}, dark now {}",
                            requested == Appearance::Dark, ok, dark);
-#if defined(_WIN32) || defined(__WXOSX__)
-        // wxOSX sets the application's NSAppearance, which wxSystemSettings reads back.
-        if (ok) {
-            return dark == (requested == Appearance::Dark);
+        if constexpr (NATIVE_OS != Os::Linux) {
+            // wxOSX sets the application's NSAppearance, which wxSystemSettings reads back.
+            if (ok) {
+                return dark == (requested == Appearance::Dark);
+            }
         }
-#endif
         // GTK: SetAppearance switches the GTK theme variant, but whether the theme has a dark
         // variant and what wxSystemSettings then reports depend on the installed theme, so only
         // the request is checked there (lenient by design).
@@ -971,7 +951,7 @@ SelfTestStep infoWindowOpensStep(SelfTest* test, const std::shared_ptr<InfoWindo
         if (!keyed) {
             return false;
         }
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         const bool placed = requested == expected && actual == requested;
 #else
         const bool placed = requested == expected;  // X11: the window manager may move it
@@ -1053,7 +1033,7 @@ SelfTestStep infoWindowMinimisedStep(SelfTest* test,
         state->phase = 0;
         const InfoWindow* const info = test->frame().infoWindow();
         state->requestedBefore = info != nullptr ? info->requestedRectForTest() : wxRect();
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         test->frame().Iconize(true);
 #else
         test->frame().Hide();  // X11: no WM-independent iconify (as hideStep)
@@ -1085,7 +1065,7 @@ SelfTestStep infoWindowMinimisedStep(SelfTest* test,
                 // shown again by the restore.
                 frame.setInfoShown(false);
                 frame.setInfoShown(true);
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
                 frame.Iconize(false);
 #else
                 frame.Show();
@@ -1093,7 +1073,7 @@ SelfTestStep infoWindowMinimisedStep(SelfTest* test,
             }
             return false;
         }
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         const bool placed = requested == state->requestedBefore && actual == requested;
 #else
         const bool placed = requested == state->requestedBefore;  // X11: the WM may move it
@@ -1115,7 +1095,7 @@ SelfTestStep infoWindowFirstShownMinimisedStep(SelfTest* test,
         if (InfoWindow* const info = frame.infoWindow(); info != nullptr) {
             info->forgetPlaceForTest();
         }
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         frame.Iconize(true);
 #else
         frame.Hide();  // X11: no WM-independent iconify (as hideStep)
@@ -1128,7 +1108,7 @@ SelfTestStep infoWindowFirstShownMinimisedStep(SelfTest* test,
             seen = "no Info window";
             return false;
         }
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         const bool frame_down = frame.IsIconized();
 #else
         const bool frame_down = !frame.IsShown();
@@ -1156,7 +1136,7 @@ SelfTestStep infoWindowFirstShownMinimisedStep(SelfTest* test,
                 if (frame_down && !info->IsShown() && frame.infoShown()) {
                     DVV_LOG_INFO("selftest: info window first shown minimised: {}", seen);
                     state->phase = 2;
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
                     frame.Iconize(false);
 #else
                     frame.Show();
@@ -1165,7 +1145,7 @@ SelfTestStep infoWindowFirstShownMinimisedStep(SelfTest* test,
                 return false;
             default: break;
         }
-#if defined(_WIN32) || defined(__WXOSX__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         const bool placed = requested == expected && actual == requested;
 #else
         const bool placed = requested == expected;  // X11: the window manager may move it
@@ -1348,22 +1328,24 @@ SelfTestStep windowIconsStep(SelfTest* test) {
         for (const int width : widths) {
             list += std::format("{}{}", list.empty() ? "" : " ", width);
         }
-#if defined(__WXOSX__)
-        const std::string file = bundleIconFile();
-        const bool icns =
-            wxFileName::FileExists(wxStandardPaths::Get().GetResourcesDir() + wxS("/rawreel.icns"));
-        seen = std::format("icons [{}], CFBundleIconFile '{}', Resources/rawreel.icns {}", list,
-                           file, icns);
-        return widths.empty() && file == "rawreel" && icns;
-#else
-#if defined(__WXMSW__)
-        constexpr std::array<int, 10> WANTED{16, 20, 24, 32, 40, 48, 64, 96, 128, 256};
-#else
-        constexpr std::array<int, 11> WANTED{16, 22, 24, 32, 48, 64, 96, 128, 192, 256, 512};
-#endif
-        seen = std::format("icons [{}]", list);
-        return std::ranges::equal(widths, WANTED);
-#endif
+        if constexpr (NATIVE_OS == Os::MacOs) {
+            const std::string file = bundleIconFile();
+            const bool icns = wxFileName::FileExists(wxStandardPaths::Get().GetResourcesDir() +
+                                                     wxS("/rawreel.icns"));
+            seen = std::format("icons [{}], CFBundleIconFile '{}', Resources/rawreel.icns {}", list,
+                               file, icns);
+            return widths.empty() && file == "rawreel" && icns;
+        } else {
+            seen = std::format("icons [{}]", list);
+            if constexpr (NATIVE_OS == Os::Windows) {
+                constexpr std::array<int, 10> WANTED{16, 20, 24, 32, 40, 48, 64, 96, 128, 256};
+                return std::ranges::equal(widths, WANTED);
+            } else {
+                constexpr std::array<int, 11> WANTED{16, 22,  24,  32,  48, 64,
+                                                     96, 128, 192, 256, 512};
+                return std::ranges::equal(widths, WANTED);
+            }
+        }
     };
     return step("window icons", {}, std::move(passed));
 }
@@ -1384,15 +1366,14 @@ bool logItemFollows(MainFrame& frame, bool shown, std::string& text) {
         text = "no View -> Log item";
         return false;
     }
-#if defined(__WXOSX__)
-    const wxString title = item->GetItemLabelText();
-    text = std::format("item '{}'", title.utf8_string());
-    return title == (shown ? "Hide Log" : "Show Log");
-#else
+    if (native_policy::logItemHasChangingTitle()) {
+        const wxString title = item->GetItemLabelText();
+        text = std::format("item '{}'", title.utf8_string());
+        return title == (shown ? "Hide Log" : "Show Log");
+    }
     text = std::format("item '{}' checkable {} checked {}", item->GetItemLabelText().utf8_string(),
                        item->IsCheckable(), item->IsChecked());
     return item->IsCheckable() && item->IsChecked() == shown;
-#endif
 }
 
 // Spec §2: a warning logged while the pane is hidden shows in the status bar's notice, counted
@@ -1555,6 +1536,7 @@ struct LogListState {
     std::vector<std::uint64_t> selected;  // the sequences of the rows the scroll step selected
     std::uint64_t top = 0;                // the sequence of the record the scroll step put on top
     std::uint64_t first = 0;              // the mirror's first sequence before the 50 more lines
+    std::size_t refreshes = 0;            // the pane's refresh count before them (a diagnostic)
 };
 
 // The list of `kind` replaces the pane's list (shown), then Info lines fill the mirror to 5000.
@@ -1627,6 +1609,7 @@ SelfTestStep logListKeepsPlaceStep(SelfTest* test, LogListKind kind,
                                    const std::shared_ptr<LogListState>& state) {
     auto start = [test, state] {
         state->first = test->frame().logPanel().mirror().at(0).sequence;
+        state->refreshes = test->frame().logPanel().refreshCount();
         for (std::size_t i = 0; i < LOG_LIST_MORE; ++i) {
             DVV_LOG_INFO("selftest more {}", i);
         }
@@ -1657,9 +1640,23 @@ SelfTestStep logListKeepsPlaceStep(SelfTest* test, LogListKind kind,
             logListKindName(kind), first, state->first, text(selected), text(want),
             text(state->selected), place.top ? std::format("{}", *place.top) : "none", state->top,
             place.tail);
+        // The top is the control's own, not the one a batch restored and the control has not shown.
+        const bool settled = panel.list().placeSettled();
+        seen += std::format(", settled {}", settled);
+        // A diagnostic: the refreshes since the start and the place each recorded one took.
+        seen += std::format("; {} refreshes since the start, the last before-places:",
+                            panel.refreshCount() - state->refreshes);
+        for (const LogPanel::RefreshRecord& record : panel.refreshRecords()) {
+            seen += std::format(
+                " [top {} tail {} selected [{}] focus {}, dropped {} appended {} reset {}]",
+                record.before.top ? std::format("{}", *record.before.top) : "none",
+                record.before.tail, text(record.before.selected),
+                record.before.focus ? std::format("{}", *record.before.focus) : "none",
+                record.change.dropped, record.change.appended, record.change.reset);
+        }
         return panel.list().kind() == kind && first >= state->first + LOG_LIST_MORE &&
                want.size() + 1 == state->selected.size() && selected == want &&
-               place.top == state->top;
+               place.top == state->top && settled;
     };
     return step(std::format("log list keeps its place ({})", logListKindName(kind)),
                 std::move(start), std::move(passed));
@@ -1835,6 +1832,8 @@ bool sendKey(wxWindow& target, int keycode, bool shift = false, bool ctrl = fals
     return injectInput(*target.GetEventHandler(), event);
 }
 
+}  // namespace
+
 // A menu item of the frame (the Edit items on Windows and Linux, or on macOS when the responder
 // chain did not handle it): the frame's wxEVT_MENU handler.
 bool sendMenu(wxFrame& frame, int id) {
@@ -1842,6 +1841,8 @@ bool sendMenu(wxFrame& frame, int id) {
     event.SetEventObject(&frame);
     return injectInput(*frame.GetEventHandler(), event);
 }
+
+namespace {
 
 // A file's bytes; nullopt when it cannot be read.
 std::optional<std::string> fileText(const std::filesystem::path& file) {
@@ -1852,8 +1853,10 @@ std::optional<std::string> fileText(const std::filesystem::path& file) {
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
-// The store holds a mark whose message is `text`, with a sequence of at least `since`.
+// The store holds a mark whose message is `text`, with a sequence of at least `since` (read after
+// Logger::flush()).
 bool storeHasMark(const App& app, std::string_view text, std::uint64_t since = 0) {
+    dvv::Logger::instance().flush();
     const std::shared_ptr<LogStore>& store = app.logStore();
     if (store == nullptr) {
         return false;
@@ -1997,16 +2000,7 @@ SelfTestStep logCopyStep(SelfTest* test, const std::shared_ptr<EditState>& state
 
 // --- The Info window's keys, Copy and ⌘W (window title and Info design §10) ---
 
-struct InfoKeysState {
-    int phase = 0;
-    bool consumed = false;       // the Info window's char hook took the key
-    bool consumedAgain = false;  // ... and the second key of a two-part step
-    bool available = false;      // macOS ⌘W: Close stream enabled with the focus in the window
-    bool availableAgain = false;
-    bool hiddenAgain = false;  // macOS ⌘W: the second ⌘W (no stream) closed the window
-    bool copyEnabled = false;  // macOS: Edit -> Copy enabled with the focus in the window
-    std::uint32_t streamsBefore = 0;
-};
+}  // namespace
 
 // The Info window's content panel (it takes the focus, §10), shown first; null without a window.
 wxWindow* shownInfoContent(MainFrame& frame) {
@@ -2017,7 +2011,7 @@ wxWindow* shownInfoContent(MainFrame& frame) {
 
 // A char-hook key event at the Info window's panel, with the focus there: whether a handler took
 // it.
-bool sendInfoKey(MainFrame& frame, int keycode, bool ctrl = false) {
+bool sendInfoKey(MainFrame& frame, int keycode, bool ctrl) {
     wxWindow* const panel = shownInfoContent(frame);
     if (panel == nullptr) {
         return false;
@@ -2027,6 +2021,8 @@ bool sendInfoKey(MainFrame& frame, int keycode, bool ctrl = false) {
     frame.setFocusForTest(nullptr);
     return consumed;
 }
+
+namespace {
 
 // §10 Keys: Space in the Info window plays, and again pauses, as in the main window.
 SelfTestStep infoWindowKeysStep(SelfTest* test, const std::shared_ptr<InfoKeysState>& state) {
@@ -2124,19 +2120,7 @@ SelfTestStep infoWindowCopyStep(SelfTest* test, const std::shared_ptr<EditState>
             frame.streams().empty() ? std::string() : infoCopyText(&frame.streams().front());
         edit->copied.reset();
         dialogHooks().clipboard = [edit](std::string text) { edit->copied = std::move(text); };
-#if defined(__WXOSX__)
-        wxWindow* const panel = shownInfoContent(frame);
-        frame.setFocusForTest(panel);
-        wxUpdateUIEvent update(wxID_COPY);
-        update.SetEventObject(&frame);
-        (void)frame.ProcessWindowEvent(update);
-        state->copyEnabled = update.GetSetEnabled() && update.GetEnabled();
-        state->consumed = panel != nullptr && sendMenu(frame, wxID_COPY);
-        frame.setFocusForTest(nullptr);
-#else
-        state->copyEnabled = true;  // no Edit menu path here: the main window's menu activates it
-        state->consumed = sendInfoKey(frame, 'C', true);
-#endif
+        copyInInfoWindow(frame, state);
     };
     auto passed = [test, edit, state](std::string& seen) {
         seen = std::format("Copy enabled {}, taken {}, infoShown {}, copied '{}' (want '{}')",
@@ -2148,63 +2132,6 @@ SelfTestStep infoWindowCopyStep(SelfTest* test, const std::shared_ptr<EditState>
     return step("info window copy", std::move(start), std::move(passed));
 }
 
-#if defined(__WXOSX__)
-// §10 Cmd+W: with the focus in the Info window, File -> Close stream (⌘W) closes the window, not
-// the stream; with no stream it is still available there and closes the window. Ends with the
-// smoke stream open again and the window shown.
-SelfTestStep infoWindowCloseKeyStep(SelfTest* test, const std::shared_ptr<InfoKeysState>& state) {
-    // ⌘W with the focus in the (shown) Info window: whether Close stream was available.
-    const auto close_key = [test] {
-        MainFrame& frame = test->frame();
-        frame.setFocusForTest(shownInfoContent(frame));
-        const bool available = frame.isAvailable(Command::CloseStreams);
-        frame.execute(Command::CloseStreams, CommandSource::Menu);
-        frame.setFocusForTest(nullptr);
-        return available;
-    };
-    auto start = [test, state, close_key] {
-        state->phase = 0;
-        state->availableAgain = false;
-        state->hiddenAgain = false;
-        state->streamsBefore = test->frame().session().status().streams;
-        state->available = close_key();
-    };
-    auto passed = [test, state, close_key](std::string& seen) {
-        MainFrame& frame = test->frame();
-        const std::uint32_t streams = frame.session().status().streams;
-        seen = std::format(
-            "phase {}: available {} (no stream {}), closed by the second ⌘W {}, infoShown {}, {} "
-            "session streams (was {}), {} frame streams",
-            state->phase, state->available, state->availableAgain, state->hiddenAgain,
-            frame.infoShown(), streams, state->streamsBefore, frame.streams().size());
-        switch (state->phase) {
-            case 0:
-                if (state->available && !frame.infoShown() && state->streamsBefore == 1 &&
-                    streams == 1 && frame.streams().size() == 1) {
-                    DVV_LOG_INFO("selftest: info window close key: {}", seen);
-                    state->phase = 1;
-                    frame.execute(Command::CloseStreams);  // the stream itself (no window in front)
-                }
-                return false;
-            case 1:
-                if (streams == 0 && frame.streams().empty()) {
-                    state->availableAgain = close_key();
-                    state->hiddenAgain = !frame.infoShown();
-                    DVV_LOG_INFO("selftest: info window close key: {}", seen);
-                    state->phase = 2;
-                    openSmokeStream(test);     // checked in a later turn
-                    frame.setInfoShown(true);  // the scenario's close covers quitting with it open
-                }
-                return false;
-            default:
-                return state->availableAgain && state->hiddenAgain && frame.infoShown() &&
-                       streams == 1 && frame.streams().size() == 1;
-        }
-    };
-    return step("⌘W closes the Info window", std::move(start), std::move(passed));
-}
-#endif
-
 // The selftest config folder (spec §7.1), where the save steps write.
 std::filesystem::path saveFolder(const SelfTest* test) {
     return test->app().selftestConfigFolder();
@@ -2213,7 +2140,7 @@ std::filesystem::path saveFolder(const SelfTest* test) {
 // The saved file holds the expected text.
 bool savedAsExpected(const EditState& state, std::string& seen) {
     const std::optional<std::string> text = fileText(state.file);
-    seen = std::format("'{}': {} bytes (want {})", dvv::media::utf8FromPath(state.file),
+    seen = std::format("'{}': {} bytes (want {})", dvv::pathDisplayText(state.file),
                        text ? std::to_string(text->size()) : "not readable", state.expected.size());
     return !state.expected.empty() && text == state.expected;
 }
@@ -2225,7 +2152,7 @@ SelfTestStep saveLogStep(SelfTest* test, const std::shared_ptr<EditState>& state
         state->file = saveFolder(test) / "saved.txt";
         state->expected = mirrorText(test->frame().logPanel().mirror());
         dialogHooks().saveLog = [state](wxFileDialog& dialog) {
-            dialog.SetPath(wxString::FromUTF8(dvv::media::utf8FromPath(state->file)));
+            dialog.SetPath(wxString::FromUTF8(dvv::pathDisplayText(state->file)));
         };
         test->frame().execute(Command::SaveLog);
     };
@@ -2244,21 +2171,21 @@ SelfTestStep saveLogFolderStep(SelfTest* test, const std::shared_ptr<EditState>&
         dialogHooks().saveLog = [state](wxFileDialog& dialog) {
             // The folder the dialog was created with (wxGTK's GetDirectory() reads its chooser).
             state->directory = dialog.wxFileDialogBase::GetDirectory().utf8_string();
-            dialog.SetPath(wxString::FromUTF8(dvv::media::utf8FromPath(state->file)));
+            dialog.SetPath(wxString::FromUTF8(dvv::pathDisplayText(state->file)));
         };
         test->frame().execute(Command::SaveLog);
     };
     auto passed = [test, state](std::string& seen) {
         const std::filesystem::path folder = saveFolder(test);
         std::error_code error;
-        const bool same = state->directory && !folder.empty() &&
-                          std::filesystem::equivalent(dvv::media::pathFromUtf8(*state->directory),
-                                                      folder, error) &&
-                          !error;
+        const bool same =
+            state->directory && !folder.empty() &&
+            std::filesystem::equivalent(dvv::pathFromText(*state->directory), folder, error) &&
+            !error;
         std::string saved;
         const bool written = savedAsExpected(*state, saved);
         seen = std::format("dialog folder '{}' is '{}' {}; {}", state->directory.value_or("none"),
-                           dvv::media::utf8FromPath(folder), same, saved);
+                           dvv::pathDisplayText(folder), same, saved);
         return same && written;
     };
     return step("save log remembers the folder", std::move(start), std::move(passed));
@@ -2274,7 +2201,7 @@ SelfTestStep saveSelectedStep(SelfTest* test, const std::shared_ptr<EditState>& 
         state->file = saveFolder(test) / "selected.txt";
         state->expected = mirrorRowsText(panel.mirror(), ROWS);
         dialogHooks().saveLog = [state](wxFileDialog& dialog) {
-            dialog.SetPath(wxString::FromUTF8(dvv::media::utf8FromPath(state->file)));
+            dialog.SetPath(wxString::FromUTF8(dvv::pathDisplayText(state->file)));
         };
         test->frame().execute(Command::SaveSelectedLines);
     };
@@ -2316,7 +2243,7 @@ SelfTestStep savedTextStep(SelfTest* test, const std::shared_ptr<EditState>& sta
         *records = test->frame().logPanel().allRecords();  // what the save below writes
         state->expected = logRecordsText(*records);
         dialogHooks().saveLog = [state](wxFileDialog& dialog) {
-            dialog.SetPath(wxString::FromUTF8(dvv::media::utf8FromPath(state->file)));
+            dialog.SetPath(wxString::FromUTF8(dvv::pathDisplayText(state->file)));
         };
         test->frame().execute(Command::SaveLog);
     };
@@ -2367,7 +2294,7 @@ SelfTestStep saveOverLiveLogStep(SelfTest* test, const std::shared_ptr<EditState
         state->logSize = std::filesystem::file_size(state->file, error);
         state->message.reset();
         dialogHooks().saveLog = [state](wxFileDialog& dialog) {
-            dialog.SetPath(wxString::FromUTF8(dvv::media::utf8FromPath(state->file)));
+            dialog.SetPath(wxString::FromUTF8(dvv::pathDisplayText(state->file)));
         };
         dialogHooks().message = [state](wxMessageDialog& dialog) {
             state->message =
@@ -2379,11 +2306,11 @@ SelfTestStep saveOverLiveLogStep(SelfTest* test, const std::shared_ptr<EditState
         std::error_code error;
         const std::uintmax_t size = std::filesystem::file_size(state->file, error);
         seen = std::format("log file '{}', message '{}', {} bytes (was {})",
-                           dvv::media::utf8FromPath(state->file), state->message.value_or("none"),
+                           dvv::pathDisplayText(state->file), state->message.value_or("none"),
                            error ? 0 : size, state->logSize);
         return !state->file.empty() && state->logSize > 0 && !error && size >= state->logSize &&
                state->message &&
-               state->message->find(dvv::media::utf8FromPath(state->file)) != std::string::npos;
+               state->message->find(dvv::pathDisplayText(state->file)) != std::string::npos;
     };
     return step("save over the live log", std::move(start), std::move(passed));
 }
@@ -2393,7 +2320,7 @@ SelfTestStep saveOverLiveLogStep(SelfTest* test, const std::shared_ptr<EditState
 // and the message names the current file.
 SelfTestStep saveOverLogFileStep(SelfTest* test, const std::shared_ptr<EditState>& state) {
     auto start = [test, state] {
-#if defined(_WIN32) || defined(__APPLE__)
+#if defined(__WXMSW__) || defined(__WXOSX__)
         const std::string name = "RawReel-20200101-000000.LOG";
 #else
         const std::string name = "rawreel-20200101-000000.log";
@@ -2401,7 +2328,7 @@ SelfTestStep saveOverLogFileStep(SelfTest* test, const std::shared_ptr<EditState
         state->file = test->app().logFolderInUse() / name;
         state->message.reset();
         dialogHooks().saveLog = [state](wxFileDialog& dialog) {
-            dialog.SetPath(wxString::FromUTF8(dvv::media::utf8FromPath(state->file)));
+            dialog.SetPath(wxString::FromUTF8(dvv::pathDisplayText(state->file)));
         };
         dialogHooks().message = [state](wxMessageDialog& dialog) {
             state->message =
@@ -2412,8 +2339,8 @@ SelfTestStep saveOverLogFileStep(SelfTest* test, const std::shared_ptr<EditState
     auto passed = [test, state](std::string& seen) {
         std::error_code error;
         const bool exists = std::filesystem::exists(state->file, error);
-        const std::string current = dvv::media::utf8FromPath(test->app().currentLogFile());
-        seen = std::format("'{}' {}, message '{}'", dvv::media::utf8FromPath(state->file),
+        const std::string current = dvv::pathDisplayText(test->app().currentLogFile());
+        seen = std::format("'{}' {}, message '{}'", dvv::pathDisplayText(state->file),
                            exists ? "exists" : "absent", state->message.value_or("none"));
         return !test->app().logFolderInUse().empty() && !current.empty() && !error && !exists &&
                state->message && state->message->find(current) != std::string::npos;
@@ -2428,7 +2355,7 @@ SelfTestStep saveFailureStep(SelfTest* test, const std::shared_ptr<EditState>& s
         state->message.reset();
         state->logNext = logNext(test->app());
         dialogHooks().saveLog = [state](wxFileDialog& dialog) {
-            dialog.SetPath(wxString::FromUTF8(dvv::media::utf8FromPath(state->file)));
+            dialog.SetPath(wxString::FromUTF8(dvv::pathDisplayText(state->file)));
         };
         dialogHooks().message = [state](wxMessageDialog& dialog) {
             state->message =
@@ -2437,8 +2364,9 @@ SelfTestStep saveFailureStep(SelfTest* test, const std::shared_ptr<EditState>& s
         test->frame().execute(Command::SaveLog);
     };
     auto passed = [test, state](std::string& seen) {
-        const std::string path = dvv::media::utf8FromPath(state->file);
+        const std::string path = dvv::pathDisplayText(state->file);
         bool warned = false;
+        dvv::Logger::instance().flush();
         for (const LogEntry& entry : test->app().logStore()->entries()) {
             warned =
                 warned || (entry.sequence >= state->logNext && entry.level == dvv::LogLevel::Warn &&
@@ -2483,9 +2411,7 @@ void addEditSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     steps.push_back(infoWindowCtrlIStep(test, info_keys));
     steps.push_back(infoWindowCloseBoxStep(test, info_keys));
     steps.push_back(infoWindowCopyStep(test, state, info_keys));
-#if defined(__WXOSX__)
-    steps.push_back(infoWindowCloseKeyStep(test, info_keys));
-#endif
+    addInfoWindowCloseKeySteps(steps, test, info_keys);
     // The Info window stays shown: the scenario's close covers quitting with it open.
     steps.push_back(saveLogStep(test, state));
     steps.push_back(saveLogFolderStep(test, state));
@@ -2556,7 +2482,7 @@ SelfTestStep settingsOwnerStep(SelfTest* test) {
         const bool owner = app.ownsSettings();
         const bool second_refused = SettingsClaim::tryClaim(app.configPath()) == nullptr;
         seen = std::format("owns the settings {}, a second claim of '{}' refused {}", owner,
-                           dvv::media::utf8FromPath(app.configPath()), second_refused);
+                           dvv::pathDisplayText(app.configPath()), second_refused);
         return owner && second_refused;
     };
     return step("settings owner", {}, std::move(passed));
@@ -2574,7 +2500,7 @@ SelfTestStep selftestConfigStep(SelfTest* test) {
             !folder.empty() &&
             std::filesystem::equivalent(folder.parent_path(),
                                         std::filesystem::temp_directory_path(), error) &&
-            !error && dvv::media::utf8FromPath(folder.filename()).starts_with(prefix);
+            !error && dvv::pathDisplayText(folder.filename()).starts_with(prefix);
         const bool in_folder =
             named && !app.configPath().empty() &&
             std::filesystem::equivalent(app.configPath().parent_path(), folder, error) && !error;
@@ -2582,19 +2508,19 @@ SelfTestStep selftestConfigStep(SelfTest* test) {
         const bool logs_used =
             !logs.empty() && std::filesystem::equivalent(logs, folder / "logs", error) && !error;
         bool private_folders = true;  // 0700 on POSIX
-#if !defined(_WIN32)
-        for (const std::filesystem::path& made : {folder, folder / "logs"}) {
-            const std::filesystem::file_status status =
-                std::filesystem::symlink_status(made, error);
-            private_folders = private_folders && !error &&
-                              status.type() == std::filesystem::file_type::directory &&
-                              status.permissions() == std::filesystem::perms::owner_all;
+        if constexpr (NATIVE_OS != Os::Windows) {
+            for (const std::filesystem::path& made : {folder, folder / "logs"}) {
+                const std::filesystem::file_status status =
+                    std::filesystem::symlink_status(made, error);
+                private_folders = private_folders && !error &&
+                                  status.type() == std::filesystem::file_type::directory &&
+                                  status.permissions() == std::filesystem::perms::owner_all;
+            }
         }
-#endif
         seen = std::format(
             "config '{}' in '{}' {}, log folder '{}' its logs/ {}, 0700 folders {}, system log {}",
-            dvv::media::utf8FromPath(app.configPath()), dvv::media::utf8FromPath(folder), in_folder,
-            dvv::media::utf8FromPath(logs), logs_used, private_folders, app.systemLogEnabled());
+            dvv::pathDisplayText(app.configPath()), dvv::pathDisplayText(folder), in_folder,
+            dvv::pathDisplayText(logs), logs_used, private_folders, app.systemLogEnabled());
         return in_folder && logs_used && private_folders && !app.systemLogEnabled();
     };
     return step("selftest config", {}, std::move(passed));
@@ -2614,7 +2540,7 @@ SelfTestStep levelStartMarkerStep(SelfTest* test) {
         const std::string first = text.substr(0, text.find('\n'));
         const bool starts = first.ends_with(header);
         const std::string named =
-            std::format("log file: '{}'", dvv::media::utf8FromPath(app.currentLogFile()));
+            std::format("log file: '{}'", dvv::pathDisplayText(app.currentLogFile()));
         const bool names = text.find(named) != std::string::npos;
         const bool in_file = text.find(marker) != std::string::npos;
         const bool in_store = storeHasMark(app, marker);
@@ -2665,6 +2591,31 @@ SelfTestStep levelDebugStep(SelfTest* test, const std::shared_ptr<LevelState>& s
     return step("log level debug reaches the file", std::move(start), std::move(passed));
 }
 
+// §2.1: a level change applies to lines logged after it. A Debug line logged right before the
+// level goes up to Info stays in the store and the file, though the log thread may still hold it.
+SelfTestStep levelRaiseKeepsLoggedStep(SelfTest* test) {
+    auto start = [test] {
+        DVV_LOG_DEBUG("selftest debug line before Info");
+        test->app().setActiveLevel(dvv::LogLevel::Info, LevelSource::Menu);
+    };
+    auto passed = [test](std::string& seen) {
+        const App& app = test->app();
+        const std::string text = currentLogText(app);  // flushes first
+        const std::shared_ptr<LogStore>& store = app.logStore();
+        const bool line_stored =
+            store != nullptr && std::ranges::any_of(store->entries(), [](const LogEntry& entry) {
+                return entry.level == dvv::LogLevel::Debug &&
+                       entry.message == "selftest debug line before Info";
+            });
+        const bool line_in_file = text.find("selftest debug line before Info") != std::string::npos;
+        seen = std::format("active {}, debug line in the store {}, in the file {}",
+                           levelShownName(app.activeLevel()), line_stored, line_in_file);
+        return app.activeLevel() == dvv::LogLevel::Info && line_stored && line_in_file;
+    };
+    return step("log level raise keeps the lines logged before it", std::move(start),
+                std::move(passed));
+}
+
 // §2.1, D11: with the system log off, a change still reaches the store and the file, and the
 // system sink stays off. The level goes back to Info afterwards for the later steps.
 SelfTestStep levelSystemLogOffStep(SelfTest* test, const std::shared_ptr<LevelState>& state) {
@@ -2696,9 +2647,9 @@ SelfTestStep levelSystemLogOffStep(SelfTest* test, const std::shared_ptr<LevelSt
 SelfTestStep logFileTimestampedStep(SelfTest* test) {
     auto passed = [test](std::string& seen) {
         const std::filesystem::path file = test->app().currentLogFile();
-        const std::string name = dvv::media::utf8FromPath(file.filename());
+        const std::string name = dvv::pathDisplayText(file.filename());
         const bool matches = !name.empty() && isLogFileName(name, false);
-        seen = std::format("log file '{}' matches {}", dvv::media::utf8FromPath(file), matches);
+        seen = std::format("log file '{}' matches {}", dvv::pathDisplayText(file), matches);
         return matches;
     };
     return step("log file is timestamped", {}, std::move(passed));
@@ -2708,6 +2659,7 @@ void addLevelSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     const auto state = std::make_shared<LevelState>();
     steps.push_back(levelStartMarkerStep(test));
     steps.push_back(levelDebugStep(test, state));
+    steps.push_back(levelRaiseKeepsLoggedStep(test));
     steps.push_back(levelSystemLogOffStep(test, state));
     steps.push_back(logFileTimestampedStep(test));
 }
@@ -2814,106 +2766,6 @@ SelfTestStep menusStep(SelfTest* test, const SharedState& state) {
     };
     return step("menus", std::move(start), std::move(passed));
 }
-
-#if defined(__WXOSX__)
-// Design C5: About and Quit carry the standard ids, so wxOSX shows them in the application menu
-// as "About rawreel" and "Quit rawreel" (and hides them in Help and File); the application menu's
-// About opens Help -> About.
-SelfTestStep appMenuStep(SelfTest* test, bool opens_about) {
-    struct Seen {
-        std::uint64_t about0 = 0;
-        bool hookRan = false;
-    };
-    auto seen_state = std::make_shared<Seen>();
-    auto start = [test, seen_state, opens_about] {
-        if (!opens_about) {
-            return;  // smoke: the menu only, no About window
-        }
-        MainFrame& frame = test->frame();
-        seen_state->about0 = frame.aboutShown();
-        dialogHooks().about = [seen_state](wxGenericAboutDialog& /*dialog*/) {
-            seen_state->hookRan = true;
-        };
-        wxCommandEvent about(wxEVT_MENU, wxID_ABOUT);  // what the application menu's item sends
-        about.SetEventObject(&frame);
-        injectInput(*frame.GetEventHandler(), about);
-    };
-    auto passed = [test, seen_state, opens_about](std::string& seen) {
-        const MainFrame& frame = test->frame();
-        const wxMenuBar* bar = frame.GetMenuBar();
-        const wxMenu* apple = bar != nullptr ? bar->OSXGetAppleMenu() : nullptr;
-        if (apple == nullptr) {
-            seen = "no application menu";
-            return false;
-        }
-        const auto label = [](const wxMenuItem* item) {
-            return item != nullptr ? item->GetItemLabelText().utf8_string() : std::string("-");
-        };
-        const std::string about = label(apple->FindItem(wxID_ABOUT));
-        const std::string quit = label(apple->FindItem(wxID_EXIT));
-        const std::string settings = label(apple->FindItem(wxID_PREFERENCES));
-        // The frame's own items carry the standard ids; none is left on the old ones.
-        const bool ids =
-            bar->FindItem(wxID_ABOUT) != nullptr && bar->FindItem(wxID_EXIT) != nullptr &&
-            bar->FindItem(COMMAND_ID_BASE + static_cast<int>(Command::About)) == nullptr &&
-            bar->FindItem(COMMAND_ID_BASE + static_cast<int>(Command::Quit)) == nullptr;
-        const bool shown = frame.aboutShown() > seen_state->about0 && seen_state->hookRan;
-        seen = opens_about
-                   ? std::format("application menu '{}' '{}' '{}', standard ids {}, About shown {}",
-                                 about, settings, quit, ids, shown)
-                   : std::format("application menu '{}' '{}' '{}', standard ids {}", about,
-                                 settings, quit, ids);
-        return about == "About rawreel" && settings == "Settings..." && quit == "Quit rawreel" &&
-               ids && (shown || !opens_about);
-    };
-    return step("application menu", std::move(start), std::move(passed));
-}
-
-// Review Focus 1 and 5: a window moved to a display of another backing scale keeps its size in
-// points, so wx sends no size event. The test hook gives the viewport's child view another scale
-// (Retina 2 <-> 1) and runs its viewDidChangeBackingProperties, Cocoa's own entry: the same
-// presenter (the hook's scale lives on its child view) gets a swapchain of physicalPixelSize() of
-// the unchanged point size. `restore`: the hook gives the window's own scale back.
-SelfTestStep backingScaleStep(SelfTest* test, const SharedState& state, bool restore) {
-    struct Probe {
-        const dvv::gpu::Presenter* presenter = nullptr;
-        wxSize points;
-        double scale = 0;
-        bool hooked = false;
-    };
-    auto probe = std::make_shared<Probe>();
-    auto start = [test, state, probe, restore] {
-        Viewport& viewport = test->frame().viewport();
-        markStart(viewport, *state);
-        probe->presenter = viewport.presenter();   // the hook needs it: it sets the child's scale
-        probe->points = viewport.GetClientSize();  // points on wxOSX
-        const double window_scale = viewport.GetContentScaleFactor();
-        probe->scale = restore ? window_scale : (window_scale >= 2 ? 1.0 : 2.0);
-        probe->hooked = setBackingScaleForTest(viewport, restore ? 0.0 : probe->scale);
-    };
-    auto passed = [test, state, probe](std::string& seen) {
-        const Viewport& viewport = test->frame().viewport();
-        const std::optional<dvv::gpu::PresenterStats> stats = statsOf(viewport);
-        const dvv::platform::PixelSize expected =
-            physicalPixelSize(probe->points.x, probe->points.y, probe->scale);
-        const wxSize points = viewport.GetClientSize();
-        const bool same_presenter =
-            probe->presenter != nullptr && viewport.presenter() == probe->presenter;
-        seen = std::format(
-            "{}; hook {}, scale {}, points {}x{} (at the start {}x{}), expected extent {}x{}, "
-            "same presenter {}",
-            describe(viewport, *state), probe->hooked, probe->scale, points.x, points.y,
-            probe->points.x, probe->points.y, expected.width, expected.height, same_presenter);
-        return probe->hooked && stats && same_presenter && points == probe->points &&
-               viewport.physicalClientSize() == expected && stats->presentedExtent == expected &&
-               stats->swapchainsCreated > state->startSwapchains &&
-               stats->framesPresented > state->startFrames;
-    };
-    return {.name = restore ? "backing scale restored" : "backing scale change",
-            .start = std::move(start),
-            .passed = std::move(passed)};
-}
-#endif
 
 // Design §7: a Session error reaches the infobar; slot 1 is refused.
 SelfTestStep infobarStep(SelfTest* test) {
@@ -3084,17 +2936,22 @@ SelfTestStep aboutStep(SelfTest* test, const std::shared_ptr<SmokeState>& state)
         const MainFrame& frame = test->frame();
         const std::string& text = frame.lastAboutText();
         const VulkanStatus vulkan = frame.vulkanStatus();
-        const dvv::components::FfmpegStatus& ffmpeg = test->app().startup().ffmpeg;
+        const dvv::ModuleStatus* const ffmpeg =
+            test->app().startup().components->module(dvv::components::FFMPEG_MODULE);
+        const std::optional<std::string_view> directory =
+            ffmpeg != nullptr ? ffmpeg->property(dvv::MODULE_DIRECTORY_PROPERTY) : std::nullopt;
+        const std::optional<std::string_view> version =
+            ffmpeg != nullptr ? ffmpeg->property(dvv::MODULE_VERSION_PROPERTY) : std::nullopt;
         // The status only: no FFmpeg directory in About (users share its text).
         const bool no_path =
-            !ffmpeg.core || !text.contains(dvv::media::utf8FromPath(ffmpeg.directory));
+            !directory || !text.contains(dvv::pathDisplayText(dvv::pathFromText(*directory)));
         // About: the name and version once, the licence, the FFmpeg version, the components, no
         // GPU (Help -> GPU info); the copied text is the full aboutText().
         const std::string heading = std::format("rawreel {}", packageVersions().front().second);
         const bool lines =
             text.find(heading) != std::string::npos && text.find(heading) == text.rfind(heading) &&
             text.contains("MIT licence") && vulkan.available && !text.contains(vulkan.device) &&
-            !text.contains("Vulkan") && (!ffmpeg.core || text.contains(ffmpeg.version)) &&
+            !text.contains("Vulkan") && (!version || text.contains(*version)) &&
             text.contains("dvv-base ") && no_path;
         // Every link of the About content is a link in the dialog.
         bool links = true;
@@ -3296,25 +3153,6 @@ void addOpenUriSteps(std::vector<SelfTestStep>& steps, SelfTest* test,
 
 // --- the Settings window (Log pane and Settings design §5, §7.3) --------------------------------
 
-struct SettingsState {
-    bool hookRan = false;
-    bool pagesCreated = false;
-    bool shown = false;
-    wxString configPathText;
-    wxString folderText;
-    wxString folderBefore;  // folder failure: the field before Choose...
-    bool useDefaultEnabled = false;
-    bool revealEnabled = false;
-    std::filesystem::path inUse;    // logFolderInUse() before the step's action
-    std::filesystem::path target;   // the folder the chooseFolder hook returns
-    std::filesystem::path oldFile;  // currentLogFile() before the step's action
-    std::optional<std::string> message;
-    std::optional<std::filesystem::path> revealed;
-    bool systemOn = false;              // system log: after "on"
-    std::optional<bool> savedSystemOn;  // system log: the scratch file after "on"
-    std::size_t streamsBefore = 0;      // close key
-};
-
 // The selftest's rawreel.json as it is now; nullopt when it cannot be read or parsed.
 std::optional<Config> scratchConfig(const App& app) {
     dvv::Result<std::string> text = readConfigText(app.configPath());
@@ -3367,9 +3205,8 @@ SelfTestStep settingsOpensStep(SelfTest* test, const std::shared_ptr<SettingsSta
         const App& app = test->app();
         const std::filesystem::path logs = app.selftestConfigFolder() / "logs";
         const bool config =
-            state->configPathText.utf8_string() == dvv::media::utf8FromPath(app.configPath());
-        const bool folder =
-            sameFolder(dvv::media::pathFromUtf8(state->folderText.utf8_string()), logs);
+            state->configPathText.utf8_string() == dvv::pathDisplayText(app.configPath());
+        const bool folder = sameFolder(dvv::pathFromText(state->folderText.utf8_string()), logs);
         seen = std::format(
             "hook ran {}, pages {}, shown {}, settings file '{}' is the config {}, folder '{}' is "
             "logs/ {}, Use Default enabled {}",
@@ -3381,6 +3218,32 @@ SelfTestStep settingsOpensStep(SelfTest* test, const std::shared_ptr<SettingsSta
     return step("settings opens", std::move(start), std::move(passed));
 }
 
+// POSIX only: a log folder whose name is not UTF-8 stays as stored when Settings opens and applies
+// without an edit (the field shows U+FFFD text, which is never parsed back into the folder).
+SelfTestStep settingsNonUtf8FolderStep(SelfTest* test,
+                                       const std::shared_ptr<SettingsState>& state) {
+    const std::string bytes =
+        "/tmp/rawreel-non-utf8-\xFF"
+        "-logs";
+    auto start = [test, state, bytes] {
+        state->target = test->app().config().log.file.folder;  // restored in passed
+        test->app().setLogFileConfig(test->app().config().log.file.enabled,
+                                     dvv::pathFromText(bytes));
+        runSettings(test, state, [](SettingsWindow&) {});
+    };
+    auto passed = [test, state, bytes](std::string& seen) {
+        App& app = test->app();
+        const bool same =
+            app.config().log.file.folder.native() == dvv::pathFromText(bytes).native();
+        app.setLogFileConfig(app.config().log.file.enabled, state->target);
+        seen = std::format("hook ran {}, the stored folder has the same bytes {}", state->hookRan,
+                           same);
+        return state->hookRan && same;
+    };
+    return step("settings: a non-UTF-8 log folder stays unchanged when the field is not edited",
+                std::move(start), std::move(passed));
+}
+
 // Spec §5.3: Choose... a new folder: logs2/ is created and gets a log file, and the old file's
 // last line names the new file; the value is saved and Use Default is enabled.
 SelfTestStep settingsLogFolderStep(SelfTest* test, const std::shared_ptr<SettingsState>& state) {
@@ -3390,7 +3253,7 @@ SelfTestStep settingsLogFolderStep(SelfTest* test, const std::shared_ptr<Setting
         state->target = test->app().selftestConfigFolder() / "logs2";
         dialogHooks().chooseFolder = [state](wxDirDialog& dialog) {
             dialog.wxDirDialogBase::SetPath(
-                wxString::FromUTF8(dvv::media::utf8FromPath(state->target)));
+                wxString::FromUTF8(dvv::pathDisplayText(state->target)));
         };
         runSettings(test, state, [state](SettingsWindow& settings) {
             settings.logPage().chooseFolder();
@@ -3405,21 +3268,22 @@ SelfTestStep settingsLogFolderStep(SelfTest* test, const std::shared_ptr<Setting
         std::error_code error;
         const bool file = !current.empty() && sameFolder(current.parent_path(), state->target) &&
                           std::filesystem::exists(current, error) && !error;
+        dvv::Logger::instance().flush();
         const std::optional<std::string> old_text = fileText(state->oldFile);
         bool named = false;
         if (old_text && !current.empty()) {
             const std::size_t line = old_text->rfind("log file moves to");
             named = line != std::string::npos &&
-                    old_text->find(dvv::media::utf8FromPath(current), line) != std::string::npos;
+                    old_text->find(dvv::pathDisplayText(current), line) != std::string::npos;
         }
         const std::optional<Config> saved = scratchConfig(app);
         const bool stored = saved && sameFolder(saved->log.file.folder, state->target);
         seen = std::format(
             "hook ran {}, log folder '{}' is logs2 {}, log file '{}' in logs2 {}, old file names "
             "it {}, saved log.file.folder '{}' {}, field '{}', Use Default enabled {}",
-            state->hookRan, dvv::media::utf8FromPath(app.logFolderInUse()), moved,
-            dvv::media::utf8FromPath(current), file, named,
-            saved ? dvv::media::utf8FromPath(saved->log.file.folder) : "not readable", stored,
+            state->hookRan, dvv::pathDisplayText(app.logFolderInUse()), moved,
+            dvv::pathDisplayText(current), file, named,
+            saved ? dvv::pathDisplayText(saved->log.file.folder) : "not readable", stored,
             state->folderText.utf8_string(), state->useDefaultEnabled);
         return state->hookRan && moved && file && named && stored && state->useDefaultEnabled;
     };
@@ -3437,7 +3301,7 @@ SelfTestStep settingsLogAppendStep(SelfTest* test, const std::shared_ptr<Setting
         std::ofstream(state->oldFile, std::ios::binary) << "an older line\n";
         dialogHooks().chooseFolder = [state](wxDirDialog& dialog) {
             dialog.wxDirDialogBase::SetPath(
-                wxString::FromUTF8(dvv::media::utf8FromPath(state->target)));
+                wxString::FromUTF8(dvv::pathDisplayText(state->target)));
         };
         runSettings(test, state,
                     [](SettingsWindow& settings) { settings.logPage().chooseFolder(); });
@@ -3453,15 +3317,15 @@ SelfTestStep settingsLogAppendStep(SelfTest* test, const std::shared_ptr<Setting
         const bool kept = text.starts_with(older);
         const std::string rest = kept ? text.substr(older.size()) : std::string();
         const std::string marker = levelMarker(app.activeLevel(), app.activeLevelSource());
-        const std::size_t named = rest.find(
-            std::format("log file: '{}'", dvv::media::utf8FromPath(app.currentLogFile())));
+        const std::size_t named =
+            rest.find(std::format("log file: '{}'", dvv::pathDisplayText(app.currentLogFile())));
         const bool marked =
             named != std::string::npos && rest.find(marker, named) != std::string::npos;
         const bool no_header = rest.find("===== log file: level") == std::string::npos;
         seen = std::format(
             "hook ran {}, log file '{}' is the existing one {}, older line kept {}, names itself "
             "{}, marker '{}' after it {}, no header {}",
-            state->hookRan, dvv::media::utf8FromPath(current), appended, kept,
+            state->hookRan, dvv::pathDisplayText(current), appended, kept,
             named != std::string::npos, marker, marked, no_header);
         return state->hookRan && appended && kept && marked && no_header;
     };
@@ -3479,7 +3343,7 @@ SelfTestStep settingsFolderFailureStep(SelfTest* test,
         state->message.reset();
         dialogHooks().chooseFolder = [state](wxDirDialog& dialog) {
             dialog.wxDirDialogBase::SetPath(
-                wxString::FromUTF8(dvv::media::utf8FromPath(state->target)));
+                wxString::FromUTF8(dvv::pathDisplayText(state->target)));
         };
         dialogHooks().message = [state](wxMessageDialog& dialog) {
             state->message =
@@ -3501,12 +3365,12 @@ SelfTestStep settingsFolderFailureStep(SelfTest* test,
 #endif
         const bool named =
             state->message &&
-            state->message->find(dvv::media::utf8FromPath(state->target)) != std::string::npos;
+            state->message->find(dvv::pathDisplayText(state->target)) != std::string::npos;
         seen = std::format(
             "hook ran {}, message '{}' names the folder {}, log folder '{}' kept {}, field '{}' "
             "(was '{}') {}",
             state->hookRan, state->message.value_or("none"), named,
-            dvv::media::utf8FromPath(app.logFolderInUse()), kept, state->folderText.utf8_string(),
+            dvv::pathDisplayText(app.logFolderInUse()), kept, state->folderText.utf8_string(),
             state->folderBefore.utf8_string(), field);
         return state->hookRan && named && kept && field;
     };
@@ -3530,8 +3394,8 @@ SelfTestStep settingsRevealStep(SelfTest* test, const std::shared_ptr<SettingsSt
         const bool same = state->revealed && *state->revealed == want;
         seen = std::format("hook ran {}, enabled {}, revealed '{}' (want '{}') {}", state->hookRan,
                            state->revealEnabled,
-                           state->revealed ? dvv::media::utf8FromPath(*state->revealed) : "none",
-                           dvv::media::utf8FromPath(want), same);
+                           state->revealed ? dvv::pathDisplayText(*state->revealed) : "none",
+                           dvv::pathDisplayText(want), same);
         return state->hookRan && state->revealEnabled && !want.empty() && same;
     };
     return step("settings reveal", std::move(start), std::move(passed));
@@ -3756,13 +3620,13 @@ SelfTestStep menuLevelReopenStep(SelfTest* test, const std::shared_ptr<SettingsS
         const std::size_t named =
             current.empty()
                 ? std::string::npos
-                : text.rfind(std::format("log file: '{}'", dvv::media::utf8FromPath(current)));
+                : text.rfind(std::format("log file: '{}'", dvv::pathDisplayText(current)));
         const bool marked =
             named != std::string::npos && text.find(level->marker, named) != std::string::npos;
         seen = std::format(
             "hook ran {}, log file '{}' names itself {}, marker '{}' after it {}, "
             "active {}",
-            state->hookRan, dvv::media::utf8FromPath(current), named != std::string::npos,
+            state->hookRan, dvv::pathDisplayText(current), named != std::string::npos,
             level->marker, marked, levelShownName(app.activeLevel()));
         return state->hookRan && marked && app.activeLevel() == dvv::LogLevel::Trace;
     };
@@ -3824,75 +3688,12 @@ SelfTestStep settingsLevelEndsRunStep(SelfTest* test, const std::shared_ptr<Sett
     return step("settings level ends the run level", std::move(start), std::move(passed));
 }
 
-#if defined(__WXOSX__)
-// Spec §5.1: ⌘W (File -> Close stream) with the Settings window in front closes that window; the
-// stream stays open.
-SelfTestStep settingsCloseKeyStep(SelfTest* test, const std::shared_ptr<SettingsState>& state) {
-    auto start = [test, state] {
-        state->streamsBefore = test->frame().streams().size();
-        runSettings(test, state, [test](SettingsWindow& settings) {
-            MainFrame& frame = test->frame();
-            wxWindowList& controls = settings.logPage().GetChildren();
-            frame.setFocusForTest(controls.empty() ? static_cast<wxWindow*>(&settings.logPage())
-                                                   : controls.front());
-            frame.execute(Command::CloseStreams);
-            frame.setFocusForTest(nullptr);
-        });
-    };
-    auto passed = [test, state](std::string& seen) {
-        MainFrame& frame = test->frame();
-        const SettingsWindow* settings = frame.settingsWindow();
-        const bool shown = settings == nullptr || settings->shown();
-        const std::uint32_t streams = frame.session().status().streams;
-        seen = std::format("hook ran {}, Settings shown {}, {} streams (was {}), session {}",
-                           state->hookRan, shown, frame.streams().size(), state->streamsBefore,
-                           streams);
-        return state->hookRan && !shown && state->streamsBefore == 1 &&
-               frame.streams().size() == 1 && streams == 1;
-    };
-    return step("settings close key", std::move(start), std::move(passed));
-}
-
-// Spec §5.1: only the Settings window takes ⌘W. With the focus in another top-level window of
-// the frame (a hidden stand-in for a floating Log pane, a wxAuiFloatingFrame), the item
-// stays File -> Close stream: the stream closes and that window is not closed.
-SelfTestStep closeKeyOtherWindowStep(SelfTest* test, const std::shared_ptr<SettingsState>& state) {
-    struct Seen {
-        bool closeAsked = false;  // the other window got wxEVT_CLOSE_WINDOW
-        bool available = false;   // Close stream was enabled with the focus there
-    };
-    auto seen_state = std::make_shared<Seen>();
-    auto start = [test, state, seen_state] {
-        MainFrame& frame = test->frame();
-        state->streamsBefore = frame.streams().size();
-        auto* other = new wxFrame(&frame, wxID_ANY, "rawreel selftest stand-in");  // never shown
-        other->Bind(wxEVT_CLOSE_WINDOW, [seen_state](wxCloseEvent& event) {
-            seen_state->closeAsked = true;
-            event.Veto();
-        });
-        auto* child = new wxPanel(other);
-        frame.setFocusForTest(child);
-        seen_state->available = frame.isAvailable(Command::CloseStreams);
-        frame.execute(Command::CloseStreams);
-        frame.setFocusForTest(nullptr);
-        other->Destroy();
-    };
-    auto passed = [test, state, seen_state](std::string& seen) {
-        const std::uint32_t streams = test->frame().session().status().streams;
-        seen = std::format(
-            "Close stream enabled {}, the other window asked to close {}, {} session streams (was "
-            "{})",
-            seen_state->available, seen_state->closeAsked, streams, state->streamsBefore);
-        return seen_state->available && !seen_state->closeAsked && state->streamsBefore == 1 &&
-               streams == 0;
-    };
-    return step("close key with another window", std::move(start), std::move(passed));
-}
-#endif
-
 void addSettingsSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     const auto state = std::make_shared<SettingsState>();
     steps.push_back(settingsOpensStep(test, state));
+    if constexpr (NATIVE_OS != Os::Windows) {
+        steps.push_back(settingsNonUtf8FolderStep(test, state));
+    }
     steps.push_back(settingsLogFolderStep(test, state));
     steps.push_back(settingsLogAppendStep(test, state));
     steps.push_back(settingsFolderFailureStep(test, state));
@@ -3905,10 +3706,7 @@ void addSettingsSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     steps.push_back(menuLevelReopenStep(test, state, level));
     steps.push_back(menuLevelDropsStep(test, level));
     steps.push_back(settingsLevelEndsRunStep(test, state, level));
-#if defined(__WXOSX__)
-    steps.push_back(settingsCloseKeyStep(test, state));
-    steps.push_back(closeKeyOtherWindowStep(test, state));  // closes the stream (last)
-#endif
+    addSettingsCloseKeySteps(steps, test, state);  // closes the stream (last)
 }
 
 std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
@@ -3943,10 +3741,7 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
     steps.push_back(cutFieldTooltipStep(t));
     steps.push_back(resizeStep(t, state, "resize with a stream", wxSize(1024, 640)));
     steps.push_back(titleAndFileFieldStep(t));  // at a size where the name fits on every OS
-#if defined(__WXOSX__)
-    steps.push_back(backingScaleStep(t, state, false));
-    steps.push_back(backingScaleStep(t, state, true));
-#endif
+    addBackingScaleSteps(steps, t, state);
     steps.push_back(panesStep(t));
     const auto info_window = std::make_shared<InfoWindowState>();
     steps.push_back(infoWindowOpensStep(t, info_window));
@@ -3973,14 +3768,14 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
     steps.push_back(diagnosticsStep(t, state));
     steps.push_back(menusStep(t, state));
     steps.push_back(infobarStep(t));
-#if defined(__WXOSX__)
-    steps.push_back(appMenuStep(t, false));
-#endif
-    if (test.app().startup().ffmpeg.lavfi) {
+    addApplicationMenuSteps(steps, t, false);
+    if (test.app().startup().components->capabilities().has(
+            dvv::components::FFMPEG_LAVFI_CAPABILITY)) {
         steps.push_back(lavfiUriStep(t, state));
         steps.push_back(lavfiFormatStep(t, state));
     } else if (ffmpegRequired()) {
-        steps.push_back(ffmpegRequiredStep(ffmpegStatusLine(test.app().startup().ffmpeg)));
+        steps.push_back(ffmpegRequiredStep(ffmpegStatusLine(
+            test.app().startup().components->module(dvv::components::FFMPEG_MODULE))));
     } else {
         DVV_LOG_INFO("selftest: FFmpeg not available, lavfi steps skipped");
     }
@@ -3996,9 +3791,7 @@ std::vector<SelfTestStep> aboutScenario(SelfTest& test) {
     const auto state = std::make_shared<SmokeState>();
     std::vector<SelfTestStep> steps;
     steps.push_back(firstFramesStep(t, state));
-#if defined(__WXOSX__)
-    steps.push_back(appMenuStep(t, true));
-#endif
+    addApplicationMenuSteps(steps, t, true);
     steps.push_back(aboutStep(t, state));
     return steps;
 }
@@ -4496,7 +4289,7 @@ void dropFiles(Viewport& viewport, const std::vector<std::filesystem::path>& fil
     const wxSize size = viewport.GetClientSize();
     wxArrayString names;
     for (const auto& file : files) {
-        names.Add(wxString::FromUTF8(dvv::media::utf8FromPath(file)));
+        names.Add(wxString::FromUTF8(dvv::pathDisplayText(file)));
     }
     target->OnDropFiles(size.x / 2, size.y / 2, names);
 }
@@ -4617,7 +4410,7 @@ bool streamIs(const MainFrame& frame, std::uint32_t w, std::uint32_t h, std::str
     const auto& streams = frame.streams();
     return streams.size() == 1 && streams[0].info.desc.width == w &&
            streams[0].info.desc.height == h &&
-           dvv::media::descriptor(streams[0].info.desc.format).name == format;
+           dvv::media::formatDesc(streams[0].info.desc.format).name == format;
 }
 
 // --- View zoom (view zoom design): Fit, Actual size, Zoom in and out, the zoom button ---
@@ -5153,13 +4946,8 @@ void addDragSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
 
 // One wheel notch as each toolkit reports it: wxOSX delta 10 and one line, wxMSW and wxGTK delta
 // 120 and three lines.
-#if defined(__WXOSX__)
-constexpr int TEST_WHEEL_DELTA = 10;
-constexpr int TEST_WHEEL_LINES = 1;
-#else
-constexpr int TEST_WHEEL_DELTA = 120;
-constexpr int TEST_WHEEL_LINES = 3;
-#endif
+constexpr int TEST_WHEEL_DELTA = NATIVE_OS == Os::MacOs ? 10 : 120;
+constexpr int TEST_WHEEL_LINES = NATIVE_OS == Os::MacOs ? 1 : 3;
 
 // A wheel event of `rotation` on `axis` on the viewport at the client point `at` (window units),
 // with Ctrl (Cmd on macOS) down when `control`.
@@ -5262,94 +5050,96 @@ void addWheelSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
                    view.centre.y == st->from.centre.y;
         }));
 
-#if defined(__WXOSX__)
-    steps.push_back(step(
-        "wheel: Cmd+wheel pans",
-        [&frame, st] {
-            Viewport& viewport = frame.viewport();
-            st->from = centredView(viewport, 2);
-            viewport.setView(st->from);
-            sendViewportWheel(viewport, viewportCentre(viewport), TEST_WHEEL_DELTA, true);
-        },
-        panned));
-#else
-    // The Ctrl+wheel steps start from 400 % centred, with no Ctrl+wheel rotation left from an
-    // earlier step: a wheel without Ctrl drops it.
-    const auto ctrl_start = [](Viewport& viewport) {
-        viewport.setView(centredView(viewport, 4));
-        sendViewportWheel(viewport, viewportCentre(viewport), 0, false);
-    };
-    // After two Ctrl+wheel half notches with `between` sent between them.
-    const auto halves = [&frame, st, ctrl_start](
-                            std::string name, std::function<void(Viewport&)> between, double zoom) {
-        return step(
-            std::move(name),
-            [&frame, st, ctrl_start, between = std::move(between)] {
+    if (native_policy::ctrlWheelZooms()) {
+        // The Ctrl+wheel steps start from 400 % centred, with no Ctrl+wheel rotation left from an
+        // earlier step: a wheel without Ctrl drops it.
+        const auto ctrl_start = [](Viewport& viewport) {
+            viewport.setView(centredView(viewport, 4));
+            sendViewportWheel(viewport, viewportCentre(viewport), 0, false);
+        };
+        // After two Ctrl+wheel half notches with `between` sent between them.
+        const auto halves = [&frame, st, ctrl_start](std::string name,
+                                                     std::function<void(Viewport&)> between,
+                                                     double zoom) {
+            return step(
+                std::move(name),
+                [&frame, st, ctrl_start, between = std::move(between)] {
+                    Viewport& viewport = frame.viewport();
+                    ctrl_start(viewport);
+                    const wxPoint at = viewportCentre(viewport);
+                    sendViewportWheel(viewport, at, TEST_WHEEL_DELTA / 2, true);
+                    st->firstZoom = viewport.view().zoom;
+                    if (between) {
+                        between(viewport);
+                    }
+                    sendViewportWheel(viewport, at, TEST_WHEEL_DELTA / 2, true);
+                },
+                [&frame, st, zoom](std::string& seen) {
+                    const bool matches = viewMatches(frame, seen);
+                    const ViewRequest& view = frame.viewport().view();
+                    seen =
+                        std::format("zoom after one half {}, after two {} {} (wanted {}); {}",
+                                    st->firstZoom, viewModeName(view.mode), view.zoom, zoom, seen);
+                    return matches && st->firstZoom == 4 && view.mode == ViewMode::Zoom &&
+                           view.zoom == zoom;
+                });
+        };
+
+        steps.push_back(step(
+            "wheel: Ctrl+wheel zooms one step at the pointer",
+            [&frame, st, ctrl_start] {
                 Viewport& viewport = frame.viewport();
                 ctrl_start(viewport);
-                const wxPoint at = viewportCentre(viewport);
-                sendViewportWheel(viewport, at, TEST_WHEEL_DELTA / 2, true);
-                st->firstZoom = viewport.view().zoom;
-                if (between) {
-                    between(viewport);
-                }
-                sendViewportWheel(viewport, at, TEST_WHEEL_DELTA / 2, true);
+                const wxSize client = viewport.GetClientSize();
+                st->at = wxPoint(client.x / 4, client.y / 4);
+                const double scale = viewport.contentScale();
+                st->before = imagePointAt(viewport.shownView(),
+                                          {.x = st->at.x * scale, .y = st->at.y * scale});
+                sendViewportWheel(viewport, st->at, TEST_WHEEL_DELTA, true);
             },
-            [&frame, st, zoom](std::string& seen) {
+            [&frame, st](std::string& seen) {
                 const bool matches = viewMatches(frame, seen);
-                const ViewRequest& view = frame.viewport().view();
-                seen = std::format("zoom after one half {}, after two {} {} (wanted {}); {}",
-                                   st->firstZoom, viewModeName(view.mode), view.zoom, zoom, seen);
-                return matches && st->firstZoom == 4 && view.mode == ViewMode::Zoom &&
-                       view.zoom == zoom;
-            });
-    };
-
-    steps.push_back(step(
-        "wheel: Ctrl+wheel zooms one step at the pointer",
-        [&frame, st, ctrl_start] {
-            Viewport& viewport = frame.viewport();
-            ctrl_start(viewport);
-            const wxSize client = viewport.GetClientSize();
-            st->at = wxPoint(client.x / 4, client.y / 4);
-            const double scale = viewport.contentScale();
-            st->before =
-                imagePointAt(viewport.shownView(), {.x = st->at.x * scale, .y = st->at.y * scale});
-            sendViewportWheel(viewport, st->at, TEST_WHEEL_DELTA, true);
-        },
-        [&frame, st](std::string& seen) {
-            const bool matches = viewMatches(frame, seen);
-            const Viewport& viewport = frame.viewport();
-            const ViewRequest& view = viewport.view();
-            const double scale = viewport.contentScale();
-            const PointD after =
-                imagePointAt(viewport.shownView(), {.x = st->at.x * scale, .y = st->at.y * scale});
-            // Offsets are whole backing pixels: the clip point may move by half a pixel.
-            const double tolerance = (0.5 / view.zoom) + 1e-9;
-            seen = std::format("view {} {}, clip point under q ({}, {}) (before ({}, {})); {}",
-                               viewModeName(view.mode), view.zoom, after.x, after.y, st->before.x,
-                               st->before.y, seen);
-            return matches && view.mode == ViewMode::Zoom && view.zoom == 8 &&
-                   std::abs(after.x - st->before.x) <= tolerance &&
-                   std::abs(after.y - st->before.y) <= tolerance;
-        }));
-    steps.push_back(halves("wheel: two half notches make one step", {}, 8));
-    steps.push_back(halves(
-        "wheel: a wheel without Ctrl drops a half notch",
-        [](Viewport& viewport) {
-            sendViewportWheel(viewport, viewportCentre(viewport), TEST_WHEEL_DELTA, false);
-        },
-        4));
-    // A new clip of another size: the frame size changes and changes back at once.
-    steps.push_back(halves(
-        "wheel: a new frame size drops a half notch",
-        [](Viewport& viewport) {
-            const dvv::platform::PixelSize image = viewport.imageSize();
-            viewport.setImageSize({.width = image.width + 2, .height = image.height});
-            viewport.setImageSize(image);
-        },
-        4));
-#endif
+                const Viewport& viewport = frame.viewport();
+                const ViewRequest& view = viewport.view();
+                const double scale = viewport.contentScale();
+                const PointD after = imagePointAt(viewport.shownView(),
+                                                  {.x = st->at.x * scale, .y = st->at.y * scale});
+                // Offsets are whole backing pixels: the clip point may move by half a pixel.
+                const double tolerance = (0.5 / view.zoom) + 1e-9;
+                seen = std::format("view {} {}, clip point under q ({}, {}) (before ({}, {})); {}",
+                                   viewModeName(view.mode), view.zoom, after.x, after.y,
+                                   st->before.x, st->before.y, seen);
+                return matches && view.mode == ViewMode::Zoom && view.zoom == 8 &&
+                       std::abs(after.x - st->before.x) <= tolerance &&
+                       std::abs(after.y - st->before.y) <= tolerance;
+            }));
+        steps.push_back(halves("wheel: two half notches make one step", {}, 8));
+        steps.push_back(halves(
+            "wheel: a wheel without Ctrl drops a half notch",
+            [](Viewport& viewport) {
+                sendViewportWheel(viewport, viewportCentre(viewport), TEST_WHEEL_DELTA, false);
+            },
+            4));
+        // A new clip of another size: the frame size changes and changes back at once.
+        steps.push_back(halves(
+            "wheel: a new frame size drops a half notch",
+            [](Viewport& viewport) {
+                const dvv::platform::PixelSize image = viewport.imageSize();
+                viewport.setImageSize({.width = image.width + 2, .height = image.height});
+                viewport.setImageSize(image);
+            },
+            4));
+    } else {
+        steps.push_back(step(
+            "wheel: Cmd+wheel pans",
+            [&frame, st] {
+                Viewport& viewport = frame.viewport();
+                st->from = centredView(viewport, 2);
+                viewport.setView(st->from);
+                sendViewportWheel(viewport, viewportCentre(viewport), TEST_WHEEL_DELTA, true);
+            },
+            panned));
+    }
 }
 
 // A zoom gesture event of `factor` on the viewport at the client point `at` (window units).
@@ -5983,20 +5773,20 @@ void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
             int flags;
             int key;
         };
-#if defined(__WXOSX__)
-        const std::array<Wanted, 5> wanted{
+        // The keys of commands.cpp's MAC_VIEW_KEYS and PC_VIEW_KEYS, chosen the same way.
+        constexpr std::array<Wanted, 5> MAC_WANTED{
             {{Command::FitToWindow, wxACCEL_CTRL, '9'},
              {Command::ActualSize, wxACCEL_CTRL, '0'},
              {Command::ZoomIn, wxACCEL_CTRL, '+'},
              {Command::ZoomOut, wxACCEL_CTRL, '-'},
              {Command::ResizeWindowToActualSize, wxACCEL_CTRL, '1'}}};
-#else
-        const std::array<Wanted, 5> wanted{{{Command::FitToWindow, wxACCEL_CTRL, '0'},
-                                            {Command::ActualSize, wxACCEL_CTRL, '1'},
-                                            {Command::ZoomIn, wxACCEL_CTRL, '+'},
-                                            {Command::ZoomOut, wxACCEL_CTRL, '-'},
-                                            {Command::ResizeWindowToActualSize, wxACCEL_ALT, '1'}}};
-#endif
+        constexpr std::array<Wanted, 5> PC_WANTED{
+            {{Command::FitToWindow, wxACCEL_CTRL, '0'},
+             {Command::ActualSize, wxACCEL_CTRL, '1'},
+             {Command::ZoomIn, wxACCEL_CTRL, '+'},
+             {Command::ZoomOut, wxACCEL_CTRL, '-'},
+             {Command::ResizeWindowToActualSize, wxACCEL_ALT, '1'}}};
+        const std::array<Wanted, 5>& wanted = NATIVE_OS == Os::MacOs ? MAC_WANTED : PC_WANTED;
         bool ok = true;
         seen.clear();
         for (const Wanted& item : wanted) {
@@ -6009,44 +5799,44 @@ void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
         }
         return ok;
     }));
-#if !defined(__WXOSX__)
-    // Windows and Linux: the char hook also dispatches the view keys (normaliseKey).
-    steps.push_back(step(
-        "view: Ctrl+Shift+= zooms in",
-        [&frame] {
-            frame.viewport().setView(centredView(frame.viewport(), 1));
-            sendKey(frame, '=', true, true);
-        },
-        [&frame, shown](std::string& seen) {
-            const bool matches = viewMatches(frame, seen);
-            seen = shown() + "; " + seen;
-            return matches && frame.viewport().view().mode == ViewMode::Zoom &&
-                   frame.viewport().view().zoom == 2;
-        }));
-    steps.push_back(step(
-        "view: Ctrl+0 fits",
-        [&frame] {
-            frame.viewport().setView(centredView(frame.viewport(), 2));
-            sendKey(frame, '0', false, true);
-        },
-        [&frame, shown](std::string& seen) {
-            const bool matches = viewMatches(frame, seen);
-            seen = shown() + "; " + seen;
-            return matches && frame.viewport().view().mode == ViewMode::Fit;
-        }));
-    steps.push_back(step(
-        "view: keypad Ctrl+1 shows 100 %",
-        [&frame] {
-            frame.viewport().setView({});
-            sendKey(frame, WXK_NUMPAD1, false, true);
-        },
-        [&frame, shown](std::string& seen) {
-            const bool matches = viewMatches(frame, seen);
-            seen = shown() + "; " + seen;
-            return matches && frame.viewport().view().mode == ViewMode::Zoom &&
-                   frame.viewport().view().zoom == 1;
-        }));
-#endif
+    if constexpr (NATIVE_OS != Os::MacOs) {
+        // Windows and Linux: the char hook also dispatches the view keys (normaliseKey).
+        steps.push_back(step(
+            "view: Ctrl+Shift+= zooms in",
+            [&frame] {
+                frame.viewport().setView(centredView(frame.viewport(), 1));
+                sendKey(frame, '=', true, true);
+            },
+            [&frame, shown](std::string& seen) {
+                const bool matches = viewMatches(frame, seen);
+                seen = shown() + "; " + seen;
+                return matches && frame.viewport().view().mode == ViewMode::Zoom &&
+                       frame.viewport().view().zoom == 2;
+            }));
+        steps.push_back(step(
+            "view: Ctrl+0 fits",
+            [&frame] {
+                frame.viewport().setView(centredView(frame.viewport(), 2));
+                sendKey(frame, '0', false, true);
+            },
+            [&frame, shown](std::string& seen) {
+                const bool matches = viewMatches(frame, seen);
+                seen = shown() + "; " + seen;
+                return matches && frame.viewport().view().mode == ViewMode::Fit;
+            }));
+        steps.push_back(step(
+            "view: keypad Ctrl+1 shows 100 %",
+            [&frame] {
+                frame.viewport().setView({});
+                sendKey(frame, WXK_NUMPAD1, false, true);
+            },
+            [&frame, shown](std::string& seen) {
+                const bool matches = viewMatches(frame, seen);
+                seen = shown() + "; " + seen;
+                return matches && frame.viewport().view().mode == ViewMode::Zoom &&
+                       frame.viewport().view().zoom == 1;
+            }));
+    }
     addDragSteps(steps, frame);
     addWheelSteps(steps, frame);
     addPinchSteps(steps, frame);
@@ -6161,7 +5951,7 @@ void addRecentSteps(std::vector<SelfTestStep>& steps, SelfTest& test,
         "Open Recent lists the earlier opens",
         [st, dir = std::move(dir)] {
             const std::filesystem::path folder = dir();
-            st->fileA = folder / dvv::media::pathFromUtf8("recent & \xC3\xBC_64x48_yuv420p.yuv");
+            st->fileA = folder / dvv::pathFromText("recent & \xC3\xBC_64x48_yuv420p.yuv");
             st->fileB = folder / "recent_second_64x48_yuv420p.yuv";
             st->fileNoSize = folder / "recent_nosize.yuv";
             st->fileFmtOnly = folder / "recent_fmtonly.yuv";
@@ -6263,7 +6053,7 @@ void addRecentSteps(std::vector<SelfTestStep>& steps, SelfTest& test,
         [&frame, st, remember] {
             remember();
             dialogHooks().uri = [st](wxTextEntryDialog& dialog) {
-                dialog.SetValue(wxString::FromUTF8(dvv::media::utf8FromPath(
+                dialog.SetValue(wxString::FromUTF8(dvv::pathDisplayText(
                     st->fileA.parent_path() / "recent_missing_64x48_yuv420p.yuv")));
             };
             frame.execute(Command::OpenUri);
@@ -6322,7 +6112,7 @@ void addRecentSteps(std::vector<SelfTestStep>& steps, SelfTest& test,
             remember();
             dialogHooks().uri = [st](wxTextEntryDialog& dialog) {
                 dialog.SetValue(
-                    wxString::FromUTF8(dvv::media::utf8FromPath(st->fileFmtOnly) + "?fmt=yuv420p"));
+                    wxString::FromUTF8(dvv::pathDisplayText(st->fileFmtOnly) + "?fmt=yuv420p"));
             };
             frame.execute(Command::OpenUri);
         },
@@ -6352,7 +6142,7 @@ void addRecentSteps(std::vector<SelfTestStep>& steps, SelfTest& test,
             seen += std::format(", hook {}, yuv420p 64x48 {}", st->formatHookRan,
                                 streamIs(frame, 64, 48, "yuv420p"));
             return st->formatHookRan && streamIs(frame, 64, 48, "yuv420p") &&
-                   top_is(dvv::media::utf8FromPath(st->fileFmtOnly) + "?fmt=yuv420p") && listed;
+                   top_is(dvv::pathText(st->fileFmtOnly) + "?fmt=yuv420p") && listed;
         }));
     // R10 (focus 4): a history save that fails logs one warning and shows no message.
     steps.push_back(step(
@@ -6551,6 +6341,7 @@ void addRecentSteps(std::vector<SelfTestStep>& steps, SelfTest& test,
                                                  recentEntryOfPath(st->fileA));
             bool warned = false;
             bool removal_logged = false;
+            dvv::Logger::instance().flush();
             for (const LogEntry& logged : app.logStore()->entries()) {
                 if (logged.sequence < st->logNext) {
                     continue;
@@ -6596,14 +6387,15 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
         std::filesystem::path dir;
         std::uint64_t dialogs0 = 0;
         bool formatHookRan = false;
-        dvv::media::ColourParams colourBefore{};  // the stream's colour before View > Format
-        ColourChoice colourRead{};                // the colour a format hook read
-        FormatChoice choiceRead{};                // the choice a format hook read (D5 T5b)
-        bool lockedRead = false;                  // FormatDialog::fieldsLocked() in a hook
-        bool flagRead = false;                    // another yes/no a format hook read
-        std::vector<std::string> textsRead;       // dialog texts a format hook read
-        std::uint64_t logNext = 0;                // logNext() at the step start
-        bool loopBefore = false;                  // loop wraps: the GUI's loop flag before the step
+        dvv::media::ColourParams colourBefore{};   // the stream's colour before View > Format
+        ColourChoice colourRead{};                 // the colour a format hook read
+        FormatChoice choiceRead{};                 // the choice a format hook read (D5 T5b)
+        bool lockedRead = false;                   // FormatDialog::fieldsLocked() in a hook
+        FormatDialog::FieldsEnabled fieldsRead{};  // FormatDialog::fieldsEnabled() in a hook
+        bool flagRead = false;                     // another yes/no a format hook read
+        std::vector<std::string> textsRead;        // dialog texts a format hook read
+        std::uint64_t logNext = 0;                 // logNext() at the step start
+        bool loopBefore = false;     // loop wraps: the GUI's loop flag before the step
         std::uint64_t ignored0 = 0;  // real input is ignored: SelfTestInput's count before
         std::chrono::steady_clock::time_point at;  // real input is ignored: the step start
         wxSize client0;  // the client size before "title of a file" widens it
@@ -6627,7 +6419,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
         const auto& streams = frame.streams();
         return streams.size() == 1 && streams[0].info.desc.width == w &&
                streams[0].info.desc.height == h &&
-               dvv::media::descriptor(streams[0].info.desc.format).name == format;
+               dvv::media::formatDesc(streams[0].info.desc.format).name == format;
     };
     // The resolved URI of the one stream; "" while none is open (a reopen).
     auto stream_uri = [&frame] {
@@ -7925,26 +7717,27 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                 st->textsRead.push_back(
                     (dialog.colourText() + "|" + dialog.colourOptionsText()).utf8_string());
                 st->colourRead = dialog.choice().colour;  // OK writes the same keys
-#if defined(__WXGTK__)
-                // A window manager that resizes the dialog anyway (as WSLg's does): the dialog
-                // goes back to its own size, as it cannot be resized on Windows.
-                const wxSize fixed = dialog.GetClientSize();
-                dialog.SetClientSize(wxSize(fixed.x + 50, 1));
-                wxSizeEvent resized(dialog.GetSize(), dialog.GetId());
-                resized.SetEventObject(&dialog);
-                dialog.HandleWindowEvent(resized);
-                for (int i = 0; i < 50 && dialog.GetClientSize() != fixed; ++i) {
-                    wxTheApp->Yield(true);
-                    wxMilliSleep(10);
+                if (native_policy::undoesForeignResize()) {
+                    // A window manager that resizes the dialog anyway (as WSLg's does): the dialog
+                    // goes back to its own size, as it cannot be resized on Windows.
+                    const wxSize fixed = dialog.GetClientSize();
+                    dialog.SetClientSize(wxSize(fixed.x + 50, 1));
+                    wxSizeEvent resized(dialog.GetSize(), dialog.GetId());
+                    resized.SetEventObject(&dialog);
+                    dialog.HandleWindowEvent(resized);
+                    for (int i = 0; i < 50 && dialog.GetClientSize() != fixed; ++i) {
+                        wxTheApp->Yield(true);
+                        wxMilliSleep(10);
+                    }
+                    const wxSize now = dialog.GetClientSize();
+                    st->textsRead.push_back(now == fixed
+                                                ? std::string("fixed size")
+                                                : std::format("client {}x{} (fixed {}x{})", now.x,
+                                                              now.y, fixed.x, fixed.y));
+                } else {
+                    // MSW and macOS: a dialog without a resize border.
+                    st->textsRead.push_back("fixed size");
                 }
-                const wxSize now = dialog.GetClientSize();
-                st->textsRead.push_back(now == fixed ? std::string("fixed size")
-                                                     : std::format("client {}x{} (fixed {}x{})",
-                                                                   now.x, now.y, fixed.x, fixed.y));
-#else
-                // MSW and macOS: a dialog without a resize border.
-                st->textsRead.push_back("fixed size");
-#endif
             };
             frame.execute(Command::Format);
         },
@@ -8112,8 +7905,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                 .write(json.data(), static_cast<std::streamsize>(json.size()));
             st->textsRead.clear();
             st->choiceRead = {};
-            dialogHooks().format = [st,
-                                    path = dvv::media::utf8FromPath(file)](FormatDialog& dialog) {
+            dialogHooks().format = [st, path = dvv::pathText(file)](FormatDialog& dialog) {
                 FormatChoice qcif = dialog.choice();
                 qcif.width = 176;
                 qcif.height = 144;
@@ -8174,10 +7966,10 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                                     .utf8_string());
                 texts.emplace_back(header.AfterLast('\n').utf8_string());  // the tooltip's end
                 // A bad pixel-format JSON: the red line, no entry.
-                dialog.loadJson(dvv::media::utf8FromPath(dir / "bad-format.json"));
+                dialog.loadJson(dvv::pathText(dir / "bad-format.json"));
                 texts.emplace_back(dialog.errorText().empty() ? "no error" : "error");
                 texts.push_back(dialog.formatLabel().BeforeFirst('|').utf8_string());
-                dialog.loadJson(dvv::media::utf8FromPath(dir / "custom.json"));
+                dialog.loadJson(dvv::pathText(dir / "custom.json"));
                 const wxString label = dialog.formatLabel();
                 texts.push_back(
                     (label.BeforeFirst('|') + "|" +
@@ -8193,7 +7985,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                                 dialog.errorText().utf8_string());
                 st->flagRead = dialog.choice().format.starts_with('@');
                 // A Load JSON error goes when the user picks a candidate.
-                dialog.loadJson(dvv::media::utf8FromPath(dir / "bad-format.json"));
+                dialog.loadJson(dvv::pathText(dir / "bad-format.json"));
                 const bool picked = dialog.userPick(Control::Candidate, 0);
                 texts.push_back(
                     std::format("picked {} '{}'", picked, dialog.errorText().utf8_string()));
@@ -8354,13 +8146,17 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             std::ofstream(st->dir / "broken.json", std::ios::binary).write("{", 1);
             st->textsRead.clear();
             st->choiceRead = {};
+            // All enabled until the hook reads them: a dialog that never opened cannot pass.
+            st->fieldsRead = {
+                .format = true, .size = true, .width = true, .height = true, .fps = true};
             st->lockedRead = false;
             st->flagRead = false;
-            dialogHooks().format = [st,
-                                    path = dvv::media::utf8FromPath(file)](FormatDialog& dialog) {
+            dialogHooks().format = [st, path = dvv::pathText(file)](FormatDialog& dialog) {
                 using Control = FormatDialog::Control;
                 std::vector<std::string>& texts = st->textsRead;
                 st->lockedRead = dialog.fieldsLocked();
+                // SourceInfo::fixed of a Y4M stream is all(): every field is disabled.
+                st->fieldsRead = dialog.fieldsEnabled();
                 st->flagRead = dialog.colourTakesInitialFocus();  // Enter presses OK
                 texts.push_back(dialog.lockedText().utf8_string());
                 // The Y4M header gives no colour: BT.709 by default, the range as the header says.
@@ -8369,8 +8165,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                 // Load JSON never shrinks a dialog the user enlarged.
                 const wxSize enlarged = dialog.GetSize() + dialog.FromDIP(wxSize(120, 160));
                 dialog.SetSize(enlarged);
-                dialog.loadJson(
-                    dvv::media::utf8FromPath(st->dir / "size-only.json"));  // no colour group
+                dialog.loadJson(dvv::pathText(st->dir / "size-only.json"));  // no colour group
                 texts.push_back(dialog.noteText().utf8_string());
                 dialog.loadJson(path);
                 texts.push_back(dialog.noteText().utf8_string());
@@ -8381,7 +8176,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                                                   after.x, after.y));
                 st->choiceRead = dialog.choice();
                 // A Load JSON error goes when the user changes a control.
-                dialog.loadJson(dvv::media::utf8FromPath(st->dir / "broken.json"));
+                dialog.loadJson(dvv::pathText(st->dir / "broken.json"));
                 texts.emplace_back(dialog.errorText().empty() ? "no error" : "error");
                 dialog.userPick(Control::Colour, "BT.601 (NTSC)");
                 texts.push_back((dialog.errorText() + "|" + dialog.colourText()).utf8_string());
@@ -8414,40 +8209,45 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             for (const std::string& text : st->textsRead) {
                 texts += std::format("'{}' ", text);
             }
-            seen = std::format("locked {}, Colour first {}, texts {}, colour only {}, URI '{}'",
-                               st->lockedRead, st->flagRead, texts, colour_only, uri);
-            return st->lockedRead && st->flagRead && st->textsRead == expected && colour_only &&
-                   uri.contains("colour=bt2020") && stream_is(16, 16, "yuv420p");
+            const FormatDialog::FieldsEnabled& fields = st->fieldsRead;
+            const bool all_disabled =
+                !fields.format && !fields.size && !fields.width && !fields.height && !fields.fps;
+            seen = std::format(
+                "locked {}, all fields disabled {}, Colour first {}, texts {}, colour only {}, URI "
+                "'{}'",
+                st->lockedRead, all_disabled, st->flagRead, texts, colour_only, uri);
+            return st->lockedRead && all_disabled && st->flagRead && st->textsRead == expected &&
+                   colour_only && uri.contains("colour=bt2020") && stream_is(16, 16, "yuv420p");
         }));
-#if defined(__WXOSX__)
-    // Design C5: a file opened from Finder or the Dock (wxApp::MacOpenFiles) takes the route of a
-    // drop and gives the drop step's state: a new Y4M file opens without a format dialog.
-    steps.push_back(step(
-        "open a Y4M file from Finder (MacOpenFiles)",
-        [&frame, st] {
-            const auto file = st->dir / "finder_clip.y4m";
-            std::string y4m = "YUV4MPEG2 W32 H16 F25:1 Ip A1:1 C420jpeg\n";
-            for (int i = 0; i < 2; ++i) {
-                y4m += "FRAME\n" + std::string(768, '\x50');
-            }
-            std::ofstream(file, std::ios::binary)
-                .write(y4m.data(), static_cast<std::streamsize>(y4m.size()));
-            st->dialogs0 = frame.formatDialogsShown();
-            wxArrayString names;
-            names.Add(wxString::FromUTF8(dvv::media::utf8FromPath(file)));
-            wxGetApp().MacOpenFiles(names);
-        },
-        [&frame, st, stream_is, stream_uri](std::string& seen) {
-            const auto& streams = frame.streams();
-            const bool y4m = streams.size() == 1 && streams[0].info.provider == "y4m";
-            const std::string uri = stream_uri();
-            seen = std::format("yuv420p 32x16 {}, y4m {}, dialogs {}, URI '{}'",
-                               stream_is(32, 16, "yuv420p"), y4m,
-                               frame.formatDialogsShown() - st->dialogs0, uri);
-            return stream_is(32, 16, "yuv420p") && y4m && uri.contains("finder_clip.y4m") &&
-                   frame.formatDialogsShown() == st->dialogs0;
-        }));
-#endif
+    if constexpr (NATIVE_OS == Os::MacOs) {
+        // Design C5: a file opened from Finder or the Dock (wxApp::MacOpenFiles) takes the route of
+        // a drop and gives the drop step's state: a new Y4M file opens without a format dialog.
+        steps.push_back(step(
+            "open a Y4M file from Finder (MacOpenFiles)",
+            [&frame, st] {
+                const auto file = st->dir / "finder_clip.y4m";
+                std::string y4m = "YUV4MPEG2 W32 H16 F25:1 Ip A1:1 C420jpeg\n";
+                for (int i = 0; i < 2; ++i) {
+                    y4m += "FRAME\n" + std::string(768, '\x50');
+                }
+                std::ofstream(file, std::ios::binary)
+                    .write(y4m.data(), static_cast<std::streamsize>(y4m.size()));
+                st->dialogs0 = frame.formatDialogsShown();
+                wxArrayString names;
+                names.Add(wxString::FromUTF8(dvv::pathDisplayText(file)));
+                openFilesFromFinder(names);
+            },
+            [&frame, st, stream_is, stream_uri](std::string& seen) {
+                const auto& streams = frame.streams();
+                const bool y4m = streams.size() == 1 && streams[0].info.provider == "y4m";
+                const std::string uri = stream_uri();
+                seen = std::format("yuv420p 32x16 {}, y4m {}, dialogs {}, URI '{}'",
+                                   stream_is(32, 16, "yuv420p"), y4m,
+                                   frame.formatDialogsShown() - st->dialogs0, uri);
+                return stream_is(32, 16, "yuv420p") && y4m && uri.contains("finder_clip.y4m") &&
+                       frame.formatDialogsShown() == st->dialogs0;
+            }));
+    }
     // A gray Y4M with XCOLORRANGE=LIMITED keeps its range under BT.709 (the default
     // range of gray is full).
     steps.push_back(step(
@@ -8540,8 +8340,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             }
         },
         [&frame, st, first_name](std::string& seen) {
-            const wxString path =
-                wxString::FromUTF8(dvv::media::utf8FromPath(st->dir / first_name));
+            const wxString path = wxString::FromUTF8(dvv::pathDisplayText(st->dir / first_name));
             const wxString title = wxString::FromUTF8(windowTitle(first_name, NATIVE_TITLE_STYLE));
             const wxString tip = fieldTooltip(frame, MainFrame::FILE_FIELD);
 #if defined(__WXOSX__)
@@ -8567,14 +8366,14 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
     steps.push_back(step(
         "long file name",
         [&frame, st, long_name] {
-            const auto file = st->dir / dvv::media::pathFromUtf8(long_name);
+            const auto file = st->dir / dvv::pathFromText(long_name);
             writeFile(file, 1024, '\x40');
             frame.openFiles({file});
             frame.SetClientSize(frame.GetMinClientSize().x, frame.GetClientSize().y);
         },
         [&frame, st, long_name, stream_is](std::string& seen) {
-            const wxString path = wxString::FromUTF8(
-                dvv::media::utf8FromPath(st->dir / dvv::media::pathFromUtf8(long_name)));
+            const wxString path =
+                wxString::FromUTF8(dvv::pathDisplayText(st->dir / dvv::pathFromText(long_name)));
             seen = std::format("gray 32x16 {}, path '{}'", stream_is(32, 16, "gray"),
                                frame.streamPath().utf8_string());
             return stream_is(32, 16, "gray") && frame.streamPath() == path;
@@ -8582,8 +8381,8 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
     steps.push_back(
         step("long file name is cut in the middle", {}, [&frame, st, long_name](std::string& seen) {
             const wxString name = wxString::FromUTF8(long_name);
-            const wxString path = wxString::FromUTF8(
-                dvv::media::utf8FromPath(st->dir / dvv::media::pathFromUtf8(long_name)));
+            const wxString path =
+                wxString::FromUTF8(dvv::pathDisplayText(st->dir / dvv::pathFromText(long_name)));
             const wxString field = frame.statusTexts()[MainFrame::FILE_FIELD];
             const wxString tip = fieldTooltip(frame, MainFrame::FILE_FIELD);
             // Review focus 1: the title is never cut, whatever the field shows.
@@ -8623,10 +8422,11 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
     wxString mkv_text;
     const bool mkv_named = wxGetEnv("RAWREEL_TEST_MKV", &mkv_text) && !mkv_text.empty();
     const std::filesystem::path mkv =
-        mkv_named ? dvv::media::pathFromUtf8(mkv_text.utf8_string()) : std::filesystem::path{};
+        mkv_named ? dvv::pathFromText(mkv_text.utf8_string()) : std::filesystem::path{};
     std::error_code mkv_error;
     const bool mkv_exists = mkv_named && std::filesystem::is_regular_file(mkv, mkv_error);
-    if (test.app().startup().ffmpeg.core && mkv_exists) {
+    if (test.app().startup().components->capabilities().has(dvv::components::FFMPEG_CAPABILITY) &&
+        mkv_exists) {
         steps.push_back(step(
             "drop the FFV1 MKV",
             [&frame, st, mkv] {
@@ -8699,10 +8499,64 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                 seen = std::format("playing {}", status().playing);
                 return !status().playing;
             }));
+        // §9.2: the dialog locks what SourceInfo::fixed fixes (an MKV), and not a raw file's.
+        struct Lock {
+            bool mkvSeen = false;
+            bool mkvLocked = false;
+            bool rawAsked = false;
+            bool rawSeen = false;
+            FormatDialog::FieldsEnabled mkv;  // every field disabled
+            FormatDialog::FieldsEnabled raw;  // every field enabled
+        };
+        auto lock = std::make_shared<Lock>();
+        auto read_lock = [&frame](bool& seen, const std::function<void(FormatDialog&)>& read) {
+            dialogHooks().format = [&seen, &read](FormatDialog& dialog) {
+                seen = true;
+                read(dialog);
+            };
+            frame.execute(Command::Format);
+            dialogHooks().format = nullptr;
+        };
+        steps.push_back(step(
+            "format dialog: locked for an MKV, editable for a raw file",
+            [&frame, st, lock, read_lock] {
+                st->dialogs0 = frame.formatDialogsShown();
+                read_lock(lock->mkvSeen, [lock](FormatDialog& dialog) {
+                    lock->mkvLocked = dialog.fieldsLocked();
+                    lock->mkv = dialog.fieldsEnabled();
+                });
+                const auto file = st->dir / "fixed_16x16_gray.yuv";
+                writeFile(file, 512, '\x40');  // 2 frames of gray 16x16
+                dropFiles(frame.viewport(), {file});
+            },
+            [&frame, st, lock, read_lock, stream_is](std::string& seen) {
+                if (stream_is(16, 16, "gray") && !lock->rawAsked) {
+                    lock->rawAsked = true;
+                    read_lock(lock->rawSeen,
+                              [lock](FormatDialog& dialog) { lock->raw = dialog.fieldsEnabled(); });
+                }
+                const auto text = [](const FormatDialog::FieldsEnabled& fields) {
+                    return std::format("format {} size {} width {} height {} fps {}", fields.format,
+                                       fields.size, fields.width, fields.height, fields.fps);
+                };
+                const FormatDialog::FieldsEnabled& mkv = lock->mkv;
+                const FormatDialog::FieldsEnabled& raw = lock->raw;
+                seen = std::format("MKV dialog {} locked {} enabled: {}; raw dialog {} enabled: {}",
+                                   lock->mkvSeen, lock->mkvLocked, text(mkv), lock->rawSeen,
+                                   text(raw));
+                const bool mkv_disabled =
+                    !mkv.format && !mkv.size && !mkv.width && !mkv.height && !mkv.fps;
+                const bool raw_enabled =
+                    raw.format && raw.size && raw.width && raw.height && raw.fps;
+                return lock->mkvSeen && lock->mkvLocked && mkv_disabled && lock->rawSeen &&
+                       raw_enabled && frame.formatDialogsShown() >= st->dialogs0 + 2;
+            }));
     } else if (ffmpegRequired()) {
         std::string reason;
-        if (!test.app().startup().ffmpeg.core) {
-            reason = ffmpegStatusLine(test.app().startup().ffmpeg);
+        if (!test.app().startup().components->capabilities().has(
+                dvv::components::FFMPEG_CAPABILITY)) {
+            reason = ffmpegStatusLine(
+                test.app().startup().components->module(dvv::components::FFMPEG_MODULE));
         } else if (!mkv_named) {
             reason = "RAWREEL_TEST_MKV is not set";
         } else {
@@ -8783,7 +8637,9 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                                                              status().length == 60 &&
                                                              status().position == 0);
                              }));
-        if (test.app().startup().ffmpeg.core && mkv_exists) {
+        if (test.app().startup().components->capabilities().has(
+                dvv::components::FFMPEG_CAPABILITY) &&
+            mkv_exists) {
             steps.push_back(step("another clip during a drag resets",
                                  drag_then([&frame, mkv] { dropFiles(frame.viewport(), {mkv}); }),
                                  [&frame, reset_done, status](std::string& seen) {

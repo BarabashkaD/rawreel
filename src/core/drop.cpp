@@ -1,12 +1,12 @@
 #include "core/drop.h"
 
 #include "dvv/base/uri.h"
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 
 namespace rawreel {
 
 std::string fileUri(const std::filesystem::path& path) {
-    return "file:" + dvv::percentEncode(dvv::media::utf8FromPath(path));
+    return "file:" + dvv::percentEncode(dvv::pathText(path));
 }
 
 DropPlan routeDrop(std::span<const std::filesystem::path> files) {

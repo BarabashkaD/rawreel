@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "core/commands.h"
+#include "core/native_os.h"
 
 using rawreel::chord;
 using rawreel::Command;
@@ -30,11 +31,8 @@ KeyChord letter(char c, bool ctrl = false) {
 }
 
 // Log pane and Settings design §5.1: GTK calls the window Preferences.
-#if defined(__linux__)
-constexpr std::string_view SETTINGS_LABEL = "Preferences...";
-#else
-constexpr std::string_view SETTINGS_LABEL = "Settings...";
-#endif
+constexpr std::string_view SETTINGS_LABEL =
+    rawreel::NATIVE_OS == rawreel::Os::Linux ? "Preferences..." : "Settings...";
 
 }  // namespace
 

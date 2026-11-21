@@ -19,9 +19,9 @@ using Clock = std::chrono::steady_clock;
 
 struct PlayerConfig {
     std::optional<std::int64_t> length;  // frames of the shortest stream; nullopt = unbounded
-    dvv::media::Rational fps{25, 1};     // stream 1's fps
-    std::uint32_t window = 8;            // W: prefetch indices ahead of the position
-    std::uint32_t inflight = 4;          // K: at most this many requested and not yet answered
+    dvv::media::Rational fps = dvv::media::FALLBACK_FPS;  // stream 1's fps
+    std::uint32_t window = 8;    // W: prefetch indices ahead of the position
+    std::uint32_t inflight = 4;  // K: at most this many requested and not yet answered
 };
 
 struct PlayerStatus {

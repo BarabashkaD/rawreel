@@ -1,5 +1,5 @@
-// rawreel-cli entry point (spec §10.3, M2 design §4.6). On Windows wmain receives the arguments as
-// UTF-16 and converts them to UTF-8 (D19); the console subsystem picks the wmain CRT entry itself.
+// rawreel-cli: the shared run of both entries (spec §7.9, M2 design §4.6); main_win32.cpp and
+// main_posix.cpp hold the entry points.
 
 #include <algorithm>
 #include <cstdio>
@@ -12,15 +12,15 @@
 #include <vector>
 
 #include "cli/arguments.h"
+#include "cli/cli_main.h"
 #include "cli/commands.h"
 #include "cli/output.h"
-#include "cli/utf8_arguments.h"
 #include "core/vulkan_driver.h"
 #include "dvv/base/json.h"
 #include "dvv/base/leak_check.h"
 #include "dvv/base/lifetime.h"
 #include "dvv/base/log.h"
-#include "gui/crash_handler.h"
+#include "dvv/platform/crash_handler.h"
 
 namespace {
 
@@ -74,17 +74,18 @@ int lastResort() noexcept {
 
 }  // namespace
 
-#if defined(_WIN32)
-int wmain(int argc, wchar_t** argv) {
+int runCli(dvv::MoveOnlyFunction<dvv::Result<std::vector<std::string>>()> arguments) noexcept {
+    // First: before anything can open the Vulkan loader.
+    const dvv::Result<dvv::gpu::DriverChoice> driver = rawreel::applyBundledDriver();
     try {
-        // The crash handler first (design M4 v2 D22), then the logger, then the test hook.
-        const std::string crash_warning = rawreel::CrashHandler::install("rawreel-cli");
+        // The logger, then the crash handler (it logs its own warning), then the test hook.
         setUpLogging();
-        if (!crash_warning.empty()) {
-            DVV_LOG_TEXT(dvv::LogLevel::Warn, crash_warning);  // now that the sinks exist
+        dvv::platform::installCrashHandler({.app = "rawreel", .process = "rawreel-cli"});
+        dvv::platform::crashIfRequested("RAWREEL_TEST_CRASH");
+        if (!driver) {
+            DVV_LOG_WARN("the bundled Vulkan driver is not used: {}", driver.error().message);
         }
-        rawreel::CrashHandler::crashIfRequested();
-        auto all = rawreel::cli::utf8Arguments(argc, argv);
+        const auto all = arguments();
         if (!all) {
             std::println(stderr, "error: {}", all.error().message);
             return rawreel::cli::exit_code::BAD_ARGUMENTS;
@@ -94,20 +95,3 @@ int wmain(int argc, wchar_t** argv) {
         return lastResort();
     }
 }
-#else
-int main(int argc, char** argv) {
-    rawreel::applyBundledDriver();  // first: before anything can open the Vulkan loader
-    try {
-        // The crash handler first (design M4 v2 D22), then the logger, then the test hook.
-        const std::string crash_warning = rawreel::CrashHandler::install("rawreel-cli");
-        setUpLogging();
-        if (!crash_warning.empty()) {
-            DVV_LOG_TEXT(dvv::LogLevel::Warn, crash_warning);  // now that the sinks exist
-        }
-        rawreel::CrashHandler::crashIfRequested();
-        return guarded(std::vector<std::string>(argv, argv + argc));
-    } catch (...) {
-        return lastResort();
-    }
-}
-#endif

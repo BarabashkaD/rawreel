@@ -43,7 +43,9 @@ void DisplayState::setParams(CompositeParams params) {
 DisplaySnapshot DisplayState::snapshot() const {
     std::lock_guard lock(mutex_);
     read_ = true;
-    return DisplaySnapshot{frames_, params_, version_};  // copies shared_ptrs under the lock
+    // The share takes the store's mutex under mutex_ (lock order: display state, then store); the
+    // caller drops the snapshot outside both.
+    return DisplaySnapshot{frames_.share(), params_, version_};
 }
 
 DisplayStats DisplayState::stats() const {

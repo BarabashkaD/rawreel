@@ -28,7 +28,7 @@ enum class Scenario : std::uint8_t { None, Smoke, Player, Lost, Perf, About };
 
 struct GuiArguments {
     Appearance appearance = Appearance::System;
-    std::optional<std::uint32_t> gpu;  // index into GpuRegistry::devices() (dvv-gpu-info order)
+    std::optional<std::uint32_t> gpu;  // index into GpuInstance::devices() (dvv-gpu-info order)
     Scenario selftest = Scenario::None;
     std::uint32_t inflight = 4;         // --inflight K, 1..64, only with --selftest perf
     std::optional<std::string> uri;     // positional, at most one (opened as the stream, frame 0)

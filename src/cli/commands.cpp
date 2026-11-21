@@ -34,13 +34,15 @@
 #include "dvv/base/log.h"
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/base/when_all.h"
 #include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/gpu_info.h"
-#include "dvv/gpu/gpu_registry.h"
+#include "dvv/gpu/gpu_instance.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/source.h"
 #include "dvv/media/source_factory.h"
@@ -81,20 +83,18 @@ public:
     }
 
     std::shared_ptr<dvv::ThreadPool> io, cpu;
-    Startup startup;  // the FFmpeg status and the component registry
+    Startup startup;  // the component registry
     std::unique_ptr<media::SourceFactory> factory;
     std::unique_ptr<media::ISource> source;  // until dump attaches it
-    std::shared_ptr<dvv::gpu::GpuRegistry> gpu;
+    std::shared_ptr<dvv::gpu::GpuInstance> gpu;
     std::shared_ptr<dvv::gpu::ExecutionContext> context;
     std::shared_ptr<media::FrameStore> store;
     std::optional<media::OriginId> origin;
 
 private:
     void shutdown() {
-        // 0. Queued prefetch work of an FFmpeg or lavfi source ends at once instead of decoding on
-        // (the store's queued Produce steps keep their sources alive).
-        dvv::components::stopFfmpegSources();
-        // 1. detach the origin (2. the leases are already dropped).
+        // 1. detach the origin: it cancels the queued and running produce steps (2. the leases are
+        // already dropped).
         if (store && origin) {
             store->detach(*origin);
             origin.reset();
@@ -103,7 +103,7 @@ private:
         source.reset();
         factory.reset();
         store.reset();
-        // 4. drain the context, 5. then release it, the GPU registry and the component registry.
+        // 4. drain the context, 5. then release it, the GPU instance and the component registry.
         if (context) {
             if (const dvv::Result<void> drained = context->drain(); !drained) {
                 DVV_LOG_WARN("rawreel-cli: draining the GPU context failed: {}",
@@ -139,19 +139,19 @@ int fail(const Arguments& arguments, const dvv::Result<void>& failed, int code) 
     return fail(arguments, failed.error(), code);
 }
 
-// The best Vulkan device of a headless GPU registry, which is destroyed right after; never fails.
+// The best Vulkan device of a headless GPU instance, which is destroyed right after; never fails.
 [[nodiscard]] VulkanStatus vulkanStatus() {
-    dvv::gpu::GpuRegistryOptions options;
+    dvv::gpu::GpuInstanceOptions options;
     options.applicationName = "rawreel-cli";
-    const auto registry = dvv::gpu::GpuRegistry::create(options);
-    if (!registry) {
+    const auto instance = dvv::gpu::GpuInstance::create(options);
+    if (!instance) {
         return {.available = false,
                 .device = {},
                 .api = {},
                 .driver = {},
-                .reason = registry.error().describe()};
+                .reason = instance.error().describe()};
     }
-    const std::optional<dvv::gpu::DeviceId> best = (*registry)->bestDevice();
+    const std::optional<dvv::gpu::DeviceId> best = (*instance)->bestDevice();
     if (!best) {
         return {.available = false,
                 .device = {},
@@ -159,7 +159,7 @@ int fail(const Arguments& arguments, const dvv::Result<void>& failed, int code) 
                 .driver = {},
                 .reason = "no usable Vulkan 1.3 device"};
     }
-    const dvv::gpu::GpuInfo& device = (*registry)->devices()[best->index()];
+    const dvv::gpu::GpuInfo& device = (*instance)->devices()[best->index()];
     return {.available = true,
             .device = device.name,
             .api = dvv::gpu::formatVulkanVersion(device.apiVersion),
@@ -172,8 +172,10 @@ int fail(const Arguments& arguments, const dvv::Result<void>& failed, int code) 
 void printVersion(bool json) {
     std::string ffmpeg;
     {
-        const Startup startup = startComponents({});
-        ffmpeg = ffmpegStatusLine(startup.ffmpeg);
+        const Startup startup = startComponents();
+        ffmpeg = ffmpegStatusLine(startup.components
+                                      ? startup.components->module(dvv::components::FFMPEG_MODULE)
+                                      : nullptr);
     }
     const VersionReport report{.packages = packageVersions(),
                                .vulkan = vulkanStatusLine(vulkanStatus()),
@@ -189,19 +191,19 @@ void printVersion(bool json) {
     return error.code == dvv::Errc::Unsupported && error.message.starts_with(NO_DEVICE);
 }
 
-// GpuRegistry::create() with the options from the environment, then a context on the best device.
+// GpuInstance::create() with the options from the environment, then a context on the best device.
 // No loader (Unsupported) or no usable device: Errc::Unsupported "no usable GPU device: <reason>";
 // other errors pass through.
 [[nodiscard]] dvv::Result<void> setUpGpu(Resources& resources) {
-    auto registry = dvv::gpu::GpuRegistry::create();
-    if (!registry) {
-        if (registry.error().code == dvv::Errc::Unsupported) {
+    auto instance = dvv::gpu::GpuInstance::create();
+    if (!instance) {
+        if (instance.error().code == dvv::Errc::Unsupported) {
             return dvv::makeError(dvv::Errc::Unsupported,
-                                  std::format("{}: {}", NO_DEVICE, registry.error().message));
+                                  std::format("{}: {}", NO_DEVICE, instance.error().message));
         }
-        return std::unexpected(std::move(registry).error());
+        return std::unexpected(std::move(instance).error());
     }
-    resources.gpu = std::move(*registry);
+    resources.gpu = std::move(*instance);
     const std::optional<dvv::gpu::DeviceId> best = resources.gpu->bestDevice();
     if (!best) {
         return dvv::makeError(dvv::Errc::Unsupported,
@@ -288,7 +290,7 @@ int dump(const Arguments& arguments, Resources& resources) {
     const auto cannot_write = [&arguments] {
         return dvv::makeError(dvv::Errc::Io, std::format("cannot write '{}'", arguments.out));
     };
-    std::ofstream file(media::pathFromUtf8(arguments.out), std::ios::binary | std::ios::trunc);
+    std::ofstream file(dvv::pathFromText(arguments.out), std::ios::binary | std::ios::trunc);
     if (!file) {
         return fail(arguments, cannot_write(), exit_code::INPUT_ERROR);
     }
@@ -300,13 +302,18 @@ int dump(const Arguments& arguments, Resources& resources) {
     for (std::int64_t k = 0; k < arguments.count; ++k) {
         const media::FrameKey key{.origin = *origin, .index = arguments.frame + k};
         dvv::Result<media::OriginalRead> read = dvv::syncWait(resources.store->acquireOriginal(
-            key, media::Api::HostPlanes, domain, *resources.cpu, exact));
+            key,
+            {.api = media::BindingKind::HostPlanes,
+             .domain = domain,
+             .fidelity =
+                 exact ? media::OriginalFidelity::Exact : media::OriginalFidelity::Lossless},
+            *resources.cpu));
         if (!read) {
             const bool gpu_stage = gpu && read.error().code == dvv::Errc::OutOfMemory;
             return fail(arguments, read.error(), exitCodeFor(read.error(), gpu_stage));
         }
         const media::ReadLease& lease = read->lease();
-        const auto* const planes = std::get_if<media::HostPlanesB>(&lease.binding());
+        const media::HostPlanesB* const planes = lease.planes();
         if (planes == nullptr) {
             const dvv::Result<void> internal =
                 dvv::makeError(dvv::Errc::Internal, "the read is not in host memory");
@@ -331,7 +338,7 @@ int dump(const Arguments& arguments, Resources& resources) {
     }
 
     // 9. The result.
-    const std::string_view format = media::descriptor(written).name;
+    const std::string_view format = media::formatDesc(written).name;
     const std::string_view via = gpu ? "gpu" : "cpu";
     if (arguments.json) {
         dvv::json::Value value = dvv::json::Value::object();
@@ -439,12 +446,15 @@ int bench(const Arguments& arguments, Resources& resources) {
         tasks.reserve(static_cast<std::size_t>(end - first));
         for (std::int64_t index = first; index < end; ++index) {
             const media::FrameKey key{.origin = *origin, .index = index};
-            tasks.push_back(arguments.readOnly
-                                ? resources.store->acquireOriginal(key, media::Api::HostPlanes,
-                                                                   resources.store->hostDomain(),
-                                                                   *resources.cpu, true)
-                                : resources.store->acquireOriginal(key, media::Api::VkImage,
-                                                                   *device, *resources.cpu));
+            tasks.push_back(
+                arguments.readOnly
+                    ? resources.store->acquireOriginal(key,
+                                                       {.api = media::BindingKind::HostPlanes,
+                                                        .domain = resources.store->hostDomain(),
+                                                        .fidelity = media::OriginalFidelity::Exact},
+                                                       *resources.cpu)
+                    : resources.store->acquireOriginal(
+                          key, {.api = media::vulkan::IMAGE, .domain = *device}, *resources.cpu));
         }
         const std::vector<dvv::Result<media::OriginalRead>> reads =
             dvv::syncWait(dvv::whenAll(std::move(tasks)));
@@ -460,7 +470,7 @@ int bench(const Arguments& arguments, Resources& resources) {
 
     // 6. The report.
     const BenchReport report{.uri = info.resolvedUri,
-                             .format = std::string(media::descriptor(info.desc.format).name),
+                             .format = std::string(media::formatDesc(info.desc.format).name),
                              .reader = info.reader,
                              .device = resources.context->deviceInfo().name,
                              .width = info.desc.width,
@@ -493,8 +503,8 @@ int runSource(const Arguments& arguments, Resources& resources) {
     }
     resources.cpu = std::move(*cpu);
 
-    // 2. and 3. The startup (FFmpeg, capabilities, component registry) and the source factory.
-    resources.startup = startComponents({});
+    // 2. and 3. The startup (the component registry and its modules) and the source factory.
+    resources.startup = startComponents();
     auto factory = media::SourceFactory::create(*resources.startup.components, resources.io);
     if (!factory) {
         return fail(arguments, factory.error(), exitCodeFor(factory.error(), false));
@@ -517,10 +527,10 @@ int runSource(const Arguments& arguments, Resources& resources) {
         const dvv::Error& error = opened.error();
         if (arguments.json) {  // error.message, as every other --json error (fail())
             printJson(errorJson(dvv::errcName(error.code),
-                                openErrorMessage(error, arguments.uri, resources.startup.ffmpeg)));
+                                openErrorMessage(error, request.uri.scheme, resources.startup)));
         } else {
             std::println(stderr, "error: {}",
-                         openErrorText(error, arguments.uri, resources.startup.ffmpeg));
+                         openErrorText(error, request.uri.scheme, resources.startup));
         }
         return exitCodeFor(error, false);
     }

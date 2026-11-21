@@ -15,7 +15,7 @@
 
 #include <windows.h>
 
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 
 namespace {
 
@@ -72,7 +72,7 @@ void checkFirstIconGroup(const wchar_t* variable, const char* variable_text) {
     // LoadLibraryExW wants backslashes; $<TARGET_FILE> gives forward slashes.
     std::filesystem::path exe(*value);
     exe.make_preferred();
-    const std::string exe_text = dvv::media::utf8FromPath(exe);
+    const std::string exe_text = dvv::pathDisplayText(exe);
     CAPTURE(exe_text);
 
     const Library library(LoadLibraryExW(

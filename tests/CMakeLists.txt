@@ -63,6 +63,7 @@ add_executable(rawreel_core_tests
     test_session_notify.cpp test_session_storm.cpp test_session_types.cpp test_settings_claim.cpp
     test_open_text.cpp test_recent.cpp test_source_provider.cpp test_startup.cpp test_vulkan_driver.cpp
     test_status_text.cpp test_stream_name.cpp test_svg_colour.cpp test_timeline.cpp test_timer.cpp test_view.cpp)
+dvv_os_sources(rawreel_core_tests test_native_os)
 target_link_libraries(rawreel_core_tests PRIVATE rawreel_core doctest::doctest)
 dvv_link_components(rawreel_core_tests dvv::media_sources)
 # RAWREEL_VERSION: the version packageVersions() must report for rawreel.
@@ -305,13 +306,15 @@ set_tests_properties(rawreel.cli_e2e.ffmpeg_missing rawreel.cli_e2e.ffmpeg_relat
     ENVIRONMENT "${gpu_test_environment}"
     ENVIRONMENT_MODIFICATION
         "${DVV_TEST_ENVIRONMENT};DVV_REQUIRE_FFMPEG=unset:;DVV_FFMPEG_DIR=unset:")
-# The crash handler (design v2 D22): Windows only, not under MSVC ASan (it installs its own
-# exception handling). Linux has no crash handler in v1.0: a crash leaves a core dump.
-if(WIN32 AND NOT DVV_SANITIZE)
+# Not under sanitizers (the handler installs its own exception and signal handling).
+if(NOT DVV_SANITIZE)
+    set(crash_home ${CMAKE_BINARY_DIR}/test-home-crash)
+    file(MAKE_DIRECTORY ${crash_home}/Roaming ${crash_home}/Local ${crash_home}/.local/share
+                        ${crash_home}/.cache)
     rawreel_cli_e2e(crash run-cli-crash.cmake "")
     set_tests_properties(rawreel.cli_e2e.crash PROPERTIES
         ENVIRONMENT DVV_LEAK_CHECK=fail
-        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
+        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT};HOME=set:${crash_home};XDG_DATA_HOME=set:${crash_home}/.local/share;XDG_CACHE_HOME=set:${crash_home}/.cache;APPDATA=set:${crash_home}/Roaming;LOCALAPPDATA=set:${crash_home}/Local")
 endif()
 
 # Our binaries import no FFmpeg library (design v2 D3 c, E1); fails if a later change links it.

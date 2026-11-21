@@ -11,7 +11,7 @@ void LogStore::write(const dvv::LogRecord& record, std::string_view /*line*/) {
     entry.message = std::string(record.message);
     entry.where = record.where;
     entry.mark = record.mark;
-    entry.line = dvv::formatLogRecord(record, with_source_.load(std::memory_order_relaxed));
+    entry.line = dvv::formatLogRecord(record, suffix_.load(std::memory_order_relaxed));
 
     const std::lock_guard lock(mutex_);
     entry.sequence = next_++;
@@ -32,8 +32,8 @@ void LogStore::write(const dvv::LogRecord& record, std::string_view /*line*/) {
     }
 }
 
-void LogStore::setWithSource(bool with_source) noexcept {
-    with_source_.store(with_source, std::memory_order_relaxed);
+void LogStore::setSourceSuffix(dvv::SourceSuffix suffix) noexcept {
+    suffix_.store(suffix, std::memory_order_relaxed);
 }
 
 void LogStore::setNotify(std::function<void()> notify) {

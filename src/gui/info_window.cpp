@@ -19,9 +19,8 @@
 #include "core/session_types.h"
 #include "gui/main_frame.h"
 #include "gui/native_controls.h"
-#if !defined(__WXOSX__)
+#include "gui/native_policy.h"
 #include "gui/selftest.h"  // setClipboardText
-#endif
 
 namespace rawreel {
 
@@ -124,9 +123,9 @@ InfoWindow::InfoWindow(MainFrame& owner)
     Bind(wxEVT_CLOSE_WINDOW, &InfoWindow::onClose, this);
     Bind(wxEVT_DPI_CHANGED, &InfoWindow::onDpiChanged, this);
     Bind(wxEVT_SYS_COLOUR_CHANGED, &InfoWindow::onSysColourChanged, this);
-#if defined(__WXGTK__)
-    Bind(wxEVT_SHOW, &InfoWindow::onShow, this);
-#endif
+    if (native_policy::hidesStaleMapShow()) {
+        Bind(wxEVT_SHOW, &InfoWindow::onShow, this);
+    }
 }
 
 void InfoWindow::measure() {
@@ -199,9 +198,9 @@ void InfoWindow::showBesideOwner() {
         requested_ = wxRectOf(place);
     }
     SetPosition(requested_.GetTopLeft());
-#if defined(__WXGTK__)
-    wanted_shown_ = true;  // before the show: its wxEVT_SHOW comes from inside it
-#endif
+    if (native_policy::hidesStaleMapShow()) {
+        wanted_shown_ = true;  // before the show: its wxEVT_SHOW comes from inside it
+    }
     ShowWithoutActivating();  // §10: the main window keeps the focus
 }
 
@@ -211,9 +210,9 @@ void InfoWindow::hideKeepingPlace() {
     if (IsShown()) {
         place_ = GetPosition();
     }
-#if defined(__WXGTK__)
-    wanted_shown_ = false;
-#endif
+    if (native_policy::hidesStaleMapShow()) {
+        wanted_shown_ = false;
+    }
     Hide();
 }
 
@@ -258,13 +257,11 @@ void InfoWindow::onCharHook(wxKeyEvent& event) {
         owner_.execute(Command::InfoWindow, CommandSource::Key);
         return;
     }
-#if !defined(__WXOSX__)
-    if (key == KeyChord{.key = 'C', .ctrl = true}) {
+    if (native_policy::infoCopiesOnCtrlC() && key == KeyChord{.key = 'C', .ctrl = true}) {
         const std::vector<StreamInfo>& streams = owner_.streams();
         setClipboardText(infoCopyText(streams.empty() ? nullptr : &streams.front()));
         return;
     }
-#endif
     if (const std::optional<Command> command = commandForKey(key, false)) {
         owner_.execute(*command, CommandSource::Key);
         return;
@@ -281,22 +278,19 @@ void InfoWindow::onClose(wxCloseEvent& event) {
     Destroy();  // the owner is closing
 }
 
-#if defined(__WXMSW__)
-// Windows: skipped after the new min sizes are set, so wx sizes the window from its sizer around
-// the rect the OS suggests; keeping the old top-left could move the window back to the old display
-// and start a stream of WM_DPICHANGED messages.
 void InfoWindow::onDpiChanged(wxDPIChangedEvent& event) {
-    measure();
-    event.Skip();
-}
-#else
-// Not skipped: the window takes its own fitted size, not the size the OS suggests.
-void InfoWindow::onDpiChanged(wxDPIChangedEvent& /*event*/) {
+    if (native_policy::dpiChangeTakesSuggestedRect()) {
+        // Windows: skipped after the new min sizes are set, so wx sizes the window from its sizer
+        // around the rect the OS suggests; keeping the old top-left could move the window back to
+        // the old display and start a stream of WM_DPICHANGED messages.
+        measure();
+        event.Skip();
+        return;
+    }
+    // Not skipped: the window takes its own fitted size, not the size the OS suggests.
     refit();
 }
-#endif
 
-#if defined(__WXGTK__)
 // X11 reports a map asynchronously. When the map notification of a show arrives after a Hide()
 // (Ctrl+I twice in quick succession), wxGTK marks the hidden window shown again and sends
 // wxEVT_SHOW (wxTopLevelWindowGTK::GTKHandleMapped calls wxWindowBase::Show(true), "it is possible
@@ -308,7 +302,6 @@ void InfoWindow::onShow(wxShowEvent& event) {
         Hide();  // wx's state only: the X window is not mapped
     }
 }
-#endif
 
 // §11: a font change fits the window again; the label colours follow the appearance.
 void InfoWindow::onSysColourChanged(wxSysColourChangedEvent& event) {

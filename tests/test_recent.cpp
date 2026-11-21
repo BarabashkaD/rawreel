@@ -11,7 +11,7 @@
 #include "core/drop.h"
 #include "core/recent.h"
 #include "dvv/base/json.h"
-#include "dvv/media/types.h"
+#include "dvv/base/utf8.h"
 #include "temporary_directory.h"
 
 #if !defined(_WIN32)
@@ -174,17 +174,16 @@ TEST_CASE("recent file: the check after a failed open") {
     const TemporaryDirectory directory("rawreel-recent");
     const std::filesystem::path file = directory.path() / "clip.yuv";
     std::ofstream(file, std::ios::binary) << "x";
-    const std::string text = dvv::media::utf8FromPath(file);
+    const std::string text = dvv::pathText(file);
     CHECK(recentFileState(text) == RecentFileState::Readable);
     CHECK(recentFileState(fileUri(file)) == RecentFileState::Readable);
     CHECK(recentFileState(text + "?fmt=v210&size=8x2") ==
           RecentFileState::Readable);  // the path without the query
-    CHECK(recentFileState(dvv::media::utf8FromPath(directory.path() / "gone.yuv")) ==
+    CHECK(recentFileState(dvv::pathText(directory.path() / "gone.yuv")) ==
           RecentFileState::Missing);
-    CHECK(recentFileState(dvv::media::utf8FromPath(directory.path() / "no" / "gone.yuv")) ==
+    CHECK(recentFileState(dvv::pathText(directory.path() / "no" / "gone.yuv")) ==
           RecentFileState::Missing);
-    CHECK(recentFileState(dvv::media::utf8FromPath(directory.path())) ==
-          RecentFileState::NotAccessible);
+    CHECK(recentFileState(dvv::pathText(directory.path())) == RecentFileState::NotAccessible);
     CHECK(recentFileState("synthetic:gradient?fmt=gray&size=16x16") == RecentFileState::NotChecked);
     CHECK(recentFileState("lavfi:testsrc2") == RecentFileState::NotChecked);
 #if !defined(_WIN32)

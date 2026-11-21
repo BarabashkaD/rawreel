@@ -77,14 +77,14 @@ void RecordingSink::show(FrameSet frames) {
     shown.inspected = !inspect || inspect(frames);
     for (std::uint32_t s = 0; s < frames.count && s < frames.views.size(); ++s) {
         const auto& view = frames.views.at(s);
-        if (!view || !*view) {
+        if (!view) {
             shown.indicesMatch = false;
             continue;
         }
         if (s == 0) {
-            shown.origin = view->key().origin;
+            shown.origin = view.key().origin;
         }
-        if (view->key().index != frames.index) {
+        if (view.key().index != frames.index) {
             shown.indicesMatch = false;
         }
     }
@@ -351,7 +351,7 @@ SessionOptions SessionFixture::options() {
             MediaStack stack;
             const dvv::media::Domain host = store->hostDomain();
             stack.viewFor = [host](const dvv::media::FrameDesc& desc) {
-                return dvv::media::planesView(desc, dvv::media::Api::HostPlanes, host);
+                return dvv::media::planesView(desc, dvv::media::BindingKind::HostPlanes, host);
             };
             stack.store = std::move(store);
             return stack;

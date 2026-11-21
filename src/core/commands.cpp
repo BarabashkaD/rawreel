@@ -2,6 +2,9 @@
 
 #include <array>
 #include <format>
+#include <string_view>
+
+#include "core/native_os.h"
 
 namespace rawreel {
 
@@ -18,34 +21,40 @@ constexpr auto ACC = KeyRoute::Accelerator;
 constexpr auto HOOK = KeyRoute::CharHook;
 // macOS dispatches the view keys only as menu accelerators; Windows and Linux also through the char
 // hook (the keys '=', '+' and the keypad need normaliseKey).
-#if defined(__APPLE__)
-constexpr auto VIEW_ROUTE = KeyRoute::Accelerator;
-constexpr std::string_view FIT_LABEL = "Zoom to Fit";
-constexpr std::string_view ACTUAL_LABEL = "Actual Size";
-constexpr std::string_view ZOOM_IN_LABEL = "Zoom In";
-constexpr std::string_view ZOOM_OUT_LABEL = "Zoom Out";
-constexpr std::string_view RESIZE_LABEL = "Resize Window to Actual Size";
-constexpr KeyChord FIT_KEY = {'9', true, false, false};
-constexpr KeyChord ACTUAL_KEY = {'0', true, false, false};
-constexpr KeyChord RESIZE_KEY = {'1', true, false, false};
-#else
-constexpr auto VIEW_ROUTE = KeyRoute::AcceleratorAndCharHook;
-constexpr std::string_view FIT_LABEL = "Fit to window";
-constexpr std::string_view ACTUAL_LABEL = "Actual size";
-constexpr std::string_view ZOOM_IN_LABEL = "Zoom in";
-constexpr std::string_view ZOOM_OUT_LABEL = "Zoom out";
-constexpr std::string_view RESIZE_LABEL = "Resize window to actual size";
-constexpr KeyChord FIT_KEY = {'0', true, false, false};
-constexpr KeyChord ACTUAL_KEY = {'1', true, false, false};
-constexpr KeyChord RESIZE_KEY = {'1', false, false, true};
-#endif
+struct ViewKeys {
+    KeyRoute route;
+    std::string_view fitLabel;
+    std::string_view actualLabel;
+    std::string_view zoomInLabel;
+    std::string_view zoomOutLabel;
+    std::string_view resizeLabel;
+    KeyChord fitKey;
+    KeyChord actualKey;
+    KeyChord resizeKey;
+};
+constexpr ViewKeys MAC_VIEW_KEYS{KeyRoute::Accelerator,
+                                 "Zoom to Fit",
+                                 "Actual Size",
+                                 "Zoom In",
+                                 "Zoom Out",
+                                 "Resize Window to Actual Size",
+                                 {'9', true, false, false},
+                                 {'0', true, false, false},
+                                 {'1', true, false, false}};
+constexpr ViewKeys PC_VIEW_KEYS{KeyRoute::AcceleratorAndCharHook,
+                                "Fit to window",
+                                "Actual size",
+                                "Zoom in",
+                                "Zoom out",
+                                "Resize window to actual size",
+                                {'0', true, false, false},
+                                {'1', true, false, false},
+                                {'1', false, false, true}};
+constexpr const ViewKeys& VIEW_KEYS = NATIVE_OS == Os::MacOs ? MAC_VIEW_KEYS : PC_VIEW_KEYS;
 
 // GTK calls the window Preferences (Log pane and Settings design §5.1).
-#if defined(__linux__)
-constexpr std::string_view SETTINGS_LABEL = "Preferences...";
-#else
-constexpr std::string_view SETTINGS_LABEL = "Settings...";
-#endif
+constexpr std::string_view SETTINGS_LABEL =
+    NATIVE_OS == Os::Linux ? "Preferences..." : "Settings...";
 
 // In Command order (design v2 §4.3, D17, D18); menus in order File, Playback, View, Help (the GUI
 // inserts Edit after File).
@@ -82,16 +91,17 @@ constexpr std::array<CommandInfo, COMMAND_COUNT> TABLE{{
      false},
     {Command::Loop, "loop", "Playback", "Loop", "Turn looping at the end on or off", plainKey('L'),
      HOOK, false},
-    {Command::FitToWindow, "fit_to_window", "View", FIT_LABEL, "Fit the clip to the window",
-     FIT_KEY, VIEW_ROUTE, false},
-    {Command::ActualSize, "actual_size", "View", ACTUAL_LABEL,
-     "Show one clip pixel per screen pixel", ACTUAL_KEY, VIEW_ROUTE, false},
-    {Command::ZoomIn, "zoom_in", "View", ZOOM_IN_LABEL, "Zoom in", chord(Key::Plus, true),
-     VIEW_ROUTE, false},
-    {Command::ZoomOut, "zoom_out", "View", ZOOM_OUT_LABEL, "Zoom out", chord(Key::Minus, true),
-     VIEW_ROUTE, false},
-    {Command::ResizeWindowToActualSize, "resize_window_to_actual_size", "View", RESIZE_LABEL,
-     "Resize the window to the clip at actual size", RESIZE_KEY, VIEW_ROUTE, false},
+    {Command::FitToWindow, "fit_to_window", "View", VIEW_KEYS.fitLabel,
+     "Fit the clip to the window", VIEW_KEYS.fitKey, VIEW_KEYS.route, false},
+    {Command::ActualSize, "actual_size", "View", VIEW_KEYS.actualLabel,
+     "Show one clip pixel per screen pixel", VIEW_KEYS.actualKey, VIEW_KEYS.route, false},
+    {Command::ZoomIn, "zoom_in", "View", VIEW_KEYS.zoomInLabel, "Zoom in", chord(Key::Plus, true),
+     VIEW_KEYS.route, false},
+    {Command::ZoomOut, "zoom_out", "View", VIEW_KEYS.zoomOutLabel, "Zoom out",
+     chord(Key::Minus, true), VIEW_KEYS.route, false},
+    {Command::ResizeWindowToActualSize, "resize_window_to_actual_size", "View",
+     VIEW_KEYS.resizeLabel, "Resize the window to the clip at actual size", VIEW_KEYS.resizeKey,
+     VIEW_KEYS.route, false},
     {Command::Format, "format", "View", "Format...",
      "Choose the pixel format, size, frame rate and colour of the stream", std::nullopt, ACC,
      false},

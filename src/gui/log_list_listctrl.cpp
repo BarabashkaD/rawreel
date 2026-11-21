@@ -15,11 +15,9 @@
 #include <vector>
 
 #include <wx/listctrl.h>
-#if defined(__WXMSW__)
-#include <wx/msw/wrapcctl.h>  // ListView_GetSelectionMark, ListView_SetSelectionMark
-#endif
 
 #include "gui/log_list.h"
+#include "gui/native_controls.h"
 
 namespace rawreel {
 
@@ -53,9 +51,9 @@ private:
 
 class ListCtrlLogList final : public LogList {
 public:
-    ListCtrlLogList(wxWindow* parent, const LogMirror& mirror, bool with_source)
+    ListCtrlLogList(wxWindow* parent, const LogMirror& mirror, dvv::SourceSuffix suffix)
         : LogList(parent, mirror), list_(new VirtualListCtrl(this, mirror)) {
-        for (std::size_t column = 0; column < logListColumns(with_source); ++column) {
+        for (std::size_t column = 0; column < logListColumns(suffix); ++column) {
             const std::string_view title = LOG_LIST_COLUMNS[column];
             list_->AppendColumn(wxString::FromUTF8(title.data(), title.size()), wxLIST_FORMAT_LEFT,
                                 FromDIP(COLUMN_WIDTHS_DIP[column]));
@@ -86,11 +84,7 @@ public:
             if (rows.focus) {
                 list_->SetItemState(static_cast<long>(*rows.focus), FOCUSED, FOCUSED);
             }
-#if defined(__WXMSW__)
-            static_cast<void>(
-                ListView_SetSelectionMark(static_cast<HWND>(list_->GetHWND()),
-                                          rows.anchor ? static_cast<int>(*rows.anchor) : -1));
-#endif
+            setListSelectionMark(*list_, rows.anchor);
             if (rows.tail) {
                 list_->EnsureVisible(count - 1);
             } else if (rows.top) {
@@ -113,12 +107,9 @@ public:
         if (const long focus = list_->GetNextItem(-1, wxLIST_NEXT_ALL, FOCUSED); focus >= 0) {
             place.focus = sequenceAt(static_cast<std::size_t>(focus));
         }
-#if defined(__WXMSW__)
-        if (const int mark = ListView_GetSelectionMark(static_cast<HWND>(list_->GetHWND()));
-            mark >= 0) {
-            place.anchor = sequenceAt(static_cast<std::size_t>(mark));
+        if (const std::optional<std::size_t> mark = listSelectionMark(*list_)) {
+            place.anchor = sequenceAt(*mark);
         }
-#endif
         place.top = sequenceAt(static_cast<std::size_t>(std::max(list_->GetTopItem(), 0L)));
         place.tail = lastRowVisible();
         return place;
@@ -207,8 +198,9 @@ private:
 
 }  // namespace
 
-LogList* createListCtrlLogList(wxWindow* parent, const LogMirror& mirror, bool with_source) {
-    return new ListCtrlLogList(parent, mirror, with_source);
+LogList* createListCtrlLogList(wxWindow* parent, const LogMirror& mirror,
+                               dvv::SourceSuffix suffix) {
+    return new ListCtrlLogList(parent, mirror, suffix);
 }
 
 }  // namespace rawreel

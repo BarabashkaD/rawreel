@@ -11,8 +11,6 @@
 #include <string>
 #include <vector>
 
-#include <vulkan/vulkan_core.h>
-
 #include "core/view.h"
 #include "dvv/base/json.h"
 #include "dvv/media/display.h"
@@ -266,12 +264,4 @@ TEST_CASE("composite reference: skip encode") {
     const std::optional<HostDisplayImage> image = hostImage(1, 1, texels);
     CHECK(compositePixel(compositeConstants(LIGHT, ViewTransform::fit({1, 1}, {1, 1}), true), 0, 0,
                          image) == Rgba8{64, 64, 64, 255});
-}
-
-TEST_CASE("isSrgbFormat") {
-    CHECK(rawreel::isSrgbFormat(VK_FORMAT_B8G8R8A8_SRGB));
-    CHECK(rawreel::isSrgbFormat(VK_FORMAT_R8G8B8A8_SRGB));
-    CHECK(rawreel::isSrgbFormat(VK_FORMAT_A8B8G8R8_SRGB_PACK32));
-    CHECK_FALSE(rawreel::isSrgbFormat(VK_FORMAT_B8G8R8A8_UNORM));
-    CHECK_FALSE(rawreel::isSrgbFormat(VK_FORMAT_R8G8B8A8_UNORM));
 }

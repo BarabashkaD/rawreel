@@ -10,6 +10,7 @@
 #include <system_error>
 
 #include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/media/source_factory.h"
 #include "dvv/media/types.h"
 
@@ -46,7 +47,7 @@ std::filesystem::path uriFolder(std::string_view text) {
     // Absolute against the working directory: a bare name or a relative folder is no start folder
     // the file dialog can use.
     std::error_code ec;
-    std::filesystem::path path = std::filesystem::absolute(dvv::media::pathFromUtf8(uri->path), ec);
+    std::filesystem::path path = std::filesystem::absolute(dvv::pathFromText(uri->path), ec);
     return ec ? std::filesystem::path{} : path.parent_path();
 }
 
