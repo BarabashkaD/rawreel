@@ -11,13 +11,13 @@
 
 #include <cstddef>
 #include <deque>
-#include <functional>
 #include <utility>
 #include <vector>
 
 #include "core/log_mirror.h"
 #include "core/log_store.h"
 #include "dvv/base/log.h"
+#include "dvv/base/move_only_function.h"
 #include "gui/log_list.h"
 
 namespace rawreel {
@@ -49,7 +49,9 @@ public:
     [[nodiscard]] std::vector<LogEntry> allRecords() const;
     [[nodiscard]] bool hasSelection() const;
     // The context menu's Save Selected Lines... (true) and Save Log... (false).
-    void setSaveHandler(std::function<void(bool selected)> save) { save_ = std::move(save); }
+    void setSaveHandler(dvv::MoveOnlyFunction<void(bool selected)> save) {
+        save_ = std::move(save);
+    }
     // Spec §4.3, log level design §2.2: Copy, Select All, a separator, Level ▸ (the five levels as
     // radio items, the active one checked), a separator, Save Selected Lines..., Save Log....
     // The right-click; a selftest calls it too (the menu then goes to the logMenu hook, unshown).
@@ -78,7 +80,7 @@ private:
     std::deque<RefreshRecord> refresh_records_;
     LogList* list_;  // a child window: wx owns it
     dvv::SourceSuffix suffix_;
-    std::function<void(bool selected)> save_;
+    dvv::MoveOnlyFunction<void(bool selected)> save_;
 };
 
 }  // namespace rawreel

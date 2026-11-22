@@ -12,7 +12,6 @@
 #include <string_view>
 
 #include "dvv/base/error.h"
-#include "dvv/components/ffmpeg.h"
 #include "dvv/registry/component_registry.h"
 #include "dvv/registry/module.h"
 

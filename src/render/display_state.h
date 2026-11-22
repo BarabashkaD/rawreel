@@ -4,7 +4,6 @@
 // IDisplaySink) and the composite parameters (GUI). Thread-safe and non-blocking.
 
 #include <cstdint>
-#include <functional>
 #include <mutex>
 
 #include "core/session_types.h"

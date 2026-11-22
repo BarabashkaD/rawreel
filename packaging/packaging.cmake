@@ -276,6 +276,12 @@ if(DVV_BUNDLE_FFMPEG)
         list(APPEND rawreel_library_versions "${library} ${major}.${minor}")
     endforeach()
     list(JOIN rawreel_library_versions ", " FFMPEG_LIBRARY_VERSIONS)
+    # dvv-build's find_package(dvv_ffmpeg_sdk) does not check these two; a broken prefix fails here.
+    if(NOT IS_DIRECTORY "${rawreel_ffmpeg_root}/share/licenses" OR NOT EXISTS
+       "${rawreel_ffmpeg_root}/share/custom_ffmpeg/build-info.txt")
+        message(FATAL_ERROR "rawreel packaging: ${rawreel_ffmpeg_root} has no share/licenses or "
+                            "share/custom_ffmpeg/build-info.txt")
+    endif()
     install(DIRECTORY "${rawreel_ffmpeg_root}/share/licenses/"
             DESTINATION "${rawreel_ffmpeg_texts_dir}/licenses" COMPONENT rawreel
             CONFIGURATIONS Release)

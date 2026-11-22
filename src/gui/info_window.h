@@ -74,7 +74,6 @@ private:
     MainFrame& owner_;
     wxPanel* content_ = nullptr;
     wxSimplebook* book_ = nullptr;
-    std::vector<wxStaticText*> headings_;
     std::vector<wxStaticText*> labels_;
     std::vector<wxStaticText*> values_;
     wxStaticText* no_stream_ = nullptr;

@@ -16,19 +16,16 @@
 // clang-format on
 
 #include <algorithm>
-#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <format>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -37,9 +34,11 @@
 
 #include "core/commands.h"
 #include "core/gui_arguments.h"
+#include "core/number_text.h"
 #include "core/player.h"
 #include "core/timeline.h"
 #include "dvv/base/log.h"
+#include "dvv/base/move_only_function.h"
 #include "gui/gui_platform.h"
 #include "gui/native_controls.h"
 #include "gui/skim_key.h"
@@ -97,12 +96,11 @@ void print(const std::string& line) {
 
 template <class Int>
 bool parseInt(std::string_view text, Int low, Int high, Int& out) {
-    Int value{};
-    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (error != std::errc{} || end != text.data() + text.size() || value < low || value > high) {
+    const std::optional<Int> value = rawreel::parseDecimal<Int>(text);
+    if (!value || *value < low || *value > high) {
         return false;
     }
-    out = value;
+    out = *value;
     return true;
 }
 
@@ -165,7 +163,7 @@ std::optional<int> parseOptions(std::span<const std::string_view> args, LabOptio
 class SimulatedPlayer {
 public:
     SimulatedPlayer(const LabOptions& options,
-                    std::function<void(const rawreel::PlayerStatus&)> notify)
+                    dvv::MoveOnlyFunction<void(const rawreel::PlayerStatus&)> notify)
         : frames_(options.frames),
           seek_delay_ms_(options.seekDelayMs),
           tick_ms_(std::max(1, static_cast<int>(std::lround(1000.0 / options.fps)))),
@@ -260,7 +258,7 @@ private:
     int seek_delay_ms_;
     int tick_ms_;
     rawreel::PlayerStatus status_;
-    std::function<void(const rawreel::PlayerStatus&)> notify_;
+    dvv::MoveOnlyFunction<void(const rawreel::PlayerStatus&)> notify_;
     wxTimer play_timer_;
     wxTimer seek_timer_;
 };
@@ -350,7 +348,7 @@ private:
     // Runs `next` after the next paint of the paint source and two CallAfter hops (the native
     // drawing is done by then), or after the two hops alone where no paint is known to arrive.
     // Fails the report after STAGE_TIMEOUT_MS.
-    void waitThenRun(std::string stage, std::function<void()> next) {
+    void waitThenRun(std::string stage, dvv::MoveOnlyFunction<void()> next) {
         waiting_for_ = std::move(stage);
         next_ = std::move(next);
         deadline_.StartOnce(STAGE_TIMEOUT_MS);
@@ -378,14 +376,14 @@ private:
                     return;
                 }
                 deadline_.Stop();
-                std::function<void()> next = std::move(next_);
+                dvv::MoveOnlyFunction<void()> next = std::move(next_);
                 next_ = nullptr;
                 next();
             });
         });
     }
 
-    void measureStage(const std::string& stage, std::function<void()> then) {
+    void measureStage(const std::string& stage, dvv::MoveOnlyFunction<void()> then) {
         const wxSize client = ToDIP(GetClientSize());
         print(std::format("stage {}: client {}x{} DIP, slider width {} px", stage, client.x,
                           client.y, slider().GetClientSize().x));
@@ -408,7 +406,7 @@ private:
     }
 
     void measureValues(const std::string& stage, std::vector<int> values, std::size_t index,
-                       std::function<void()> then) {
+                       dvv::MoveOnlyFunction<void()> then) {
         if (index == values.size()) {
             const wxSize best = bar_->ToDIP(bar_->GetBestSize());
             print(std::format("best {}x{} DIP", best.x, best.y));
@@ -469,7 +467,7 @@ private:
     std::unique_ptr<SimulatedPlayer> player_;
     wxTimer deadline_;
     std::string waiting_for_;
-    std::function<void()> next_;
+    dvv::MoveOnlyFunction<void()> next_;
     bool armed_ = false;
     bool failed_ = false;
     bool finished_ = false;

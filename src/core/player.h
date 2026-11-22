@@ -17,11 +17,15 @@ namespace rawreel {
 
 using Clock = std::chrono::steady_clock;
 
+// K: requested and not yet answered frames at most (D11). The default of the player, the Session,
+// rawreel-gui's --inflight and rawreel-cli's bench --inflight.
+inline constexpr std::uint32_t DEFAULT_INFLIGHT = 4;
+
 struct PlayerConfig {
     std::optional<std::int64_t> length;  // frames of the shortest stream; nullopt = unbounded
     dvv::media::Rational fps = dvv::media::FALLBACK_FPS;  // stream 1's fps
-    std::uint32_t window = 8;    // W: prefetch indices ahead of the position
-    std::uint32_t inflight = 4;  // K: at most this many requested and not yet answered
+    std::uint32_t window = 8;                   // W: prefetch indices ahead of the position
+    std::uint32_t inflight = DEFAULT_INFLIGHT;  // K
 };
 
 struct PlayerStatus {

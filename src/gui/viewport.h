@@ -5,12 +5,12 @@
 // clang-format on
 
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <optional>
 
 #include "core/view.h"
 #include "dvv/base/error.h"
+#include "dvv/base/move_only_function.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/presenter.h"
 #include "dvv/platform/pixel_size.h"
@@ -51,11 +51,11 @@ public:
     void detachStack();     // stopPresenting() and release the context (frame close, §5.5)
     // Called with the presenter's epoch when it fails with DeviceLost (MainFrame:
     // reportDeviceLost).
-    void setDeviceLostHandler(std::function<void(std::uint64_t)> handler);
+    void setDeviceLostHandler(dvv::MoveOnlyFunction<void(std::uint64_t)> handler);
     // D25: called once with the failure when the presenter fails with an error other than
     // DeviceLost, or when renderer or presenter creation fails with such an error. Nothing is
     // recreated; MainFrame::onPresenterFailed logs it (Task 9: infobar with Reopen).
-    void setFailureHandler(std::function<void(const dvv::Error&)> handler);
+    void setFailureHandler(dvv::MoveOnlyFunction<void(const dvv::Error&)> handler);
     void requestFrame();  // presenter->requestFrame() when there is one
     // The resize entry: with a presenter, syncNativeWindow() and then
     // presenter->resize(physicalClientSize()). onSize calls it, and on macOS so does the child
@@ -111,7 +111,7 @@ public:
     // Backing pixels per DIP: GetDPIScaleFactor() on Windows, contentScale() elsewhere.
     [[nodiscard]] double backingPerDip() const;
     // Called after setView() changed the request and at the end of every resizePresenter().
-    void setViewChangedHandler(std::function<void()> handler);
+    void setViewChangedHandler(dvv::MoveOnlyFunction<void()> handler);
     // Test hook (selftest): a left- or middle-button drag is panning the picture.
     [[nodiscard]] bool draggingForTest() const noexcept { return drag_.has_value(); }
 
@@ -160,14 +160,14 @@ private:
     std::shared_ptr<dvv::gpu::ExecutionContext> context_;
     std::uint64_t epoch_ = 0;
     std::uint64_t serial_ = 0;  // +1 for every presenter created
-    // wxGTK: the presenter's own X connection (ViewportWindow); released after the presenter.
-    std::shared_ptr<void> connection_;
+    // What the window lends the presenter (ViewportWindow::lent); released after the presenter.
+    std::shared_ptr<void> lent_;
     // Destroyed after the presenter: the presenter's frame provider uses the renderer.
     std::unique_ptr<ViewportRenderer> renderer_;
     std::unique_ptr<dvv::gpu::Presenter> presenter_;
-    std::function<void(std::uint64_t)> device_lost_;
-    std::function<void(const dvv::Error&)> failure_;
-    std::function<void()> view_changed_;  // setViewChangedHandler()
+    dvv::MoveOnlyFunction<void(std::uint64_t)> device_lost_;
+    dvv::MoveOnlyFunction<void(const dvv::Error&)> failure_;
+    dvv::MoveOnlyFunction<void()> view_changed_;  // setViewChangedHandler()
     std::optional<dvv::Error> last_failure_;
     ViewRequest view_{};                // view()
     dvv::platform::PixelSize image_{};  // imageSize()

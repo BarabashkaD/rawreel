@@ -38,10 +38,6 @@ struct SizePreset {
 
 // The frame-rate combo's entries: 23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 100, 119.88, 120.
 [[nodiscard]] std::span<const std::string_view> frameRatePresets() noexcept;
-// The index of the entry whose parseFpsText() equals `fps`, or nullopt.
-[[nodiscard]] std::optional<std::size_t> findFrameRatePreset(dvv::media::Rational fps);
-// "= 29.970 fps (30000/1001)", "= 25 fps" for an integer rate, "" for nullopt.
-[[nodiscard]] std::string frameRateValueLabel(std::optional<dvv::media::Rational> fps);
 
 // The colour model of a catalogue name or of an "@<path>" JSON (only its "model" key is read:
 // "gray", "yuv", "rgb"); Yuv for an unknown name or a file that cannot be read.
@@ -57,8 +53,6 @@ struct SizePreset {
 [[nodiscard]] std::string_view rangeLabel(dvv::media::ColourRange range) noexcept;
 [[nodiscard]] std::string_view transferLabel(dvv::media::TransferFn transfer) noexcept;
 [[nodiscard]] std::string_view primariesLabel(dvv::media::Primaries primaries) noexcept;
-// "Not used (RGB format)", "Not used (gray format)"; "" for Yuv.
-[[nodiscard]] std::string_view matrixNotUsedLabel(dvv::media::ColourModel model) noexcept;
 
 // The Colour list (D5R §4.4): the first entry for a base whose file colour matches no standard.
 inline constexpr std::string_view NO_STANDARD_LABEL = "From file (no standard)";

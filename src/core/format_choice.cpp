@@ -14,6 +14,7 @@
 
 #include "core/format_presets.h"
 #include "dvv/base/json.h"
+#include "dvv/base/paths.h"
 #include "dvv/base/uri.h"
 #include "dvv/media/clip_json.h"
 #include "dvv/media/colour_preset.h"
@@ -72,10 +73,7 @@ std::optional<dvv::media::Rational> ntscRate(dvv::media::Rational rate) {
 // The fallback of the prefill: the first "WxH" token of the file name, and a catalogue format
 // right behind it.
 void applyFirstSizeToken(std::string_view path, FormatChoice& choice) {
-    std::string_view name = path;
-    if (const std::size_t slash = name.find_last_of("/\\"); slash != std::string_view::npos) {
-        name.remove_prefix(slash + 1);
-    }
+    std::string_view name = dvv::baseNameOf(path);
     name = name.substr(0, name.rfind('.'));  // the stem: up to the last '.', or the whole name
     bool sized = false;
     for (std::size_t begin = 0; begin <= name.size();) {
@@ -184,13 +182,6 @@ std::optional<std::string> fileKey(std::string_view uri) {
 
 ColourModel streamModel(const StreamInfo& stream) {
     return dvv::media::formatDesc(stream.info.desc.format).model;
-}
-
-std::string fileNameOf(std::string_view path) {
-    if (const std::size_t slash = path.find_last_of("/\\"); slash != std::string_view::npos) {
-        path.remove_prefix(slash + 1);
-    }
-    return std::string(path);
 }
 
 // The colour group of a clip description file; nullopt when it cannot be read or has none.
@@ -407,7 +398,7 @@ ColourBase colourBaseFromUri(std::string_view uri, std::string_view format, std:
     if (clip && clip->preset) {
         base.standard = clip->preset;
         base.origin = ColourOrigin::Clip;
-        base.clipName = fileNameOf(clip_path);
+        base.clipName = std::string(dvv::baseNameOf(clip_path));
         base.values = withStandard(base.values, *clip->preset, model);
         if (clip->range != ColourRange::Unspecified) {
             base.values.range = clip->range;
@@ -449,7 +440,7 @@ ColourBase streamColourBase(const StreamInfo& stream) {
             stream.info.clipFile.empty() ? std::nullopt : clipColour(stream.info.clipFile);
         if (clip && clip->preset) {
             base.origin = ColourOrigin::Clip;
-            base.clipName = fileNameOf(stream.info.clipFile);
+            base.clipName = std::string(dvv::baseNameOf(stream.info.clipFile));
         } else {
             base.origin = ColourOrigin::FileName;
         }

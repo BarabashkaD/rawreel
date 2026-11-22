@@ -97,6 +97,7 @@ private:
     std::vector<ShownFrame> history_;
     std::optional<FrameSet> latest_;
     std::uint64_t clears_ = 0;
+    // std::function: show() copies it under the lock and calls the copy outside it.
     std::function<bool(const FrameSet&)> inspect_;
 };
 
@@ -142,6 +143,7 @@ private:
     std::condition_variable changed_;
     std::vector<SessionEvent> events_;
     std::weak_ptr<dvv::gpu::ExecutionContext> context_;
+    // std::function: error() copies it under the lock and calls the copy outside it.
     std::function<SessionStatus()> probe_;
 };
 
@@ -157,7 +159,7 @@ public:
     // The production clock and timer: `clock` and `timer` stay null, tick() must not be used.
     explicit SessionFixture(RealTime);
     // As RealTime, with `configure` applied to options() before Session::create.
-    SessionFixture(RealTime, std::function<void(SessionOptions&)> configure);
+    SessionFixture(RealTime, dvv::MoveOnlyFunction<void(SessionOptions&)> configure);
     // SessionOptions::fileReads = file_reads; fake clock and timer.
     explicit SessionFixture(dvv::platform::FileReadMode file_reads);
     SessionFixture(const SessionFixture&) = delete;
@@ -213,7 +215,7 @@ public:
 
 private:
     void start(bool real_time);
-    std::function<void(SessionOptions&)> configure_;
+    dvv::MoveOnlyFunction<void(SessionOptions&)> configure_;
     void teardown();  // the destructor's body
 };
 

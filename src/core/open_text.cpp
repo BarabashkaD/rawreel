@@ -9,6 +9,7 @@
 #include <string_view>
 #include <system_error>
 
+#include "dvv/base/ascii.h"
 #include "dvv/base/uri.h"
 #include "dvv/base/utf8.h"
 #include "dvv/media/source_factory.h"
@@ -29,12 +30,8 @@ constexpr std::array<std::string_view, 31> CONTAINER_EXTENSIONS{
     "m2ts", "mts", "flv", "asf", "wmv", "mpg",  "mpeg", "vob",  "3gp",  "3g2", "ogv",
     "ogg",  "ivf", "dv",  "f4v", "wtv", "h264", "264",  "hevc", "265"};
 
-[[nodiscard]] constexpr bool isAlpha(char c) noexcept {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
-}
-
 [[nodiscard]] constexpr bool isSchemeChar(char c) noexcept {
-    return isAlpha(c) || (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.';
+    return dvv::isAsciiLetter(c) || (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.';
 }
 
 }  // namespace
@@ -77,7 +74,7 @@ std::string withoutLineBreaks(std::string_view text) {
 
 bool hasScheme(std::string_view text) noexcept {
     const std::size_t colon = text.find(':');
-    if (colon == std::string_view::npos || colon < 2 || !isAlpha(text[0])) {
+    if (colon == std::string_view::npos || colon < 2 || !dvv::isAsciiLetter(text[0])) {
         return false;
     }
     for (const char c : text.substr(0, colon)) {
@@ -105,7 +102,7 @@ bool isContainerName(std::string_view path) {
     }
     std::string extension;
     for (const char c : path.substr(dot + 1)) {
-        extension += (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+        extension += dvv::asciiLower(c);
     }
     return std::ranges::find(CONTAINER_EXTENSIONS, extension) != CONTAINER_EXTENSIONS.end();
 }

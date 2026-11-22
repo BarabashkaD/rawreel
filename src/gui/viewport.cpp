@@ -16,7 +16,7 @@
 
 #include "dvv/base/log.h"
 #include "gui/native_policy.h"
-#include "gui/native_window.h"
+#include "gui/viewport_window.h"
 
 namespace rawreel {
 
@@ -98,8 +98,8 @@ void Viewport::startPresenting() {
     if (!ready_ || !context_ || presenter_) {
         return;
     }
-    // On failure paths below, `window` (and its connection) is released after the failed creation.
-    dvv::Result<ViewportWindow> window = nativeWindowOf(*this);
+    // On failure paths below, `window` (and what it lends) is released after the failed creation.
+    dvv::Result<ViewportWindow> window = viewportWindowOf(*this);
     if (!window) {
         reportFailure(window.error());
         return;
@@ -140,7 +140,7 @@ void Viewport::startPresenting() {
     }
     presenter_ = std::move(*presenter);
     presenter_visible_ = visible;
-    connection_ = std::move(window->connection);
+    lent_ = std::move(window->lent);
     last_failure_.reset();
     // Safe with a raw pointer: stopPresenting() clears the callback before the presenter dies,
     // and after setOnChanged({}) returns no callback runs (DisplayState binding rule).
@@ -168,9 +168,9 @@ void Viewport::stopPresenting() {
         {});  // first (M1b order): no callback can reach the presenter after this
     // reset() clears the member before ~Presenter runs, so a handler of this window that runs
     // while the presenter waits (Windows dispatches cross-thread sent messages) sees no presenter.
-    presenter_.reset();   // joins the presenter thread (about one frame)
-    renderer_.reset();    // after the presenter: its provider used the renderer
-    connection_.reset();  // after the presenter's surface and swapchain; the window still exists
+    presenter_.reset();  // joins the presenter thread (about one frame)
+    renderer_.reset();   // after the presenter: its provider used the renderer
+    lent_.reset();       // after the presenter's surface and swapchain; the window still exists
 }
 
 void Viewport::detachStack() {
@@ -178,11 +178,11 @@ void Viewport::detachStack() {
     context_.reset();
 }
 
-void Viewport::setDeviceLostHandler(std::function<void(std::uint64_t)> handler) {
+void Viewport::setDeviceLostHandler(dvv::MoveOnlyFunction<void(std::uint64_t)> handler) {
     device_lost_ = std::move(handler);
 }
 
-void Viewport::setFailureHandler(std::function<void(const dvv::Error&)> handler) {
+void Viewport::setFailureHandler(dvv::MoveOnlyFunction<void(const dvv::Error&)> handler) {
     failure_ = std::move(handler);
 }
 
@@ -465,7 +465,7 @@ double Viewport::backingPerDip() const {
 #endif
 }
 
-void Viewport::setViewChangedHandler(std::function<void()> handler) {
+void Viewport::setViewChangedHandler(dvv::MoveOnlyFunction<void()> handler) {
     view_changed_ = std::move(handler);
 }
 

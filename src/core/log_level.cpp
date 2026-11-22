@@ -1,9 +1,10 @@
 #include "core/log_level.h"
 
 #include <array>
-#include <cctype>
 #include <format>
 #include <utility>
+
+#include "dvv/base/ascii.h"
 
 namespace rawreel {
 namespace {
@@ -21,18 +22,6 @@ constexpr std::array<LevelNames, 5> LEVELS{{
     {.level = dvv::LogLevel::Debug, .shown = "Debug", .config = "debug"},
     {.level = dvv::LogLevel::Trace, .shown = "Trace", .config = "trace"},
 }};
-
-bool equalsIgnoringCase(std::string_view text, std::string_view lower) noexcept {
-    if (text.size() != lower.size()) {
-        return false;
-    }
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(text[i])) != lower[i]) {
-            return false;
-        }
-    }
-    return true;
-}
 
 std::string_view sourceText(LevelSource source) noexcept {
     switch (source) {
@@ -66,7 +55,7 @@ std::string_view levelConfigValue(dvv::LogLevel level) noexcept {
 
 std::optional<dvv::LogLevel> parseLevel(std::string_view text) noexcept {
     for (const LevelNames& names : LEVELS) {
-        if (equalsIgnoringCase(text, names.config)) {
+        if (dvv::equalsIgnoreAscii(text, names.config)) {
             return names.level;
         }
     }

@@ -10,8 +10,6 @@
 #include <cstdio>
 #include <filesystem>
 #include <format>
-#include <fstream>
-#include <ios>
 #include <memory>
 #include <optional>
 #include <random>
@@ -26,6 +24,7 @@
 
 #include "core/config.h"
 #include "core/config_writer.h"
+#include "core/exit_code.h"
 #include "core/log_file_switch.h"
 #include "core/log_level.h"
 #include "core/log_store.h"
@@ -42,7 +41,8 @@
 #include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/gpu_info.h"
 #include "dvv/platform/crash_handler.h"
-#include "dvv/platform/native_window.h"
+#include "dvv/platform/file_writer.h"
+#include "dvv/platform/window_handle.h"
 #include "gui/main_frame.h"
 #include "gui/native_policy.h"
 #include "gui/selftest.h"
@@ -365,8 +365,8 @@ bool App::startLogAndConfig() {
         for (const std::string& warning : history.warnings) {
             DVV_LOG_WARN("config '{}': {}", shown, warning);
         }
-        DVV_LOG_INFO("config '{}': gui.recentSize {}, gui.recent {} entries", shown, history.size,
-                     history.entries.size());
+        DVV_LOG_INFO("config '{}': {} {}, {} {} entries", shown, config_key::GUI_RECENT_SIZE,
+                     history.size, config_key::GUI_RECENT, history.entries.size());
         recent_ = RecentList(history.size, std::move(history.entries));
     }
     // The claim before the first log file: only the settings owner appends to the newest log
@@ -476,17 +476,11 @@ dvv::Result<std::filesystem::path> App::makeSelftestConfig(const std::filesystem
     std::filesystem::path file = folder / CONFIG_FILE_NAME;
     if (!seed.empty()) {
         DVV_TRY(const std::string text, readConfigText(seed));
-        std::ofstream out(file, std::ios::binary | std::ios::trunc);
-        out << text;
-        out.close();
-        if (!out) {
-            return dvv::makeError(
-                dvv::Errc::Io, std::format("{} could not be written", dvv::pathDisplayText(file)));
-        }
+        DVV_TRY_VOID(dvv::platform::replaceFile(file, std::as_bytes(std::span(text))));
     }
     const std::array<ConfigValue, 2> values{{
-        {.key = "log.file.folder", .value = dvv::pathText(logs)},
-        {.key = "log.system.enabled", .value = false},
+        {.key = config_key::LOG_FILE_FOLDER, .value = dvv::pathText(logs)},
+        {.key = config_key::LOG_SYSTEM_ENABLED, .value = false},
     }};
     DVV_TRY_VOID(saveConfigValues(file, values));
     return file;
@@ -634,9 +628,8 @@ void App::stopLogFile() {
     log_folder_.clear();
 }
 
-void App::setLogFileConfig(bool enabled, std::filesystem::path folder) {
-    config_.log.file.enabled = enabled;
-    config_.log.file.folder = std::move(folder);
+void App::setLogFileConfig(LogFileConfig file) {
+    config_.log.file = std::move(file);
 }
 
 void App::setLevelConfig(dvv::LogLevel level) {

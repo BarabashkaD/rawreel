@@ -98,27 +98,6 @@ std::span<const std::string_view> frameRatePresets() noexcept {
     return FRAME_RATES;
 }
 
-std::optional<std::size_t> findFrameRatePreset(dvv::media::Rational fps) {
-    for (std::size_t i = 0; i < FRAME_RATES.size(); ++i) {
-        if (parseFpsText(FRAME_RATES.at(i)) == fps) {
-            return i;
-        }
-    }
-    return std::nullopt;
-}
-
-std::string frameRateValueLabel(std::optional<dvv::media::Rational> fps) {
-    if (!fps || fps->den <= 0) {
-        return {};
-    }
-    if (fps->den == 1) {
-        return std::format("= {} fps", fps->num);
-    }
-    return std::format("= {:.3f} fps ({}/{})",
-                       static_cast<double>(fps->num) / static_cast<double>(fps->den), fps->num,
-                       fps->den);
-}
-
 ColourModel formatModel(std::string_view format) {
     if (format.starts_with('@')) {
         return jsonModel(format.substr(1)).value_or(ColourModel::Yuv);
@@ -184,15 +163,6 @@ std::string_view primariesLabel(Primaries primaries) noexcept {
         case Primaries::Bt601_625: return "BT.601-625";
         case Primaries::Bt709: return "BT.709";
         case Primaries::Bt2020: return "BT.2020";
-    }
-    return "";
-}
-
-std::string_view matrixNotUsedLabel(ColourModel model) noexcept {
-    switch (model) {
-        case ColourModel::Rgb: return "Not used (RGB format)";
-        case ColourModel::Gray: return "Not used (gray format)";
-        case ColourModel::Yuv: return "";
     }
     return "";
 }

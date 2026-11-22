@@ -2,15 +2,15 @@
 
 #include <algorithm>
 #include <array>
-#include <charconv>
 #include <cstddef>
 #include <format>
-#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 
+#include "core/exit_code.h"
 #include "core/native_os.h"
+#include "core/number_text.h"
 #include "dvv/base/environment.h"
 
 namespace rawreel {
@@ -27,18 +27,6 @@ constexpr std::array<std::pair<std::string_view, Scenario>, 5> SCENARIOS{{
 
 constexpr std::uint32_t MAX_INFLIGHT = 64;
 constexpr std::uint32_t MAX_DEBUG_SEEK_DELAY = 60000;
-
-// A decimal number without sign, spaces or trailing characters that fits in 32 bits.
-std::optional<std::uint32_t> parseNumber(std::string_view text) {
-    std::uint32_t value = 0;
-    const char* const first = std::to_address(text.begin());
-    const char* const end = std::to_address(text.end());
-    const auto [ptr, ec] = std::from_chars(first, end, value);
-    if (text.empty() || ec != std::errc{} || ptr != end) {
-        return std::nullopt;
-    }
-    return value;
-}
 
 std::optional<Appearance> parseAppearance(std::string_view text) {
     if (text == "system") {
@@ -139,14 +127,14 @@ dvv::Result<GuiArguments> parseGuiArguments(std::span<const std::string_view> ar
             }
             arguments.appearance = *appearance;
         } else if (arg == "--gpu") {
-            const std::optional<std::uint32_t> gpu = parseNumber(value);
+            const std::optional<std::uint32_t> gpu = parseDecimal<std::uint32_t>(value);
             if (!gpu) {
                 return dvv::makeError(dvv::Errc::Format,
                                       std::format("bad number '{}' for --gpu", value));
             }
             arguments.gpu = gpu;
         } else if (arg == "--debug-seek-delay") {
-            const std::optional<std::uint32_t> delay = parseNumber(value);
+            const std::optional<std::uint32_t> delay = parseDecimal<std::uint32_t>(value);
             if (!delay || *delay < 1 || *delay > MAX_DEBUG_SEEK_DELAY) {
                 return dvv::makeError(
                     dvv::Errc::Format,
@@ -166,7 +154,7 @@ dvv::Result<GuiArguments> parseGuiArguments(std::span<const std::string_view> ar
             }
             arguments.selftest = *scenario;
         } else {
-            const std::optional<std::uint32_t> inflight = parseNumber(value);
+            const std::optional<std::uint32_t> inflight = parseDecimal<std::uint32_t>(value);
             if (!inflight || *inflight < 1 || *inflight > MAX_INFLIGHT) {
                 return dvv::makeError(
                     dvv::Errc::Format,
@@ -197,6 +185,29 @@ std::optional<std::string> x11DisplayProblem(const std::optional<std::string>& d
                            *display);
     }
     return std::nullopt;
+}
+
+std::string guiUsageText() {
+    return std::format(
+        R"(Usage: rawreel-gui [--appearance system|light|dark] [--gpu N] [--selftest SCENARIO]
+                   [--inflight K] [--config FILE] [--debug-seek-delay MS]
+                   [--debug-transport] [URI]
+
+  --appearance  light or dark windows, or the system setting (default)
+  --gpu N       use GPU N (the index dvv-gpu-info lists) instead of the best one
+  --selftest S  run a scripted check and exit: smoke, player, lost, perf or about
+  --inflight K  frames in flight for --selftest perf (default {})
+  --config F    read config file F instead of the default rawreel.json
+  --debug-seek-delay MS  developer: every frame takes MS ms longer to load
+  --debug-transport  developer: log the transport bar's notifications
+  --help        print this text
+  URI           a source to open (a path, file:..., synthetic:...)
+
+Exit codes: 0 success; 1 bad arguments, or the GUI could not start; 4 GPU error (no Vulkan
+loader, no usable device, presenter failure); 6 a --selftest check failed; 77 (--selftest only)
+no usable device or no display, unless DVV_REQUIRE_GPU=1 (then 4).
+)",
+        DEFAULT_INFLIGHT);
 }
 
 }  // namespace rawreel

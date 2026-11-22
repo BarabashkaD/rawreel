@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/config.h"
 #include "core/drop.h"
 #include "core/open_text.h"
 #include "dvv/base/error.h"
@@ -291,9 +292,10 @@ RecentConfig parseRecent(std::string_view text) {
         if (const std::optional<std::size_t> valid = sizeOf(*size)) {
             result.size = *valid;
         } else {
-            result.warnings.push_back(std::format(
-                "gui.recentSize: expected a whole number from {} to {}, not {}; using {}",
-                RECENT_MIN_SIZE, RECENT_MAX_SIZE, dvv::json::dump(*size), RECENT_DEFAULT_SIZE));
+            result.warnings.push_back(
+                std::format("{}: expected a whole number from {} to {}, not {}; using {}",
+                            config_key::GUI_RECENT_SIZE, RECENT_MIN_SIZE, RECENT_MAX_SIZE,
+                            dvv::json::dump(*size), RECENT_DEFAULT_SIZE));
         }
     }
     const auto recent = gui->find("recent");
@@ -302,8 +304,8 @@ RecentConfig parseRecent(std::string_view text) {
     }
     if (!recent->is_array()) {
         result.warnings.push_back(
-            std::format("gui.recent: expected an array of strings, not {}; the list is empty",
-                        dvv::json::dump(*recent)));
+            std::format("{}: expected an array of strings, not {}; the list is empty",
+                        config_key::GUI_RECENT, dvv::json::dump(*recent)));
         return result;
     }
     std::size_t not_strings = 0;
@@ -347,12 +349,12 @@ RecentConfig parseRecent(std::string_view text) {
         for (const std::string& part : parts) {
             joined += joined.empty() ? part : ", " + part;
         }
-        result.warnings.push_back("gui.recent: ignored " + joined);
+        result.warnings.push_back(std::string(config_key::GUI_RECENT) + ": ignored " + joined);
     }
     if (kept.size() > result.size) {
-        result.warnings.push_back(
-            std::format("gui.recent: {} entries, more than gui.recentSize {}; the first {} kept",
-                        kept.size(), result.size, result.size));
+        result.warnings.push_back(std::format(
+            "{}: {} entries, more than {} {}; the first {} kept", config_key::GUI_RECENT,
+            kept.size(), config_key::GUI_RECENT_SIZE, result.size, result.size));
         kept.resize(result.size);
     }
     result.entries = std::move(kept);

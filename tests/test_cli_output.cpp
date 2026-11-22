@@ -1,9 +1,11 @@
 #include <doctest/doctest.h>
 
+#include <array>
 #include <optional>
 #include <string>
 
 #include "cli/output.h"
+#include "core/exit_code.h"
 #include "dvv/base/error.h"
 #include "dvv/base/json.h"
 #include "dvv/media/display.h"
@@ -38,6 +40,22 @@ dvv::media::SourceInfo v210Info() {
 
 }  // namespace
 
+TEST_CASE("exit codes: one table") {
+    static_assert(rawreel::exit_code::SUCCESS == 0);
+    static_assert(rawreel::exit_code::BAD_ARGUMENTS == 1);
+    static_assert(rawreel::exit_code::INPUT_ERROR == 2);
+    static_assert(rawreel::exit_code::UNSUPPORTED == 3);
+    static_assert(rawreel::exit_code::GPU_ERROR == 4);
+    static_assert(rawreel::exit_code::SELFTEST_FAILED == 6);
+    static_assert(rawreel::exit_code::SKIPPED == 77);
+    const std::array<int, 7> codes{
+        rawreel::exit_code::SUCCESS,     rawreel::exit_code::BAD_ARGUMENTS,
+        rawreel::exit_code::INPUT_ERROR, rawreel::exit_code::UNSUPPORTED,
+        rawreel::exit_code::GPU_ERROR,   rawreel::exit_code::SELFTEST_FAILED,
+        rawreel::exit_code::SKIPPED};
+    CHECK(codes == std::array<int, 7>{0, 1, 2, 3, 4, 6, 77});
+}
+
 TEST_CASE("exit codes: table") {
     CHECK(exitCodeFor(errorOf(Errc::Io), false) == 2);
     CHECK(exitCodeFor(errorOf(Errc::Io), true) == 2);
@@ -49,8 +67,6 @@ TEST_CASE("exit codes: table") {
     CHECK(exitCodeFor(errorOf(Errc::OutOfMemory), true) == 4);
     CHECK(exitCodeFor(errorOf(Errc::DeviceLost), false) == 4);
     CHECK(exitCodeFor(errorOf(Errc::DeviceLost), true) == 4);
-    CHECK(exitCodeFor(errorOf(Errc::ShaderCompile), false) == 4);
-    CHECK(exitCodeFor(errorOf(Errc::ShaderCompile), true) == 4);
     CHECK(exitCodeFor(errorOf(Errc::Internal), false) == 2);
     CHECK(exitCodeFor(errorOf(Errc::Internal), true) == 4);
     CHECK(exitCodeFor(errorOf(Errc::Cancelled), false) == 2);

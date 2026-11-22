@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -10,7 +11,11 @@
 #include <utility>
 #include <vector>
 
+#include "core/exit_code.h"
 #include "core/gui_arguments.h"
+#include "core/number_text.h"
+#include "core/player.h"
+#include "core/session.h"
 #include "dvv/base/environment.h"
 #include "dvv/base/error.h"
 
@@ -303,20 +308,20 @@ TEST_CASE("gui arguments: --debug-transport") {
 }
 
 TEST_CASE("gui arguments: the usage text") {
-    const std::string_view usage = rawreel::USAGE;
+    const std::string usage = rawreel::guiUsageText();
     REQUIRE_FALSE(usage.empty());
     CHECK(usage.starts_with("Usage: rawreel-gui"));
     CHECK(usage.back() == '\n');
-    CHECK(usage.find("0 success") != std::string_view::npos);
-    CHECK(usage.find("1 bad arguments") != std::string_view::npos);
-    CHECK(usage.find("4 GPU error") != std::string_view::npos);
-    CHECK(usage.find("6 a --selftest check failed") != std::string_view::npos);
-    CHECK(usage.find("77") != std::string_view::npos);
+    CHECK(usage.find("0 success") != std::string::npos);
+    CHECK(usage.find("1 bad arguments") != std::string::npos);
+    CHECK(usage.find("4 GPU error") != std::string::npos);
+    CHECK(usage.find("6 a --selftest check failed") != std::string::npos);
+    CHECK(usage.find("77") != std::string::npos);
     CHECK(usage.find(
               "  --debug-seek-delay MS  developer: every frame takes MS ms longer to load\n") !=
-          std::string_view::npos);
+          std::string::npos);
     CHECK(usage.find("  --debug-transport  developer: log the transport bar's notifications\n") !=
-          std::string_view::npos);
+          std::string::npos);
 }
 
 TEST_CASE("gui arguments: --config") {
@@ -343,4 +348,26 @@ TEST_CASE("gui arguments: the X11 display check") {
     const std::optional<std::string> closed =
         rawreel::x11DisplayProblem(std::string(":987"), false);
     CHECK(closed == std::string("cannot open X display ':987'; rawreel-gui needs X11 or XWayland"));
+}
+
+TEST_CASE("parseDecimal: the whole text") {
+    using rawreel::parseDecimal;
+    CHECK(parseDecimal<std::uint32_t>("42") == 42);
+    CHECK_FALSE(parseDecimal<std::uint32_t>("").has_value());
+    CHECK_FALSE(parseDecimal<std::uint32_t>("4x").has_value());
+    CHECK_FALSE(parseDecimal<std::uint32_t>(" 4").has_value());
+    CHECK_FALSE(parseDecimal<std::uint32_t>("+4").has_value());
+    CHECK_FALSE(parseDecimal<std::uint32_t>("-4").has_value());
+    CHECK_FALSE(parseDecimal<std::uint32_t>("4294967296").has_value());
+    CHECK(parseDecimal<std::int64_t>("-4") == -4);
+    CHECK_FALSE(parseDecimal<std::int64_t>("9223372036854775808").has_value());
+    CHECK(parseDecimal<std::int64_t>("-9223372036854775808") ==
+          std::numeric_limits<std::int64_t>::min());
+}
+
+TEST_CASE("inflight: one default") {
+    CHECK(rawreel::PlayerConfig{}.inflight == rawreel::DEFAULT_INFLIGHT);
+    CHECK(rawreel::SessionOptions{}.inflight == rawreel::DEFAULT_INFLIGHT);
+    CHECK(rawreel::GuiArguments{}.inflight == rawreel::DEFAULT_INFLIGHT);
+    CHECK(rawreel::guiUsageText().find("(default 4)") != std::string::npos);
 }

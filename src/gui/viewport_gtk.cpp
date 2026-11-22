@@ -9,8 +9,8 @@
 #include <utility>
 
 #include "dvv/base/error.h"
-#include "dvv/platform/native_window.h"
-#include "gui/native_window.h"
+#include "dvv/platform/window_handle_xlib.h"
+#include "gui/viewport_window.h"
 
 // Last: Xlib's macros (None, Bool, Status, True, False) stay out of the headers above.
 #include <X11/Xlib.h>
@@ -36,7 +36,7 @@ void closeConnection(void* display) noexcept {
 
 }  // namespace
 
-dvv::Result<ViewportWindow> nativeWindowOf(wxWindow& window) {
+dvv::Result<ViewportWindow> viewportWindowOf(wxWindow& window) {
     auto* const widget = static_cast<GtkWidget*>(window.GetHandle());
     if (widget == nullptr) {
         return failure("the window has no GTK widget");
@@ -68,10 +68,9 @@ dvv::Result<ViewportWindow> nativeWindowOf(wxWindow& window) {
         return failure("cannot open a second X connection to GTK's display for the presenter");
     }
     std::shared_ptr<void> connection(own, closeConnection);
-    return ViewportWindow{
-        .window =
-            dvv::platform::XlibWindow{.display = own, .window = gdk_x11_window_get_xid(gdk_window)},
-        .connection = std::move(connection)};
+    return ViewportWindow{.window = dvv::platform::windowHandleOf(dvv::platform::XlibWindow{
+                              .display = own, .window = gdk_x11_window_get_xid(gdk_window)}),
+                          .lent = std::move(connection)};
 }
 
 void syncNativeWindow(wxWindow& window) {

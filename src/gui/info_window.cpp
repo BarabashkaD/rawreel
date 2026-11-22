@@ -76,7 +76,6 @@ InfoWindow::InfoWindow(MainFrame& owner)
         auto* const heading =
             new wxStaticText(rows_page, wxID_ANY, group == 0 ? "Picture" : "Colour");
         heading->SetFont(heading->GetFont().Bold());
-        headings_.push_back(heading);
         rows_sizer->Add(heading);
         rows_sizer->AddSpacer(gap);
         auto* const grid = new wxFlexGridSizer(2, gap, FromDIP(COLUMN_GAP_DIP));

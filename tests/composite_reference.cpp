@@ -1,4 +1,4 @@
-#include "render/composite_reference.h"
+#include "composite_reference.h"
 
 #include <algorithm>
 #include <cmath>
@@ -78,20 +78,6 @@ std::uint8_t unorm8(float x) {
 }
 
 }  // namespace
-
-CompositeConstants compositeConstants(const CompositeParams& params, const ViewTransform& view,
-                                      bool skip_encode) {
-    const bool drawn = view.zoom() > 0.0;
-    return CompositeConstants{
-        .viewportW = view.viewport().width,
-        .viewportH = view.viewport().height,
-        .imageW = drawn ? view.image().width : 0,
-        .imageH = drawn ? view.image().height : 0,
-        .zoom = static_cast<float>(view.zoom()),
-        .originX = static_cast<float>(view.origin().x),
-        .originY = static_cast<float>(view.origin().y),
-        .flags = (params.dark ? COMPOSITE_DARK : 0U) | (skip_encode ? COMPOSITE_SKIP_ENCODE : 0U)};
-}
 
 std::array<std::uint8_t, 4> compositePixel(const CompositeConstants& k, std::uint32_t px,
                                            std::uint32_t py,

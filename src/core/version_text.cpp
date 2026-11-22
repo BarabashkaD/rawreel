@@ -1,7 +1,6 @@
 #include "core/version_text.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cstddef>
 #include <format>
 #include <string>
@@ -9,6 +8,7 @@
 #include <utility>
 
 #include "core/startup.h"
+#include "dvv/base/ascii.h"
 
 namespace rawreel {
 
@@ -160,9 +160,8 @@ dvv::json::Value versionJson(const VersionReport& report) {
     dvv::json::Value value = dvv::json::Value::object();
     for (const auto& [name, version] : report.packages) {
         std::string key = name;
-        std::ranges::transform(key, key.begin(), [](char c) {
-            return c == '-' ? '_' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        });
+        std::ranges::transform(key, key.begin(),
+                               [](char c) { return c == '-' ? '_' : dvv::asciiLower(c); });
         value[key] = version;
     }
     value["vulkan"] = report.vulkan;

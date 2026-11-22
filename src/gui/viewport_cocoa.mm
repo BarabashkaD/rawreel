@@ -20,12 +20,12 @@
 
 #include "core/view.h"
 #include "dvv/base/error.h"
-#include "dvv/platform/native_window.h"
-#include "gui/native_window.h"
+#include "dvv/platform/window_handle_metal.h"
 #include "gui/viewport.h"
+#include "gui/viewport_window.h"
 
-// The child view. Owned by ViewportWindow::connection (a retained reference) while the presenter
-// exists; its superview holds a second reference until the connection's deleter removes it.
+// The child view. Owned by ViewportWindow::lent (a retained reference) while the presenter
+// exists; its superview holds a second reference until lent's deleter removes it.
 @interface RawreelViewportView : NSView
 // The viewport whose presenter draws to this view; null once the view is being removed.
 @property(nonatomic, assign) rawreel::Viewport* viewport;
@@ -111,7 +111,7 @@ void syncChild(RawreelViewportView* child, NSView* parent) {
     child.layer.contentsScale = [child backingScale];
 }
 
-// The deleter of ViewportWindow::connection: runs on the GUI thread after the presenter, its
+// The deleter of ViewportWindow::lent: runs on the GUI thread after the presenter, its
 // surface and its swapchain are destroyed (Viewport::stopPresenting), or when a failed
 // startPresenting() drops the window, so the layer outlives every surface made from it.
 void removeChild(void* retained) noexcept {
@@ -124,7 +124,7 @@ void removeChild(void* retained) noexcept {
 
 }  // namespace
 
-dvv::Result<ViewportWindow> nativeWindowOf(wxWindow& window) {
+dvv::Result<ViewportWindow> viewportWindowOf(wxWindow& window) {
     @autoreleasepool {
         NSView* const parent = viewOf(window);
         if (parent == nil) {
@@ -145,9 +145,10 @@ dvv::Result<ViewportWindow> nativeWindowOf(wxWindow& window) {
         [parent addSubview:child];
         syncChild(child, parent);
         void* const layer = (__bridge void*)child.layer;
-        std::shared_ptr<void> connection((__bridge_retained void*)child, removeChild);
-        return ViewportWindow{.window = dvv::platform::MetalWindow{.layer = layer},
-                              .connection = std::move(connection)};
+        std::shared_ptr<void> lent((__bridge_retained void*)child, removeChild);
+        return ViewportWindow{
+            .window = dvv::platform::windowHandleOf(dvv::platform::MetalWindow{.layer = layer}),
+            .lent = std::move(lent)};
     }
 }
 

@@ -1,7 +1,6 @@
 #pragma once
 
-// rawreel-cli's exit codes and the text and JSON forms of its results and errors (spec §10.3, M2
-// design §4.6).
+// rawreel-cli: the text and JSON forms of its results and errors (spec §10.3, M2 design §4.6).
 
 #include <cstdint>
 #include <string>
@@ -15,14 +14,6 @@
 #include "dvv/media/source_factory.h"
 
 namespace rawreel::cli {
-
-namespace exit_code {
-inline constexpr int SUCCESS = 0;
-inline constexpr int BAD_ARGUMENTS = 1;  // also: a frame range outside the source
-inline constexpr int INPUT_ERROR = 2;
-inline constexpr int UNSUPPORTED = 3;  // also: an ambiguous source
-inline constexpr int GPU_ERROR = 4;
-}  // namespace exit_code
 
 // The exit code of an error. `gpu_stage`: the error comes from the GPU setup (GpuInstance::create,
 // createContext, FrameStore::create with a context) or is OutOfMemory from an acquire in a store

@@ -8,16 +8,17 @@
 // clang-format on
 
 #include <filesystem>
-#include <functional>
 #include <vector>
 
 #include <wx/dnd.h>
+
+#include "dvv/base/move_only_function.h"
 
 namespace rawreel {
 
 class DropTarget final : public wxFileDropTarget {
 public:
-    using Handler = std::function<void(std::vector<std::filesystem::path>)>;
+    using Handler = dvv::MoveOnlyFunction<void(std::vector<std::filesystem::path>)>;
     explicit DropTarget(Handler handler);
     bool OnDropFiles(wxCoord x, wxCoord y, const wxArrayString& names) override;
 

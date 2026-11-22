@@ -1,12 +1,12 @@
 #include "core/stream_name.h"
 
-#include <cctype>
 #include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "dvv/base/error.h"
+#include "dvv/base/paths.h"
 #include "dvv/base/uri.h"
 
 namespace rawreel {
@@ -14,15 +14,6 @@ namespace {
 
 bool isSeparator(char c) {
     return c == '/' || c == '\\';
-}
-
-std::string baseNameOf(std::string_view path) {
-    const std::size_t cut = path.find_last_of("/\\");
-    return std::string(cut == std::string_view::npos ? path : path.substr(cut + 1));
-}
-
-bool isDriveLetter(char c) {
-    return std::isalpha(static_cast<unsigned char>(c)) != 0;
 }
 
 // The prefix length of an absolute path in the style (0 when the path is relative).
@@ -33,7 +24,7 @@ std::size_t rootLength(std::string_view path, PathStyle style) {
     if (path.size() >= 2 && isSeparator(path[0]) && isSeparator(path[1])) {
         return 2;
     }
-    if (path.size() >= 3 && isDriveLetter(path[0]) && path[1] == ':' && isSeparator(path[2])) {
+    if (path.size() >= 3 && dvv::isDriveLetterPath(path) && isSeparator(path[2])) {
         return 3;
     }
     return 0;
@@ -93,7 +84,7 @@ std::string streamName(std::string_view resolved_uri) {
         return std::string(resolved_uri);
     }
     if (parsed->scheme == "file" && !parsed->path.empty()) {
-        return baseNameOf(parsed->path);
+        return std::string(dvv::baseNameOf(parsed->path));
     }
     if (!parsed->path.empty()) {
         return parsed->scheme + ":" + parsed->path;

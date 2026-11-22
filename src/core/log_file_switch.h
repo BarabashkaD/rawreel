@@ -39,11 +39,6 @@ enum class FolderCreation : std::uint8_t {
 [[nodiscard]] dvv::Result<std::shared_ptr<dvv::SplitFileSink>> openLogFile(
     const std::filesystem::path& folder, FolderCreation creation, dvv::SplitOpen open);
 
-// `name` is a log file's name: strictly rawreel-YYYYMMDD-HHMMSS.log or
-// rawreel-YYYYMMDD-HHMMSS-N.log (N 1 to 9 digits, no leading zero), as SplitFileSink parses it.
-// case_insensitive: letters compare without case (Windows and macOS file names).
-[[nodiscard]] bool isLogFileName(std::string_view name, bool case_insensitive);
-
 class LogFileSwitch final : public dvv::ILogSink {
 public:
     // To the file, if any, as formatLogRecord(record, suffix); `line` is not used.

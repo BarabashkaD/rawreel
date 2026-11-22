@@ -8,7 +8,6 @@
 // clang-format on
 
 #include <cstdint>
-#include <functional>
 #include <memory>
 
 // clang-format off

@@ -6,17 +6,15 @@
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <format>
-#include <fstream>
-#include <ios>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -55,6 +53,7 @@
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/gpu_info_json.h"
 #include "dvv/media/types.h"
+#include "dvv/platform/file_writer.h"
 #include "dvv/registry/module.h"
 #include "gui/about.h"
 #include "gui/app.h"
@@ -199,30 +198,13 @@ bool isLiveLogFile(const std::filesystem::path& file, const std::filesystem::pat
         return false;
     }
 #if defined(__WXMSW__) || defined(__WXOSX__)
-    constexpr bool CASE_INSENSITIVE = true;
+    constexpr dvv::LetterCase LOG_NAME_LETTERS = dvv::LetterCase::IgnoreAscii;
 #else
-    constexpr bool CASE_INSENSITIVE = false;
+    constexpr dvv::LetterCase LOG_NAME_LETTERS = dvv::LetterCase::Exact;
 #endif
-    return isLogFileName(dvv::pathDisplayText(file.filename()), CASE_INSENSITIVE);
-}
-
-// The reason `text` could not be written to `file` (created or replaced); nullopt once written.
-std::optional<std::string> writeTextFile(const std::filesystem::path& file,
-                                         const std::string& text) {
-    const auto reason = [](int code, std::string_view fallback) {
-        return code != 0 ? std::generic_category().message(code) : std::string(fallback);
-    };
-    errno = 0;
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        return reason(errno, "it cannot be created");
-    }
-    out.write(text.data(), static_cast<std::streamsize>(text.size()));
-    out.close();
-    if (!out) {
-        return reason(errno, "it cannot be written");
-    }
-    return std::nullopt;
+    return dvv::parseSplitLogName(dvv::pathDisplayText(file.filename()), LOG_FILE_PREFIX,
+                                  LOG_NAME_LETTERS)
+        .has_value();
 }
 
 // The widths of the status bar's two fixed fields at its font. D5R §2.2: the display mapping is as
@@ -578,7 +560,7 @@ void MainFrame::recordRecent(const std::string& entry) {
         return;  // already on top: nothing is saved (spec §7)
     }
     const std::array<ConfigValue, 1> values{
-        {{.key = "gui.recent", .value = app.recent().entries()}}};
+        {{.key = config_key::GUI_RECENT, .value = app.recent().entries()}}};
     app.saveHistory(values);  // a failure is logged there; the list stays in effect
     recentChanged();
 }
@@ -1677,7 +1659,7 @@ void MainFrame::recentChecked(const std::string& entry, RecentFileState state) {
         return;  // no longer listed
     }
     const std::array<ConfigValue, 1> values{
-        {{.key = "gui.recent", .value = app.recent().entries()}}};
+        {{.key = config_key::GUI_RECENT, .value = app.recent().entries()}}};
     app.saveHistory(values);  // a failure is logged there; the list stays in effect
     recentChanged();
     DVV_LOG_INFO("\"{}\" removed from Open Recent: {}", entry, reason);
@@ -1769,9 +1751,13 @@ void MainFrame::saveLog(bool selected) {
                         path, dvv::pathDisplayText(current)));
         return;
     }
-    if (const std::optional<std::string> failure = writeTextFile(file, text)) {
-        DVV_LOG_WARN("log not saved to '{}': {}", path, *failure);
-        refuse(std::format("'{}': {}", path, *failure));
+    // Windows: a brief open by another program (an indexer, a scanner) is waited out, 5 x 10 ms.
+    constexpr dvv::platform::ReplaceFileOptions SAVE_LOG_WRITE{.retries = 5};
+    if (const dvv::Result<void> saved =
+            dvv::platform::replaceFile(file, std::as_bytes(std::span(text)), SAVE_LOG_WRITE);
+        !saved) {
+        DVV_LOG_WARN("log not saved: {}", saved.error().message);
+        refuse(saved.error().message);
         return;
     }
     last_log_save_dir_ = file.parent_path();  // the next save dialog starts there
@@ -1968,7 +1954,8 @@ void MainFrame::saveLogPaneState() {
     if (shown == log_shown_at_start_) {
         return;
     }
-    const std::array<ConfigValue, 1> values{{{.key = "gui.showLogPane", .value = shown}}};
+    const std::array<ConfigValue, 1> values{
+        {{.key = config_key::GUI_SHOW_LOG_PANE, .value = shown}}};
     if (app.saveSettings(values, /*closing=*/true)) {
         app.setSavedLogPane(shown);
     }

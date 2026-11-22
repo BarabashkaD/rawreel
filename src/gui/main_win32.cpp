@@ -11,6 +11,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/exit_code.h"
 #include "core/gui_arguments.h"
 #include "core/utf8_arguments_win32.h"
 #include "dvv/base/error.h"

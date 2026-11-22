@@ -13,6 +13,7 @@
 #include <string_view>
 #include <utility>
 
+#include "core/exit_code.h"
 #include "core/gui_arguments.h"
 #include "core/vulkan_driver.h"
 #include "dvv/base/leak_check.h"
@@ -31,11 +32,11 @@ int rawreel::runGui(std::span<const std::string_view> args, dvv::MoveOnlyFunctio
     dvv::Result<rawreel::GuiArguments> arguments = rawreel::parseGuiArguments(args);
     if (!arguments) {
         std::fprintf(stderr, "rawreel-gui: %s\n\n%s", arguments.error().message.c_str(),
-                     rawreel::USAGE);
+                     rawreel::guiUsageText().c_str());
         return rawreel::exit_code::BAD_ARGUMENTS;
     }
     if (arguments->help) {
-        std::fputs(rawreel::USAGE, stdout);
+        std::fputs(rawreel::guiUsageText().c_str(), stdout);
         return rawreel::exit_code::SUCCESS;
     }
     // Before wxEntry(), on Linux: XInitThreads(), GDK limited to X11, then the DISPLAY check.

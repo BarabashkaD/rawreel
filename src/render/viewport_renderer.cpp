@@ -10,12 +10,13 @@
 #include "core/view.h"
 #include "dvv/base/log.h"
 #include "dvv/gpu/context_vulkan.h"
+#include "dvv/gpu/presenter_vulkan.h"
 #include "dvv/media/display.h"
 #include "dvv/media/display_vulkan.h"
 #include "dvv/media/frame_store.h"
 #include "dvv/media/frame_vulkan.h"
 #include "rawreel_shaders/composite.h"
-#include "render/composite_reference.h"
+#include "render/composite_constants.h"
 
 namespace rawreel {
 

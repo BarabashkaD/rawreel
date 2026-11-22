@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.2)
-project(rawreel VERSION 0.12.0 DESCRIPTION "rawreel raw video player" LANGUAGES CXX)
+project(rawreel VERSION 0.13.0 DESCRIPTION "rawreel raw video player" LANGUAGES CXX)
 # Version string; a pre-release build adds its release-stage label.
 set(rawreel_VERSION_STRING "${PROJECT_VERSION}")
 
@@ -32,7 +32,7 @@ include("${DVV_CMAKE_DIR}/DvvOsSources.cmake")
 # rawreel_render: the rendering of rawreel-gui that needs no wx (the display state and the viewport
 # compositor), so unit, GPU and sanitizer builds use it without the GUI.
 add_library(rawreel_render STATIC
-    src/render/composite_reference.cpp
+    src/render/composite_constants.cpp
     src/render/display_state.cpp
     src/render/viewport_renderer.cpp)
 target_include_directories(rawreel_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -187,7 +187,8 @@ if(NOT DVV_SANITIZE)
     elseif(UNIX AND NOT APPLE)
         target_link_libraries(rawreel_panel PRIVATE PkgConfig::GTK3 X11::X11)
     elseif(APPLE)
-        target_link_libraries(rawreel_panel PRIVATE "-framework AppKit")
+        # native_controls_cocoa.mm: AppKit controls and the slider's ghost CALayer (QuartzCore).
+        target_link_libraries(rawreel_panel PRIVATE "-framework AppKit" "-framework QuartzCore")
     endif()
     dvv_set_compiler_options(rawreel_panel)
     add_executable(rawreel_gui WIN32

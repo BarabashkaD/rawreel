@@ -135,3 +135,8 @@ TEST_CASE("arguments: --config for the commands that open a source") {
     checkError({"info", "u", "--config", "a", "--config", "b"}, "option --config given twice");
     checkError({"--version", "--config", "a"}, "option --config is not valid for --version");
 }
+
+TEST_CASE("arguments: one default K") {
+    CHECK(rawreel::cli::Arguments{}.inflight == 4);
+    CHECK(rawreel::cli::usageText().find("--inflight, default 4") != std::string::npos);
+}

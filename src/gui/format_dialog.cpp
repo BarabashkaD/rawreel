@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -21,8 +20,10 @@
 
 #include "core/format_presets.h"
 #include "core/stream_name.h"
+#include "dvv/base/ascii.h"
 #include "dvv/base/error.h"
 #include "dvv/base/json.h"
+#include "dvv/base/paths.h"
 #include "dvv/base/uri.h"
 #include "dvv/media/clip_json.h"
 #include "dvv/media/colour_preset.h"
@@ -83,11 +84,6 @@ constexpr std::string_view FROM_FILE = "  (from file)";
 constexpr std::string_view TEMPLATE_LINE1 = "Name the file <name>_WxH[_fmt][_fps]";
 constexpr std::string_view TEMPLATE_LINE2 = "Example: clip_1920x1080_yuv420p_25.yuv";
 
-std::string baseName(std::string_view path) {
-    const std::size_t slash = path.find_last_of("/\\");
-    return std::string(slash == std::string_view::npos ? path : path.substr(slash + 1));
-}
-
 // "a", "a and b", "a, b and c".
 std::string joinItems(const std::vector<std::string_view>& items) {
     std::string text;
@@ -116,7 +112,7 @@ FormatDetection nameDetection(const dvv::media::FileNameInfo& name) {
         return detection;
     }
     std::string text = joinItems(what);
-    text.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(text.front())));
+    text.front() = dvv::asciiUpper(text.front());
     detection.text =
         std::format("{} detected from the file name; {} not detected", text, joinItems(rest));
     detection.partial = true;
@@ -141,7 +137,7 @@ FormatDetection uriDetection(const std::string& uri, const dvv::Result<dvv::Uri>
     FormatDetection detection;
     if (parsed && parsed->scheme == "file" && !parsed->path.empty()) {
         detection.tooltip = parsed->path;
-        detection.fileName = baseName(parsed->path);
+        detection.fileName = std::string(dvv::baseNameOf(parsed->path));
     } else {
         detection.tooltip = uri;
     }
@@ -158,8 +154,8 @@ dvv::Result<dvv::media::FormatId> pixelFormatFromFile(const std::string& utf8_pa
     }
     dvv::Result<dvv::media::FormatId> format = dvv::media::formatFromJson(*root);
     if (!format) {
-        return dvv::makeError(dvv::Errc::Format,
-                              std::format("{}: {}", baseName(utf8_path), format.error().message));
+        return dvv::makeError(dvv::Errc::Format, std::format("{}: {}", dvv::baseNameOf(utf8_path),
+                                                             format.error().message));
     }
     return format;
 }
@@ -228,17 +224,16 @@ FormatDetection streamDetection(const dvv::media::SourceInfo& info) {
         const std::size_t dot = detection.fileName.find_last_of('.');
         std::string container =
             dot == std::string::npos ? std::string() : detection.fileName.substr(dot + 1);
-        std::ranges::transform(container, container.begin(), [](char c) {
-            return static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        });
+        std::ranges::transform(container, container.begin(),
+                               [](char c) { return dvv::asciiUpper(c); });
         detection.text = container.empty()
                              ? std::string("Format detected from the container")
                              : std::format("Format detected from the container ({})", container);
     } else if (parsed && parsed->param("clip") && clipGeometry(info.clipFile)) {
-        detection.text =
-            std::format("Format detected from the clip description ({})", baseName(info.clipFile));
+        detection.text = std::format("Format detected from the clip description ({})",
+                                     dvv::baseNameOf(info.clipFile));
     } else if (clipGeometry(info.clipFile)) {
-        detection.text = std::format("Format detected from {}", baseName(info.clipFile));
+        detection.text = std::format("Format detected from {}", dvv::baseNameOf(info.clipFile));
     } else {
         detection.text = "Format given in the URI";
         // The file name's format and size are the stream's: the name gave them.
@@ -537,7 +532,8 @@ void FormatDialog::selectFormat(const std::string& format) {
         // the tooltip (refreshColour()); the interned format's geometry is checked by validate().
         json_path_ = format.substr(1);
         json_format_ = pixelFormatFromFile(json_path_);
-        const wxString label = fromUtf8(std::format("Custom (from {})", baseName(json_path_)));
+        const wxString label =
+            fromUtf8(std::format("Custom (from {})", dvv::baseNameOf(json_path_)));
         if (json_item_ == wxNOT_FOUND) {
             json_item_ = format_->Append(label);
         } else {

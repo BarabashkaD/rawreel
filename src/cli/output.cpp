@@ -7,6 +7,7 @@
 #include <string_view>
 #include <utility>
 
+#include "core/exit_code.h"
 #include "dvv/base/uri.h"
 #include "dvv/media/colour_preset.h"
 #include "dvv/media/display.h"
@@ -160,8 +161,7 @@ int exitCodeFor(const dvv::Error& error, bool gpu_stage) noexcept {
         case dvv::Errc::Format: return exit_code::INPUT_ERROR;
         case dvv::Errc::Unsupported:
             return gpu_stage ? exit_code::GPU_ERROR : exit_code::UNSUPPORTED;
-        case dvv::Errc::DeviceLost:
-        case dvv::Errc::ShaderCompile: return exit_code::GPU_ERROR;
+        case dvv::Errc::DeviceLost: return exit_code::GPU_ERROR;
         case dvv::Errc::OutOfMemory:
         case dvv::Errc::Internal:
         case dvv::Errc::Cancelled: return gpu_stage ? exit_code::GPU_ERROR : exit_code::INPUT_ERROR;
