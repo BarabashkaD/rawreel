@@ -31,7 +31,7 @@ bool fitted(const wxAuiDockInfo& dock) {
 
 }  // namespace
 
-DockManager::DockManager(std::function<wxSize()> centre_minimum)
+DockManager::DockManager(dvv::MoveOnlyFunction<wxSize()> centre_minimum)
     : centre_minimum_(std::move(centre_minimum)) {}
 
 void DockManager::manage(wxWindow* frame) {

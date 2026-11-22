@@ -1,7 +1,7 @@
 // rawreel's viewport compositor (design M3 v2 D3, D23, §4.4). One thread per viewport pixel: the
 // display image (RGBA16F, linear light, BT.709 primaries) fitted into the viewport with the
 // background around it, then the sRGB encode into the RGBA8 output, which the presenter blits 1:1.
-// compositePixel() in src/render/composite_reference.cpp computes the same, in the same order.
+// compositePixel() in tests/composite_reference.cpp computes the same, in the same order.
 
 static const uint FLAG_DARK = 1;
 static const uint FLAG_SKIP_ENCODE = 2;

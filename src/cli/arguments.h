@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 
+#include "core/player.h"
 #include "dvv/base/error.h"
 
 namespace rawreel::cli {
@@ -19,7 +20,7 @@ enum class Via : std::uint8_t { Auto, Cpu, Gpu };
 struct Arguments {
     Command command;
     std::string uri, out;
-    std::int64_t frame = 0, count = 1, frames = 60, inflight = 4;
+    std::int64_t frame = 0, count = 1, frames = 60, inflight = DEFAULT_INFLIGHT;
     View view = View::Original;
     Via via = Via::Auto;
     bool json = false;

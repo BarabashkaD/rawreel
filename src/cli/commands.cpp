@@ -26,6 +26,7 @@
 #include "cli/arguments.h"
 #include "cli/output.h"
 #include "core/config.h"
+#include "core/exit_code.h"
 #include "core/startup.h"
 #include "core/version_text.h"
 #include "dvv/base/error.h"
@@ -303,7 +304,7 @@ int dump(const Arguments& arguments, Resources& resources) {
         const media::FrameKey key{.origin = *origin, .index = arguments.frame + k};
         dvv::Result<media::OriginalRead> read = dvv::syncWait(resources.store->acquireOriginal(
             key,
-            {.api = media::BindingKind::HostPlanes,
+            {.binding = media::HOST_PLANES,
              .domain = domain,
              .fidelity =
                  exact ? media::OriginalFidelity::Exact : media::OriginalFidelity::Lossless},
@@ -449,12 +450,13 @@ int bench(const Arguments& arguments, Resources& resources) {
             tasks.push_back(
                 arguments.readOnly
                     ? resources.store->acquireOriginal(key,
-                                                       {.api = media::BindingKind::HostPlanes,
+                                                       {.binding = media::HOST_PLANES,
                                                         .domain = resources.store->hostDomain(),
                                                         .fidelity = media::OriginalFidelity::Exact},
                                                        *resources.cpu)
                     : resources.store->acquireOriginal(
-                          key, {.api = media::vulkan::IMAGE, .domain = *device}, *resources.cpu));
+                          key, {.binding = media::vulkan::IMAGE, .domain = *device},
+                          *resources.cpu));
         }
         const std::vector<dvv::Result<media::OriginalRead>> reads =
             dvv::syncWait(dvv::whenAll(std::move(tasks)));

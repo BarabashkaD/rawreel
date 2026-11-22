@@ -36,7 +36,7 @@ void LogStore::setSourceSuffix(dvv::SourceSuffix suffix) noexcept {
     suffix_.store(suffix, std::memory_order_relaxed);
 }
 
-void LogStore::setNotify(std::function<void()> notify) {
+void LogStore::setNotify(dvv::MoveOnlyFunction<void()> notify) {
     const std::lock_guard lock(mutex_);
     notify_ = std::move(notify);
 }

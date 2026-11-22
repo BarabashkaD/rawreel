@@ -16,9 +16,14 @@ list(APPEND DVV_TEST_ENVIRONMENT
 # find_package() sets these in its directory scope only.
 find_package(dvv_ffmpeg_sdk CONFIG REQUIRED)
 
+# The CPU reference of the compositor, compiled once for the unit and the GPU tests.
+add_library(rawreel_composite_reference STATIC composite_reference.cpp)
+target_link_libraries(rawreel_composite_reference PUBLIC rawreel_render PRIVATE dvv::media)
+dvv_set_compiler_options(rawreel_composite_reference)
+
 add_executable(rawreel_tests
     main.cpp test_composite_reference.cpp test_display_state.cpp)
-target_link_libraries(rawreel_tests PRIVATE rawreel_render doctest::doctest)
+target_link_libraries(rawreel_tests PRIVATE rawreel_composite_reference rawreel_render doctest::doctest)
 target_compile_definitions(rawreel_tests PRIVATE DOCTEST_CONFIG_USE_STD_HEADERS)
 dvv_set_compiler_options(rawreel_tests)
 add_test(NAME rawreel.unit COMMAND rawreel_tests)
@@ -107,7 +112,7 @@ endif()
 add_executable(rawreel_gpu_tests
     gpu_main.cpp gpu_support.cpp gpu_test_compositor.cpp gpu_test_session.cpp
     session_fixture.cpp test_source_provider.cpp)
-target_link_libraries(rawreel_gpu_tests PRIVATE rawreel_render rawreel_core doctest::doctest)
+target_link_libraries(rawreel_gpu_tests PRIVATE rawreel_composite_reference rawreel_render rawreel_core doctest::doctest)
 dvv_link_components(rawreel_gpu_tests dvv::media_sources)
 target_compile_definitions(rawreel_gpu_tests PRIVATE DOCTEST_CONFIG_USE_STD_HEADERS)
 dvv_set_compiler_options(rawreel_gpu_tests)

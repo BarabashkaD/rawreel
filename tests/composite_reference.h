@@ -1,6 +1,6 @@
 #pragma once
 
-// The compositor's push constants and its CPU reference (design M3 v2 §4.4). compositePixel()
+// The CPU reference of the compositor (design M3 v2 §4.4). compositePixel()
 // computes exactly what shaders/composite.slang computes, in the same order, in float32.
 
 #include <array>
@@ -8,31 +8,17 @@
 #include <optional>
 #include <span>
 
+#include "core/view.h"
+#include "dvv/media/display.h"
 #include "dvv/platform/pixel_size.h"
+#include "render/composite_constants.h"
 #include "render/display_state.h"
 
 namespace rawreel {
 
-inline constexpr std::uint32_t COMPOSITE_DARK = 1;         // flags bit0: dark background
-inline constexpr std::uint32_t COMPOSITE_SKIP_ENCODE = 2;  // flags bit1: the swapchain is _SRGB
-inline constexpr std::uint32_t COMPOSITE_MAX_TAPS = 4;     // taps per axis below zoom 0.5
-inline constexpr float BACKGROUND_DARK = 0.12F;            // sRGB-encoded grey of the background
+inline constexpr std::uint32_t COMPOSITE_MAX_TAPS = 4;  // taps per axis below zoom 0.5
+inline constexpr float BACKGROUND_DARK = 0.12F;         // sRGB-encoded grey of the background
 inline constexpr float BACKGROUND_LIGHT = 0.85F;
-
-struct CompositeConstants {  // = PushConstants of composite.slang
-    std::uint32_t viewportW = 0, viewportH = 0, imageW = 0, imageH = 0;
-    float zoom = 0.0F, originX = 0.0F, originY = 0.0F;
-    std::uint32_t flags = 0;
-    bool operator==(const CompositeConstants&) const = default;
-};
-static_assert(sizeof(CompositeConstants) == 32);
-
-// The constants of one composite for the resolved `view` (design §4.4): viewportW/H =
-// view.viewport(); zoom/originX/originY = float(view.zoom()/origin()); imageW/H = view.image() when
-// view.zoom() > 0, else 0 (no frame or an empty size: background only); flags = COMPOSITE_DARK when
-// params.dark, | COMPOSITE_SKIP_ENCODE when skip_encode.
-[[nodiscard]] CompositeConstants compositeConstants(const CompositeParams& params,
-                                                    const ViewTransform& view, bool skip_encode);
 
 struct HostDisplayImage {  // host copy of a display view
     std::uint32_t width = 0, height = 0;

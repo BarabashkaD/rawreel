@@ -11,7 +11,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <functional>
 #include <mutex>
 #include <source_location>
 #include <string>
@@ -19,6 +18,7 @@
 #include <vector>
 
 #include "dvv/base/log.h"
+#include "dvv/base/move_only_function.h"
 
 namespace rawreel {
 
@@ -58,7 +58,7 @@ public:
     void setSourceSuffix(dvv::SourceSuffix suffix) noexcept;
     // Called after the first record that follows a take() (or the call itself), until the next
     // take(). Empty: none.
-    void setNotify(std::function<void()> notify);
+    void setNotify(dvv::MoveOnlyFunction<void()> notify);
     // The records with sequence >= since; also clears pending, in one lock hold.
     [[nodiscard]] LogBatch take(std::uint64_t since);
     [[nodiscard]] std::vector<LogEntry> entries() const;  // every kept record
@@ -70,7 +70,7 @@ private:
     std::uint64_t next_ = 0;
     LogCounts counts_;
     bool pending_ = false;  // true only after notify_ was called, until take()
-    std::function<void()> notify_;
+    dvv::MoveOnlyFunction<void()> notify_;
     std::atomic<dvv::SourceSuffix> suffix_{dvv::SourceSuffix::Without};
 };
 

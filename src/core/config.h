@@ -72,6 +72,20 @@ struct Config {
     LogConfig log;
 };
 
+// The dotted keys of rawreel.json: what the GUI writes (saveConfigValues) and what the reader
+// names in its messages.
+namespace config_key {
+inline constexpr std::string_view IO_FILE_READS = "io.fileReads";
+inline constexpr std::string_view GUI_SHOW_LOG_PANE = "gui.showLogPane";
+inline constexpr std::string_view GUI_RECENT = "gui.recent";
+inline constexpr std::string_view GUI_RECENT_SIZE = "gui.recentSize";
+inline constexpr std::string_view LOG_LEVEL = "log.level";
+inline constexpr std::string_view LOG_SOURCE = "log.source";
+inline constexpr std::string_view LOG_FILE_ENABLED = "log.file.enabled";
+inline constexpr std::string_view LOG_FILE_FOLDER = "log.file.folder";
+inline constexpr std::string_view LOG_SYSTEM_ENABLED = "log.system.enabled";
+}  // namespace config_key
+
 // "auto", "buffered", "unbuffered".
 [[nodiscard]] std::string_view fileReadsName(dvv::platform::FileReadMode mode) noexcept;
 [[nodiscard]] std::optional<dvv::platform::FileReadMode> parseFileReads(
@@ -98,6 +112,7 @@ struct Config {
 // the result.
 [[nodiscard]] dvv::Result<std::filesystem::path> defaultConfigPath(
     const std::filesystem::path& executable, bool macos,
+    // const std::function&: called during the call only (std::function_ref is C++26).
     const std::function<dvv::Result<std::filesystem::path>()>& user_data_dir,
     const std::function<bool(const std::filesystem::path&)>& exists);
 // defaultConfigPath() of the running executable (dvv::paths::executablePath) on this platform.

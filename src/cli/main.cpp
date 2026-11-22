@@ -15,6 +15,7 @@
 #include "cli/cli_main.h"
 #include "cli/commands.h"
 #include "cli/output.h"
+#include "core/exit_code.h"
 #include "core/vulkan_driver.h"
 #include "dvv/base/json.h"
 #include "dvv/base/leak_check.h"
@@ -46,7 +47,7 @@ int runWith(const std::vector<std::string>& all) {
             std::print(stderr, "error: {}\n\n{}", parsed.error().message,
                        rawreel::cli::usageText());
         }
-        return rawreel::cli::exit_code::BAD_ARGUMENTS;
+        return rawreel::exit_code::BAD_ARGUMENTS;
     }
     return rawreel::cli::run(*parsed);
 }
@@ -54,7 +55,7 @@ int runWith(const std::vector<std::string>& all) {
 // Runs the command and returns the exit code after the leak check; every object of the run is
 // destroyed inside run().
 int guarded(const std::vector<std::string>& all) {
-    int code = rawreel::cli::exit_code::INPUT_ERROR;
+    int code = rawreel::exit_code::INPUT_ERROR;
     try {
         code = runWith(all);
     } catch (const std::exception& error) {
@@ -69,7 +70,7 @@ int guarded(const std::vector<std::string>& all) {
 // printing an internal error) ends the process with exit 2.
 int lastResort() noexcept {
     std::fputs("internal error: unexpected exception\n", stderr);
-    return rawreel::cli::exit_code::INPUT_ERROR;
+    return rawreel::exit_code::INPUT_ERROR;
 }
 
 }  // namespace
@@ -88,7 +89,7 @@ int runCli(dvv::MoveOnlyFunction<dvv::Result<std::vector<std::string>>()> argume
         const auto all = arguments();
         if (!all) {
             std::println(stderr, "error: {}", all.error().message);
-            return rawreel::cli::exit_code::BAD_ARGUMENTS;
+            return rawreel::exit_code::BAD_ARGUMENTS;
         }
         return guarded(*all);
     } catch (...) {

@@ -86,16 +86,10 @@ public:
 
     // Null before OnInit() created it and after shutdownSession().
     [[nodiscard]] Session* session() const noexcept { return session_.get(); }
-    [[nodiscard]] const std::shared_ptr<dvv::gpu::GpuInstance>& gpuInstance() const noexcept {
-        return gpu_instance_;
-    }
     [[nodiscard]] const std::shared_ptr<DisplayState>& display() const noexcept { return display_; }
     // The Log pane's records (spec §3.1): a Logger sink from the start of OnInit() on, never
     // removed; null before.
     [[nodiscard]] const std::shared_ptr<LogStore>& logStore() const noexcept { return log_store_; }
-    // The log file sink in the Logger (spec §5.3); it holds no file before OnInit() opened one,
-    // when log.file.enabled is false or no folder could be used, and after OnExit().
-    [[nodiscard]] LogFileSwitch& logFileSwitch() noexcept { return *log_file_; }
     // Whether the system log sink is on (level Warn) or off (level Off).
     [[nodiscard]] bool systemLogEnabled() const noexcept { return system_log_enabled_; }
     // Sets the system log sink's level to Warn (on) or Off; it never adds or removes a sink. The
@@ -120,7 +114,7 @@ public:
     void stopLogFile();
     // The values in effect of log.file.enabled and log.file.folder (empty: the default folder),
     // after the Settings window applied them; the log file itself is changed by the calls above.
-    void setLogFileConfig(bool enabled, std::filesystem::path folder);
+    void setLogFileConfig(LogFileConfig file);
     // The value in effect of log.level (savedLevel()) after the Settings window applied it; it is
     // marked as saved only in the settings owner, which saves it. The active level is set apart.
     void setLevelConfig(dvv::LogLevel level);
@@ -153,9 +147,8 @@ public:
     // run's first history failure logs one warning, "config '<path>' not saved: <reason>", later
     // ones nothing; it never counts as a saveSettings() failure.
     bool saveHistory(std::span<const ConfigValue> values);
-    // The gui.showLogPane value the main window's close saved (spec §2); nullopt when nothing was
-    // saved. A selftest's OnExit checks it against the file.
-    [[nodiscard]] std::optional<bool> savedLogPane() const noexcept { return saved_log_pane_; }
+    // The gui.showLogPane value the main window's close saved (spec §2): a selftest's OnExit
+    // checks it against the file.
     void setSavedLogPane(bool shown) noexcept { saved_log_pane_ = shown; }
     // A --selftest run: its own config folder, <temp>/rawreel-selftest-config-<pid>-<16 hex>/
     // (spec §7.1; with --config its rawreel.json starts as a copy of that file); empty otherwise

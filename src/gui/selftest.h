@@ -13,7 +13,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>

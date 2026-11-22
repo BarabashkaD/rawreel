@@ -110,7 +110,7 @@ TEST_SUITE("core") {
         writeLine(log, "r1");
         const std::vector<std::string> names = namesIn(tmp.path() / "f");
         REQUIRE(names.size() == 1);
-        CHECK(rawreel::isLogFileName(names.front(), false));
+        CHECK(dvv::parseSplitLogName(names.front(), rawreel::LOG_FILE_PREFIX).has_value());
         CHECK(log.currentFile() == tmp.path() / "f" / names.front());
         (void)log.replace(nullptr);
         CHECK(log.currentFile().empty());
@@ -219,22 +219,16 @@ TEST_SUITE("core") {
             std::format(" [test_log_file_switch.cpp:{}]", entries[0].where.line())));
     }
 
-    TEST_CASE("log file name: pattern") {
-        CHECK(rawreel::isLogFileName("rawreel-20261110-153126.log", false));
-        CHECK(rawreel::isLogFileName("rawreel-20261110-153126-2.log", false));
-        CHECK(rawreel::isLogFileName("rawreel-20261110-153126-1.log", false));  // as dvv-base
-        CHECK(rawreel::isLogFileName("rawreel-20261110-153126-10.log", false));
-        CHECK_FALSE(rawreel::isLogFileName("rawreel.log", false));
-        CHECK_FALSE(rawreel::isLogFileName("rawreel-old.log", false));
-        CHECK_FALSE(rawreel::isLogFileName("rawreel-20261110-1.log", false));
-        CHECK_FALSE(rawreel::isLogFileName("rawreel-20261110-153126-02.log", false));
-        CHECK_FALSE(rawreel::isLogFileName("rawreel-20261110-153126-.log", false));
-        CHECK_FALSE(rawreel::isLogFileName("rawreel-2026111a-153126.log", false));
-        CHECK_FALSE(rawreel::isLogFileName("rawreel-20261110-153126.log.1", false));
-        CHECK_FALSE(rawreel::isLogFileName("xrawreel-20261110-153126.log", false));
-        CHECK_FALSE(rawreel::isLogFileName("RawReel-20261110-153126.LOG", false));
-        CHECK(rawreel::isLogFileName("RawReel-20261110-153126.LOG", true));
-        CHECK_FALSE(rawreel::isLogFileName("rawreel-old.log", true));
+    TEST_CASE("log file name: rawreel's prefix through dvv-base") {
+        CHECK(dvv::parseSplitLogName("rawreel-20261110-153126-2.log", rawreel::LOG_FILE_PREFIX)
+                  .has_value());
+        CHECK(dvv::parseSplitLogName("RawReel-20261110-153126.LOG", rawreel::LOG_FILE_PREFIX,
+                                     dvv::LetterCase::IgnoreAscii)
+                  .has_value());
+        CHECK_FALSE(dvv::parseSplitLogName("RawReel-20261110-153126.LOG", rawreel::LOG_FILE_PREFIX)
+                        .has_value());
+        CHECK_FALSE(
+            dvv::parseSplitLogName("rawreel-old.log", rawreel::LOG_FILE_PREFIX).has_value());
     }
 
     TEST_CASE("log file switch: no record lost during replace") {

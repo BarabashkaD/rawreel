@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <format>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -112,6 +113,19 @@ TEST_SUITE("core") {
         store.setNotify({});
         put(store, dvv::LogLevel::Info, "b");
         CHECK(calls == 1);
+    }
+
+    TEST_CASE("setNotify takes a move-only callable") {
+        LogStore store;
+        int calls = 0;
+        int seen = 0;
+        store.setNotify([&calls, &seen, value = std::make_unique<int>(7)] {
+            ++calls;
+            seen = *value;
+        });
+        put(store, dvv::LogLevel::Info, "a");
+        CHECK(calls == 1);
+        CHECK(seen == 7);
     }
 
     TEST_CASE("log store: source and line") {

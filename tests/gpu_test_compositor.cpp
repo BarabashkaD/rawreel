@@ -23,6 +23,7 @@
 
 #include <vulkan/vulkan_core.h>
 
+#include "composite_reference.h"
 #include "core/session_types.h"
 #include "core/view.h"
 #include "dvv/base/log.h"
@@ -38,7 +39,6 @@
 #include "dvv/media/frame_vulkan.h"
 #include "dvv/media/source_factory.h"
 #include "gpu_support.h"
-#include "render/composite_reference.h"
 #include "render/display_state.h"
 #include "render/viewport_renderer.h"
 

@@ -1076,7 +1076,7 @@ dvv::Result<MediaStack> hostStack(const std::shared_ptr<dvv::IExecutor>& cpu,
     MediaStack stack;
     const dvv::media::Domain host = store->hostDomain();
     stack.viewFor = [host](const dvv::media::FrameDesc& desc) {
-        return dvv::media::planesView(desc, dvv::media::BindingKind::HostPlanes, host);
+        return dvv::media::planesView(desc, dvv::media::HOST_PLANES, host);
     };
     stack.store = std::move(store);
     return stack;

@@ -2,14 +2,14 @@
 
 #include <algorithm>
 #include <array>
-#include <charconv>
 #include <cstdint>
 #include <format>
-#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <vector>
+
+#include "core/number_text.h"
 
 namespace rawreel::cli {
 
@@ -78,13 +78,11 @@ constexpr std::array<OptionInfo, 10> OPTIONS{{
 
 [[nodiscard]] dvv::Result<std::int64_t> parseNumber(std::string_view name, std::string_view text,
                                                     std::int64_t minimum) {
-    std::int64_t value = 0;
-    const char* const first = std::to_address(text.begin());
-    const char* const end = std::to_address(text.end());
-    const auto [last, error] = std::from_chars(first, end, value);
-    if (text.empty() || error != std::errc{} || last != end) {
+    const std::optional<std::int64_t> parsed = parseDecimal<std::int64_t>(text);
+    if (!parsed) {
         return dvv::makeError(dvv::Errc::Format, std::format("bad number '{}' for {}", text, name));
     }
+    const std::int64_t value = *parsed;
     if (value < minimum) {
         return dvv::makeError(
             dvv::Errc::Format,
@@ -219,7 +217,7 @@ dvv::Result<Arguments> parseArguments(std::span<const std::string_view> args) {
 }
 
 std::string usageText() {
-    return R"(Usage:
+    return std::format(R"(Usage:
   rawreel-cli info <uri> [--json] [--config <file>]
   rawreel-cli dump <uri> --out <file> [--frame N] [--count K] [--view original|planes]
                    [--via cpu|gpu|auto] [--json] [--config <file>]
@@ -233,7 +231,7 @@ std::string usageText() {
             --via gpu through the GPU (upload, unpack, readback), --via auto (the default) uses
             the GPU when a usable device exists
   bench     read N frames (--frames, default 60) through produce, staging, upload and unpack on
-            the GPU, K reads in flight (--inflight, default 4); prints frames/s and per-stage
+            the GPU, K reads in flight (--inflight, default {}); prints frames/s and per-stage
             throughput; --read-only stops after produce (host memory), so the wall time is the
             file read stage's wall clock
   --json    print the result, and errors, as JSON on stdout
@@ -245,7 +243,8 @@ synthetic:<gradient|noise>?fmt=<format>&size=WxH[&frames=N][&seed=S].
 
 Exit codes: 0 success; 1 bad arguments (also frames outside the source); 2 input error;
 3 unsupported or ambiguous source; 4 GPU error (also no usable GPU device for --via gpu).
-)";
+)",
+                       DEFAULT_INFLIGHT);
 }
 
 }  // namespace rawreel::cli

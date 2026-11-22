@@ -144,6 +144,7 @@ bool waitUntil(const std::function<bool()>& predicate, std::chrono::milliseconds
 // Headless stacks are host-only: every stackChanged has an expired context, so the cases match on
 // the epoch: epoch 0 is a loss (or a released stack), epoch N >= 1 an installed stack.
 
+// std::function: a predicate value, copied freely and called during each wait.
 using EventPredicate = std::function<bool(const SessionEvent&)>;
 
 EventPredicate isLoss() {
@@ -256,6 +257,7 @@ void shutdownWhileOpenRuns(SessionFixture& f, std::string_view name) {
 TEST_SUITE("session") {
     TEST_CASE("session: create checks its options") {
         SessionFixture f;
+        // std::function: an initializer_list copies its elements.
         const std::vector<std::function<void(rawreel::SessionOptions&)>> breakers{
             [](rawreel::SessionOptions& o) { o.components.reset(); },
             [](rawreel::SessionOptions& o) { o.cpu.reset(); },

@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -15,7 +16,9 @@
 #include <vector>
 
 #include "core/config.h"
+#include "core/config_writer.h"
 #include "core/native_os.h"
+#include "core/recent.h"
 #include "dvv/base/error.h"
 #include "dvv/base/json.h"
 #include "dvv/base/log.h"
@@ -414,4 +417,34 @@ TEST_SUITE("core") {
         CHECK(loaded.path.is_absolute());
         CHECK(loaded.path == fs::absolute(fs::path("rel.json")));
     }
+}
+
+TEST_CASE("config keys: written and read back") {
+    namespace key = rawreel::config_key;
+    const TemporaryDirectory dir("rawreel-config");
+    const fs::path file = dir.path() / "rawreel.json";
+    const std::vector<rawreel::ConfigValue> values{
+        {.key = key::IO_FILE_READS, .value = std::string("buffered")},
+        {.key = key::GUI_SHOW_LOG_PANE, .value = true},
+        {.key = key::LOG_LEVEL, .value = std::string("debug")},
+        {.key = key::LOG_SOURCE, .value = true},
+        {.key = key::LOG_FILE_ENABLED, .value = false},
+        {.key = key::LOG_FILE_FOLDER, .value = dvv::pathText(dir.path() / "logs")},
+        {.key = key::LOG_SYSTEM_ENABLED, .value = true},
+        {.key = key::GUI_RECENT, .value = std::vector<std::string>{"file:a.yuv"}},
+        {.key = key::GUI_RECENT_SIZE, .value = std::int64_t{7}},
+    };
+    REQUIRE(rawreel::saveConfigValues(file, values));
+    const LoadedConfig loaded = rawreel::loadConfig(file);
+    CHECK(loaded.warning.empty());
+    CHECK(loaded.config.io.fileReads == FileReadMode::Buffered);
+    CHECK(loaded.config.gui.showLogPane);
+    CHECK(loaded.config.log.level == dvv::LogLevel::Debug);
+    CHECK(loaded.config.log.source);
+    CHECK(!loaded.config.log.file.enabled);
+    CHECK(loaded.config.log.file.folder == dir.path() / "logs");
+    CHECK(loaded.config.log.system.enabled);
+    const rawreel::RecentConfig recent = rawreel::parseRecent(loaded.text);
+    CHECK(recent.size == 7);
+    CHECK(recent.entries == std::vector<std::string>{"file:a.yuv"});
 }

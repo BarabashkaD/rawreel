@@ -11,12 +11,11 @@
 #include <string>
 #include <vector>
 
+#include "composite_reference.h"
 #include "core/view.h"
 #include "dvv/base/json.h"
 #include "dvv/media/display.h"
 #include "rawreel_shaders/composite.h"
-#include "render/composite_reference.h"
-#include "render/viewport_renderer.h"
 
 using dvv::media::encodeSrgb8;
 using dvv::media::floatToHalf;

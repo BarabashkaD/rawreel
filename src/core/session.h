@@ -8,13 +8,13 @@
 
 #include <atomic>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <vector>
 
+#include "core/player.h"
 #include "core/session_types.h"
 #include "dvv/base/error.h"
 #include "dvv/base/executor.h"
@@ -66,8 +66,8 @@ struct MediaStack {                                       // what device loss re
     std::shared_ptr<dvv::gpu::ExecutionContext> context;  // null: host-only (tests)
     std::shared_ptr<dvv::media::FrameStore> store;
     // The display view of a stream (GPU: displayView(deviceDomain), host fixture: planesView(desc,
-    // HostPlanes, host)); evaluated once per stream at attach.
-    std::function<dvv::media::ViewSpec(const dvv::media::FrameDesc&)> viewFor;
+    // HOST_PLANES, host)); evaluated once per stream at attach.
+    dvv::MoveOnlyFunction<dvv::media::ViewSpec(const dvv::media::FrameDesc&)> viewFor;
 };
 using StackFactory =
     dvv::MoveOnlyFunction<dvv::Result<MediaStack>(std::optional<dvv::gpu::DeviceId>)>;
@@ -78,7 +78,7 @@ struct SessionOptions {
     std::shared_ptr<dvv::gpu::GpuInstance> gpus;  // null: host-only
     std::optional<dvv::gpu::DeviceId> device;     // null: the best device
     bool presentation = false;                    // contexts with presentation (GUI)
-    std::uint32_t inflight = 4;                   // PlayerConfig::inflight (K, D11)
+    std::uint32_t inflight = DEFAULT_INFLIGHT;    // PlayerConfig::inflight (K, D11)
     // SourceRequest::fileReads of every open (the config file's io.fileReads).
     dvv::platform::FileReadMode fileReads = dvv::media::DEFAULT_FILE_READS;
     std::shared_ptr<IClock> clock;

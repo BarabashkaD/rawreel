@@ -12,6 +12,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/exit_code.h"
 #include "core/gui_arguments.h"
 #include "gui/gui_main.h"
 

@@ -36,6 +36,7 @@ TEST_CASE("full path: Windows") {
     CHECK(streamFullPath("file:clip.yuv", "X:\\work\\v", PathStyle::Windows) ==
           "X:\\work\\v\\clip.yuv");
     CHECK(streamFullPath("file:X:/in/clip.yuv", "X:\\u", PathStyle::Windows) == "X:\\in\\clip.yuv");
+    CHECK(streamFullPath("file:x:/in/clip.yuv", "X:\\u", PathStyle::Windows) == "x:\\in\\clip.yuv");
     CHECK(streamFullPath("file:\\\\server\\share\\clip.yuv", "X:\\u", PathStyle::Windows) ==
           "\\\\server\\share\\clip.yuv");
 }

@@ -22,6 +22,7 @@
 #include <wx/preferences.h>
 #include <wx/weakref.h>
 
+#include "core/config.h"
 #include "core/config_writer.h"
 #include "core/recent.h"
 #include "dvv/base/log.h"
@@ -72,10 +73,9 @@ public:
 
 private:
     struct Choice {
-        dvv::LogLevel level = dvv::LogLevel::Info;  // the saved log.level
-        bool fileEnabled = true;
-        std::filesystem::path folder;  // empty: the default folder
-        bool systemLog = false;
+        dvv::LogLevel level = LogConfig{}.level;  // the saved log.level
+        LogFileConfig file;                       // enabled, folder (empty: the default folder)
+        SystemLogConfig system;
     };
     struct Prepared {
         std::shared_ptr<dvv::SplitFileSink> sink;

@@ -11,17 +11,18 @@
 #include <wx/wx.h>  // first (R11)
 // clang-format on
 
-#include <functional>
 #include <vector>
 
 #include <wx/aui/framemanager.h>
+
+#include "dvv/base/move_only_function.h"
 
 namespace rawreel {
 
 class DockManager final : public wxAuiManager {
 public:
     // `centre_minimum`: the centre pane's minimum size in physical pixels.
-    explicit DockManager(std::function<wxSize()> centre_minimum);
+    explicit DockManager(dvv::MoveOnlyFunction<wxSize()> centre_minimum);
 
     // SetManagedWindow(frame), with the frame's size and left-up events routed through the fit.
     void manage(wxWindow* frame);
@@ -46,7 +47,8 @@ private:
     void onLeftUp(wxMouseEvent& event);
     Remembered& remembered(const wxAuiDockInfo& dock);
 
-    std::function<wxSize()> centre_minimum_;
+    // mutable: minimumClientSize() const calls it (MoveOnlyFunction has no const form).
+    mutable dvv::MoveOnlyFunction<wxSize()> centre_minimum_;
     std::vector<Remembered> remembered_;
 };
 

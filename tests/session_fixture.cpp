@@ -240,7 +240,7 @@ SessionFixture::SessionFixture(RealTime) {
     start(true);
 }
 
-SessionFixture::SessionFixture(RealTime, std::function<void(SessionOptions&)> configure)
+SessionFixture::SessionFixture(RealTime, dvv::MoveOnlyFunction<void(SessionOptions&)> configure)
     : configure_(std::move(configure)) {
     start(true);
 }
@@ -351,7 +351,7 @@ SessionOptions SessionFixture::options() {
             MediaStack stack;
             const dvv::media::Domain host = store->hostDomain();
             stack.viewFor = [host](const dvv::media::FrameDesc& desc) {
-                return dvv::media::planesView(desc, dvv::media::BindingKind::HostPlanes, host);
+                return dvv::media::planesView(desc, dvv::media::HOST_PLANES, host);
             };
             stack.store = std::move(store);
             return stack;

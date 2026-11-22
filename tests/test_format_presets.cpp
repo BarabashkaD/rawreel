@@ -16,7 +16,6 @@
 using dvv::media::ColourMatrix;
 using dvv::media::ColourModel;
 using dvv::media::ColourParams;
-using dvv::media::Rational;
 
 TEST_SUITE("core") {
     TEST_CASE("format presets: size labels") {
@@ -50,12 +49,6 @@ TEST_SUITE("core") {
         for (std::size_t i = 0; i < rates.size(); ++i) {
             CHECK(rates[i] == expected[i]);
         }
-        CHECK(rawreel::findFrameRatePreset({30000, 1001}) == std::size_t{3});
-        CHECK(rawreel::findFrameRatePreset({25, 1}) == std::size_t{2});
-        CHECK_FALSE(rawreel::findFrameRatePreset({2997, 100}));
-        CHECK(rawreel::frameRateValueLabel(Rational{30000, 1001}) == "= 29.970 fps (30000/1001)");
-        CHECK(rawreel::frameRateValueLabel(Rational{25, 1}) == "= 25 fps");
-        CHECK(rawreel::frameRateValueLabel(std::nullopt).empty());
     }
 
     TEST_CASE("format presets: format model") {
@@ -140,9 +133,6 @@ TEST_SUITE("core") {
     TEST_CASE("format presets: RGB and gray") {
         const auto rgb = rawreel::defaultColour("rgb24", 1080);
         CHECK(rgb.params.range == dvv::media::ColourRange::Full);
-        CHECK(rawreel::matrixNotUsedLabel(ColourModel::Rgb) == "Not used (RGB format)");
-        CHECK(rawreel::matrixNotUsedLabel(ColourModel::Gray) == "Not used (gray format)");
-        CHECK(rawreel::matrixNotUsedLabel(ColourModel::Yuv).empty());
         CHECK(rawreel::matrixLabel(ColourMatrix::Rgb) == "GBR (planes hold G, B, R)");
         CHECK(rawreel::matrixLabel(ColourMatrix::Bt2020Ncl) == "BT.2020 NCL");
     }

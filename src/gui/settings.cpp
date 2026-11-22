@@ -167,16 +167,15 @@ bool LogSettingsPage::active() const {
 LogSettingsPage::Choice LogSettingsPage::applied() const {
     const App& app = wxGetApp();
     return {.level = app.savedLevel(),
-            .fileEnabled = app.config().log.file.enabled,
-            .folder = app.config().log.file.folder,
-            .systemLog = app.systemLogEnabled()};
+            .file = app.config().log.file,
+            .system = {.enabled = app.systemLogEnabled()}};
 }
 
 dvv::Result<std::filesystem::path> LogSettingsPage::folderOf(const Choice& choice) const {
-    if (choice.folder.empty()) {
+    if (choice.file.folder.empty()) {
         return wxGetApp().defaultLogFolder();
     }
-    return choice.folder;
+    return choice.file.folder;
 }
 
 void LogSettingsPage::chooseFolder() {
@@ -194,7 +193,7 @@ void LogSettingsPage::chooseFolder() {
         return;
     }
     // Spec §5.2: the default folder's own path is stored as "".
-    wanted_.folder = wxGetApp().isDefaultLogFolder(chosen) ? std::filesystem::path() : chosen;
+    wanted_.file.folder = wxGetApp().isDefaultLogFolder(chosen) ? std::filesystem::path() : chosen;
     folder_chosen_ = true;
     changed();
 }
@@ -203,7 +202,7 @@ void LogSettingsPage::useDefault() {
     if (!active()) {
         return;
     }
-    wanted_.folder.clear();
+    wanted_.file.folder.clear();
     folder_chosen_ = true;
     changed();
 }
@@ -225,7 +224,7 @@ void LogSettingsPage::setFileEnabled(bool on) {
     if (!active()) {
         return;
     }
-    wanted_.fileEnabled = on;
+    wanted_.file.enabled = on;
     changed();
 }
 
@@ -249,12 +248,12 @@ void LogSettingsPage::setSystemLog(bool on) {
     if (!active()) {
         return;
     }
-    wanted_.systemLog = on;
+    wanted_.system.enabled = on;
     changed();
 }
 
 bool LogSettingsPage::useDefaultEnabled() const {
-    return !wanted_.folder.empty() && !wxGetApp().isDefaultLogFolder(wanted_.folder);
+    return !wanted_.file.folder.empty() && !wxGetApp().isDefaultLogFolder(wanted_.file.folder);
 }
 
 bool LogSettingsPage::revealEnabled() const {
@@ -329,8 +328,8 @@ bool LogSettingsPage::prepare() {
     // folder was chosen (a system log change never retries a folder that failed at start). A
     // chosen folder that is already in use is not reopened (below).
     const bool chosen = std::exchange(folder_chosen_, false);
-    if (!wanted_.fileEnabled ||
-        (wanted_.fileEnabled == now.fileEnabled && wanted_.folder == now.folder && !chosen)) {
+    if (!wanted_.file.enabled || (wanted_.file.enabled == now.file.enabled &&
+                                  wanted_.file.folder == now.file.folder && !chosen)) {
         return true;
     }
     App& app = wxGetApp();
@@ -351,7 +350,7 @@ bool LogSettingsPage::prepare() {
         reason = folder.error().message;
     }
     // The old file stays in use; a native message gives the path and the reason.
-    const std::string path = dvv::pathDisplayText(folder ? *folder : wanted_.folder);
+    const std::string path = dvv::pathDisplayText(folder ? *folder : wanted_.file.folder);
     DVV_LOG_WARN("log folder '{}' cannot be used: {}", path, reason);
     wxMessageDialog dialog(wxGetTopLevelParent(this), "The log folder cannot be used.", "rawreel",
                            wxOK | wxICON_ERROR);
@@ -365,22 +364,23 @@ bool LogSettingsPage::prepare() {
 void LogSettingsPage::apply(std::vector<ConfigValue>& values) {
     App& app = wxGetApp();
     const Choice before = applied();
-    if (!wanted_.fileEnabled) {
+    if (!wanted_.file.enabled) {
         app.stopLogFile();
     } else if (prepared_) {
         app.useLogFile(std::move(prepared_->sink), std::move(prepared_->folder));
     }
     prepared_.reset();
-    if (wanted_.fileEnabled != before.fileEnabled) {
-        values.push_back({.key = "log.file.enabled", .value = wanted_.fileEnabled});
+    if (wanted_.file.enabled != before.file.enabled) {
+        values.push_back({.key = config_key::LOG_FILE_ENABLED, .value = wanted_.file.enabled});
     }
-    if (wanted_.folder != before.folder) {
-        values.push_back({.key = "log.file.folder", .value = dvv::pathText(wanted_.folder)});
+    if (wanted_.file.folder != before.file.folder) {
+        values.push_back(
+            {.key = config_key::LOG_FILE_FOLDER, .value = dvv::pathText(wanted_.file.folder)});
     }
-    app.setLogFileConfig(wanted_.fileEnabled, wanted_.folder);
-    if (wanted_.systemLog != before.systemLog) {
-        app.useSystemLog(wanted_.systemLog);
-        values.push_back({.key = "log.system.enabled", .value = wanted_.systemLog});
+    app.setLogFileConfig(wanted_.file);
+    if (wanted_.system.enabled != before.system.enabled) {
+        app.useSystemLog(wanted_.system.enabled);
+        values.push_back({.key = config_key::LOG_SYSTEM_ENABLED, .value = wanted_.system.enabled});
     }
     // Log level design §2.2: a changed level is saved (only the owner saves) and becomes the
     // active level, which ends a run-only level. On macOS and GTK choosing the saved level does
@@ -390,7 +390,7 @@ void LogSettingsPage::apply(std::vector<ConfigValue>& values) {
     if (level_changed) {
         app.setLevelConfig(wanted_.level);
         values.push_back(
-            {.key = "log.level", .value = std::string(levelConfigValue(wanted_.level))});
+            {.key = config_key::LOG_LEVEL, .value = std::string(levelConfigValue(wanted_.level))});
     }
     if (level_changed || (level_chosen && wxPreferencesEditor::ShouldApplyChangesImmediately())) {
         app.setActiveLevel(wanted_.level,
@@ -403,13 +403,13 @@ void LogSettingsPage::refresh() {
     const auto level = std::ranges::find(LEVELS, wanted_.level);
     level_->SetSelection(level != LEVELS.end() ? static_cast<int>(level - LEVELS.begin())
                                                : wxNOT_FOUND);
-    file_box_->SetValue(wanted_.fileEnabled);
-    folder_->ChangeValue(fromUtf8(dvv::pathDisplayText(wanted_.folder)));
+    file_box_->SetValue(wanted_.file.enabled);
+    folder_->ChangeValue(fromUtf8(dvv::pathDisplayText(wanted_.file.folder)));
     const dvv::Result<std::filesystem::path> fallback = app.defaultLogFolder();
     folder_->SetHint(fallback ? fromUtf8(dvv::pathDisplayText(*fallback)) : wxString());
     use_default_->Enable(useDefaultEnabled());
     reveal_->Enable(revealEnabled());
-    system_box_->SetValue(wanted_.systemLog);
+    system_box_->SetValue(wanted_.system.enabled);
     // Spec §5.2: the folder in use is not the saved one (a fallback at start).
     const std::filesystem::path in_use = app.logFolderInUse();
     const dvv::Result<std::filesystem::path> saved = folderOf(applied());
@@ -561,16 +561,17 @@ void FilesSettingsPage::apply(std::vector<ConfigValue>& values) {
     App& app = wxGetApp();
     if (wanted_ != app.config().io.fileReads) {
         app.useFileReads(wanted_);  // spec §5.3: every later open, reopens included
-        values.push_back({.key = "io.fileReads", .value = std::string(fileReadsName(wanted_))});
+        values.push_back(
+            {.key = config_key::IO_FILE_READS, .value = std::string(fileReadsName(wanted_))});
     }
     // Open Recent spec §7, §9: a smaller size cuts the list for good, a larger one brings nothing
     // back; the cut list is saved with the size.
     if (wanted_size_ != app.recent().capacity()) {
         const bool cut = app.recent().setCapacity(wanted_size_);
         values.push_back(
-            {.key = "gui.recentSize", .value = static_cast<std::int64_t>(wanted_size_)});
+            {.key = config_key::GUI_RECENT_SIZE, .value = static_cast<std::int64_t>(wanted_size_)});
         if (cut) {
-            values.push_back({.key = "gui.recent", .value = app.recent().entries()});
+            values.push_back({.key = config_key::GUI_RECENT, .value = app.recent().entries()});
             if (frame_) {
                 frame_->recentChanged();
             }

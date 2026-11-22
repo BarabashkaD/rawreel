@@ -52,6 +52,7 @@
 
 #include "core/commands.h"
 #include "core/config.h"
+#include "core/exit_code.h"
 #include "core/format_choice.h"
 #include "core/info_text.h"
 #include "core/layout.h"
@@ -83,7 +84,6 @@
 #include "dvv/media/format_json.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
-#include "dvv/platform/native_window.h"
 #include "dvv/platform/pixel_size.h"
 #include "dvv/registry/module.h"
 #include "gui/about.h"
@@ -98,7 +98,6 @@
 #include "gui/main_frame.h"
 #include "gui/native_controls.h"
 #include "gui/native_policy.h"
-#include "gui/native_window.h"
 #include "gui/player_panel.h"
 #include "gui/selftest_detail.h"
 #include "gui/settings.h"
@@ -1905,6 +1904,7 @@ struct EditState {
     std::optional<std::string> message;    // the message hook's text and extended text
     std::uintmax_t logSize = 0;            // over the live log: the file's size before
     std::uint64_t logNext = 0;             // write failure: the store's next sequence before
+    bool seeded = false;                   // replace: the old file was really written
 };
 
 // Spec §4.1: the focused Log list keeps its keys; Space does not reach playback.
@@ -2380,6 +2380,51 @@ SelfTestStep saveFailureStep(SelfTest* test, const std::shared_ptr<EditState>& s
     return step("save log write failure", std::move(start), std::move(passed));
 }
 
+// Spec §4.5: a save over an existing file replaces it (the old text is gone, no ".tmp" is left).
+SelfTestStep saveReplaceStep(SelfTest* test, const std::shared_ptr<EditState>& state) {
+    static constexpr std::string_view SENTINEL = "rawreel selftest: old contents\n";
+    auto start = [test, state] {
+        state->file = saveFolder(test) / "replaced.txt";
+        state->message.reset();
+        state->seeded = false;
+        if (!saveFolder(test).empty()) {
+            std::ofstream out(state->file, std::ios::binary | std::ios::trunc);
+            out << SENTINEL;
+            out.close();
+            state->seeded = !out.fail();
+        }
+        dialogHooks().saveLog = [state](wxFileDialog& dialog) {
+            dialog.SetPath(wxString::FromUTF8(dvv::pathDisplayText(state->file)));
+        };
+        dialogHooks().message = [state](wxMessageDialog& dialog) {
+            state->message =
+                (dialog.GetMessage() + " " + dialog.GetExtendedMessage()).utf8_string();
+        };
+        test->frame().execute(Command::SaveLog);
+    };
+    auto passed = [test, state](std::string& seen) {
+        std::string text;
+        {
+            std::ifstream in(state->file, std::ios::binary);
+            text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        const bool replaced =
+            !text.empty() && text.find(SENTINEL) == std::string::npos && text.back() == '\n';
+        bool left_over = false;
+        std::error_code error;
+        for (const auto& entry : std::filesystem::directory_iterator(saveFolder(test), error)) {
+            left_over = left_over || entry.path().extension() == ".tmp";
+        }
+        seen = std::format("{} bytes, the old text {}; message '{}'; a .tmp file {}{}", text.size(),
+                           replaced ? "replaced" : "kept or file empty",
+                           state->message.value_or("none"), left_over ? "left" : "absent",
+                           state->seeded ? "" : "; the old file was not written");
+        return state->seeded && !saveFolder(test).empty() && !error && replaced &&
+               !state->message && !left_over;
+    };
+    return step("save log replaces a file", std::move(start), std::move(passed));
+}
+
 // A hidden Log pane can keep the native focus (wxAUI hides the pane, not the focus): then the
 // playback keys work (Home, which only goes to frame 0, reaches the frame's char hook).
 SelfTestStep hiddenLogKeysStep(SelfTest* test, const std::shared_ptr<EditState>& state) {
@@ -2421,6 +2466,7 @@ void addEditSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     steps.push_back(saveOverLiveLogStep(test, state));
     steps.push_back(saveOverLogFileStep(test, state));
     steps.push_back(saveFailureStep(test, state));
+    steps.push_back(saveReplaceStep(test, state));
     steps.push_back(hiddenLogKeysStep(test, state));
 }
 
@@ -2648,7 +2694,8 @@ SelfTestStep logFileTimestampedStep(SelfTest* test) {
     auto passed = [test](std::string& seen) {
         const std::filesystem::path file = test->app().currentLogFile();
         const std::string name = dvv::pathDisplayText(file.filename());
-        const bool matches = !name.empty() && isLogFileName(name, false);
+        const bool matches =
+            !name.empty() && dvv::parseSplitLogName(name, LOG_FILE_PREFIX).has_value();
         seen = std::format("log file '{}' matches {}", dvv::pathDisplayText(file), matches);
         return matches;
     };
@@ -3227,15 +3274,15 @@ SelfTestStep settingsNonUtf8FolderStep(SelfTest* test,
         "-logs";
     auto start = [test, state, bytes] {
         state->target = test->app().config().log.file.folder;  // restored in passed
-        test->app().setLogFileConfig(test->app().config().log.file.enabled,
-                                     dvv::pathFromText(bytes));
+        test->app().setLogFileConfig(
+            {.enabled = test->app().config().log.file.enabled, .folder = dvv::pathFromText(bytes)});
         runSettings(test, state, [](SettingsWindow&) {});
     };
     auto passed = [test, state, bytes](std::string& seen) {
         App& app = test->app();
         const bool same =
             app.config().log.file.folder.native() == dvv::pathFromText(bytes).native();
-        app.setLogFileConfig(app.config().log.file.enabled, state->target);
+        app.setLogFileConfig({.enabled = app.config().log.file.enabled, .folder = state->target});
         seen = std::format("hook ran {}, the stored folder has the same bytes {}", state->hookRan,
                            same);
         return state->hookRan && same;
@@ -5059,11 +5106,11 @@ void addWheelSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
         };
         // After two Ctrl+wheel half notches with `between` sent between them.
         const auto halves = [&frame, st, ctrl_start](std::string name,
-                                                     std::function<void(Viewport&)> between,
+                                                     dvv::MoveOnlyFunction<void(Viewport&)> between,
                                                      double zoom) {
             return step(
                 std::move(name),
-                [&frame, st, ctrl_start, between = std::move(between)] {
+                [&frame, st, ctrl_start, between = std::move(between)]() mutable {
                     Viewport& viewport = frame.viewport();
                     ctrl_start(viewport);
                     const wxPoint at = viewportCentre(viewport);
@@ -5602,11 +5649,11 @@ void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
                            frame.viewport().view().zoom, viewModeName(view.mode()), view.zoom());
     };
     // `command` from the menu, starting from `from`; then the view is Zoom at `zoom` with `text`.
-    auto menu_zoom = [&frame, shown](std::string name, std::function<ViewRequest()> from,
+    auto menu_zoom = [&frame, shown](std::string name, dvv::MoveOnlyFunction<ViewRequest()> from,
                                      Command command, double zoom, std::string text) {
         return step(
             std::move(name),
-            [&frame, from = std::move(from), command] {
+            [&frame, from = std::move(from), command]() mutable {
                 frame.viewport().setView(from());
                 sendMenu(frame, menuId(command));
             },
@@ -5874,7 +5921,7 @@ void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
 // Spec §11: the scenario's earlier opens, then routes, failures, Format dialogs and the history
 // saves. `dir` is the scenario's scratch folder (known once its first step ran).
 void addRecentSteps(std::vector<SelfTestStep>& steps, SelfTest& test,
-                    std::function<std::filesystem::path()> dir) {
+                    dvv::MoveOnlyFunction<std::filesystem::path()> dir) {
     MainFrame& frame = test.frame();
     App& app = test.app();
     struct State {
@@ -5949,7 +5996,7 @@ void addRecentSteps(std::vector<SelfTestStep>& steps, SelfTest& test,
     // R1: the earlier opens of the scenario (the command line, drops, Finder) are listed.
     steps.push_back(step(
         "Open Recent lists the earlier opens",
-        [st, dir = std::move(dir)] {
+        [st, dir = std::move(dir)]() mutable {
             const std::filesystem::path folder = dir();
             st->fileA = folder / dvv::pathFromText("recent & \xC3\xBC_64x48_yuv420p.yuv");
             st->fileB = folder / "recent_second_64x48_yuv420p.yuv";
@@ -8509,6 +8556,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             FormatDialog::FieldsEnabled raw;  // every field enabled
         };
         auto lock = std::make_shared<Lock>();
+        // const std::function&: called during the call only (std::function_ref is C++26).
         auto read_lock = [&frame](bool& seen, const std::function<void(FormatDialog&)>& read) {
             dialogHooks().format = [&seen, &read](FormatDialog& dialog) {
                 seen = true;

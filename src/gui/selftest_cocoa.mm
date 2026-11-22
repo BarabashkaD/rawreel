@@ -18,11 +18,11 @@
 #include "dvv/platform/pixel_size.h"
 #include "gui/app.h"
 #include "gui/main_frame.h"
-#include "gui/native_window.h"
 #include "gui/selftest.h"
 #include "gui/selftest_detail.h"
 #include "gui/settings.h"
 #include "gui/viewport.h"
+#include "gui/viewport_window.h"
 
 namespace rawreel {
 namespace {

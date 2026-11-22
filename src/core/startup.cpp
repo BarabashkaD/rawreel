@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <filesystem>
 #include <format>
-#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -16,6 +15,7 @@
 #include "dvv/base/environment.h"
 #include "dvv/base/paths.h"
 #include "dvv/base/utf8.h"
+#include "dvv/components/ffmpeg.h"
 #include "dvv/media/source_factory.h"
 
 namespace rawreel {

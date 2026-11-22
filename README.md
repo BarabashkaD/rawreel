@@ -10,15 +10,15 @@ are built on the dvv libraries, which this repository pins as git submodules in 
 |---|---|
 | [dvv-build](https://github.com/BarabashkaD/dvv-build) | presets, bootstrap, third-party superbuild and licence gate, privacy lint, CI workflow |
 | [dvv-base](https://github.com/BarabashkaD/dvv-base) | errors, tasks and executors, logger, lifetime registry and leak check, JSON, URIs, paths |
-| [dvv-registry](https://github.com/BarabashkaD/dvv-registry) | component registry, capabilities, parameter schemas, component kind check |
-| [dvv-platform](https://github.com/BarabashkaD/dvv-platform) | native windows, Vulkan surfaces, dynamic libraries, `FileReader` |
+| [dvv-registry](https://github.com/BarabashkaD/dvv-registry) | component info, capability probing, loadable modules, the component registry |
+| [dvv-platform](https://github.com/BarabashkaD/dvv-platform) | native window handles, run-time libraries, `FileReader`, atomic file replacement, crash handler |
 | [dvv-gpu](https://github.com/BarabashkaD/dvv-gpu) | Vulkan 1.4 core: devices, buffers and images, submission, Slang shaders, compute pipelines, presentation |
 | [dvv-media](https://github.com/BarabashkaD/dvv-media) | pixel-format catalogue, custom JSON formats, frames and the frame store, synthetic, raw and Y4M sources |
 | [dvv-components](https://github.com/BarabashkaD/dvv-components) | `dvv_add_component()`, the FFmpeg run-time binding, the `ffmpeg` and `lavfi` sources |
 
 ## Packages
 
-A release has these files (`<v>` is the version, e.g. `0.12.0`):
+A release has these files (`<v>` is the version, e.g. `0.13.0`):
 
 - `rawreel-<v>-windows-x64.zip`: the application. Unzip it anywhere and start `rawreel-gui.exe`;
   nothing is installed. The zip is not code-signed, so Windows SmartScreen may warn at the first
@@ -407,7 +407,9 @@ selection); the playback keys work again once the focus is elsewhere.
   lines), UTF-8, with `\n` line ends. The save dialog suggests `rawreel-log-YYYYMMDD-HHMMSS.txt`.
   A target that is the log file in use, or a file in the log folder in use whose name is that of a
   log file (`rawreel-YYYYMMDD-HHMMSS.log`, with an optional `-N` before `.log`; names compare
-  without regard to case on Windows and macOS), is refused.
+  without regard to case on Windows and macOS), is refused, as is a link or anything else that is
+  not a regular file. The log is written to a temporary file next to the target, which then
+  replaces the target.
 - **Level:** the active log level decides which records are recorded. The list's context menu has
   Level ▸ with Errors, Warnings, Info, Debug and Trace, the active one checked. A level chosen
   there holds for this run only and is not saved; the next start uses the saved level. The saved
@@ -628,9 +630,8 @@ In detail:
   URI the parser rejects, even as `Unsupported` (e.g. `file://host/x`), and an unexpected
   exception.
 - 3 covers `Unsupported` from opening a source.
-- 4 covers `DeviceLost` and `ShaderCompile` anywhere, `Unsupported`, `OutOfMemory`, `Internal`
-  and `Cancelled` from the GPU setup, and `OutOfMemory` from reading a frame through a store with
-  a GPU context.
+- 4 covers `DeviceLost` anywhere, `Unsupported`, `OutOfMemory`, `Internal` and `Cancelled` from
+  the GPU setup, and `OutOfMemory` from reading a frame through a store with a GPU context.
 
 A leak check runs at exit and lists leaked objects on stderr; with `DVV_LEAK_CHECK=fail` (the
 default in Debug builds) a run that would exit with 0 exits with 1.
@@ -660,8 +661,8 @@ valid Unicode, an internal error (an unexpected exception) and the leak report. 
   `dvv_components`, `wxwidgets`, `vulkan` and `ffmpeg` (the FFmpeg status line).
 
 An error is `{"error": {"code", "message"}}`. `code` is `Arguments` for exit 1 and otherwise the
-dvv error code (`Io`, `Format`, `Unsupported`, `OutOfMemory`, `DeviceLost`, `ShaderCompile`,
-`Cancelled`, `Internal`):
+dvv error code (`Io`, `Format`, `Unsupported`, `OutOfMemory`, `DeviceLost`, `Cancelled`,
+`Internal`):
 
 ```powershell
 & $cli info 'synthetic:noise?fmt=nope&size=2x2' --json    # exit 2
@@ -829,7 +830,7 @@ the report with the symbols of the same release, `rawreel-<v>-macos-arm64-symbol
 `SHA256SUMS` lists the SHA256 of every release file. In PowerShell, in the download folder:
 
 ```powershell
-$f = 'rawreel-0.12.0-windows-x64.zip'
+$f = 'rawreel-0.13.0-windows-x64.zip'
 $want = (Select-String -Path SHA256SUMS -SimpleMatch $f).Line.Split(' ')[0]
 (Get-FileHash $f -Algorithm SHA256).Hash -eq $want    # True
 ```
@@ -839,12 +840,12 @@ On Linux (or wherever coreutils exist), and on macOS: `sha256sum -c --ignore-mis
 attestation from the release workflow; with the GitHub CLI:
 
 ```powershell
-gh attestation verify rawreel-0.12.0-windows-x64.zip --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.13.0-windows-x64.zip --repo BarabashkaD/rawreel
 ```
 
 ```sh
-gh attestation verify rawreel-0.12.0-linux-x64.tar.xz --repo BarabashkaD/rawreel
-gh attestation verify rawreel-0.12.0-macos-arm64.dmg --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.13.0-linux-x64.tar.xz --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.13.0-macos-arm64.dmg --repo BarabashkaD/rawreel
 ```
 
 ## Getting the source
@@ -871,7 +872,9 @@ To change a dvv library, work in its folder in `libs/` as `libs/dvv-build/README
    change is merged only after a green run of the `ci` workflow that includes every library's
    tests at the pins: a pull request does not run them, so start `ci` by hand on its branch with
    `test_libs` (every push to `main` runs them).
-4. Raise the library's line in rawreel's `dvv-deps.txt` only when rawreel needs the new version.
+4. Raise the library's line in rawreel's `dvv-deps.txt` to every new minor of the library (a minor
+   may remove names, and the check accepts only the same minor at or above the line), and to a new
+   patch only when rawreel needs it.
 5. A dvv-build change follows the same flow; the `@v<version>` of `dvv-ci.yml` in
    `.github/workflows/` moves with its pin (check-pins checks it).
 
