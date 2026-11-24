@@ -1,30 +1,33 @@
-// rawreel's viewport compositor (design M3 v2 D3, D23, §4.4). One thread per viewport pixel: the
-// display image (RGBA16F, linear light, BT.709 primaries) fitted into the viewport with the
-// background around it, then the sRGB encode into the RGBA8 output, which the presenter blits 1:1.
-// compositePixel() in tests/composite_reference.cpp computes the same, in the same order.
+// rawreel's picture pass. One thread per pixel of the part of P it draws, from P pixel (drawX,
+// drawY) (the part right of and below the hugged rect's top-left): the display image (RGBA16F,
+// linear light, BT.709 primaries) shown with the background around it, the grid drawn over it, then
+// the sRGB encode into the RGBA8 output, which the presenter blits 1:1. Viewport pixel p shows the
+// image when it lies in dvv-media's imageSpan on both axes and samples at its pixel centre,
+// imageCoordinateAt; the grid lines come from lineAt, run once per column and per row by the grid
+// prepass (grid_lines.slang), so the picture and the lines share one rule. compositePixel() in
+// tests/composite_reference.cpp computes the same, in the same order.
+
+import composite_common;
+import dvv_media.view_lines;
+import viewport_background;
+
+using namespace dvv::media;
 
 static const uint FLAG_DARK = 1;
 static const uint FLAG_SKIP_ENCODE = 2;
 static const uint MAX_TAPS = 4;
 
-struct PushConstants
-{
-    uint viewportW;
-    uint viewportH;
-    uint imageW;
-    uint imageH;
-    float zoom;
-    float originX;
-    float originY;
-    uint flags;
-};
+// The halo darkens the pixel by this share of the level's opacity.
+static const float HALO_STRENGTH = 0.6;
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> pc;
 
 // Set 0, pushed per dispatch (M2 push descriptors). Bound images are writable for dvv-gpu; this
-// shader only reads binding 0.
+// shader only reads bindings 0 and 2. `lines` holds the grid prepass's hits (packHit), written
+// only when a grid level is drawn.
 [[vk::binding(0, 0)]] [format("rgba16f")] RWTexture2D<float4> display;
 [[vk::binding(1, 0)]] [format("rgba8")] RWTexture2D<float4> output;
+[[vk::binding(2, 0)]] [format("r32ui")] RWTexture2D<uint> lines;
 
 // IEC 61966-2-1, as dvv::media::srgbEncode/srgbDecode (input clamped).
 float srgbEncode(float x)
@@ -47,9 +50,9 @@ float3 texel(int x, int y)
 
 float3 mix3(float3 a, float3 b, float t)
 {
-    return a + t * (b - a);
+    precise const float3 mixed = a + t * (b - a);
+    return mixed;
 }
-
 // The 4-texel bilinear around (u - 0.5, v - 0.5), edges clamped.
 float3 bilinear(float u, float v)
 {
@@ -92,28 +95,95 @@ float3 sampleDisplay(float u, float v)
     return sum / float(n * n);
 }
 
+float3 encode3(float3 c)
+{
+    return float3(srgbEncode(c.r), srgbEncode(c.g), srgbEncode(c.b));
+}
+
+float3 decode3(float3 c)
+{
+    return float3(srgbDecode(c.r), srgbDecode(c.g), srgbDecode(c.b));
+}
+
+// A byte of a packed colour as a value in [0, 1].
+float unpackByte(uint packed, uint shift)
+{
+    return float((packed >> shift) & 0xFF) * (1.0 / 255.0);
+}
+
+bool inSpan(PixelSpan span, int pixel)
+{
+    return pixel >= span.begin && pixel < span.end;
+}
+
+// The hit drawn where both axes hit: the smaller level; at the same level a line beats a halo (a
+// horizontal line is not cut by the halo of a vertical one); else x.
+LineHit winner(LineHit x, LineHit y)
+{
+    if (!y.hit)
+    {
+        return x;
+    }
+    if (!x.hit || y.level < x.level || (y.level == x.level && x.halo && !y.halo))
+    {
+        return y;
+    }
+    return x;
+}
+
+// The encoded pixel `encoded` with the line of `hit` over it, in encoded space.
+float3 blendLine(float3 encoded, LineHit hit)
+{
+    const uint colour = pc.levelColour[hit.level];
+    const float alpha = unpackByte(colour, 24);
+    if (hit.halo)
+    {
+        const float strength = HALO_STRENGTH * alpha;
+        return mix3(encoded, float3(0.0, 0.0, 0.0), strength);
+    }
+    float3 line = float3(unpackByte(colour, 0), unpackByte(colour, 8), unpackByte(colour, 16));
+    if ((pc.levelShape[hit.level] & LEVEL_ADAPTIVE) != 0)
+    {
+        precise const float luma = 0.2126 * encoded.r + 0.7152 * encoded.g + 0.0722 * encoded.b;
+        const float shade = luma > 0.5 ? 0.0 : 1.0;
+        line = float3(shade, shade, shade);
+    }
+    return mix3(encoded, line, alpha);
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void main(uint3 id: SV_DispatchThreadID)
 {
-    if (id.x >= pc.viewportW || id.y >= pc.viewportH)
+    // Thread id draws P pixel id + draw: the bounds test, the line table and the write use it.
+    const uint2 p = uint2(id.x + pc.drawX, id.y + pc.drawY);
+    if (p.x >= pc.viewportW || p.y >= pc.viewportH)
     {
         return;
     }
-    float grey = srgbDecode((pc.flags & FLAG_DARK) != 0 ? 0.12 : 0.85);
+    const AxisView ax = axisOf(pc.offsetX, pc.zoom, pc.imageW, pc.viewportW);
+    const AxisView ay = axisOf(pc.offsetY, pc.zoom, pc.imageH, pc.viewportH);
+    const int px = int(p.x);
+    const int py = int(p.y);
+    const bool inside = inSpan(imageSpan(ax), px) && inSpan(imageSpan(ay), py);
+    float grey = srgbDecode(viewportBackground((pc.flags & FLAG_DARK) != 0));
     float3 colour = float3(grey, grey, grey);
-    if (pc.imageW != 0 && pc.imageH != 0 && pc.zoom > 0.0)
+    if (inside)
     {
-        float u = pc.originX + (float(id.x) + 0.5) / pc.zoom;
-        float v = pc.originY + (float(id.y) + 0.5) / pc.zoom;
-        if (u >= 0.0 && v >= 0.0 && u < float(pc.imageW) && v < float(pc.imageH))
+        colour = sampleDisplay(imageCoordinateAt(ax, px), imageCoordinateAt(ay, py));
+    }
+    const bool skip = (pc.flags & FLAG_SKIP_ENCODE) != 0;
+    float3 result = skip ? colour : encode3(colour);
+    if (inside && gridDrawn(pc))
+    {
+        // The prepass's lineAt of this column and of this row.
+        const LineHit hit =
+            winner(unpackHit(lines[uint2(p.x, 0)]), unpackHit(lines[uint2(p.y, 1)]));
+        if (hit.hit)
         {
-            colour = sampleDisplay(u, v);
+            const float3 blended = blendLine(skip ? encode3(colour) : result, hit);
+            result = skip ? decode3(blended) : blended;
         }
     }
-    if ((pc.flags & FLAG_SKIP_ENCODE) == 0)
-    {
-        colour = float3(srgbEncode(colour.r), srgbEncode(colour.g), srgbEncode(colour.b));
-    }
-    output[id.xy] = float4(colour, 1.0);
+    output[uint2(pc.regionX + p.x, pc.regionY + p.y)] = float4(result, 1.0);
 }

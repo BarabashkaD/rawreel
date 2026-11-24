@@ -20,6 +20,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <wx/aui/framemanager.h>
@@ -30,14 +31,15 @@
 #include "core/gui_arguments.h"
 #include "core/layout.h"
 #include "core/log_store.h"
+#include "core/overlay.h"
 #include "core/recent.h"
 #include "core/session.h"
 #include "core/session_types.h"
 #include "core/version_text.h"
-#include "core/view.h"
 #include "dvv/base/error.h"
+#include "dvv/media/view.h"
 #include "gui/dock_manager.h"
-#include "gui/info_window.h"
+#include "gui/floating_window.h"
 #include "gui/skim_key.h"
 #include "render/display_state.h"
 
@@ -88,7 +90,13 @@ inline constexpr int COMMAND_ID_BASE = wxID_HIGHEST + 100;  // menu id = base + 
 // Resize window to actual size. Fit, Actual size and Resize carry menuId and menuLabel (their
 // keys), the percentages ZOOM_MENU_ID_BASE + i. All but Resize are check items; the one
 // zoomMenuChecked names is checked.
-[[nodiscard]] std::unique_ptr<wxMenu> zoomMenu(ViewMode mode, double zoom);
+[[nodiscard]] std::unique_ptr<wxMenu> zoomMenu(dvv::media::ViewMode mode, double zoom);
+
+// Whether setOverlay() saves the settings (App::saveOverlay) now or leaves them unsaved.
+enum class OverlaySave : std::uint8_t {
+    Now,    // saved by this call
+    Later,  // not saved by this call (the settings loaded at start)
+};
 
 // Where an execute() call came from (the Loop log line names it).
 enum class CommandSource : std::uint8_t {
@@ -119,9 +127,10 @@ public:
     void dismissMessage();
     [[nodiscard]] const wxString& lastMessage() const noexcept { return last_message_; }
     // The status bar's fields (spec §7): the stream's name, the status tick's three (position,
-    // rate, bottleneck), the display mapping and the Log notice (the zoom is on the control bar).
-    static constexpr std::size_t FILE_FIELD = 0, FIRST_TICK_FIELD = 1, MAPPING_FIELD = 4,
-                                 LOG_NOTICE_FIELD = 5, STATUS_FIELD_COUNT = 6;
+    // rate, bottleneck), the cursor's image pixel, the display mapping and the Log notice (the zoom
+    // is on the control bar).
+    static constexpr std::size_t FILE_FIELD = 0, FIRST_TICK_FIELD = 1, CURSOR_FIELD = 4,
+                                 MAPPING_FIELD = 5, LOG_NOTICE_FIELD = 6, STATUS_FIELD_COUNT = 7;
     // The fields' texts; the file field's is the shown one (cut in the middle to its width).
     [[nodiscard]] std::array<wxString, STATUS_FIELD_COUNT> statusTexts() const;
     // The narrowest client width the status bar allows: the fixed fields plus room for the variable
@@ -140,17 +149,20 @@ public:
     // when the pane is already so, or while closing.
     void setLogShown(bool shown);
     [[nodiscard]] bool logShown() const;
-    // View -> Info (window title and Info design §10): every show and hide of the Info window goes
-    // through setInfoShown (the command, the window's close box). The window is created by the
-    // first show. Nothing while closing or when it is already so. infoShown() stays true while
-    // the minimised (or, on X11, hidden) main window hides it.
-    void setInfoShown(bool shown);
-    [[nodiscard]] bool infoShown() const;
+    // View -> Info and every other floating window: each show and hide goes through setWindowShown
+    // (the command, the window's close box, Esc). A window is created by its first show. Nothing
+    // while closing or when it is already so. Hiding the Grid and Rulers window saves the settings
+    // in effect (OverlaySave::Now). windowShown() stays true while the minimised (or, on X11,
+    // hidden) main window hides it.
+    void setWindowShown(FloatingKind kind, bool shown);
+    [[nodiscard]] bool windowShown(FloatingKind kind) const;
     // Null before the first show and once the frame has closed.
-    [[nodiscard]] InfoWindow* infoWindow() const noexcept { return info_window_.get(); }
-    // §10: the Info window when the focus (focusedWindow()) is inside it, or when it is shown and
-    // the active window; null otherwise. Its Cmd+W (macOS) and Edit -> Copy act on it.
-    [[nodiscard]] wxWindow* infoInFront() const;
+    [[nodiscard]] FloatingWindow* floatingWindow(FloatingKind kind) const noexcept {
+        return floating_[static_cast<std::size_t>(kind)].get();
+    }
+    // The floating window the focus (focusedWindow()) is inside, or the one shown and active; null
+    // otherwise. Its Cmd+W (macOS) closes it; Edit -> Copy copies the Info window's rows.
+    [[nodiscard]] FloatingWindow* floatingInFront() const;
     // The status bar's last field: the warnings and errors logged since the pane was last shown
     // ("2 errors, 3 warnings in the log"); empty while it is shown.
     [[nodiscard]] wxString logNotice() const { return status_texts_[LOG_NOTICE_FIELD]; }
@@ -177,6 +189,21 @@ public:
 
     // The child viewport; valid until the frame closes (onClose destroys it).
     [[nodiscard]] Viewport& viewport() const noexcept { return *viewport_; }
+    // The grid and ruler settings in effect.
+    [[nodiscard]] const GridConfig& grid() const noexcept { return grid_; }
+    [[nodiscard]] const RulerConfig& rulers() const noexcept { return rulers_; }
+    // The one apply path of the grid and ruler settings: stored, applied to the viewport
+    // (setOverlayConfig) and the Grid button, then saved through App::saveOverlay when `save` is
+    // Now. Nothing is done once the close began (closing_): the close saved the settings, and the
+    // viewport goes during it. Precondition: stepsValid() of the grid's steps (convertOverlay()).
+    void setOverlay(const GridConfig& grid, const RulerConfig& rulers, OverlaySave save);
+    // Selftests: setOverlay(grid, rulers, OverlaySave::Now) as it runs during the close; closing_
+    // is set for that call only and then back as it was.
+    void setOverlayWhileClosingForTest(const GridConfig& grid, const RulerConfig& rulers) {
+        const bool was_closing = std::exchange(closing_, true);
+        setOverlay(grid, rulers, OverlaySave::Now);
+        closing_ = was_closing;
+    }
     [[nodiscard]] PlayerPanel& playerPanel() const noexcept { return *player_; }
     [[nodiscard]] LogPanel& logPanel() const noexcept { return *log_; }
     [[nodiscard]] wxAuiManager& aui() noexcept { return aui_; }
@@ -262,9 +289,14 @@ private:
     // The bar's zoom controls: zoomText of the viewport's shownView(); "" without an image
     // (TransportBar::showZoom, from isAvailable).
     void showZoom();
-    // FitToWindow, ActualSize, ZoomIn and ZoomOut, around the viewport's centre.
+    // The Grid and Rulers window's notes for the shown view (GridWindow::showNotes), when it
+    // exists: the viewport's zoom, backingPerDip and the label widths of the image with its
+    // digitAdvance.
+    void showGridNotes();
+    // FitToWindow, ActualSize, ZoomIn and ZoomOut, around the centre of P (the viewport's picture
+    // region).
     void applyViewCommand(Command command);
-    // zoomAround the viewport's centre at `zoom` (Actual size, a zoom menu percentage).
+    // zoomAround the centre of P at `zoom` (Actual size, a zoom menu percentage).
     void zoomAtCentre(double zoom);
     // A percentage of the zoom button's menu (zoom buttons design §2.2): zoomAtCentre at its
     // ZOOM_MENU_STEPS value; nothing unless isAvailable(Command::FitToWindow).
@@ -281,6 +313,9 @@ private:
     // §4: Resize window to actual size; each axis clamped to the work area. A fixed window: as
     // Actual size.
     void resizeWindowToActualSize();
+    // The viewport that shows `image` at 100 % in P: viewportForClip(image, contentScale()) plus
+    // the strips' window units on both axes.
+    [[nodiscard]] LayoutSize viewportForActualSize(dvv::platform::PixelSize image) const;
     // Spec §7: the tooltip of the field under the pointer; unset when that field changes, so
     // each field gets the OS's own hover delay.
     void onStatusBarMotion(wxMouseEvent& event);
@@ -300,7 +335,7 @@ private:
     void showSettings();            // Command::Settings: creates the window once, then shows it
     // Spec §5.1: the Settings window when it holds the focus (focusedWindow()) or is the active
     // window, whose ⌘W closes it instead of the stream (macOS); null otherwise, and always null on
-    // the other toolkits. Only that window (and the Info window, infoInFront()): a floating AUI
+    // the other toolkits. Only that window (and floatingInFront()): a floating AUI
     // pane (Log) is a top-level window too, and closing it would hide the pane for the session.
     [[nodiscard]] wxWindow* settingsInFront() const;
     // The application menu's About and Quit go to onMenu and onUpdateUi (macOS); nothing on the
@@ -330,6 +365,12 @@ private:
     void onSkimKeyUp();  // the skim key's release anywhere: the bar returns from a skim
     void onMenu(wxCommandEvent& event);
     void onUpdateUi(wxUpdateUIEvent& event);
+    // Whether the part a show-or-hide command (Log pane, Info, Grid, Rulers) names is shown;
+    // nullopt for every other command. Its menu item shows it: a check mark, or on macOS its title.
+    [[nodiscard]] std::optional<bool> shownBy(Command command) const;
+    // The viewport's context menu at `point` (viewport client coordinates): Grid and Rulers as
+    // check items with their menu ids; the chosen item runs as a menu command.
+    void popUpViewportMenu(wxPoint point);
     // The Edit items (spec §4.2): runEdit and canEdit on focusedWindow().
     void onEditMenu(wxCommandEvent& event);
     void onEditUpdateUi(wxUpdateUIEvent& event);
@@ -344,9 +385,9 @@ private:
     void onLogChanged();
     void onIconize(wxIconizeEvent& event);
     void onShow(wxShowEvent& event);
-    // §10 Life: the Info window hides while the main window is minimised (X11: hidden) and shows
-    // again, without activating, when it is restored.
-    void infoFollowsFrame(bool frame_hidden);
+    // The floating windows hide while the main window is minimised (X11: hidden) and show again,
+    // without activating, when it is restored.
+    void floatingWindowsFollow(bool frame_hidden);
     // Spec §4.1: the native focus inside the Log pane (any of its windows) goes to the player
     // panel, so a hidden pane, or a wrapper panel with nothing visibly focused, does not hold it.
     // When the pane hides (View -> Log, the caption's close button) and once after the first show.
@@ -367,6 +408,9 @@ private:
     // At close (spec §2): gui.showLogPane through App::saveSettings when the pane's state differs
     // from its state at start (log_shown_at_start_).
     void saveLogPaneState();
+    // At close: the grid and ruler settings through App::saveOverlay (it writes nothing when they
+    // equal the last ones saved).
+    void saveOverlayState();
     // Design §5.5, binding order: status timer, selftest timer, viewport stack, display leases,
     // Session and viewport window.
     void onClose(wxCloseEvent& event);
@@ -376,6 +420,8 @@ private:
     PlayerPanel* player_ = nullptr;
     LogPanel* log_ = nullptr;
     Viewport* viewport_ = nullptr;  // null once the frame has closed
+    GridConfig grid_{};             // grid()
+    RulerConfig rulers_{};          // rulers()
     wxSize applied_minimum_;        // the last minimum client size applyLayoutLimits() set
     bool limits_check_pending_ = false;
     std::array<wxString, STATUS_FIELD_COUNT> status_texts_;
@@ -422,8 +468,8 @@ private:
     std::uint64_t about_shown_ = 0;             // About dialogs shown (noteAbout)
     std::string last_about_text_;               // the text of the last About dialog
     std::unique_ptr<SettingsWindow> settings_;  // Settings... (dismissed in onClose)
-    wxWeakRef<InfoWindow> info_window_;    // View -> Info; a child top-level window (wx owns it)
-    bool info_hidden_by_iconize_ = false;  // the minimised main window hid the shown Info window
+    // By kind; each a child top-level window (wx owns it), created by its first show.
+    std::array<wxWeakRef<FloatingWindow>, FLOATING_KIND_COUNT> floating_;
     std::unique_ptr<SelfTest> selftest_;
     bool closing_ = false;
     wxWeakRef<wxWindow> focus_for_test_;  // setFocusForTest(); cleared when that window goes

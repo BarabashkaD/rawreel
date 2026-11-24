@@ -39,6 +39,9 @@ enum class Command : std::uint8_t {
     Reopen,
     LogPane,     // View -> Log (Log pane and Settings design §2)
     InfoWindow,  // View -> Info (window title and Info design §10)
+    Grid,        // View -> Grid: the grid on the picture
+    Rulers,      // View -> Rulers: the ruler strips
+    GridWindow,  // View -> Grid and Rulers...: the Grid and Rulers window
     GpuInfo,
     Diagnostics,
     About,
@@ -90,6 +93,9 @@ struct CommandInfo {
 // command matches.
 [[nodiscard]] std::optional<Command> commandForKey(const KeyChord& chord,
                                                    bool focus_keeps_keys) noexcept;
+// The command whose key is `chord`, whatever its route; nullopt when no command has it. A floating
+// window's modified chords reach the main window through it where the menu bar does not take them.
+[[nodiscard]] std::optional<Command> commandOfChord(const KeyChord& chord) noexcept;
 // wx 3.3 key code + modifiers -> KeyChord. Unknown codes keep their value.
 [[nodiscard]] KeyChord normaliseKey(std::int32_t keycode, bool ctrl, bool shift, bool alt) noexcept;
 // "Ctrl+O", "Ctrl+Shift+O", "F11", "Space", "Shift+Left", "+", "Esc", "1", "L".
@@ -97,6 +103,10 @@ struct CommandInfo {
 // Accelerator or AcceleratorAndCharHook with a key: "<label>\t<keyText>"; CharHook: "<label>
 // (<keyText>)"; no key: "<label>".
 [[nodiscard]] std::string menuLabel(const CommandInfo& info);
+// A show-or-hide item's title where it changes instead of a check mark: "Hide " or "Show " and
+// menuLabel(info) ("Hide Info\tCtrl+I", "Show Log"). The key stays in the title: wxOSX builds the
+// key equivalent from the label at every SetText.
+[[nodiscard]] std::string shownItemTitle(const CommandInfo& info, bool shown);
 // A button's tooltip (video control panel spec §7): "<help> (<keyText>)", or the help alone for
 // a command without a key. With `cmd_for_ctrl` (macOS) an Accelerator chord's "Ctrl+" reads "Cmd+",
 // as the menus show it there.

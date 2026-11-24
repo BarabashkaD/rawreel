@@ -72,6 +72,14 @@ inline void applySettingsPageStyle(wxWindow& /*page*/,
     return true;
 }
 
+[[nodiscard]] constexpr long labelAlignment() noexcept {  // MSW, GTK
+    return wxALIGN_LEFT;
+}
+
+[[nodiscard]] constexpr bool floatingForwardsAccelerators() noexcept {  // MSW, GTK
+    return true;
+}
+
 [[nodiscard]] constexpr bool dpiChangeTakesSuggestedRect() noexcept {  // GTK, macOS
     return false;
 }

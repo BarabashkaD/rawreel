@@ -54,7 +54,7 @@ public:
     }
     // Spec §4.3, log level design §2.2: Copy, Select All, a separator, Level ▸ (the five levels as
     // radio items, the active one checked), a separator, Save Selected Lines..., Save Log....
-    // The right-click; a selftest calls it too (the menu then goes to the logMenu hook, unshown).
+    // The right-click; a selftest calls it too (the menu then goes to the popupMenu hook, unshown).
     void showContextMenu();
     // The menu's Level ▸ items (log level design §2.2): the active level for this run only
     // (App::setActiveLevel(level, LevelSource::Menu)); nothing is saved.

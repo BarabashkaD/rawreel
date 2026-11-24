@@ -17,12 +17,19 @@ list(APPEND DVV_TEST_ENVIRONMENT
 find_package(dvv_ffmpeg_sdk CONFIG REQUIRED)
 
 # The CPU reference of the compositor, compiled once for the unit and the GPU tests.
-add_library(rawreel_composite_reference STATIC composite_reference.cpp)
+add_library(rawreel_composite_reference STATIC composite_reference.cpp ruler_reference.cpp)
 target_link_libraries(rawreel_composite_reference PUBLIC rawreel_render PRIVATE dvv::media)
 dvv_set_compiler_options(rawreel_composite_reference)
+# The reference rounds after every float operation, as the shaders mark it precise (dvv-media's
+# view_lines.cpp rule): no multiply-add may be fused.
+set_source_files_properties(composite_reference.cpp ruler_reference.cpp PROPERTIES
+    COMPILE_OPTIONS "$<IF:$<CXX_COMPILER_ID:MSVC>,/fp:precise,-ffp-contract=off>")
 
 add_executable(rawreel_tests
-    main.cpp test_composite_reference.cpp test_display_state.cpp)
+    main.cpp test_composite_reference.cpp test_display_state.cpp test_overlay_params.cpp
+    test_pass_regions.cpp test_ruler_reference.cpp
+    # The GUI's one unit conversion: wx-free, so tested here without wx and in the sanitizer builds.
+    ${PROJECT_SOURCE_DIR}/src/gui/overlay_params.cpp)
 target_link_libraries(rawreel_tests PRIVATE rawreel_composite_reference rawreel_render doctest::doctest)
 target_compile_definitions(rawreel_tests PRIVATE DOCTEST_CONFIG_USE_STD_HEADERS)
 dvv_set_compiler_options(rawreel_tests)
@@ -66,7 +73,7 @@ add_executable(rawreel_core_tests
     test_format_choice.cpp test_format_presets.cpp
     test_gui_arguments.cpp test_info_text.cpp test_layout.cpp test_log_file_switch.cpp test_log_level.cpp test_log_mirror.cpp test_log_store.cpp test_log_text.cpp test_perf_stats.cpp test_player.cpp test_session.cpp
     test_session_notify.cpp test_session_storm.cpp test_session_types.cpp test_settings_claim.cpp
-    test_open_text.cpp test_recent.cpp test_source_provider.cpp test_startup.cpp test_vulkan_driver.cpp
+    test_open_text.cpp test_overlay.cpp test_recent.cpp test_source_provider.cpp test_startup.cpp test_vulkan_driver.cpp
     test_status_text.cpp test_stream_name.cpp test_svg_colour.cpp test_timeline.cpp test_timer.cpp test_view.cpp)
 dvv_os_sources(rawreel_core_tests test_native_os)
 target_link_libraries(rawreel_core_tests PRIVATE rawreel_core doctest::doctest)

@@ -79,6 +79,12 @@ struct InfoKeysState {
     bool availableAgain = false;
     bool hiddenAgain = false;  // macOS ⌘W: the second ⌘W (no stream) closed the window
     bool copyEnabled = false;  // macOS: Edit -> Copy enabled with the focus in the window
+    bool onPage = false;       // the window has a current book page (the first Space's focus)
+    // The second Space's focus: the real one where the OS gives the window the focus (focusReal),
+    // else shownInfoFocus(); focusKeepsNoKey: it is in the content, at no native control.
+    wxWindow* focusAgain = nullptr;
+    bool focusReal = false;
+    bool focusKeepsNoKey = false;
     std::uint32_t streamsBefore = 0;
 };
 
@@ -113,12 +119,15 @@ std::string describe(const Viewport& viewport, const SmokeState& state);
 void markStart(const Viewport& viewport, SmokeState& state);
 // Opens SMOKE_STREAM in slot 0 through the Session (no dialog).
 void openSmokeStream(SelfTest* test);
+// The rulers shown or hidden, unsaved; the other ruler settings (numbers, cursor colour) kept.
+void showRulers(MainFrame& frame, bool show);
 // The frame's wxEVT_MENU handler for the menu item `id`.
 bool sendMenu(wxFrame& frame, int id);
-// The Info window's content panel, shown first; null without a window.
-wxWindow* shownInfoContent(MainFrame& frame);
-// A char-hook key event at the Info window's panel, with the focus there: whether a handler took
-// it.
+// The Info window, shown first: the window in it that wx gives the focus when the user activates
+// it (focusLanding: the content panel, as the static text takes no focus from the keyboard);
+// null without a window.
+wxWindow* shownInfoFocus(MainFrame& frame);
+// A char-hook key event at shownInfoFocus(), with the focus there: whether a handler took it.
 bool sendInfoKey(MainFrame& frame, int keycode, bool ctrl = false);
 // Runs `action` in the Settings window through the settings hook (state->hookRan).
 void runSettings(SelfTest* test, const std::shared_ptr<SettingsState>& state,

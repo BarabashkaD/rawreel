@@ -29,6 +29,10 @@ dvv::platform::PixelSize nativePixelSize(const wxWindow& window) {
             .height = static_cast<std::uint32_t>(std::max(size.y, 0))};
 }
 
+double nativeContentScale(const wxWindow& window) {
+    return window.GetContentScaleFactor();
+}
+
 bool setBackingScaleForTest(wxWindow& /*window*/, double /*scale*/) {
     return false;
 }

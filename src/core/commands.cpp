@@ -112,6 +112,11 @@ constexpr std::array<CommandInfo, COMMAND_COUNT> TABLE{{
      true},  // "Show Log"/"Hide Log" on macOS (the GUI sets the title)
     {Command::InfoWindow, "info_window", "View", "Info", "Show or hide the Info window",
      ctrlKey('I'), ACC, true},  // "Show Info"/"Hide Info" on macOS (the GUI sets the title)
+    {Command::Grid, "grid", "View", "Grid", "Show or hide the grid", plainKey('G'), HOOK, true},
+    {Command::Rulers, "rulers", "View", "Rulers", "Show or hide the rulers", plainKey('R'), HOOK,
+     true},
+    {Command::GridWindow, "grid_window", "View", "Grid and Rulers...",
+     "Show the Grid and Rulers window", std::nullopt, ACC, false},
     {Command::GpuInfo, "gpu_info", "Help", "GPU info", "Show the GPU and its driver", std::nullopt,
      ACC, false},
     {Command::Diagnostics, "diagnostics", "Help", "Diagnostics",
@@ -159,6 +164,15 @@ std::optional<Command> commandForKey(const KeyChord& chord, bool focus_keeps_key
     }
     for (const CommandInfo& info : TABLE) {
         if (info.route != KeyRoute::Accelerator && info.key == chord) {
+            return info.command;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<Command> commandOfChord(const KeyChord& chord) noexcept {
+    for (const CommandInfo& info : TABLE) {
+        if (info.key == chord) {
             return info.command;
         }
     }
@@ -239,6 +253,10 @@ std::string menuLabel(const CommandInfo& info) {
         return label + "\t" + keyText(*info.key);
     }
     return label + " (" + keyText(*info.key) + ")";
+}
+
+std::string shownItemTitle(const CommandInfo& info, bool shown) {
+    return (shown ? "Hide " : "Show ") + menuLabel(info);
 }
 
 std::string tooltipText(const CommandInfo& info, bool cmd_for_ctrl) {

@@ -1,31 +1,79 @@
 #pragma once
 
-// The host side of composite.slang's push constants: the flag bits and the constants of one
-// composite.
+// The host side of composite.slang's push constants: the flag bits, the packed grid levels and
+// the constants of one picture pass.
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 
-#include "core/view.h"
+#include "core/overlay.h"
+#include "dvv/media/view.h"
 #include "render/display_state.h"
+#include "render/pass_regions.h"
 
 namespace rawreel {
 
 inline constexpr std::uint32_t COMPOSITE_DARK = 1;         // flags bit0: dark background
 inline constexpr std::uint32_t COMPOSITE_SKIP_ENCODE = 2;  // flags bit1: the swapchain is _SRGB
 
-struct CompositeConstants {  // = PushConstants of composite.slang
-    std::uint32_t viewportW = 0, viewportH = 0, imageW = 0, imageH = 0;
-    float zoom = 0.0F, originX = 0.0F, originY = 0.0F;
+// A grid level's levelShape word: stepLog2 in bits 0-3 (clamped to LEVEL_STEP_MASK, 15), the
+// thickness in backing pixels in bits 4-11 (clamped to LEVEL_THICKNESS_MAX), adaptive, halo and
+// drawn in bits 12, 13 and 14.
+inline constexpr std::uint32_t LEVEL_STEP_MASK = 0xFU;
+inline constexpr std::uint32_t LEVEL_THICKNESS_SHIFT = 4;
+inline constexpr std::uint32_t LEVEL_THICKNESS_MAX = 255;
+inline constexpr std::uint32_t LEVEL_ADAPTIVE = 1U << 12U;
+inline constexpr std::uint32_t LEVEL_HALO = 1U << 13U;
+inline constexpr std::uint32_t LEVEL_DRAWN = 1U << 14U;
+// A halo darkens the pixel underneath by this share of its level's opacity.
+inline constexpr float GRID_HALO_STRENGTH = 0.6F;
+
+// = PushConstants of shaders/composite_common.slang (the picture pass and its grid prepass), 80
+// bytes with no padding.
+struct CompositeConstants {
+    std::uint32_t viewportW = 0, viewportH = 0;  // the picture region P's size
+    std::uint32_t imageW = 0, imageH = 0;
+    float zoom = 0.0F;
     std::uint32_t flags = 0;
+    std::uint32_t regionX = 0, regionY = 0;  // P's origin in the output
+    std::int32_t offsetX = 0, offsetY = 0;   // the view's integer offset in P
+    // The first pixel of P the pass draws, from P's origin (pictureDrawn - picture): thread id
+    // draws P pixel id + draw. The shaders' uint4 below starts at 48.
+    std::uint32_t drawX = 0, drawY = 0;
+    // The shaders declare the two as uint4; [3] is unused.
+    std::array<std::uint32_t, 4> levelColour{};  // GridLevelParams::colour
+    std::array<std::uint32_t, 4> levelShape{};   // the LEVEL_* bits
     bool operator==(const CompositeConstants&) const = default;
 };
-static_assert(sizeof(CompositeConstants) == 32);
+static_assert(sizeof(CompositeConstants) == 80);
+static_assert(
+    offsetof(CompositeConstants, zoom) == 16 && offsetof(CompositeConstants, flags) == 20 &&
+    offsetof(CompositeConstants, regionX) == 24 && offsetof(CompositeConstants, regionY) == 28 &&
+    offsetof(CompositeConstants, offsetX) == 32 && offsetof(CompositeConstants, offsetY) == 36 &&
+    offsetof(CompositeConstants, drawX) == 40 && offsetof(CompositeConstants, drawY) == 44 &&
+    offsetof(CompositeConstants, levelColour) == 48 &&
+    offsetof(CompositeConstants, levelShape) == 64);
 
-// The constants of one composite for the resolved `view` (design §4.4): viewportW/H =
-// view.viewport(); zoom/originX/originY = float(view.zoom()/origin()); imageW/H = view.image() when
-// view.zoom() > 0, else 0 (no frame or an empty size: background only); flags = COMPOSITE_DARK when
-// params.dark, | COMPOSITE_SKIP_ENCODE when skip_encode.
-[[nodiscard]] CompositeConstants compositeConstants(const CompositeParams& params,
-                                                    const ViewTransform& view, bool skip_encode);
+// The step the shaders draw: min(level.stepLog2, LEVEL_STEP_MASK), since levelShape holds 4 bits
+// of it.
+[[nodiscard]] std::uint32_t levelStepLog2(const GridLevelParams& level) noexcept;
+
+// The grid levels drawn at `view`'s zoom: level l when levels[0].shown, levels[l].shown and
+// dvv::media::levelVisible(min(stepLog2, LEVEL_STEP_MASK), float(view.zoom()), minimumSpacing);
+// none when level 0 is not visible (the grid follows the ruler's major level). A stepLog2 above
+// 15 is drawn as 15, here and in compositeConstants.
+[[nodiscard]] std::array<bool, GRID_LEVELS> gridLevelsDrawn(
+    const OverlayParams& overlay, const dvv::media::ViewTransform& view) noexcept;
+
+// The constants of the picture pass of `regions` for `view`, resolved against P's size:
+// viewportW/H = view.viewport(); zoom and offsetX/Y as dvv::media::axisX/axisY(view); imageW/H =
+// view.image() when view.zoom() > 0, else 0 (no frame or an empty size: background only); flags =
+// COMPOSITE_DARK when overlay.dark, | COMPOSITE_SKIP_ENCODE when skip_encode; regionX/Y =
+// regions.picture.x/y; drawX/Y = regions.pictureDrawn.x/y - regions.picture.x/y; per level,
+// its colour and its shape with LEVEL_DRAWN by gridLevelsDrawn.
+[[nodiscard]] CompositeConstants compositeConstants(const OverlayParams& overlay,
+                                                    const dvv::media::ViewTransform& view,
+                                                    const PassRegions& regions, bool skip_encode);
 
 }  // namespace rawreel

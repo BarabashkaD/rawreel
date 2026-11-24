@@ -49,6 +49,11 @@ void syncNativeWindow(wxWindow& window);
 // factor. MSW and wxGTK: the client area in physical pixels (wx 3.3 ToPhys), negative sizes as 0.
 [[nodiscard]] dvv::platform::PixelSize nativePixelSize(const wxWindow& window);
 
+// Backing pixels per window unit, the scale of nativePixelSize(). wxOSX: the child view's layer
+// contentsScale (it follows the backing_scale test hook); without a child view, and on MSW and
+// wxGTK, the window's content scale factor.
+[[nodiscard]] double nativeContentScale(const wxWindow& window);
+
 // Test only (the backing_scale selftest). wxOSX: `scale` > 0 replaces the window's backing scale
 // factor for the child view (0 gives it back), then the child's viewDidChangeBackingProperties
 // runs, as Cocoa runs it after a display change. False when the window has no child view (no

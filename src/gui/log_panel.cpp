@@ -183,7 +183,7 @@ void LogPanel::showContextMenu() {
     menu.Enable(CONTEXT_SAVE_SELECTED_ID, selection);
     menu.Enable(CONTEXT_SAVE_LOG_ID, mirror_.size() > 0);
     // The chosen item acts on this list, wherever the keyboard focus is.
-    const int chosen = showLogMenu(*this, menu);
+    const int chosen = showPopupMenu(*this, menu);
     if (chosen >= CONTEXT_LEVEL_FIRST_ID &&
         chosen < CONTEXT_LEVEL_FIRST_ID + static_cast<int>(MENU_LEVELS.size())) {
         setRunLevel(MENU_LEVELS[static_cast<std::size_t>(chosen - CONTEXT_LEVEL_FIRST_ID)]);

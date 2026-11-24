@@ -339,6 +339,7 @@ then stalls; it never skips a frame.
 | Ctrl+W | File → Close stream | Shift+Left / Shift+Right | 10 frames back / forward |
 | Ctrl+Q | File → Quit | Home / End | First / last frame |
 | | | L | Loop on or off |
+| G | View → Grid (on or off) | R | View → Rulers (on or off) |
 
 View keys:
 
@@ -350,8 +351,8 @@ View keys:
 Mouse and trackpad: drag or scroll to pan a picture larger than the window; pinch to zoom;
 Ctrl+scroll zooms on Windows and Linux. On macOS scrolling always pans.
 
-Playback → Stop, View → Format…, View → Restart GPU and reopen, Help → GPU info and Help →
-Diagnostics have no key.
+Playback → Stop, View → Format…, View → Grid and Rulers…, View → Restart GPU and reopen, Help →
+GPU info and Help → Diagnostics have no key.
 
 **GPU failures.** When the GPU device is lost (or a presenter fails), playback pauses, the viewport
 shows the background and the infobar says "GPU device lost: … Restart the GPU to continue." with a
@@ -378,6 +379,40 @@ step with a 5 s deadline, closes the window and exits with 6 naming a failed ste
 URI"), or the GUI could not start; 4 GPU error (no Vulkan loader, no usable device, a presenter
 failure in a selftest); 6 a `--selftest` check failed; 77 (`--selftest` only) no usable device or
 no display, unless `DVV_REQUIRE_GPU=1` (then 4).
+
+### Grid and rulers
+
+The grid draws lines over the picture at three levels, Major, Minor and Second minor, every 32, 8
+and 2 image pixels by default (the steps are 2 to 256, a power of two; major at least twice minor,
+minor at least twice second minor). G, View → Grid or the Grid button (right of Zoom in) shows and
+hides it; R or View → Rulers the rulers (on macOS: Show Grid / Hide Grid, Show Rulers / Hide
+Rulers). The picture's context menu has the same two items and Grid and Rulers…. View → Grid and
+Rulers… or a right-click on the Grid button (Ctrl-click on macOS) opens the Grid and Rulers
+window:
+
+- Quick: Show rulers, Ruler numbers, and per level its checkbox, step and opacity (0–100 %). A
+  level whose lines would be closer than its minimum spacing at the shown zoom is hidden, and its
+  row says so (e.g. "hidden at this zoom (2 px at 100 % = 1 pt, needs 3 pt)"); the minor levels
+  are hidden with the major one.
+- Appearance: Style (Plain, Adaptive, Coloured or Halo; Custom when the values match none), and
+  per level its colour, thickness (1–4 pt), Adaptive (black lines on light pixels, white on dark)
+  and Halo (a dark edge beside the line); then the cursor colour. A style sets the colours,
+  opacities, Adaptive, Halo and the cursor colour.
+
+Every change applies at once and is saved in `rawreel.json` (see [Configuration](#configuration)).
+
+The rulers run along the top and left edges of the picture, not of the window, so they stay next to
+the picture when it is smaller than the window. Their ticks come from the same rule as the
+grid lines and land on the same pixels. The tick nearest the pointer is lit in the cursor colour
+(#ff3b30 by default), and a marker in that colour shows the pointer's position. A ruler shows no
+ticks when the major ticks are closer than the major level's minimum spacing or, with Ruler numbers
+on, too close for the digits of the image's size (its width on the top ruler, its height on the
+left one); the Quick tab's note gives the reason, e.g. "Rulers off at this zoom: major ticks closer
+than 2 pt" or "Left ruler off at this zoom: the numbers do not fit". A press on a ruler does not
+pan the picture.
+
+The status bar shows the image pixel under the pointer, e.g. `x 812  y 403`; the field is empty
+off the picture and with no stream.
 
 ### Log pane
 
@@ -722,11 +757,25 @@ creates it in the user data folder when a setting is saved or an open changes Op
 | `gui.showLogPane` | `true`, `false` | `false` | rawreel-gui |
 | `gui.recentSize` | a whole number from 1 to 10 | `5` | rawreel-gui |
 | `gui.recent` | an array of strings (files and URIs of Open Recent), newest first | `[]` | rawreel-gui |
+| `gui.rulers.show` | `true`, `false` | `false` | rawreel-gui |
+| `gui.rulers.numbers` | `true`, `false` (Ruler numbers) | `true` | rawreel-gui |
+| `gui.rulers.cursorColour` | `"#rrggbb"` (the lit tick and the marker) | `"#ff3b30"` | rawreel-gui |
+| `gui.grid.<level>.show` | `true`, `false`; `major.show` is the grid's on/off | `false` / `true` / `false` | rawreel-gui |
+| `gui.grid.<level>.step` | 2, 4, 8, 16, 32, 64, 128 or 256 image pixels; major ≥ 2 × minor, minor ≥ 2 × second minor | `32` / `8` / `2` | rawreel-gui |
+| `gui.grid.<level>.opacity` | a whole number from 0 to 100 (%) | `85` / `50` / `25` | rawreel-gui |
+| `gui.grid.<level>.colour` | `"#rrggbb"` | `"#ffffff"` | rawreel-gui |
+| `gui.grid.<level>.thickness` | a whole number from 1 to 4 (pt) | `2` / `1` / `1` | rawreel-gui |
+| `gui.grid.<level>.adaptive` | `true`, `false` | `false` | rawreel-gui |
+| `gui.grid.<level>.halo` | `true`, `false` | `false` | rawreel-gui |
+| `gui.grid.<level>.minimumSpacing` | a whole number from 1 to 100 (pt): the level is hidden while its lines are closer | `2` / `4` / `3` | rawreel-gui |
 | `log.level` | `error`, `warn`, `info`, `debug`, `trace` (any letter case) | `info` | rawreel-gui |
 | `log.source` | `true`, `false` | `false` | rawreel-gui |
 | `log.file.enabled` | `true`, `false` | `true` | rawreel-gui |
 | `log.file.folder` | an absolute folder path; `""` is the user data folder | `""` | rawreel-gui |
 | `log.system.enabled` | `true`, `false` | `false` | rawreel-gui |
+
+`<level>` is `major`, `minor` or `secondMinor`; a default written `a` / `b` / `c` is theirs in
+that order.
 
 `log.level` is the active log level at start (see [Log pane](#log-pane)); Settings writes it.
 `log.source` has no control in the GUI, is read at start and is never written by rawreel: when
@@ -754,15 +803,17 @@ for the session only, with the warning "config '<path>' not saved: <reason>". A 
 write logs that warning once per run, and the list holds for the session. `rawreel-cli` never
 writes the file.
 
-A missing default `rawreel.json` means the defaults, silently. A missing
-`--config` file, or a file that cannot be read, is not valid JSON or has a bad value, gives one
-warning in the log ("config '<path>' ignored: <reason>; using the defaults") and the defaults. A
-bad value in any key, including a `gui` or `log` key that `rawreel-cli` does not use, makes both
-executables use the defaults. The two Open Recent keys are the exception: a wrong `gui.recentSize`
-gives 5 and a wrong `gui.recent` an empty list (a wrong entry in it is dropped), each with a
-warning, and the rest of the file is used; `rawreel-cli` ignores both keys. An older rawreel
-ignores a file that holds a value only a newer one knows. Unknown keys are ignored. To try
-another file:
+A missing default `rawreel.json` means the defaults, silently. A missing `--config` file, or a file
+that cannot be read, is not valid JSON or has a bad value, gives one warning in the log ("config
+'<path>' ignored: <reason>; using the defaults") and the defaults. A bad value in any key, including
+a `gui` or `log` key that `rawreel-cli` does not use, makes both executables use the defaults, with
+two exceptions. First, the two Open Recent keys: a wrong `gui.recentSize` gives 5 and a wrong
+`gui.recent` an empty list (a wrong entry in it is dropped), each with a warning, and the rest of
+the file is used. Second, the `gui.grid` and `gui.rulers` keys: a wrong value gives that key's
+default with a warning, steps that break the step rule give 32 / 8 / 2, and a `gui.grid`, level or
+`gui.rulers` that is not an object gives its defaults (and is not written over, unless it is
+`null`). `rawreel-cli` ignores the keys of both exceptions. An older rawreel ignores a file that
+holds a value only a newer one knows. Unknown keys are ignored. To try another file:
 
 ```powershell
 & $cli info <uri> --config <folder>/rawreel.json

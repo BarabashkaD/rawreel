@@ -94,9 +94,25 @@ bool hidesStaleMapShow() noexcept {
     return true;
 }
 
+long labelAlignment() noexcept {
+    return wx_generic::labelAlignment();
+}
+
+bool floatingForwardsAccelerators() noexcept {
+    return wx_generic::floatingForwardsAccelerators();
+}
+
+bool choiceTakesSpace() noexcept {
+    return true;
+}
+
 // Fleur: wxGTK maps wxCURSOR_SIZENWSE to it.
 wxStockCursor panCursor() noexcept {
     return wxCURSOR_SIZENWSE;
+}
+
+double dipPerFontPoint() noexcept {
+    return 96.0 / 72.0;
 }
 
 }  // namespace rawreel::native_policy

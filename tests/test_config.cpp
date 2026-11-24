@@ -13,11 +13,13 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "core/config.h"
 #include "core/config_writer.h"
 #include "core/native_os.h"
+#include "core/overlay.h"
 #include "core/recent.h"
 #include "dvv/base/error.h"
 #include "dvv/base/json.h"
@@ -447,4 +449,314 @@ TEST_CASE("config keys: written and read back") {
     const rawreel::RecentConfig recent = rawreel::parseRecent(loaded.text);
     CHECK(recent.size == 7);
     CHECK(recent.entries == std::vector<std::string>{"file:a.yuv"});
+}
+
+TEST_SUITE("core") {
+    using rawreel::GridConfig;
+    using rawreel::OverlayConfig;
+    using rawreel::overlayConfigValues;
+    using rawreel::parseOverlayConfig;
+    using rawreel::Rgb8;
+    using rawreel::RulerConfig;
+
+    TEST_CASE("config: overlay keys round trip through the writer") {
+        const TemporaryDirectory dir("rawreel-config");
+        const fs::path file = dir.path() / "rawreel.json";
+        writeText(file, R"({"gui":{"showLogPane":true,"grid":{"major":null}}})");
+        GridConfig g;
+        g.levels[0] = {.show = true,
+                       .step = 64,
+                       .opacity = 90,
+                       .colour = {255, 159, 26},
+                       .thickness = 3,
+                       .adaptive = true,
+                       .halo = false,
+                       .minimumSpacing = 20};
+        g.levels[2].colour = {0, 10, 171};
+        const RulerConfig r{.show = true, .numbers = false};
+        const std::vector<rawreel::ConfigValue> values = overlayConfigValues(g, r, true, true);
+        REQUIRE(rawreel::saveConfigValues(file, values));
+        const dvv::Result<std::string> text = rawreel::readConfigText(file);
+        REQUIRE(text);
+        const OverlayConfig c = parseOverlayConfig(*text);
+        CHECK(c.grid == g);
+        CHECK(c.rulers == r);
+        CHECK(c.warnings.empty());
+        CHECK(c.gridSavable);
+        CHECK(c.rulersSavable);
+        const dvv::Result<Config> config = rawreel::parseConfig(*text);
+        REQUIRE(config);
+        CHECK(config->gui.showLogPane);
+    }
+
+    TEST_CASE("config: a missing or empty gui gives the overlay defaults") {
+        for (const char* text : {R"({"io":{}})", R"({"gui":{}})", R"({"gui":{"grid":{}}})", "[]",
+                                 "not json", R"({"gui":5})"}) {
+            const OverlayConfig c = parseOverlayConfig(text);
+            CHECK(c.grid == GridConfig{});
+            CHECK(c.rulers == RulerConfig{});
+            CHECK(c.warnings.empty());
+            CHECK(c.gridSavable);
+            CHECK(c.rulersSavable);
+        }
+    }
+
+    TEST_CASE("config: a bad overlay leaf falls back alone") {
+        const OverlayConfig c = parseOverlayConfig(
+            R"({"gui":{"grid":{"major":{"step":24,"opacity":101,"colour":"#fff","thickness":0,)"
+            R"("minimumSpacing":-1,"halo":true}},"rulers":{"show":"yes","numbers":false}}})");
+        CHECK(c.grid.levels[0].step == 32);
+        CHECK(c.grid.levels[0].opacity == 85);
+        CHECK(c.grid.levels[0].colour == Rgb8{});
+        CHECK(c.grid.levels[0].thickness == 2);
+        CHECK(c.grid.levels[0].minimumSpacing == 2);
+        CHECK(c.grid.levels[0].halo);
+        CHECK_FALSE(c.rulers.show);
+        CHECK_FALSE(c.rulers.numbers);
+        REQUIRE(c.warnings.size() == 6);
+        CHECK(c.gridSavable);
+        CHECK(c.rulersSavable);
+        CHECK(c.warnings[0] ==
+              "gui.grid.major.step: expected one of 2, 4, 8, 16, 32, 64, 128, 256, not 24; "
+              "using 32");
+        CHECK(c.warnings[1] ==
+              "gui.grid.major.opacity: expected a whole number from 0 to 100, not 101; using 85");
+        CHECK(c.warnings[2] ==
+              R"(gui.grid.major.colour: expected "#rrggbb", not "#fff"; using "#ffffff")");
+        CHECK(c.warnings[3] ==
+              "gui.grid.major.thickness: expected a whole number from 1 to 4, not 0; using 2");
+        CHECK(c.warnings[4] ==
+              "gui.grid.major.minimumSpacing: expected a whole number from 1 to "
+              "100, not -1; using 2");
+        CHECK(c.warnings[5] ==
+              R"(gui.rulers.show: expected true or false, not "yes"; using false)");
+    }
+
+    TEST_CASE("config: other bad overlay leaves") {
+        const OverlayConfig c = parseOverlayConfig(
+            R"({"gui":{"grid":{"major":{"step":512,"colour":"red","minimumSpacing":12.5},)"
+            R"("minor":{"colour":"#2BD2fF","opacity":0,"show":1,"adaptive":null},)"
+            R"("secondMinor":{"thickness":4,"minimumSpacing":100,"step":4.0}}}})");
+        CHECK(c.grid.levels[0].step == 32);
+        CHECK(c.grid.levels[0].colour == Rgb8{});
+        CHECK(c.grid.levels[0].minimumSpacing == 2);
+        CHECK(c.grid.levels[1].colour == Rgb8{43, 210, 255});
+        CHECK(c.grid.levels[1].opacity == 0);
+        CHECK(c.grid.levels[1].show);
+        CHECK_FALSE(c.grid.levels[1].adaptive);
+        CHECK(c.grid.levels[2].thickness == 4);
+        CHECK(c.grid.levels[2].minimumSpacing == 100);
+        CHECK(c.grid.levels[2].step == 2);
+        REQUIRE(c.warnings.size() == 6);
+        CHECK(c.warnings[0].starts_with("gui.grid.major.step: expected"));
+        CHECK(c.warnings[1].starts_with("gui.grid.major.colour: expected"));
+        CHECK(c.warnings[2].starts_with("gui.grid.major.minimumSpacing: expected"));
+        CHECK(c.warnings[3] == "gui.grid.minor.show: expected true or false, not 1; using true");
+        CHECK(c.warnings[4].starts_with("gui.grid.minor.adaptive: expected"));
+        CHECK(c.warnings[5].starts_with("gui.grid.secondMinor.step: expected"));
+        CHECK(c.gridSavable);
+    }
+
+    TEST_CASE("config: steps that break the rules fall back together") {
+        const OverlayConfig c = parseOverlayConfig(
+            R"({"gui":{"grid":{"major":{"step":32},"minor":{"step":32,"opacity":10}}}})");
+        CHECK(c.grid.levels[0].step == 32);
+        CHECK(c.grid.levels[1].step == 8);
+        CHECK(c.grid.levels[2].step == 2);
+        CHECK(c.grid.levels[1].opacity == 10);
+        REQUIRE(c.warnings.size() == 1);
+        CHECK(c.warnings[0] == std::format("gui.grid: the steps 32 / 32 / 2 break {}; using 32 / "
+                                           "8 / 2",
+                                           rawreel::GRID_STEP_RULE));
+        CHECK(c.gridSavable);
+        const OverlayConfig valid = parseOverlayConfig(
+            R"({"gui":{"grid":{"major":{"step":256},"minor":{"step":4},"secondMinor":{"step":2}}}})");
+        CHECK(valid.grid.levels[0].step == 256);
+        CHECK(valid.grid.levels[1].step == 4);
+        CHECK(valid.warnings.empty());
+    }
+
+    TEST_CASE("config: an overlay parent that is not an object") {
+        for (const char* text : {R"({"gui":{"grid":5}})", R"({"gui":{"grid":[]}})",
+                                 R"({"gui":{"grid":{"major":true}}})"}) {
+            const OverlayConfig c = parseOverlayConfig(text);
+            CHECK_FALSE(c.gridSavable);
+            CHECK(c.rulersSavable);
+            CHECK(c.grid == GridConfig{});
+            REQUIRE(c.warnings.size() == 1);
+            CHECK(c.warnings[0].ends_with("; the defaults are used and not saved"));
+            CHECK(rawreel::parseConfig(text).has_value());  // never a format error
+        }
+        CHECK(parseOverlayConfig(R"({"gui":{"grid":[]}})").warnings[0] ==
+              "gui.grid: expected an object, not []; the defaults are used and not saved");
+        // A level that is not an object keeps the other levels' values.
+        const OverlayConfig level = parseOverlayConfig(
+            R"({"gui":{"grid":{"major":true,"minor":{"opacity":10}},"rulers":{"show":true}}})");
+        CHECK_FALSE(level.gridSavable);
+        CHECK(level.grid.levels[1].opacity == 10);
+        CHECK(level.rulers.show);
+        CHECK(level.warnings[0] ==
+              "gui.grid.major: expected an object, not true; the defaults "
+              "are used and not saved");
+        // null: the writer replaces it by an object, so the level's defaults are used and saving
+        // works.
+        const OverlayConfig null_major = parseOverlayConfig(R"({"gui":{"grid":{"major":null}}})");
+        CHECK(null_major.gridSavable);
+        CHECK(null_major.grid == GridConfig{});
+        REQUIRE(null_major.warnings.size() == 1);
+        CHECK(null_major.warnings[0] ==
+              "gui.grid.major: expected an object, not null; the defaults are used");
+        const OverlayConfig null_rulers = parseOverlayConfig(R"({"gui":{"rulers":null}})");
+        CHECK(null_rulers.rulersSavable);
+        CHECK(null_rulers.warnings.size() == 1);
+        const OverlayConfig rulers = parseOverlayConfig(R"({"gui":{"rulers":"yes"}})");
+        CHECK_FALSE(rulers.rulersSavable);
+        CHECK(rulers.rulers.cursorColour == RulerConfig{}.cursorColour);
+        CHECK(rulers.gridSavable);
+        CHECK(rulers.warnings.size() == 1);
+        CHECK(rawreel::parseConfig(R"({"gui":{"rulers":"yes"}})").has_value());
+    }
+
+    TEST_CASE("config: the grid numbers are read in the overlay ranges") {
+        struct Case {
+            const char* key;
+            rawreel::GridRange range;
+        };
+        for (const Case c : {Case{"opacity", rawreel::GRID_OPACITY_RANGE},
+                             Case{"thickness", rawreel::GRID_THICKNESS_RANGE},
+                             Case{"minimumSpacing", rawreel::GRID_MINIMUM_SPACING_RANGE}}) {
+            CAPTURE(c.key);
+            const auto level = [&](std::int64_t value) {
+                const OverlayConfig read = parseOverlayConfig(
+                    std::format(R"({{"gui":{{"grid":{{"minor":{{"{}":{}}}}}}}}})", c.key, value));
+                return std::pair{read.grid.levels[1], read.warnings};
+            };
+            const auto number = [&](const rawreel::GridLevelConfig& l) {
+                return std::string_view{c.key} == "opacity"     ? l.opacity
+                       : std::string_view{c.key} == "thickness" ? l.thickness
+                                                                : l.minimumSpacing;
+            };
+            const rawreel::GridLevelConfig fallback = GridConfig{}.levels[1];
+            for (const std::uint32_t end : {c.range.minimum, c.range.maximum}) {
+                const auto [read, warnings] = level(end);
+                CHECK(number(read) == end);
+                CHECK(warnings.empty());
+            }
+            for (const std::int64_t outside :
+                 {std::int64_t{c.range.minimum} - 1, std::int64_t{c.range.maximum} + 1}) {
+                const auto [read, warnings] = level(outside);
+                CHECK(number(read) == number(fallback));
+                REQUIRE(warnings.size() == 1);
+                CHECK(warnings[0] ==
+                      std::format("gui.grid.minor.{}: expected a whole number from {} to {}, not "
+                                  "{}; using {}",
+                                  c.key, c.range.minimum, c.range.maximum, outside,
+                                  number(fallback)));
+            }
+        }
+    }
+
+    TEST_CASE("config: a colour that is not a string falls back") {
+        for (const char* colour : {"5", "null", "[]", "true"}) {
+            CAPTURE(colour);
+            const OverlayConfig c = parseOverlayConfig(std::format(
+                R"({{"gui":{{"grid":{{"minor":{{"colour":{},"opacity":10}}}}}}}})", colour));
+            CHECK(c.grid.levels[1].colour == Rgb8{});
+            CHECK(c.grid.levels[1].opacity == 10);
+            REQUIRE(c.warnings.size() == 1);
+            CHECK(c.warnings[0] == std::format(R"(gui.grid.minor.colour: expected "#rrggbb", not )"
+                                               R"({}; using "#ffffff")",
+                                               colour));
+            CHECK(c.gridSavable);
+        }
+    }
+
+    TEST_CASE("config: savable means the writer can merge the overlay keys") {
+        const TemporaryDirectory dir("rawreel-config");
+        const fs::path file = dir.path() / "rawreel.json";
+        GridConfig g;
+        g.levels[1].opacity = 10;
+        const RulerConfig r{.show = true, .numbers = false};
+        // A parent that is not an object: not savable, and the writer refuses the grid keys and
+        // the ruler keys.
+        for (const char* text : {R"({"gui":{"grid":{"major":true}}})", R"({"gui":{"grid":5}})",
+                                 R"({"gui":{"rulers":"yes"}})"}) {
+            CAPTURE(text);
+            writeText(file, text);
+            const OverlayConfig c = parseOverlayConfig(text);
+            CHECK(c.gridSavable != c.rulersSavable);
+            CHECK_FALSE(rawreel::saveConfigValues(
+                file, overlayConfigValues(g, r, !c.gridSavable, !c.rulersSavable)));
+            CHECK(rawreel::saveConfigValues(
+                file, overlayConfigValues(g, r, c.gridSavable, c.rulersSavable)));
+        }
+        // Bad leaves never block a save: the saved values replace them, with no warning left.
+        const char* const leaves =
+            R"({"gui":{"grid":{"major":{"step":24,"opacity":101,"colour":"#fff","thickness":0,)"
+            R"("minimumSpacing":-1},"minor":{"colour":5}},"rulers":{"show":"yes"}}})";
+        writeText(file, leaves);
+        const OverlayConfig before = parseOverlayConfig(leaves);
+        REQUIRE(before.gridSavable);
+        REQUIRE(before.rulersSavable);
+        REQUIRE(rawreel::saveConfigValues(file, overlayConfigValues(g, r, true, true)));
+        const dvv::Result<std::string> text = rawreel::readConfigText(file);
+        REQUIRE(text);
+        const OverlayConfig after = parseOverlayConfig(*text);
+        CHECK(after.grid == g);
+        CHECK(after.rulers == r);
+        CHECK(after.warnings.empty());
+    }
+
+    TEST_CASE("config: gui.rulers.cursorColour") {
+        const OverlayConfig c = parseOverlayConfig(
+            R"({"gui":{"rulers":{"show":true,"numbers":false,"cursorColour":"#34C759"}}})");
+        CHECK(c.warnings.empty());
+        CHECK(c.rulers.cursorColour == Rgb8{0x34, 0xc7, 0x59});
+        const std::vector<rawreel::ConfigValue> values =
+            overlayConfigValues(GridConfig{}, c.rulers, false, true);
+        REQUIRE(values.size() == 3);
+        CHECK(values[1].key == "gui.rulers.numbers");
+        CHECK(values[2].key == "gui.rulers.cursorColour");
+        CHECK(std::get<std::string>(values[2].value) == "#34c759");
+    }
+
+    TEST_CASE("config: a bad cursorColour falls back alone") {
+        for (const std::string_view bad : {R"("red")", R"("#fff")", "5"}) {
+            CAPTURE(bad);
+            const OverlayConfig c = parseOverlayConfig(std::format(
+                R"({{"gui":{{"rulers":{{"show":true,"numbers":false,"cursorColour":{}}}}}}})",
+                bad));
+            CHECK(c.rulers.cursorColour == RulerConfig{}.cursorColour);
+            CHECK(c.rulers.show);
+            CHECK_FALSE(c.rulers.numbers);
+            CHECK(c.rulersSavable);
+            REQUIRE(c.warnings.size() == 1);
+            CHECK(c.warnings[0] ==
+                  std::format(R"(gui.rulers.cursorColour: expected "#rrggbb", not {}; using )"
+                              R"("#ff3b30")",
+                              bad));
+        }
+    }
+
+    TEST_CASE("config: overlayConfigValues writes only the asked parts") {
+        GridConfig g;
+        g.levels[0].colour = {255, 159, 26};
+        const std::vector<rawreel::ConfigValue> grid_only = overlayConfigValues(g, {}, true, false);
+        CHECK(grid_only.size() == 24);
+        CHECK(std::ranges::all_of(grid_only, [](const rawreel::ConfigValue& v) {
+            return v.key.starts_with("gui.grid.");
+        }));
+        CHECK(grid_only[3].key == "gui.grid.major.colour");
+        CHECK(std::get<std::string>(grid_only[3].value) == "#ff9f1a");
+        CHECK(std::get<std::int64_t>(grid_only[1].value) == 32);
+        CHECK(std::get<bool>(grid_only[8].value));  // gui.grid.minor.show
+        const std::vector<rawreel::ConfigValue> rulers_only =
+            overlayConfigValues(g, {}, false, true);
+        REQUIRE(rulers_only.size() == 3);
+        CHECK(rulers_only[0].key == "gui.rulers.show");
+        CHECK(rulers_only[1].key == "gui.rulers.numbers");
+        CHECK(rulers_only[2].key == "gui.rulers.cursorColour");
+        CHECK(std::get<std::string>(rulers_only[2].value) == "#ff3b30");
+        CHECK(overlayConfigValues(g, {}, false, false).empty());
+    }
 }

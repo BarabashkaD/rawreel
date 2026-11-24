@@ -23,8 +23,8 @@ constexpr std::array<std::string_view, ICON_COUNT> SVGS{
     lucide::PAUSE,        lucide::SQUARE,
     lucide::STEP_FORWARD, lucide::SKIP_FORWARD,
     lucide::REPEAT,       lucide::SLIDERS_HORIZONTAL,
-    lucide::INFO,         lucide::ZOOM_OUT,
-    lucide::ZOOM_IN,
+    lucide::GRID_3X3,     lucide::INFO,
+    lucide::ZOOM_OUT,     lucide::ZOOM_IN,
 };
 
 }  // namespace

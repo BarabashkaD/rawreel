@@ -1,6 +1,9 @@
 #include "core/config.h"
 
+#include <algorithm>
 #include <array>
+#include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <format>
@@ -12,8 +15,11 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
+#include "core/config_writer.h"
 #include "core/log_level.h"
+#include "core/overlay.h"
 #include "dvv/base/error.h"
 #include "dvv/base/json.h"
 #include "dvv/base/log.h"
@@ -125,6 +131,204 @@ dvv::Result<void> readFileReads(const dvv::json::Value& io, IoConfig& target) {
     return {};
 }
 
+// The last part of a dotted key, its name in the parent object.
+std::string_view memberName(std::string_view key) {
+    return key.substr(key.rfind('.') + 1);
+}
+
+// A dotted key without its last part.
+std::string_view parentKey(std::string_view key) {
+    return key.substr(0, key.rfind('.'));
+}
+
+// A JSON integer from `low` to `high`; nullopt for anything else (2.0 too).
+std::optional<std::uint32_t> wholeNumber(const dvv::json::Value& value, std::uint32_t low,
+                                         std::uint32_t high) {
+    if (!value.is_number_integer()) {
+        return std::nullopt;
+    }
+    std::uint64_t number = 0;
+    if (value.is_number_unsigned()) {
+        number = value.get<std::uint64_t>();
+    } else if (const auto signed_number = value.get<std::int64_t>(); signed_number >= 0) {
+        number = static_cast<std::uint64_t>(signed_number);
+    } else {
+        return std::nullopt;
+    }
+    if (number < low || number > high) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(number);
+}
+
+// "#rrggbb" in either letter case.
+std::optional<Rgb8> parseColour(std::string_view text) noexcept {
+    constexpr std::size_t LENGTH = 7;
+    constexpr int HEX = 16;
+    if (text.size() != LENGTH || text[0] != '#') {
+        return std::nullopt;
+    }
+    std::array<std::uint8_t, 3> parts{};
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        const char* const first = text.data() + 1 + (2 * i);
+        const char* const last = first + 2;
+        const auto [end, error] = std::from_chars(first, last, parts[i], HEX);
+        if (error != std::errc{} || end != last) {
+            return std::nullopt;
+        }
+    }
+    return Rgb8{.r = parts[0], .g = parts[1], .b = parts[2]};
+}
+
+std::string colourText(Rgb8 colour) {
+    return std::format("#{:02x}{:02x}{:02x}", colour.r, colour.g, colour.b);
+}
+
+// The overlay leaf readers: the value at parent[memberName(key)], or `fallback` when it is
+// missing; a bad value gives `fallback` and one warning.
+class OverlayReader {
+public:
+    explicit OverlayReader(std::vector<std::string>& warnings) noexcept : warnings_(warnings) {}
+
+    bool flag(const dvv::json::Value& parent, std::string_view key, bool fallback) {
+        const auto found = parent.find(memberName(key));
+        if (found == parent.end()) {
+            return fallback;
+        }
+        if (found->is_boolean()) {
+            return found->get<bool>();
+        }
+        warn(key, "true or false", *found, std::format("{}", fallback));
+        return fallback;
+    }
+
+    std::uint32_t number(const dvv::json::Value& parent, std::string_view key, GridRange range,
+                         std::uint32_t fallback) {
+        const auto found = parent.find(memberName(key));
+        if (found == parent.end()) {
+            return fallback;
+        }
+        if (const std::optional<std::uint32_t> value =
+                wholeNumber(*found, range.minimum, range.maximum)) {
+            return *value;
+        }
+        warn(key, std::format("a whole number from {} to {}", range.minimum, range.maximum), *found,
+             std::format("{}", fallback));
+        return fallback;
+    }
+
+    std::uint32_t step(const dvv::json::Value& parent, std::string_view key,
+                       std::uint32_t fallback) {
+        const auto found = parent.find(memberName(key));
+        if (found == parent.end()) {
+            return fallback;
+        }
+        const std::optional<std::uint32_t> value =
+            wholeNumber(*found, GRID_STEP_VALUES.front(), GRID_STEP_VALUES.back());
+        if (value && std::ranges::contains(GRID_STEP_VALUES, *value)) {
+            return *value;
+        }
+        std::string values;
+        for (const std::uint32_t step_value : GRID_STEP_VALUES) {
+            values += std::format("{}{}", values.empty() ? "" : ", ", step_value);
+        }
+        warn(key, "one of " + values, *found, std::format("{}", fallback));
+        return fallback;
+    }
+
+    Rgb8 colour(const dvv::json::Value& parent, std::string_view key, Rgb8 fallback) {
+        const auto found = parent.find(memberName(key));
+        if (found == parent.end()) {
+            return fallback;
+        }
+        if (found->is_string()) {
+            if (const std::optional<Rgb8> value =
+                    parseColour(found->get_ref<const std::string&>())) {
+                return *value;
+            }
+        }
+        warn(key, R"("#rrggbb")", *found, std::format(R"("{}")", colourText(fallback)));
+        return fallback;
+    }
+
+    // The object at parent[memberName(key)]; nullptr when it is missing or not an object (with a
+    // warning). Anything but an object or null clears `savable`: the writer cannot merge into it.
+    const dvv::json::Value* object(const dvv::json::Value& parent, std::string_view key,
+                                   bool& savable) {
+        const auto found = parent.find(memberName(key));
+        if (found == parent.end()) {
+            return nullptr;
+        }
+        if (found->is_object()) {
+            return &*found;
+        }
+        if (found->is_null()) {
+            warnings_.push_back(
+                std::format("{}: expected an object, not null; the defaults are used", key));
+        } else {
+            warnings_.push_back(
+                std::format("{}: expected an object, not {}; the defaults are used and not saved",
+                            key, dvv::json::dump(*found)));
+            savable = false;
+        }
+        return nullptr;
+    }
+
+private:
+    void warn(std::string_view key, std::string_view expected, const dvv::json::Value& value,
+              std::string_view fallback) {
+        warnings_.push_back(std::format("{}: expected {}, not {}; using {}", key, expected,
+                                        dvv::json::dump(value), fallback));
+    }
+
+    std::vector<std::string>& warnings_;
+};
+
+GridLevelConfig readGridLevel(OverlayReader& read, const dvv::json::Value& level,
+                              const config_key::GridLevelKeys& keys,
+                              const GridLevelConfig& fallback) {
+    GridLevelConfig result;
+    result.show = read.flag(level, keys.show, fallback.show);
+    result.step = read.step(level, keys.step, fallback.step);
+    result.opacity = read.number(level, keys.opacity, GRID_OPACITY_RANGE, fallback.opacity);
+    result.colour = read.colour(level, keys.colour, fallback.colour);
+    result.thickness = read.number(level, keys.thickness, GRID_THICKNESS_RANGE, fallback.thickness);
+    result.adaptive = read.flag(level, keys.adaptive, fallback.adaptive);
+    result.halo = read.flag(level, keys.halo, fallback.halo);
+    result.minimumSpacing = read.number(level, keys.minimumSpacing, GRID_MINIMUM_SPACING_RANGE,
+                                        fallback.minimumSpacing);
+    return result;
+}
+
+void readGrid(OverlayReader& read, const dvv::json::Value& gui, OverlayConfig& result) {
+    const std::string_view grid_key = parentKey(parentKey(config_key::GUI_GRID[0].show));
+    const dvv::json::Value* const grid = read.object(gui, grid_key, result.gridSavable);
+    if (grid == nullptr) {
+        return;
+    }
+    const GridConfig defaults;
+    for (std::size_t i = 0; i < GRID_LEVELS; ++i) {
+        const config_key::GridLevelKeys& keys = config_key::GUI_GRID[i];
+        if (const dvv::json::Value* const level =
+                read.object(*grid, parentKey(keys.show), result.gridSavable)) {
+            result.grid.levels[i] = readGridLevel(read, *level, keys, defaults.levels[i]);
+        }
+    }
+    std::array<std::uint32_t, GRID_LEVELS> steps{};
+    std::ranges::transform(result.grid.levels, steps.begin(),
+                           [](const GridLevelConfig& level) { return level.step; });
+    if (stepsValid(steps)) {
+        return;
+    }
+    result.warnings.push_back(std::format("{}: the steps {} / {} / {} break {}; using {} / {} / {}",
+                                          grid_key, steps[0], steps[1], steps[2], GRID_STEP_RULE,
+                                          defaults.levels[0].step, defaults.levels[1].step,
+                                          defaults.levels[2].step));
+    for (std::size_t i = 0; i < GRID_LEVELS; ++i) {
+        result.grid.levels[i].step = defaults.levels[i].step;
+    }
+}
+
 }  // namespace
 
 std::string_view fileReadsName(FileReadMode mode) noexcept {
@@ -178,6 +382,57 @@ dvv::Result<Config> parseConfig(std::string_view text) {
         }
     }
     return config;
+}
+
+OverlayConfig parseOverlayConfig(std::string_view text) {
+    OverlayConfig result;
+    const dvv::Result<dvv::json::Value> root = dvv::json::parse(text);
+    if (!root || !root->is_object()) {
+        return result;
+    }
+    const auto gui = root->find("gui");
+    if (gui == root->end() || !gui->is_object()) {
+        return result;
+    }
+    OverlayReader read(result.warnings);
+    readGrid(read, *gui, result);
+    if (const dvv::json::Value* const rulers =
+            read.object(*gui, parentKey(config_key::GUI_RULERS_SHOW), result.rulersSavable)) {
+        const RulerConfig defaults;
+        result.rulers.show = read.flag(*rulers, config_key::GUI_RULERS_SHOW, defaults.show);
+        result.rulers.numbers =
+            read.flag(*rulers, config_key::GUI_RULERS_NUMBERS, defaults.numbers);
+        result.rulers.cursorColour =
+            read.colour(*rulers, config_key::GUI_RULERS_CURSOR_COLOUR, defaults.cursorColour);
+    }
+    return result;
+}
+
+std::vector<ConfigValue> overlayConfigValues(const GridConfig& grid, const RulerConfig& rulers,
+                                             bool grid_keys, bool ruler_keys) {
+    std::vector<ConfigValue> values;
+    if (grid_keys) {
+        for (std::size_t i = 0; i < GRID_LEVELS; ++i) {
+            const config_key::GridLevelKeys& keys = config_key::GUI_GRID[i];
+            const GridLevelConfig& level = grid.levels[i];
+            values.push_back({.key = keys.show, .value = level.show});
+            values.push_back({.key = keys.step, .value = std::int64_t{level.step}});
+            values.push_back({.key = keys.opacity, .value = std::int64_t{level.opacity}});
+            values.push_back({.key = keys.colour, .value = colourText(level.colour)});
+            values.push_back({.key = keys.thickness, .value = std::int64_t{level.thickness}});
+            values.push_back({.key = keys.adaptive, .value = level.adaptive});
+            values.push_back({.key = keys.halo, .value = level.halo});
+            values.push_back(
+                {.key = keys.minimumSpacing, .value = std::int64_t{level.minimumSpacing}});
+        }
+    }
+    if (ruler_keys) {
+        values.push_back({.key = config_key::GUI_RULERS_SHOW, .value = rulers.show});
+        values.push_back({.key = config_key::GUI_RULERS_NUMBERS, .value = rulers.numbers});
+        values.push_back({.key = config_key::GUI_RULERS_CURSOR_COLOUR,
+                          .value = colourText(rulers.cursorColour)});
+    }
+    return values;
 }
 
 dvv::Result<std::string> readConfigText(const std::filesystem::path& path) {

@@ -3,9 +3,11 @@
 #include <cmath>
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <string>
 
 #include "dvv/media/types.h"
+#include "dvv/media/view.h"
 
 namespace rawreel {
 
@@ -60,6 +62,13 @@ std::string mappingText(const dvv::media::ColourParams* resolved) {
             return "HLG \xE2\x86\x92 SDR tone mapping (1000 \xE2\x86\x92 100 nits)";
         default: return "SDR, no tone mapping";
     }
+}
+
+std::string cursorText(std::optional<dvv::media::ImagePixel> pixel) {
+    if (!pixel) {
+        return {};
+    }
+    return std::format("x {}  y {}", pixel->x, pixel->y);
 }
 
 }  // namespace rawreel

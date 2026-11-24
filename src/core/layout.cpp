@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <optional>
 
 namespace rawreel {
 
@@ -37,20 +39,64 @@ std::vector<int> fitDocks(std::span<const DockFit> docks, int space) {
     return sizes;
 }
 
-ScreenRect infoWindowPlace(ScreenRect frame, ScreenRect client, LayoutSize size,
-                           ScreenRect work_area, int gap) noexcept {
-    const int work_right = work_area.x + work_area.width;
-    const int work_bottom = work_area.y + work_area.height;
-    const int frame_right = frame.x + frame.width;
-    ScreenRect place{
-        .x = frame_right + gap, .y = frame.y, .width = size.width, .height = size.height};
-    const bool fits = place.x >= work_area.x && place.y >= work_area.y &&
-                      place.x + place.width <= work_right && place.y + place.height <= work_bottom;
-    if (!fits) {
-        place.x = std::min(frame_right, work_right) - gap - size.width;
-        place.y = client.y + gap;
+namespace {
+
+bool fitsIn(const ScreenRect& rect, const ScreenRect& area) noexcept {
+    return rect.x >= area.x && rect.y >= area.y && rect.x + rect.width <= area.x + area.width &&
+           rect.y + rect.height <= area.y + area.height;
+}
+
+}  // namespace
+
+ScreenRect floatingWindowPlace(ScreenRect frame, ScreenRect client, LayoutSize size,
+                               ScreenRect work_area, std::optional<ScreenRect> other,
+                               int gap) noexcept {
+    const auto at = [&](int x, int y) {
+        return ScreenRect{.x = x, .y = y, .width = size.width, .height = size.height};
+    };
+    const int inside_y = client.y + gap;
+    if (!other) {
+        const int frame_right = frame.x + frame.width;
+        const ScreenRect right = at(frame_right + gap, frame.y);
+        if (fitsIn(right, work_area)) {
+            return right;
+        }
+        const int work_right = work_area.x + work_area.width;
+        return clampInto(at(std::min(frame_right, work_right) - gap - size.width, inside_y),
+                         work_area);
     }
-    return clampInto(place, work_area);
+    if (const ScreenRect below = at(other->x, other->y + other->height + gap);
+        fitsIn(below, work_area)) {
+        return below;
+    }
+    if (const ScreenRect left = at(frame.x - gap - size.width, frame.y); fitsIn(left, work_area)) {
+        return left;
+    }
+    return clampInto(at(std::max(frame.x, work_area.x) + gap, inside_y), work_area);
+}
+
+RulerStrip rulerStrip(const RulerConfig& rulers, double font_dip, DisplayScale scale) noexcept {
+    if (!rulers.show) {
+        return {};
+    }
+    const auto positive = [](double value, double otherwise) {
+        return std::isfinite(value) && value > 0 ? value : otherwise;
+    };
+    const double per_dip = positive(scale.backingPerDip, 1);
+    const double content = positive(scale.contentScale, 1);
+    const double font = positive(font_dip, 0);
+    const double dip = RULER_TICK_BAND_DIP + (rulers.numbers ? 2 * RULER_LABEL_LINE * font : 0);
+    // The small epsilon keeps a product that lands a rounding error above a whole unit on it; no
+    // strip is wider than MOST_UNITS, which keeps the conversions below in range.
+    constexpr double EPSILON = 1e-9;
+    constexpr double MOST_UNITS = 65536;
+    const int units =
+        static_cast<int>(std::min(std::ceil((dip * per_dip / content) - EPSILON), MOST_UNITS));
+    const auto backing = static_cast<std::uint32_t>(std::min(
+        std::floor((units * content) + 0.5), double{std::numeric_limits<std::uint32_t>::max()}));
+    const auto tick_band = static_cast<std::uint32_t>(
+        std::min(std::floor((RULER_TICK_BAND_DIP * per_dip) + 0.5), static_cast<double>(backing)));
+    return {.windowUnits = units, .backing = backing, .tickBand = tick_band};
 }
 
 ScreenRect clampInto(ScreenRect rect, ScreenRect work_area) noexcept {

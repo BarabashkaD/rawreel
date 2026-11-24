@@ -34,16 +34,20 @@ include("${DVV_CMAKE_DIR}/DvvOsSources.cmake")
 add_library(rawreel_render STATIC
     src/render/composite_constants.cpp
     src/render/display_state.cpp
+    src/render/pass_regions.cpp
+    src/render/ruler_constants.cpp
     src/render/viewport_renderer.cpp)
 target_include_directories(rawreel_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(rawreel_render PUBLIC rawreel_core dvv::base dvv::gpu dvv::platform
-                                            PRIVATE dvv::media)
-dvv_add_shaders(rawreel_render NAMESPACE rawreel_shaders SHADERS shaders/composite.slang)
+target_link_libraries(rawreel_render PUBLIC rawreel_core dvv::base dvv::gpu dvv::media
+                                            dvv::platform)
+dvv_add_shaders(rawreel_render NAMESPACE rawreel_shaders
+    SHADERS shaders/composite.slang shaders/grid_lines.slang shaders/rulers.slang
+    IMPORTS dvv::media)
 dvv_set_compiler_options(rawreel_render)
 
-# rawreel_core (design M3 §3): the wx-free application core (fit view math, player logic,
-# commands and keys, format choice, drop routing, the Session and its timer, rawreel-gui's
-# argument parser, the config file). Built under every preset, sanitizers included.
+# rawreel_core: the wx-free application core (the view's zoom and wheel policy, player logic,
+# commands and keys, format choice, drop routing, the Session and its timer, rawreel-gui's argument
+# parser, the config file). Built under every preset, sanitizers included.
 add_library(rawreel_core STATIC
     src/core/commands.cpp
     src/core/config.cpp
@@ -62,6 +66,7 @@ add_library(rawreel_core STATIC
     src/core/log_mirror.cpp
     src/core/log_store.cpp
     src/core/log_text.cpp
+    src/core/overlay.cpp
     src/core/perf_stats.cpp
     src/core/player.cpp
     src/core/session.cpp
@@ -198,12 +203,15 @@ if(NOT DVV_SANITIZE)
         src/gui/drop_target.cpp
         src/gui/edit_dispatch.cpp
         src/gui/format_dialog.cpp
+        src/gui/floating_window.cpp
+        src/gui/grid_window.cpp
         src/gui/info_window.cpp
         src/gui/log_list_dataview.cpp
         src/gui/log_list_listctrl.cpp
         src/gui/log_panel.cpp
         src/gui/main.cpp
         src/gui/main_frame.cpp
+        src/gui/overlay_params.cpp
         src/gui/player_panel.cpp
         src/gui/selftest.cpp
         src/gui/session_bridge.cpp

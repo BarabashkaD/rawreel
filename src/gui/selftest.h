@@ -179,9 +179,9 @@ struct DialogHooks {
     // and GTK it runs once the window is shown; on Windows it is queued (CallAfter) before the
     // modal Show() and runs inside its loop, so it must end the dialog (SettingsWindow::pressOk()).
     dvv::MoveOnlyFunction<void(SettingsWindow&)> settings;
-    // The Log list's context menu (log level design §2.2), built but never shown: its items and
-    // which Level item is checked.
-    dvv::MoveOnlyFunction<void(const wxMenu&)> logMenu;
+    // A context menu (the Log list's, the viewport's), built but never shown: the hook reads its
+    // items and returns the id of the item it chooses (wxID_NONE: dismissed).
+    dvv::MoveOnlyFunction<int(const wxMenu&)> popupMenu;
 };
 [[nodiscard]] DialogHooks& dialogHooks();
 // Every ShowModal of these dialogs goes here. With a hook set, a CallAfter queued before ShowModal
@@ -199,10 +199,13 @@ struct DialogHooks {
 [[nodiscard]] int showModal(wxFileDialog& dialog);
 // The same for the native folder dialog (the chooseFolder hook).
 [[nodiscard]] int showModal(wxDirDialog& dialog);
-// A popup menu (the Log list's context menu) is never shown in a --selftest run: the menu goes to
-// the logMenu hook (without one: one warning) and wxID_NONE is returned. Otherwise
-// window.GetPopupMenuSelectionFromUser(menu).
-[[nodiscard]] int showLogMenu(wxWindow& window, wxMenu& menu);
+// A popup menu is never shown in a --selftest run: the menu, its items updated from `window` as
+// every OS does before it shows one, goes to the popupMenu hook, which returns the chosen id
+// (without a hook: one error, wxID_NONE). Otherwise
+// window.GetPopupMenuSelectionFromUser(menu, position) (client coordinates of `window`;
+// wxDefaultPosition: at the pointer).
+[[nodiscard]] int showPopupMenu(wxWindow& window, wxMenu& menu,
+                                wxPoint position = wxDefaultPosition);
 // The file a save dialog returned: in a --selftest run the path its hook set (wxGTK's GetPath()
 // reads its file chooser, which a dialog that was never shown may not have updated), else
 // GetPath(). UTF-8.

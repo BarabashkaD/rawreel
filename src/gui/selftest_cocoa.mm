@@ -4,6 +4,7 @@
 // clang-format off
 #include <wx/wx.h>  // first (R11)
 // clang-format on
+#include <cmath>
 #include <cstdint>
 #include <format>
 #include <memory>
@@ -15,8 +16,10 @@
 #include "core/view.h"
 #include "dvv/base/log.h"
 #include "dvv/gpu/presenter.h"
+#include "dvv/media/view_lines.h"
 #include "dvv/platform/pixel_size.h"
 #include "gui/app.h"
+#include "gui/floating_window.h"
 #include "gui/main_frame.h"
 #include "gui/selftest.h"
 #include "gui/selftest_detail.h"
@@ -34,7 +37,7 @@ SelfTestStep infoWindowCloseKeyStep(SelfTest* test, const std::shared_ptr<InfoKe
     // ⌘W with the focus in the (shown) Info window: whether Close stream was available.
     const auto close_key = [test] {
         MainFrame& frame = test->frame();
-        frame.setFocusForTest(shownInfoContent(frame));
+        frame.setFocusForTest(shownInfoFocus(frame));
         const bool available = frame.isAvailable(Command::CloseStreams);
         frame.execute(Command::CloseStreams, CommandSource::Menu);
         frame.setFocusForTest(nullptr);
@@ -51,14 +54,15 @@ SelfTestStep infoWindowCloseKeyStep(SelfTest* test, const std::shared_ptr<InfoKe
         MainFrame& frame = test->frame();
         const std::uint32_t streams = frame.session().status().streams;
         seen = std::format(
-            "phase {}: available {} (no stream {}), closed by the second ⌘W {}, infoShown {}, {} "
+            "phase {}: available {} (no stream {}), closed by the second ⌘W {}, windowShown {}, {} "
             "session streams (was {}), {} frame streams",
             state->phase, state->available, state->availableAgain, state->hiddenAgain,
-            frame.infoShown(), streams, state->streamsBefore, frame.streams().size());
+            frame.windowShown(FloatingKind::Info), streams, state->streamsBefore,
+            frame.streams().size());
         switch (state->phase) {
             case 0:
-                if (state->available && !frame.infoShown() && state->streamsBefore == 1 &&
-                    streams == 1 && frame.streams().size() == 1) {
+                if (state->available && !frame.windowShown(FloatingKind::Info) &&
+                    state->streamsBefore == 1 && streams == 1 && frame.streams().size() == 1) {
                     DVV_LOG_INFO("selftest: info window close key: {}", seen);
                     state->phase = 1;
                     frame.execute(Command::CloseStreams);  // the stream itself (no window in front)
@@ -67,16 +71,19 @@ SelfTestStep infoWindowCloseKeyStep(SelfTest* test, const std::shared_ptr<InfoKe
             case 1:
                 if (streams == 0 && frame.streams().empty()) {
                     state->availableAgain = close_key();
-                    state->hiddenAgain = !frame.infoShown();
+                    state->hiddenAgain = !frame.windowShown(FloatingKind::Info);
                     DVV_LOG_INFO("selftest: info window close key: {}", seen);
                     state->phase = 2;
-                    openSmokeStream(test);     // checked in a later turn
-                    frame.setInfoShown(true);  // the scenario's close covers quitting with it open
+                    openSmokeStream(test);  // checked in a later turn
+                    frame.setWindowShown(
+                        FloatingKind::Info,
+                        true);  // the scenario's close covers quitting with it open
                 }
                 return false;
             default:
-                return state->availableAgain && state->hiddenAgain && frame.infoShown() &&
-                       streams == 1 && frame.streams().size() == 1;
+                return state->availableAgain && state->hiddenAgain &&
+                       frame.windowShown(FloatingKind::Info) && streams == 1 &&
+                       frame.streams().size() == 1;
         }
     };
     return step("⌘W closes the Info window", std::move(start), std::move(passed));
@@ -135,11 +142,13 @@ SelfTestStep appMenuStep(SelfTest* test, bool opens_about) {
     return step("application menu", std::move(start), std::move(passed));
 }
 
-// Review Focus 1 and 5: a window moved to a display of another backing scale keeps its size in
-// points, so wx sends no size event. The test hook gives the viewport's child view another scale
-// (Retina 2 <-> 1) and runs its viewDidChangeBackingProperties, Cocoa's own entry: the same
-// presenter (the hook's scale lives on its child view) gets a swapchain of physicalPixelSize() of
-// the unchanged point size. `restore`: the hook gives the window's own scale back.
+// A window moved to a display of another backing scale keeps its size in points, so wx sends no
+// size event, yet its swapchain, its ruler strips and its picture region P follow the new scale.
+// The test hook gives the viewport's child view another scale (Retina 2 <-> 1) and runs its
+// viewDidChangeBackingProperties, Cocoa's own entry: the same presenter (the hook's scale lives on
+// its child view) gets a swapchain of physicalPixelSize() of the unchanged point size; with the
+// rulers shown (the change shows them, the restore keeps them) the strips stay whole window units
+// and P is that extent minus the strips. `restore`: the hook gives the window's own scale back.
 SelfTestStep backingScaleStep(SelfTest* test, const SharedState& state, bool restore) {
     struct Probe {
         const dvv::gpu::Presenter* presenter = nullptr;
@@ -151,6 +160,10 @@ SelfTestStep backingScaleStep(SelfTest* test, const SharedState& state, bool res
     auto start = [test, state, probe, restore] {
         Viewport& viewport = test->frame().viewport();
         markStart(viewport, *state);
+        if (!restore) {
+            MainFrame& frame = test->frame();
+            showRulers(frame, true);
+        }
         probe->presenter = viewport.presenter();   // the hook needs it: it sets the child's scale
         probe->points = viewport.GetClientSize();  // points on wxOSX
         const double window_scale = viewport.GetContentScaleFactor();
@@ -165,13 +178,23 @@ SelfTestStep backingScaleStep(SelfTest* test, const SharedState& state, bool res
         const wxSize points = viewport.GetClientSize();
         const bool same_presenter =
             probe->presenter != nullptr && viewport.presenter() == probe->presenter;
+        const dvv::media::ViewStrips strips = viewport.overlayParams().strips;
+        const int units = viewport.stripWindowUnits();
+        const dvv::platform::PixelSize picture = viewport.pictureSize();
+        const bool whole =
+            units > 0 && strips.top == strips.left &&
+            strips.top == static_cast<std::uint32_t>(std::lround(units * probe->scale));
+        const bool in_p = picture.width == expected.width - strips.left &&
+                          picture.height == expected.height - strips.top;
         seen = std::format(
             "{}; hook {}, scale {}, points {}x{} (at the start {}x{}), expected extent {}x{}, "
-            "same presenter {}",
+            "same presenter {}, strips {} ({} window units), P {}x{}",
             describe(viewport, *state), probe->hooked, probe->scale, points.x, points.y,
-            probe->points.x, probe->points.y, expected.width, expected.height, same_presenter);
-        return probe->hooked && stats && same_presenter && points == probe->points &&
-               viewport.physicalClientSize() == expected && stats->presentedExtent == expected &&
+            probe->points.x, probe->points.y, expected.width, expected.height, same_presenter,
+            strips.top, units, picture.width, picture.height);
+        return probe->hooked && stats && same_presenter && points == probe->points && whole &&
+               in_p && viewport.physicalClientSize() == expected &&
+               stats->presentedExtent == expected &&
                stats->swapchainsCreated > state->startSwapchains &&
                stats->framesPresented > state->startFrames;
     };
@@ -247,7 +270,7 @@ SelfTestStep closeKeyOtherWindowStep(SelfTest* test, const std::shared_ptr<Setti
 }  // namespace
 
 void copyInInfoWindow(MainFrame& frame, const std::shared_ptr<InfoKeysState>& state) {
-    wxWindow* const panel = shownInfoContent(frame);
+    wxWindow* const panel = shownInfoFocus(frame);
     frame.setFocusForTest(panel);
     wxUpdateUIEvent update(wxID_COPY);
     update.SetEventObject(&frame);
@@ -266,6 +289,18 @@ void addBackingScaleSteps(std::vector<SelfTestStep>& steps, SelfTest* test,
                           const std::shared_ptr<SmokeState>& state) {
     steps.push_back(backingScaleStep(test, state, false));
     steps.push_back(backingScaleStep(test, state, true));
+    steps.push_back(step(
+        "backing scale: the rulers hidden again",
+        [test] {
+            MainFrame& frame = test->frame();
+            showRulers(frame, false);
+        },
+        [test](std::string& seen) {
+            const Viewport& viewport = test->frame().viewport();
+            seen = std::format("strip {} window units", viewport.stripWindowUnits());
+            return viewport.stripWindowUnits() == 0 &&
+                   viewport.pictureSize() == viewport.physicalClientSize();
+        }));
 }
 
 void addApplicationMenuSteps(std::vector<SelfTestStep>& steps, SelfTest* test, bool opens_about) {
