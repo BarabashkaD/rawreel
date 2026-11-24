@@ -8,12 +8,14 @@
 #include <memory>
 #include <optional>
 
-#include "core/view.h"
+#include "core/overlay.h"
 #include "dvv/base/error.h"
 #include "dvv/base/move_only_function.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/presenter.h"
+#include "dvv/media/view.h"
 #include "dvv/platform/pixel_size.h"
+#include "gui/overlay_params.h"
 #include "render/display_state.h"
 #include "render/viewport_renderer.h"
 
@@ -33,9 +35,10 @@ inline constexpr double WHEEL_LINE_DIP = 16;
 // runs on the GUI thread; the GUI thread only calls the presenter's non-blocking members.
 class Viewport final : public wxWindow {
 public:
-    // Sets display->setParams(CompositeParams{.dark = wxSystemSettings::GetAppearance().IsDark()}):
-    // the Fit view. Only setView() changes the params later; the renderer resolves the view
-    // against its extent and the frame size, so a resize sets nothing.
+    // Sets the display's view to Fit and its overlay to the default GridConfig and RulerConfig,
+    // converted at the window's scale and theme (sendOverlay), until setOverlayConfig(). Only
+    // setView() changes the view later; the renderer resolves the view against P (the extent minus
+    // the ruler strips) and the frame size, so a resize sets no view.
     Viewport(wxWindow* parent, std::shared_ptr<DisplayState> display);
     Viewport(const Viewport&) = delete;
     Viewport& operator=(const Viewport&) = delete;
@@ -57,10 +60,10 @@ public:
     // recreated; MainFrame::onPresenterFailed logs it (Task 9: infobar with Reopen).
     void setFailureHandler(dvv::MoveOnlyFunction<void(const dvv::Error&)> handler);
     void requestFrame();  // presenter->requestFrame() when there is one
-    // The resize entry: with a presenter, syncNativeWindow() and then
-    // presenter->resize(physicalClientSize()). onSize calls it, and on macOS so does the child
-    // view's viewDidChangeBackingProperties (a display-scale change sends no wxEVT_SIZE). GUI
-    // thread.
+    // The resize entry: the overlay converted again at the current scale (the strips follow it),
+    // then, with a presenter, syncNativeWindow() and presenter->resize(physicalClientSize()).
+    // onSize and onDpiChanged call it, and on macOS so does the child view's
+    // viewDidChangeBackingProperties (a display-scale change sends no wxEVT_SIZE). GUI thread.
     void resizePresenter();
     // Test only (--selftest with RAWREEL_GUI_FAULT=presenter): the record function of every
     // presenter frame throws, so each presenter fails with Errc::Internal (the D25 path).
@@ -93,25 +96,66 @@ public:
     [[nodiscard]] std::optional<RecordedInfo> lastRecorded() const;
 
     // The view request (view zoom design; values in backing and clip pixels). Stores the request;
-    // when it changed, display->setParams({.dark, .view = request}), then the view handler.
-    void setView(const ViewRequest& request);
-    [[nodiscard]] const ViewRequest& view() const noexcept { return view_; }
+    // when it changed, display->setView(request), then the view handler.
+    void setView(const dvv::media::ViewRequest& request);
+    [[nodiscard]] const dvv::media::ViewRequest& view() const noexcept { return view_; }
     // The stream's frame size; {} without a stream (MainFrame::onStreamsChanged). A new size drops
-    // the Ctrl+wheel rotation not yet a whole notch.
-    void setImageSize(dvv::platform::PixelSize image) noexcept;
+    // the Ctrl+wheel rotation not yet a whole notch. Then updateCursor() and the view handler.
+    void setImageSize(dvv::platform::PixelSize image);
     [[nodiscard]] dvv::platform::PixelSize imageSize() const noexcept { return image_; }
-    // The view as shown: resolveView(view(), physicalClientSize(), imageSize()).
-    [[nodiscard]] ViewTransform shownView() const;
-    // The fit's zoom: ViewTransform::fit(physicalClientSize(), imageSize()).zoom(); 0 without an
-    // image.
+    // The grid and ruler settings: stored, converted with convertOverlay() at the current scale,
+    // theme and font and sent (DisplayState::setOverlay); P and a Fit view follow, then the view
+    // handler.
+    void setOverlayConfig(const GridConfig& grid, const RulerConfig& rulers);
+    // The params last sent.
+    [[nodiscard]] const OverlayParams& overlayParams() const noexcept { return overlay_.params; }
+    // The picture region P: dvv::media::pictureRegion(physicalClientSize(), the strips). Every
+    // view computation resolves against its size.
+    [[nodiscard]] dvv::platform::PixelSize pictureSize() const;
+    // P's origin in the viewport: (left strip, top strip), backing pixels.
+    [[nodiscard]] dvv::media::PointD pictureOffset() const;
+    // The ruler strips' thickness, whole window units; 0 while the rulers are hidden.
+    [[nodiscard]] int stripWindowUnits() const noexcept { return overlay_.strip.windowUnits; }
+    // The backing point of a window position, relative to P:
+    // (position + 0.5) x contentScale() - pictureOffset().
+    [[nodiscard]] dvv::media::PointD picturePoint(wxPoint position) const;
+    // The window position's backing point lies in P (PixelRect::contains), not in a reserved strip.
+    [[nodiscard]] bool inPicture(wxPoint position) const;
+    // The window position's backing point lies in a drawn ruler: the top, left or corner rect of
+    // dvv::media::rulerRects(physicalClientSize(), the strips, shownView()), the rects the rulers
+    // hug the visible picture with. A press there starts no pan; the background beside them pans.
+    [[nodiscard]] bool onRuler(wxPoint position) const;
+    // The view as shown: resolveView(view(), pictureSize(), imageSize()).
+    [[nodiscard]] dvv::media::ViewTransform shownView() const;
+    // The fit's zoom: ViewTransform::fit(pictureSize(), imageSize()).zoom(); 0 without an image.
     [[nodiscard]] double fitZoom() const;
-    // Backing pixels per window unit: GetContentScaleFactor() (1 on Windows, where window units
-    // are physical pixels).
+    // Backing pixels per window unit, the scale of physicalClientSize(): nativeContentScale() (1 on
+    // Windows, where window units are physical pixels).
     [[nodiscard]] double contentScale() const;
     // Backing pixels per DIP: GetDPIScaleFactor() on Windows, contentScale() elsewhere.
     [[nodiscard]] double backingPerDip() const;
-    // Called after setView() changed the request and at the end of every resizePresenter().
+    // Called after setView() changed the request, after setOverlayConfig(), after setImageSize()
+    // and at the end of every resizePresenter().
     void setViewChangedHandler(dvv::MoveOnlyFunction<void()> handler);
+    // The image pixel under the pointer, dvv::media::cursorPixel(shownView(), P, the pointer's
+    // backing point); nullopt off the image, over a strip, without an image or after the pointer
+    // left. updateCursor() maps it on every motion (with or without a drag), on a leave and after
+    // every change of the view, P or the image (setView, resizePresenter, setImageSize,
+    // setOverlayConfig), so it follows the picture under a still pointer. The handler hears every
+    // change of the pixel; moves never run the view handler.
+    void setCursorHandler(
+        dvv::MoveOnlyFunction<void(std::optional<dvv::media::ImagePixel>)> handler);
+    [[nodiscard]] std::optional<dvv::media::ImagePixel> cursorPixel() const noexcept {
+        return cursor_pixel_;
+    }
+    // A context menu request (a right-click, the menu key, Shift+F10): the handler gets the point
+    // in client coordinates; one from the keyboard (wxDefaultPosition) becomes the centre of the
+    // client area. Without a handler the event goes on to the parent.
+    void setContextMenuHandler(dvv::MoveOnlyFunction<void(wxPoint)> handler);
+    // Test hook (selftest): how often the cursor was sent to the display.
+    [[nodiscard]] std::uint64_t cursorPushesForTest() const noexcept { return cursor_pushes_; }
+    // Test hook (selftest): how often the view handler ran.
+    [[nodiscard]] std::uint64_t viewChangesForTest() const noexcept { return view_changes_; }
     // Test hook (selftest): a left- or middle-button drag is panning the picture.
     [[nodiscard]] bool draggingForTest() const noexcept { return drag_.has_value(); }
 
@@ -126,7 +170,19 @@ private:
     void updateVisible(bool shown, bool old_visible, const char* event);
     void onPaint(wxPaintEvent& event);
     void onSize(wxSizeEvent& event);
+    // A display of another scale (wxMSW, wxGTK): the overlay and P follow (resizePresenter).
+    void onDpiChanged(wxDPIChangedEvent& event);
+    // The light or dark theme changed: dark_ follows, the overlay is sent again, Refresh().
+    void onSysColourChanged(wxSysColourChangedEvent& event);
+    // overlay_ = convertOverlay() of grid_ and rulers_ at the current scale, theme and font, its
+    // params sent to the display.
+    void sendOverlay();
+    // The backing point of a window position: (position + 0.5) x contentScale().
+    [[nodiscard]] dvv::media::PointD backingPoint(wxPoint position) const;
+    // picturePoint() moved into P (its edges included): the anchor of a wheel or pinch zoom.
+    [[nodiscard]] dvv::media::PointD pictureAnchor(wxPoint position) const;
     void onMouseDown(wxMouseEvent& event);  // SetFocus() on a right or aux button press (R5)
+    void onContextMenu(wxContextMenuEvent& event);  // the handler, or Skip() without one
     // Left and middle press and double-click: SetFocus(); with canPan(), a drag starts (mouse
     // capture, the drag cursor).
     void onButtonDown(wxMouseEvent& event);
@@ -136,7 +192,15 @@ private:
     // The drag's button released: ReleaseMouse(), endDrag(). Another button's release does not.
     void onButtonUp(wxMouseEvent& event);
     void onCaptureLost(wxMouseCaptureLostEvent& event);  // ends a drag without ReleaseMouse()
-    void endDrag();                                      // the default cursor, drag_ reset
+    // The pointer left the window: no cursor (updateCursor).
+    void onLeave(wxMouseEvent& event);
+    // cursor_pixel_ from position_ (cursorPixel()), the cursor handler when it changed. The display
+    // gets the pointer's backing point (DisplayState::setCursor) only while the rulers are shown
+    // and only when the pixel the display last got differs from this one (a new pixel, the image
+    // left, or the last point now maps to another pixel); nullopt once when the rulers are hidden.
+    void updateCursor();
+    void endDrag();            // the default cursor, drag_ reset
+    void notifyViewChanged();  // the view handler (set: the callers check), counted
     // View zoom design §5: with an image, Ctrl+wheel (Windows, Linux; vertical axis) steps the
     // zoom at the pointer (stepZoom), one step per whole notch; a wheel without Ctrl drops the
     // rotation not yet a whole notch. Any other wheel pans when canPan().
@@ -148,7 +212,10 @@ private:
     void onZoomGesture(wxZoomGestureEvent& event);
 
     std::shared_ptr<DisplayState> display_;
-    bool dark_ = false;  // the background of the paint handler without a presenter
+    bool dark_ = false;     // the theme: the overlay's colours, the paint handler's background
+    GridConfig grid_{};     // setOverlayConfig()
+    RulerConfig rulers_{};  // setOverlayConfig()
+    OverlayConversion overlay_{};  // overlayParams() and the strip it holds
     bool ready_ = false;
     bool iconized_ = false;  // the top-level frame is minimised: a new presenter starts hidden
     bool presenter_visible_ = false;     // the last value sent to the presenter (or its creation)
@@ -168,8 +235,16 @@ private:
     dvv::MoveOnlyFunction<void(std::uint64_t)> device_lost_;
     dvv::MoveOnlyFunction<void(const dvv::Error&)> failure_;
     dvv::MoveOnlyFunction<void()> view_changed_;  // setViewChangedHandler()
+    dvv::MoveOnlyFunction<void(std::optional<dvv::media::ImagePixel>)> cursor_changed_;
+    dvv::MoveOnlyFunction<void(wxPoint)> context_menu_;   // setContextMenuHandler()
+    std::optional<wxPoint> position_;                     // the pointer (window units); none: left
+    std::optional<dvv::media::ImagePixel> cursor_pixel_;  // cursorPixel()
+    std::optional<dvv::media::PointD> pushed_point_;      // the point the display last got
+    std::optional<dvv::media::ImagePixel> pushed_pixel_;  // its pixel; none: the display has none
+    std::uint64_t cursor_pushes_ = 0;                     // cursorPushesForTest()
+    std::uint64_t view_changes_ = 0;                      // viewChangesForTest()
     std::optional<dvv::Error> last_failure_;
-    ViewRequest view_{};                // view()
+    dvv::media::ViewRequest view_{};    // view()
     dvv::platform::PixelSize image_{};  // imageSize()
     struct Drag {
         wxPoint last;          // the last pointer position (window units)

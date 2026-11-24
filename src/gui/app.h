@@ -15,6 +15,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 #include "core/config.h"
 #include "core/config_writer.h"
@@ -142,6 +143,19 @@ public:
     // defaults without a usable file); the frame builds the submenu from it.
     [[nodiscard]] RecentList& recent() noexcept { return recent_; }
     [[nodiscard]] const RecentList& recent() const noexcept { return recent_; }
+    // The grid and ruler settings, loaded with the config at start (the defaults without a usable
+    // file); the frame applies them at creation.
+    [[nodiscard]] const OverlayConfig& overlay() const noexcept { return overlay_; }
+    // Saves the grid and ruler settings through saveSettings(): the keys of the parts whose
+    // overlay() *Savable flag is set. The flags are taken again from the file as it is now (a part
+    // whose parent was made a non-object while rawreel runs is no longer saved, with one warning;
+    // one made an object again is saved again); a file that cannot be read keeps them. Nothing is
+    // written, and no dialog shown, when neither part is savable or the values equal the last ones
+    // saved (at start: the loaded ones); false then.
+    bool saveOverlay(const GridConfig& grid, const RulerConfig& rulers, bool closing);
+    // Selftest runs only: overlay() read again from configPath(), its warnings logged, and the
+    // values taken as the last ones saved, as at start. The frame is not changed.
+    void reloadOverlayForTest();
     // The history's save (spec §7): false, and nothing written, unless ownsSettings(); otherwise
     // saveConfigValues(configPath(), values), true when it saved. A failure shows no dialog: the
     // run's first history failure logs one warning, "config '<path>' not saved: <reason>", later
@@ -150,6 +164,15 @@ public:
     // The gui.showLogPane value the main window's close saved (spec §2): a selftest's OnExit
     // checks it against the file.
     void setSavedLogPane(bool shown) noexcept { saved_log_pane_ = shown; }
+    // Selftest runs only: the grid and ruler settings the main window's close must save (a
+    // change made with OverlaySave::Later and left unsaved); OnExit checks them against the file.
+    void expectOverlayAtCloseForTest(const GridConfig& grid, const RulerConfig& rulers) {
+        expected_overlay_ = OverlayConfig{.grid = grid,
+                                          .rulers = rulers,
+                                          .gridSavable = true,
+                                          .rulersSavable = true,
+                                          .warnings = {}};
+    }
     // A --selftest run: its own config folder, <temp>/rawreel-selftest-config-<pid>-<16 hex>/
     // (spec §7.1; with --config its rawreel.json starts as a copy of that file); empty otherwise
     // and after OnExit().
@@ -203,6 +226,8 @@ public:
     [[nodiscard]] const std::shared_ptr<dvv::IExecutor>& io() const noexcept { return io_; }
 
 private:
+    // overlay()'s *Savable flags from the file as it is now (saveOverlay).
+    void refreshOverlaySavable();
     // OnInit() steps 2 to 4 of spec §5.3 "At start" and §7.1: the selftest config, the config,
     // the settings claim (before the log file, whose open mode follows ownsSettings()), the
     // source flag and the active level (addendum §2.1, §4), the system log, the log file and the
@@ -239,6 +264,10 @@ private:
     // OnExit step 1 of a selftest: the config file holds `saved`, the value the close saved; a
     // mismatch records exit 6.
     void checkSavedLogPane(bool saved);
+    // OnExit step 1 of a selftest: the config file holds the grid and the rulers of `expected`,
+    // the values the close had to save; a mismatch records exit 6. Only the parts overlay()
+    // marks savable after the close's save are compared: the close writes no other part.
+    void checkSavedOverlay(const OverlayConfig& expected);
     [[nodiscard]] bool startPools();
     // The GPU instance and the device of --gpu; false (after finish()) when there is none to use.
     [[nodiscard]] bool startGpu();
@@ -262,10 +291,14 @@ private:
     std::uint64_t checked_splits_ = 0;  // the switch's splits() at the last size check
     bool size_warned_ = false;          // the 1 GiB warning was posted in this run
     std::unique_ptr<SettingsClaim> settings_claim_;
-    bool save_failed_ = false;            // a saveSettings() failed in this run
-    bool history_save_failed_ = false;    // a saveHistory() failed in this run
-    RecentList recent_;                   // recent()
-    std::optional<bool> saved_log_pane_;  // set by the close's save
+    bool save_failed_ = false;                // a saveSettings() failed in this run
+    bool history_save_failed_ = false;        // a saveHistory() failed in this run
+    RecentList recent_;                       // recent()
+    OverlayConfig overlay_;                   // overlay()
+    std::vector<ConfigValue> saved_overlay_;  // the values saveOverlay() saved last
+    std::optional<bool> saved_log_pane_;      // set by the close's save
+    // expectOverlayAtCloseForTest()
+    std::optional<OverlayConfig> expected_overlay_;
     std::optional<AppearanceResult> appearance_result_;
     std::shared_ptr<dvv::IExecutor> cpu_;
     std::shared_ptr<dvv::IExecutor> io_;

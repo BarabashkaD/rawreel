@@ -85,8 +85,8 @@ std::string_view zoomTextShown(const ZoomControls& zoom) noexcept {
 }  // namespace
 
 // Spec §5.1, window title and Info design §12, zoom buttons design §2, §3: the slider row, then
-// [Open][Format][pad] stretch [group] stretch [pad][Zoom out][zoom][Zoom in]["i"]. The pads make
-// the two sides equally wide (syncSpacer), so the group is centred on the whole bar.
+// [Open][Format][pad] stretch [group] stretch [pad][Zoom out][zoom][Zoom in][Grid]["i"]. The pads
+// make the two sides equally wide (syncSpacer), so the group is centred on the whole bar.
 TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)> execute,
                            dvv::MoveOnlyFunction<void(std::int64_t)> seek,
                            dvv::MoveOnlyFunction<BarStatus()> read_status)
@@ -144,6 +144,14 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
     zoom_->Bind(wxEVT_BUTTON, [this](wxCommandEvent& /*event*/) { popUpZoomMenu(); });
     row->Add(zoom_, wxSizerFlags().Border(wxALL, border));
     zoom_in_ = addButton(*row, Command::ZoomIn, Icon::ZoomIn);
+    grid_ = new wxBitmapToggleButton(this, wxID_ANY, bundles_[static_cast<std::size_t>(Icon::Grid)],
+                                     wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+    grid_->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent& /*event*/) { execute_(Command::Grid); });
+    setUp(*grid_, Command::Grid, Icon::Grid);
+    // A right-click (Ctrl-click on macOS, the Menu key) opens the Grid and Rulers window.
+    grid_->Bind(wxEVT_CONTEXT_MENU,
+                [this](wxContextMenuEvent& /*event*/) { execute_(Command::GridWindow); });
+    row->Add(grid_, wxSizerFlags().Border(wxALL, border));
     info_ = new wxBitmapToggleButton(this, wxID_ANY, bundles_[static_cast<std::size_t>(Icon::Info)],
                                      wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
     info_->Bind(wxEVT_TOGGLEBUTTON,
@@ -151,7 +159,7 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
     setUp(*info_, Command::InfoWindow, Icon::Info);
     row->Add(info_, wxSizerFlags().Border(wxALL, border));
     right_items_ = {row->GetItem(zoom_out_), row->GetItem(zoom_), row->GetItem(zoom_in_),
-                    row->GetItem(info_)};
+                    row->GetItem(grid_), row->GetItem(info_)};
     applyZoomMinSize();
     syncSpacer();
 
@@ -296,6 +304,12 @@ void TransportBar::syncSpacer() {
     const int right = side(right_items_);
     left_pad_->AssignSpacer(std::max(right - left, 0), 0);
     right_pad_->AssignSpacer(std::max(left - right, 0), 0);
+}
+
+void TransportBar::setGridShown(bool shown) {
+    if (grid_->GetValue() != shown) {
+        grid_->SetValue(shown);
+    }
 }
 
 void TransportBar::setInfoShown(bool shown) {

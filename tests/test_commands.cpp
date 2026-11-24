@@ -38,7 +38,7 @@ constexpr std::string_view SETTINGS_LABEL =
 
 TEST_SUITE("core") {
     TEST_CASE("commands: the table lists every command once, in order") {
-        static_assert(COMMAND_COUNT == 28);
+        static_assert(COMMAND_COUNT == 31);
         const auto table = commandTable();
         REQUIRE(table.size() == COMMAND_COUNT);
         std::set<std::string_view> ids;
@@ -169,7 +169,8 @@ TEST_SUITE("core") {
         for (const rawreel::CommandInfo& entry : commandTable()) {
             CAPTURE(entry.id);
             CHECK(entry.checkable ==
-                  (entry.command == Command::LogPane || entry.command == Command::InfoWindow));
+                  (entry.command == Command::LogPane || entry.command == Command::InfoWindow ||
+                   entry.command == Command::Grid || entry.command == Command::Rulers));
         }
     }
 
@@ -183,12 +184,67 @@ TEST_SUITE("core") {
         CHECK(commandForKey(chord(Key::End), false) == Command::Last);
         CHECK(commandForKey(letter('L'), false) == Command::Loop);
         CHECK_FALSE(commandForKey(chord(Key::Plus), false));
-        CHECK_FALSE(commandForKey(letter('G'), false));
+        CHECK_FALSE(commandForKey(letter('J'), false));
         CHECK_FALSE(commandForKey(letter('1'), false));
         CHECK_FALSE(commandForKey(chord(Key::Escape), false));
         CHECK_FALSE(commandForKey(chord(Key::Space), true));
         CHECK_FALSE(commandForKey(letter('O', true), false));
         CHECK_FALSE(commandForKey(letter('Q'), false));
+    }
+
+    TEST_CASE("commands: commandOfChord matches every route") {
+        CHECK(rawreel::commandOfChord(letter('O', true)) == Command::Open);
+        CHECK(rawreel::commandOfChord(chord(Key::Space)) == Command::PlayPause);
+        CHECK(rawreel::commandOfChord(letter('I', true)) == Command::InfoWindow);
+        CHECK(rawreel::commandOfChord(chord(Key::Plus, true)) == Command::ZoomIn);
+        CHECK_FALSE(rawreel::commandOfChord(KeyChord{.key = 'Q', .ctrl = true, .shift = true}));
+        CHECK_FALSE(rawreel::commandOfChord(chord(Key::Escape)));
+    }
+
+    TEST_CASE("commands: shownItemTitle") {
+        const rawreel::CommandInfo& info_window = info(Command::InfoWindow);
+        REQUIRE(info_window.key.has_value());
+        const std::string key = rawreel::keyText(info_window.key.value_or(rawreel::KeyChord{}));
+        CHECK(rawreel::shownItemTitle(info_window, true) == "Hide Info\t" + key);
+        CHECK(rawreel::shownItemTitle(info_window, false) == "Show Info\t" + key);
+        CHECK(key == "Ctrl+I");
+        CHECK(rawreel::shownItemTitle(info(Command::LogPane), true) == "Hide Log");
+        CHECK(rawreel::shownItemTitle(info(Command::LogPane), false) == "Show Log");
+    }
+
+    TEST_CASE("commands: the grid commands") {
+        static_assert(static_cast<std::size_t>(Command::Grid) ==
+                      static_cast<std::size_t>(Command::InfoWindow) + 1);
+        static_assert(static_cast<std::size_t>(Command::Rulers) ==
+                      static_cast<std::size_t>(Command::Grid) + 1);
+        const rawreel::CommandInfo& grid = info(Command::Grid);
+        const rawreel::CommandInfo& rulers = info(Command::Rulers);
+        CHECK(grid.id == "grid");
+        CHECK(rulers.id == "rulers");
+        CHECK(grid.menu == "View");
+        CHECK(rulers.menu == "View");
+        CHECK(grid.help == "Show or hide the grid");
+        CHECK(rulers.help == "Show or hide the rulers");
+        CHECK(grid.route == rawreel::KeyRoute::CharHook);
+        CHECK(rulers.route == rawreel::KeyRoute::CharHook);
+        CHECK(grid.checkable);
+        CHECK(rulers.checkable);
+        CHECK(rawreel::menuLabel(grid) == "Grid (G)");
+        CHECK(rawreel::menuLabel(rulers) == "Rulers (R)");
+        CHECK(commandForKey(letter('G'), false) == Command::Grid);
+        CHECK(commandForKey(letter('R'), false) == Command::Rulers);
+        CHECK(rawreel::shownItemTitle(grid, false) == "Show Grid (G)");
+        CHECK(rawreel::shownItemTitle(rulers, true) == "Hide Rulers (R)");
+        static_assert(static_cast<std::size_t>(Command::GridWindow) ==
+                      static_cast<std::size_t>(Command::Rulers) + 1);
+        const rawreel::CommandInfo& window = info(Command::GridWindow);
+        CHECK(window.id == "grid_window");
+        CHECK(window.menu == "View");
+        CHECK(window.help == "Show the Grid and Rulers window");
+        CHECK_FALSE(window.key);
+        CHECK(window.route == rawreel::KeyRoute::Accelerator);
+        CHECK_FALSE(window.checkable);
+        CHECK(rawreel::menuLabel(window) == "Grid and Rulers...");
     }
 
     TEST_CASE("commands: the view commands") {

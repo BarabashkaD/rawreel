@@ -68,7 +68,7 @@
 
 // Main thread: the window moved to a display with another scale factor (or the hook below). The
 // view keeps its size in points, so wx sends no wxEVT_SIZE; the presenter is resized here, through
-// the same entry as onSize (Review Focus 5).
+// the same entry as onSize, so the strips and P follow the new scale as a resize does.
 - (void)viewDidChangeBackingProperties {
     [super viewDidChangeBackingProperties];
     self.layer.contentsScale = [self backingScale];
@@ -168,6 +168,15 @@ dvv::platform::PixelSize nativePixelSize(const wxWindow& window) {
         }
         const wxSize points = window.GetClientSize();
         return physicalPixelSize(points.x, points.y, window.GetContentScaleFactor());
+    }
+}
+
+double nativeContentScale(const wxWindow& window) {
+    @autoreleasepool {
+        if (RawreelViewportView* const child = childOf(window); child != nil) {
+            return child.layer.contentsScale;
+        }
+        return window.GetContentScaleFactor();
     }
 }
 

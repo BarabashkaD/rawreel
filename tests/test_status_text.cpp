@@ -6,6 +6,7 @@
 #include "core/session_types.h"
 #include "core/status_text.h"
 #include "dvv/media/types.h"
+#include "dvv/media/view.h"
 
 using rawreel::SessionStatus;
 using rawreel::statusFields;
@@ -95,5 +96,12 @@ TEST_SUITE("core") {
             const ColourParams colour = with(sdr);
             CHECK(rawreel::mappingText(&colour) == "SDR, no tone mapping");
         }
+    }
+
+    TEST_CASE("status text: cursorText") {
+        CHECK(rawreel::cursorText(dvv::media::ImagePixel{812, 403}) == "x 812  y 403");
+        CHECK(rawreel::cursorText(std::nullopt).empty());
+        CHECK(rawreel::cursorText(dvv::media::ImagePixel{16383, 16383}) ==
+              rawreel::WIDEST_CURSOR_TEXT);
     }
 }

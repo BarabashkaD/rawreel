@@ -69,13 +69,28 @@ void applySettingsPageStyle(wxWindow& page, dvv::MoveOnlyFunction<void(wxWindow&
 // Ctrl+C in the Info window copies its text (MSW, GTK).
 [[nodiscard]] bool infoCopiesOnCtrlC() noexcept;
 
-// The Info window takes the rect the OS suggests on a DPI change (MSW).
+// A floating window takes the rect the OS suggests on a DPI change (MSW).
 [[nodiscard]] bool dpiChangeTakesSuggestedRect() noexcept;
 
-// The Info window hides again after a map notification that arrives after its Hide() (GTK).
+// A floating window hides again after a map notification that arrives after its Hide() (GTK).
 [[nodiscard]] bool hidesStaleMapShow() noexcept;
+
+// The alignment of a label column beside its values: right on macOS (as Finder's Get Info), left
+// on Windows and GTK.
+[[nodiscard]] long labelAlignment() noexcept;
+
+// A floating window sends the modified chords of the main window's commands to it (MSW, GTK). On
+// macOS the menu bar takes every window's key equivalents.
+[[nodiscard]] bool floatingForwardsAccelerators() noexcept;
+
+// Space opens a focused choice's popup (macOS, GTK). A Windows drop-down list opens on F4 or
+// Alt+Down and does not use Space.
+[[nodiscard]] bool choiceTakesSpace() noexcept;
 
 // The viewport's cursor while it pans.
 [[nodiscard]] wxStockCursor panCursor() noexcept;
+
+// DIP per point of a wx font size: 1 on macOS (a point is a DIP), 96 / 72 on Windows and GTK.
+[[nodiscard]] double dipPerFontPoint() noexcept;
 
 }  // namespace rawreel::native_policy

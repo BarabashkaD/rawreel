@@ -101,9 +101,27 @@ bool hidesStaleMapShow() noexcept {
     return wx_generic::hidesStaleMapShow();
 }
 
+// Finder's Get Info: labels right-aligned against their values.
+long labelAlignment() noexcept {
+    return wxALIGN_RIGHT;
+}
+
+// The menu bar takes the key equivalents of every window, a floating one too.
+bool floatingForwardsAccelerators() noexcept {
+    return false;
+}
+
+bool choiceTakesSpace() noexcept {
+    return true;
+}
+
 // The closed hand.
 wxStockCursor panCursor() noexcept {
     return wxCURSOR_CLOSED_HAND;
+}
+
+double dipPerFontPoint() noexcept {
+    return 1.0;
 }
 
 }  // namespace rawreel::native_policy

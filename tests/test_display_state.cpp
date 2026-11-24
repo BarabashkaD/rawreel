@@ -1,5 +1,5 @@
-// DisplayState (design M3 v2 §4.4, D23): versions, the overwritten count, lease release and the
-// binding setOnChanged handshake.
+// DisplayState: versions, the separate view, overlay and cursor setters, the overwritten count,
+// lease release and the binding setOnChanged handshake.
 #include <doctest/doctest.h>
 
 #include <atomic>
@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <latch>
 #include <memory>
+#include <optional>
 #include <span>
 #include <thread>
 #include <utility>
@@ -17,11 +18,17 @@
 #include "dvv/media/display.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
+#include "dvv/media/view.h"
 #include "render/display_state.h"
 
-using rawreel::CompositeParams;
+using dvv::media::PointD;
+using dvv::media::ViewMode;
+using dvv::media::ViewRequest;
+using rawreel::DisplayParams;
+using rawreel::DisplaySnapshot;
 using rawreel::DisplayState;
 using rawreel::FrameSet;
+using rawreel::OverlayParams;
 
 namespace {
 
@@ -98,19 +105,119 @@ TEST_CASE("display state: versions and snapshots") {
     CHECK(state.snapshot().version == 0);
     state.show(frameSet(7));
     CHECK(state.snapshot().version == 1);
-    state.setParams(CompositeParams{.dark = true});
-    CHECK(state.snapshot().version == 2);
     const rawreel::DisplaySnapshot snapshot = state.snapshot();
     CHECK(snapshot.frames.index == 7);
-    CHECK(snapshot.params.dark);
-    state.setParams(CompositeParams{.dark = true});  // equal params still count
-    CHECK(state.snapshot().version == 3);
     state.clear();
     const rawreel::DisplaySnapshot cleared = state.snapshot();
-    CHECK(cleared.version == 4);
+    CHECK(cleared.version == 2);
     CHECK(cleared.frames.index == -1);
     CHECK(cleared.frames.count == 0);
-    CHECK(cleared.params.dark);
+}
+
+TEST_CASE("display state: the setters do not bump the version") {
+    DisplayState state;
+    state.show(frameSet(7));
+    CHECK(state.snapshot().version == 1);
+    const ViewRequest zoom{.mode = ViewMode::Zoom, .zoom = 2.0, .centre = PointD{.x = 3, .y = 4}};
+    state.setView(zoom);
+    state.setOverlay(OverlayParams{.dark = true});
+    state.setCursor(PointD{.x = 10.5, .y = 20.5});
+    const rawreel::DisplaySnapshot snapshot = state.snapshot();
+    CHECK(snapshot.version == 1);
+    CHECK(snapshot.frames.index == 7);
+    CHECK(snapshot.params.view == zoom);
+    CHECK(snapshot.params.overlay == OverlayParams{.dark = true});
+    CHECK(snapshot.params.cursor == PointD{.x = 10.5, .y = 20.5});
+    // Each setter changes only its own part.
+    state.setView(ViewRequest{});
+    state.setCursor(std::nullopt);
+    const rawreel::DisplaySnapshot changed = state.snapshot();
+    CHECK(changed.params == DisplayParams{.overlay = OverlayParams{.dark = true}});
+    state.clear();
+    const rawreel::DisplaySnapshot cleared = state.snapshot();
+    CHECK(cleared.version == 2);
+    CHECK(cleared.params.overlay.dark);  // clear() keeps the params
+}
+
+TEST_CASE("display state: a setter with an unchanged value does not notify") {
+    DisplayState state;
+    int calls = 0;
+    state.setOnChanged([&calls] { ++calls; });
+    state.setView(ViewRequest{});
+    state.setOverlay(OverlayParams{});
+    state.setCursor(std::nullopt);
+    CHECK(calls == 0);
+    const ViewRequest zoom{.mode = ViewMode::Zoom, .zoom = 2.0};
+    state.setView(zoom);
+    state.setView(zoom);
+    CHECK(calls == 1);
+    OverlayParams overlay;
+    overlay.levels[1].shown = true;
+    state.setOverlay(overlay);
+    state.setOverlay(overlay);
+    CHECK(calls == 2);
+    state.setCursor(PointD{.x = 1, .y = 2});
+    state.setCursor(PointD{.x = 1, .y = 2});
+    CHECK(calls == 3);
+    state.setCursor(std::nullopt);
+    CHECK(calls == 4);
+    state.setOnChanged({});
+}
+
+TEST_CASE("display state: the setters and snapshot on two threads") {
+    // Race case (TSan): the GUI thread sets the params while the presenter thread reads them. The
+    // callback runs outside the state's mutex: it takes a snapshot itself, which a notify() under
+    // that mutex would deadlock on. Each snapshot is one cut of the writes view, overlay, cursor
+    // of round i, seen through each part's parity (before the first round: the parity of -1).
+    constexpr int ROUNDS = 10000;
+    DisplayState state;
+    std::atomic<int> calls{0};
+    bool bumped = false;        // the reader thread only, read after it joined
+    bool inconsistent = false;  // the reader thread only, read after it joined
+    state.setOnChanged([&state, &calls] {
+        static_cast<void>(state.snapshot());
+        calls.fetch_add(1, std::memory_order_relaxed);
+    });
+    {
+        std::latch start(2);
+        std::jthread writer([&state, &start] {
+            start.arrive_and_wait();
+            for (int i = 0; i < ROUNDS; ++i) {
+                const double at = i % 2;
+                state.setView(ViewRequest{.mode = ViewMode::Zoom, .zoom = 1.0 + at});
+                state.setOverlay(OverlayParams{.dark = i % 2 == 0});
+                state.setCursor(PointD{.x = at, .y = at});
+            }
+        });
+        std::jthread reader([&state, &start, &bumped, &inconsistent] {
+            start.arrive_and_wait();
+            for (int i = 0; i < ROUNDS; ++i) {
+                const DisplaySnapshot snapshot = state.snapshot();
+                if (snapshot.version != 0) {
+                    bumped = true;
+                }
+                const DisplayParams& params = snapshot.params;
+                const int view =
+                    params.view.mode == ViewMode::Zoom ? static_cast<int>(params.view.zoom) - 1 : 1;
+                const int overlay = params.overlay.dark ? 0 : 1;
+                const int cursor = params.cursor ? static_cast<int>(params.cursor->x) : 1;
+                // A cut after view i, overlay i or cursor i: the overlay is of the view's round,
+                // else the overlay and the cursor are both of the round before.
+                if ((params.cursor && params.cursor->x != params.cursor->y) ||
+                    (overlay != view && cursor != overlay)) {
+                    inconsistent = true;
+                }
+            }
+        });
+    }
+    state.setOnChanged({});
+    CHECK(calls.load() == 3 * ROUNDS);
+    CHECK_FALSE(bumped);
+    CHECK_FALSE(inconsistent);
+    CHECK(state.snapshot().params ==
+          DisplayParams{.view = ViewRequest{.mode = ViewMode::Zoom, .zoom = 2.0},
+                        .overlay = OverlayParams{.dark = false},
+                        .cursor = PointD{.x = 1, .y = 1}});
 }
 
 TEST_CASE("display state: overwritten") {

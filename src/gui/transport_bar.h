@@ -91,7 +91,10 @@ public:
     void frameActivated(bool active);
     // The skim key's wxEVT_KEY_UP anywhere (SkimKeyRelease): returns from a skim.
     void skimKeyReleased();
-    // The "i" toggle's value: whether the Info window is shown (MainFrame::infoShown).
+    // The Grid toggle's value: whether the grid is shown (MainFrame::grid().levels[0].show).
+    void setGridShown(bool shown);
+    // The "i" toggle's value: whether the Info window is shown
+    // (MainFrame::windowShown(FloatingKind::Info)).
     void setInfoShown(bool shown);
     // The "i" tooltip: the command's tooltip, then "\n" + `hint` (design §13); "": the first line
     // alone.
@@ -196,10 +199,11 @@ private:
     dvv::MoveOnlyFunction<void(std::int64_t)> seek_observer_;
     dvv::MoveOnlyFunction<wxColour(wxSystemColour)> system_colour_;
     // Child windows: wx owns them. `buttons_` in row order: Open, Format, the group, Zoom out,
-    // Zoom in, "i".
+    // Zoom in, Grid, "i".
     std::vector<IconButton> buttons_;
     wxBitmapButton* open_ = nullptr;
     wxBitmapButton* format_ = nullptr;
+    wxBitmapToggleButton* grid_ = nullptr;
     wxBitmapToggleButton* info_ = nullptr;
     wxBitmapButton* play_ = nullptr;
     wxBitmapToggleButton* loop_ = nullptr;
@@ -207,7 +211,7 @@ private:
     wxButton* zoom_ = nullptr;  // the zoom button: no command, not in `buttons_`
     wxBitmapButton* zoom_in_ = nullptr;
     // The transport row's items left of the group (Open, Format) and right of it (Zoom out, the
-    // zoom button, Zoom in, "i"); the pads make the two sides equally wide (syncSpacer).
+    // zoom button, Zoom in, Grid, "i"); the pads make the two sides equally wide (syncSpacer).
     std::vector<wxSizerItem*> left_items_;
     std::vector<wxSizerItem*> right_items_;
     wxSizerItem* left_pad_ = nullptr;   // after Format

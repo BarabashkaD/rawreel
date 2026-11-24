@@ -87,9 +87,25 @@ bool hidesStaleMapShow() noexcept {
     return wx_generic::hidesStaleMapShow();
 }
 
+long labelAlignment() noexcept {
+    return wx_generic::labelAlignment();
+}
+
+bool floatingForwardsAccelerators() noexcept {
+    return wx_generic::floatingForwardsAccelerators();
+}
+
+bool choiceTakesSpace() noexcept {
+    return false;
+}
+
 // The move cursor.
 wxStockCursor panCursor() noexcept {
     return wxCURSOR_SIZING;
+}
+
+double dipPerFontPoint() noexcept {
+    return 96.0 / 72.0;
 }
 
 }  // namespace rawreel::native_policy

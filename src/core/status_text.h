@@ -2,10 +2,13 @@
 
 // The status bar fields of design D20, wx-free.
 
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include "core/session_types.h"
 #include "dvv/media/types.h"
+#include "dvv/media/view.h"
 
 namespace rawreel {
 
@@ -22,5 +25,10 @@ struct StatusFields {
 // without one. "PQ → SDR tone mapping (1000 → 100 nits)", "HLG → SDR tone mapping (1000 → 100
 // nits)", else "SDR, no tone mapping".
 [[nodiscard]] std::string mappingText(const dvv::media::ColourParams* resolved);
+
+// The image pixel under the cursor: "x 812  y 403" (two spaces between the axes); "" for none.
+[[nodiscard]] std::string cursorText(std::optional<dvv::media::ImagePixel> pixel);
+// The widest cursorText for images of up to 16384 pixels per side, for sizing its field.
+inline constexpr std::string_view WIDEST_CURSOR_TEXT = "x 16383  y 16383";
 
 }  // namespace rawreel

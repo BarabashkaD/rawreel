@@ -39,12 +39,14 @@
 #include "core/log_store.h"
 #include "core/log_text.h"
 #include "core/open_text.h"
+#include "core/overlay.h"
 #include "core/recent.h"
 #include "core/session.h"
 #include "core/startup.h"
 #include "core/status_text.h"
 #include "core/stream_name.h"
 #include "core/version_text.h"
+#include "core/view.h"
 #include "dvv/base/json.h"
 #include "dvv/base/log.h"
 #include "dvv/base/uri.h"
@@ -53,6 +55,8 @@
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/gpu_info_json.h"
 #include "dvv/media/types.h"
+#include "dvv/media/view.h"
+#include "dvv/media/view_lines.h"
 #include "dvv/platform/file_writer.h"
 #include "dvv/registry/module.h"
 #include "gui/about.h"
@@ -60,7 +64,10 @@
 #include "gui/app_icon.h"
 #include "gui/drop_target.h"
 #include "gui/edit_dispatch.h"
+#include "gui/floating_window.h"
 #include "gui/format_dialog.h"
+#include "gui/grid_window.h"
+#include "gui/info_window.h"
 #include "gui/log_panel.h"
 #include "gui/native_policy.h"
 #include "gui/player_panel.h"
@@ -69,9 +76,24 @@
 #include "gui/transport_bar.h"
 #include "gui/viewport.h"
 
+using dvv::media::PointD;
+using dvv::media::ViewMode;
+using dvv::media::ViewRequest;
+using dvv::media::ViewTransform;
+using dvv::media::zoomAround;
+
 namespace rawreel {
 
 namespace {
+
+const CommandInfo& commandInfo(Command command) {
+    return commandTable()[static_cast<std::size_t>(command)];
+}
+
+// Edit -> Copy copies the Info window's rows while it is the floating window in front.
+bool infoInFront(const FloatingWindow* in_front) {
+    return in_front != nullptr && in_front->kind() == FloatingKind::Info;
+}
 
 // What the transport bar shows for `status`: nothing without a stream (a default BarStatus).
 BarStatus barStatus(const SessionStatus& status) {
@@ -104,20 +126,6 @@ constexpr int VARIABLE_FIELDS_MINIMUM_DIP = FILE_FIELD_MINIMUM_DIP *
                                             (VARIABLE_FIELD_SHARES[0] + VARIABLE_FIELD_SHARES[1] +
                                              VARIABLE_FIELD_SHARES[2] + VARIABLE_FIELD_SHARES[3]) /
                                             VARIABLE_FIELD_SHARES[0];
-
-// View -> Show Log / Hide Log (spec §2): the item's title where it changes
-// (native_policy::logItemHasChangingTitle).
-wxString logItemTitle(bool shown) {
-    return shown ? "Hide Log" : "Show Log";
-}
-// View -> Show Info / Hide Info (window title and Info design §10), with "\t<key>": wxOSX builds
-// the key equivalent from the label at Append and at every SetText, so the title keeps the key.
-// (Show Log / Hide Log need no suffix: View -> Log has no key.)
-wxString infoItemTitle(bool shown) {
-    const CommandInfo& info = commandTable()[static_cast<std::size_t>(Command::InfoWindow)];
-    const wxString title = shown ? "Hide Info" : "Show Info";
-    return info.key ? title + "\t" + wxString::FromUTF8(keyText(*info.key)) : title;
-}
 
 // The wx key codes Task 4's normaliser names (core/commands.cpp, D17).
 static_assert(WXK_ESCAPE == 27 && WXK_SPACE == 32);
@@ -207,10 +215,11 @@ bool isLiveLogFile(const std::filesystem::path& file, const std::filesystem::pat
         .has_value();
 }
 
-// The widths of the status bar's two fixed fields at its font. D5R §2.2: the display mapping is as
-// wide as its longest text plus a margin. Spec §2 (Log pane): the Log notice is as wide as a long
-// notice plus the same margin.
-std::array<int, 2> fixedFieldWidths(wxStatusBar& bar) {
+// The widths of the status bar's three fixed fields at its font. The cursor field is as wide
+// as WIDEST_CURSOR_TEXT plus a margin, so a move never re-lays the bar out. The display mapping is
+// as wide as its longest text plus a margin. The Log notice is as wide as a long notice plus the
+// same margin.
+std::array<int, 3> fixedFieldWidths(wxStatusBar& bar) {
     wxClientDC dc(&bar);
     int mapping = 0;
     for (const dvv::media::TransferFn curve :
@@ -221,7 +230,8 @@ std::array<int, 2> fixedFieldWidths(wxStatusBar& bar) {
         mapping = std::max(mapping, dc.GetTextExtent(wxString::FromUTF8(mappingText(&sample))).x);
     }
     const int margin = bar.FromDIP(24);
-    return {mapping + margin, dc.GetTextExtent(LONG_LOG_NOTICE).x + margin};
+    return {dc.GetTextExtent(wxString::FromUTF8(WIDEST_CURSOR_TEXT)).x + margin, mapping + margin,
+            dc.GetTextExtent(LONG_LOG_NOTICE).x + margin};
 }
 
 // D5R §2.2: the mapping status field, the display mapping of the active (first) stream.
@@ -348,7 +358,23 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     buildMenus();
     buildStatusBar();
     // The zoom button follows every view change and every resize.
-    viewport_->setViewChangedHandler([this] { showZoom(); });
+    viewport_->setViewChangedHandler([this] {
+        showZoom();
+        showGridNotes();
+    });
+    // The cursor field follows the image pixel under the pointer; empty off the image and without
+    // a clip. Set only when its text changes.
+    viewport_->setCursorHandler([this](std::optional<dvv::media::ImagePixel> pixel) {
+        const wxString text = wxString::FromUTF8(cursorText(pixel));
+        if (text != status_texts_[CURSOR_FIELD]) {
+            status_texts_[CURSOR_FIELD] = text;
+            SetStatusText(text, static_cast<int>(CURSOR_FIELD));
+        }
+    });
+    // The grid and ruler settings loaded at start.
+    setOverlay(wxGetApp().overlay().grid, wxGetApp().overlay().rulers, OverlaySave::Later);
+    // A context menu on the picture: Grid and Rulers.
+    viewport_->setContextMenuHandler([this](wxPoint point) { popUpViewportMenu(point); });
     // Zoom buttons design §2.2: the zoom button's menu for the shown view. Its Fit, Actual size
     // and Resize items reach onMenu; its percentages onZoomMenu.
     transportBar().setZoomMenu([this] {
@@ -465,17 +491,11 @@ void MainFrame::buildMenus() {
             continue;  // Edit -> Preferences..., below
         }
         if (native_policy::logItemHasChangingTitle()) {
-            // Spec §2: macOS shows and hides a part of a window with a title that changes, not a
-            // check mark ("checkable" does not apply); onUpdateUi keeps the title.
-            if (info.command == Command::LogPane) {
-                menu->Append(menuId(info.command), logItemTitle(logShown()), help);
-                continue;
-            }
-            if (info.command == Command::InfoWindow) {
-                menu->Append(menuId(info.command), infoItemTitle(infoShown()), help);
-                continue;
-            }
-            menu->Append(menuId(info.command), label, help);
+            // macOS shows and hides a part of a window with a title that changes, not a check
+            // mark ("checkable" does not apply); onUpdateUi keeps the title.
+            const std::optional<bool> shown = shownBy(info.command);
+            menu->Append(menuId(info.command),
+                         shown ? wxString::FromUTF8(shownItemTitle(info, *shown)) : label, help);
         } else if (info.checkable) {
             menu->AppendCheckItem(menuId(info.command), label, help);  // onUpdateUi checks it
         } else {
@@ -569,13 +589,14 @@ void MainFrame::buildStatusBar() {
     // Spec §7: without wxSTB_SHOW_TIPS, which shows only a cut field's own text and asserts on a
     // tooltip set by hand; the bar keeps its size grip and its end cut.
     CreateStatusBar(static_cast<int>(status_texts_.size()), wxSTB_DEFAULT_STYLE & ~wxSTB_SHOW_TIPS);
-    const std::array<int, 2> fixed = fixedFieldWidths(*GetStatusBar());
+    const std::array<int, 3> fixed = fixedFieldWidths(*GetStatusBar());
     const std::array<int, STATUS_FIELD_COUNT> widths{-VARIABLE_FIELD_SHARES[0],
                                                      -VARIABLE_FIELD_SHARES[1],
                                                      -VARIABLE_FIELD_SHARES[2],
                                                      -VARIABLE_FIELD_SHARES[3],
                                                      fixed[0],
-                                                     fixed[1]};
+                                                     fixed[1],
+                                                     fixed[2]};
     SetStatusWidths(static_cast<int>(widths.size()), widths.data());
 #if defined(__WXMSW__)
     // Spec §7: wxMSW caps a tooltip at min(400 px, half the display); a path stays on one line
@@ -609,8 +630,8 @@ int MainFrame::statusFixedWidth() const {
     if (bar == nullptr) {
         return 0;
     }
-    const std::array<int, 2> fixed = fixedFieldWidths(*bar);
-    return fixed[0] + fixed[1];
+    const std::array<int, 3> fixed = fixedFieldWidths(*bar);
+    return fixed[0] + fixed[1] + fixed[2];
 }
 
 int MainFrame::statusMinimumWidth() const {
@@ -633,8 +654,37 @@ void MainFrame::showZoom() {
                              .canZoomIn = isAvailable(Command::ZoomIn)});
 }
 
+void MainFrame::showGridNotes() {
+    auto* const window = dynamic_cast<GridWindow*>(floatingWindow(FloatingKind::GridAndRulers));
+    if (closing_ || viewport_ == nullptr || window == nullptr) {
+        return;
+    }
+    const dvv::platform::PixelSize image = viewport_->imageSize();
+    const float digit_advance = viewport_->overlayParams().digitAdvance;
+    window->showNotes(
+        viewport_->shownView().zoom(), viewport_->backingPerDip(),
+        {labelWidth(image.width, digit_advance), labelWidth(image.height, digit_advance)});
+}
+
+void MainFrame::setOverlay(const GridConfig& grid, const RulerConfig& rulers, OverlaySave save) {
+    if (closing_ || viewport_ == nullptr) {
+        return;  // the close saved the settings; the viewport goes during it
+    }
+    grid_ = grid;
+    rulers_ = rulers;
+    viewport_->setOverlayConfig(grid_, rulers_);
+    transportBar().setGridShown(grid_.levels[0].show);
+    if (auto* const window = dynamic_cast<GridWindow*>(floatingWindow(FloatingKind::GridAndRulers));
+        window != nullptr) {
+        window->showOverlay(grid_, rulers_);
+    }
+    if (save == OverlaySave::Now) {
+        (void)wxGetApp().saveOverlay(grid_, rulers_, /*closing=*/false);
+    }
+}
+
 void MainFrame::applyViewCommand(Command command) {
-    const dvv::platform::PixelSize extent = viewport_->physicalClientSize();
+    const dvv::platform::PixelSize extent = viewport_->pictureSize();
     const dvv::platform::PixelSize image = viewport_->imageSize();
     if (command == Command::FitToWindow) {
         viewport_->setView({});
@@ -644,7 +694,7 @@ void MainFrame::applyViewCommand(Command command) {
         zoomAtCentre(1);
         return;
     }
-    // Backing pixels: the viewport's centre stays on its clip point.
+    // Backing pixels in P: P's centre stays on its clip point.
     const PointD anchor{.x = extent.width / 2.0, .y = extent.height / 2.0};
     const std::optional<ViewRequest> next =
         stepZoom(viewport_->view(), extent, image, command == Command::ZoomIn, anchor);
@@ -654,8 +704,8 @@ void MainFrame::applyViewCommand(Command command) {
 }
 
 void MainFrame::zoomAtCentre(double zoom) {
-    const dvv::platform::PixelSize extent = viewport_->physicalClientSize();
-    // Backing pixels: the viewport's centre stays on its clip point.
+    const dvv::platform::PixelSize extent = viewport_->pictureSize();
+    // Backing pixels in P: P's centre stays on its clip point.
     const PointD anchor{.x = extent.width / 2.0, .y = extent.height / 2.0};
     viewport_->setView(zoomAround(viewport_->view(), extent, viewport_->imageSize(), zoom, anchor));
 }
@@ -720,7 +770,7 @@ bool MainFrame::windowIsFixed() const {
 namespace {
 
 // View zoom design §3.1, §3.2 (rev 6): after the open sizing the view is Fit, so the picture
-// follows the window, unless Fit would show the clip above 100 % in a viewport of `extent`
+// follows the window, unless Fit would show the clip above 100 % in a picture region P of `extent`
 // backing pixels (fit zoom > 1.002; the allowance covers viewportForClip's 1-pixel round-up on a
 // 2x display): then Zoom 100 %.
 bool opensAtActualSize(dvv::platform::PixelSize image, dvv::platform::PixelSize extent) {
@@ -738,27 +788,29 @@ void MainFrame::sizeWindowForOpen() {
     }
     if (windowIsFixed()) {
         // §3.2: the window stays; 100 % when Fit would show the clip above 100 %, else Fit.
-        if (opensAtActualSize(image, viewport_->physicalClientSize())) {
+        if (opensAtActualSize(image, viewport_->pictureSize())) {
             viewport_->setView(actualSizeView(image));
         }
         return;
     }
     const double scale = viewport_->contentScale();
-    const LayoutSize wanted = viewportForClip(layoutSizeOf(image), scale);
+    const LayoutSize wanted = viewportForActualSize(image);
     const WindowNow now = windowNow();
     const ScreenRect work = screenRect(workArea());
     if (const std::optional<ScreenRect> rect =
             windowForViewport(now, wanted, work, WindowSizing::Exact)) {
         SetSize(wxRectOf(*rect));
-        // The viewport the window gets, in backing pixels: wanted, or larger at the minimum
-        // window. Computed, as the size may arrive later (wxGTK).
+        // P of the viewport the window gets, in backing pixels: wanted, or larger at the minimum
+        // window, minus the strips. Computed, as the size may arrive later (wxGTK).
         const auto backing = [scale](int window_units) {
             return static_cast<std::uint32_t>(std::lround(std::max(0, window_units) * scale));
         };
         const dvv::platform::PixelSize extent{
             .width = backing(rect->width - (now.outer.width - now.viewport.width)),
             .height = backing(rect->height - (now.outer.height - now.viewport.height))};
-        if (opensAtActualSize(image, extent)) {
+        const dvv::platform::PixelSize picture =
+            dvv::media::pictureRegion(extent, viewport_->overlayParams().strips).size();
+        if (opensAtActualSize(image, picture)) {
             viewport_->setView(actualSizeView(image));
         }  // else the view stays Fit (openUri set it)
     } else if (const std::optional<ScreenRect> shape =
@@ -767,13 +819,20 @@ void MainFrame::sizeWindowForOpen() {
     }
 }
 
+LayoutSize MainFrame::viewportForActualSize(dvv::platform::PixelSize image) const {
+    // P at least the clip at any scale; at a fractional one up to scale + 1 pixels more.
+    const LayoutSize clip = viewportForClip(layoutSizeOf(image), viewport_->contentScale());
+    const int strip = viewport_->stripWindowUnits();
+    return {.width = clip.width + strip, .height = clip.height + strip};
+}
+
 void MainFrame::resizeWindowToActualSize() {
     if (windowIsFixed()) {
         applyViewCommand(Command::ActualSize);
         return;
     }
     const dvv::platform::PixelSize image = viewport_->imageSize();
-    const LayoutSize wanted = viewportForClip(layoutSizeOf(image), viewport_->contentScale());
+    const LayoutSize wanted = viewportForActualSize(image);
     const std::optional<ScreenRect> rect =
         windowForViewport(windowNow(), wanted, screenRect(workArea()), WindowSizing::Clamped);
     if (!rect) {
@@ -807,12 +866,15 @@ bool MainFrame::isAvailable(Command command) const {
         case Command::GpuInfo:
         case Command::LogPane:
         case Command::InfoWindow:
+        case Command::Grid:
+        case Command::Rulers:
+        case Command::GridWindow:
         case Command::Diagnostics:
         case Command::Settings:
         case Command::About: return true;
         case Command::CloseStreams:
             if (native_policy::closeCommandClosesSettingsFirst()) {
-                return hasStream() || settingsInFront() != nullptr || infoInFront() != nullptr;
+                return hasStream() || settingsInFront() != nullptr || floatingInFront() != nullptr;
             }
             [[fallthrough]];
         case Command::PlayPause:
@@ -871,9 +933,9 @@ void MainFrame::execute(Command command, CommandSource source) {
             settings->Close();
             return;
         }
-        // Window title and Info design §10: the Info window too, through setInfoShown.
-        if (infoInFront() != nullptr) {
-            setInfoShown(false);
+        // A floating window too, through setWindowShown.
+        if (const FloatingWindow* const floating = floatingInFront(); floating != nullptr) {
+            setWindowShown(floating->kind(), false);
             return;
         }
     }
@@ -910,7 +972,22 @@ void MainFrame::execute(Command command, CommandSource source) {
         return;
     }
     if (command == Command::InfoWindow) {
-        setInfoShown(!infoShown());
+        setWindowShown(FloatingKind::Info, !windowShown(FloatingKind::Info));
+        return;
+    }
+    if (command == Command::GridWindow) {
+        setWindowShown(FloatingKind::GridAndRulers, true);
+        return;
+    }
+    if (command == Command::Grid || command == Command::Rulers) {
+        GridConfig grid = grid_;
+        RulerConfig rulers = rulers_;
+        if (command == Command::Grid) {
+            grid.levels[0].show = !grid.levels[0].show;
+        } else {
+            rulers.show = !rulers.show;
+        }
+        setOverlay(grid, rulers, OverlaySave::Now);
         return;
     }
     if (command == Command::Settings) {
@@ -985,6 +1062,9 @@ void MainFrame::execute(Command command, CommandSource source) {
         case Command::Format:
         case Command::LogPane:
         case Command::InfoWindow:
+        case Command::Grid:
+        case Command::Rulers:
+        case Command::GridWindow:
         case Command::Settings:
         case Command::About: return;
     }
@@ -997,15 +1077,20 @@ void MainFrame::showSettings() {
     showSettingsWindow(*settings_, *this);  // the selftest's hook, if any
 }
 
-wxWindow* MainFrame::infoInFront() const {
-    InfoWindow* const info = info_window_.get();
-    if (info == nullptr) {
-        return nullptr;
-    }
+FloatingWindow* MainFrame::floatingInFront() const {
     // As settingsInFront(): wxOSX FindFocus() can be null while the window is the key window.
     wxWindow* const focus = focusedWindow();
-    const bool focused = focus != nullptr && wxGetTopLevelParent(focus) == info;
-    return focused || (info->IsShown() && info->IsActive()) ? info : nullptr;
+    for (const wxWeakRef<FloatingWindow>& window : floating_) {
+        FloatingWindow* const floating = window.get();
+        if (floating == nullptr) {
+            continue;
+        }
+        const bool focused = focus != nullptr && wxGetTopLevelParent(focus) == floating;
+        if (focused || (floating->IsShown() && floating->IsActive())) {
+            return floating;
+        }
+    }
+    return nullptr;
 }
 
 void MainFrame::showGpuInfo() {
@@ -1511,7 +1596,6 @@ void MainFrame::onStreamsChanged(const std::vector<StreamInfo>& streams) {
         const dvv::media::FrameDesc& desc = streams_.front().info.desc;
         viewport_->setImageSize({.width = desc.width, .height = desc.height});
     }
-    showZoom();
     for (const StreamInfo& stream : streams_) {
         file_colours_.remember(stream);  // the file's colour for View > Format
         DVV_LOG_INFO("stream {}: {}", stream.slot, stream.resolvedUri);
@@ -1530,8 +1614,9 @@ void MainFrame::onStreamsChanged(const std::vector<StreamInfo>& streams) {
     status_texts_[MAPPING_FIELD] = mappingField(streams_);
     SetStatusText(status_texts_[MAPPING_FIELD], static_cast<int>(MAPPING_FIELD));
     showStreamName();  // spec §5, §7: the title and the file field change with it
-    if (info_window_) {
-        info_window_->showFor(streams_.empty() ? nullptr : &streams_.front());
+    if (auto* const info = dynamic_cast<InfoWindow*>(floatingWindow(FloatingKind::Info));
+        info != nullptr) {
+        info->showFor(streams_.empty() ? nullptr : &streams_.front());
     }
     // §13: the "i" tooltip's second line follows the stream.
     transportBar().setInfoHint(streams_.empty() ? "" : infoHint(streams_.front()));
@@ -1682,19 +1767,52 @@ void MainFrame::onMenu(wxCommandEvent& event) {
 void MainFrame::onUpdateUi(wxUpdateUIEvent& event) {
     const std::optional<Command> command = commandOfMenuId(event.GetId());
     event.Enable(!closing_ && command && isAvailable(*command));
-    if (command == Command::LogPane) {  // spec §2: the item follows the pane however it changed
-        if (native_policy::logItemHasChangingTitle()) {
-            event.SetText(logItemTitle(logShown()));
+    // A show-or-hide item follows its part however it changed. Only the menu bar's items change
+    // their title; a popup menu's (the picture's context menu) stay check items on every OS.
+    if (const std::optional<bool> shown = command ? shownBy(*command) : std::nullopt) {
+        const auto* const menu = dynamic_cast<const wxMenu*>(event.GetEventObject());
+        const bool in_menu_bar = menu == nullptr || menu->GetMenuBar() != nullptr;
+        if (native_policy::logItemHasChangingTitle() && in_menu_bar) {
+            event.SetText(wxString::FromUTF8(shownItemTitle(commandInfo(*command), *shown)));
         } else {
-            event.Check(logShown());
+            event.Check(*shown);
         }
     }
-    if (command == Command::InfoWindow) {  // §10: the item follows the window
-        if (native_policy::logItemHasChangingTitle()) {
-            event.SetText(infoItemTitle(infoShown()));
-        } else {
-            event.Check(infoShown());
-        }
+}
+
+std::optional<bool> MainFrame::shownBy(Command command) const {
+    if (command == Command::LogPane) {
+        return logShown();
+    }
+    if (command == Command::InfoWindow) {
+        return windowShown(FloatingKind::Info);
+    }
+    if (command == Command::Grid) {
+        return grid_.levels[0].show;
+    }
+    if (command == Command::Rulers) {
+        return rulers_.show;
+    }
+    return std::nullopt;
+}
+
+void MainFrame::popUpViewportMenu(wxPoint point) {
+    if (closing_) {
+        return;
+    }
+    wxMenu menu;
+    for (const Command command : {Command::Grid, Command::Rulers}) {
+        const CommandInfo& info = commandInfo(command);
+        menu.AppendCheckItem(menuId(command), wxString::FromUTF8(menuLabel(info)),
+                             wxString::FromUTF8(info.help))
+            ->Check(shownBy(command).value_or(false));
+    }
+    const CommandInfo& window = commandInfo(Command::GridWindow);
+    menu.Append(menuId(Command::GridWindow), wxString::FromUTF8(menuLabel(window)),
+                wxString::FromUTF8(window.help));
+    const int chosen = showPopupMenu(*viewport_, menu, point);
+    if (const std::optional<Command> command = commandOfMenuId(chosen)) {
+        execute(*command, CommandSource::Menu);
     }
 }
 
@@ -1703,7 +1821,7 @@ void MainFrame::onEditMenu(wxCommandEvent& event) {
         return;
     }
     // Window title and Info design §10: Copy with the Info window in front copies its rows.
-    if (event.GetId() == wxID_COPY && infoInFront() != nullptr) {
+    if (event.GetId() == wxID_COPY && infoInFront(floatingInFront())) {
         setClipboardText(infoCopyText(streams_.empty() ? nullptr : &streams_.front()));
         return;
     }
@@ -1714,7 +1832,7 @@ void MainFrame::onEditMenu(wxCommandEvent& event) {
 }
 
 void MainFrame::onEditUpdateUi(wxUpdateUIEvent& event) {
-    if (!closing_ && event.GetId() == wxID_COPY && infoInFront() != nullptr) {
+    if (!closing_ && event.GetId() == wxID_COPY && infoInFront(floatingInFront())) {
         event.Enable(true);  // §10 Copy: always, "No stream" too
         return;
     }
@@ -1821,7 +1939,7 @@ void MainFrame::onIconize(wxIconizeEvent& event) {
     if (viewport_ != nullptr) {
         viewport_->topLevelIconized(event.IsIconized());
     }
-    infoFollowsFrame(event.IsIconized());
+    floatingWindowsFollow(event.IsIconized());
     event.Skip();
 }
 
@@ -1880,7 +1998,7 @@ void MainFrame::onShow(wxShowEvent& event) {
         viewport_->topLevelShown(event.IsShown());
     }
 #if defined(__WXGTK__)
-    infoFollowsFrame(!event.IsShown());  // X11 has no WM-independent iconify: Hide and Show
+    floatingWindowsFollow(!event.IsShown());  // X11 has no WM-independent iconify: Hide and Show
 #endif
     if (event.IsShown() && !std::exchange(first_shown_, true)) {
         // wx gives the first focusable child the focus when the window appears, which can be a
@@ -1890,47 +2008,63 @@ void MainFrame::onShow(wxShowEvent& event) {
     event.Skip();
 }
 
-// Every show and hide of the Info window (the command, its close box, Esc, the keys) comes here;
-// the "i" toggle follows (window title and Info design §12).
-void MainFrame::setInfoShown(bool shown) {
+// Every show and hide of a floating window (the command, its close box, Esc, the keys) comes here;
+// the "i" toggle follows the Info window.
+void MainFrame::setWindowShown(FloatingKind kind, bool shown) {
     if (closing_) {
         return;
     }
-    if (shown != infoShown()) {
-        info_hidden_by_iconize_ = false;
+    if (shown != windowShown(kind)) {
+        wxWeakRef<FloatingWindow>& window = floating_[static_cast<std::size_t>(kind)];
         if (!shown) {
-            info_window_->hideKeepingPlace();
-        } else {
-            if (!info_window_) {
-                info_window_ = new InfoWindow(*this);  // a child top-level window: wx owns it
+            if (auto* const grid_window = dynamic_cast<GridWindow*>(window.get())) {
+                grid_window->endPending();  // before the save below
             }
-            info_window_->showFor(streams_.empty() ? nullptr : &streams_.front());
-            // X11: Hide stands for iconify (onShow).
-            const bool frame_hidden =
-                IsIconized() || (native_policy::hideMeansIconified() && !IsShown());
-            if (frame_hidden) {
-                info_hidden_by_iconize_ = true;  // shown with the main window when restored
-            } else {
-                info_window_->showBesideOwner();
+            window->hideKeepingPlace();
+            if (kind == FloatingKind::GridAndRulers) {
+                setOverlay(grid_, rulers_, OverlaySave::Now);  // writes nothing when unchanged
+            }
+        } else {
+            if (!window) {
+                // Creating a floating window leaves wx's focus where it was: wxGTK's native book
+                // gives the page it selects the focus, the first one too, and wx then names a
+                // control of the hidden new window as the focus (FindFocus) until it is set again.
+                // With no focus before, the viewport takes it, as a click on it does.
+                wxWindow* const focus = wxWindow::FindFocus();
+                switch (kind) {
+                    case FloatingKind::Info: window = new InfoWindow(*this); break;
+                    case FloatingKind::GridAndRulers: window = new GridWindow(*this); break;
+                }
+                wxWindow* const now = wxWindow::FindFocus();
+                wxWindow* const back = focus != nullptr ? focus : viewport_;
+                if (now != nullptr && wxGetTopLevelParent(now) == window.get() && back != nullptr) {
+                    back->SetFocus();
+                }
+            }
+            window->showBesideOwner();
+            if (kind == FloatingKind::GridAndRulers) {
+                showGridNotes();
             }
         }
     }
-    transportBar().setInfoShown(infoShown());
+    if (kind == FloatingKind::Info) {
+        transportBar().setInfoShown(windowShown(kind));
+    }
 }
 
-bool MainFrame::infoShown() const {
-    return info_window_ && (info_window_->IsShown() || info_hidden_by_iconize_);
+bool MainFrame::windowShown(FloatingKind kind) const {
+    const FloatingWindow* const window = floatingWindow(kind);
+    return window != nullptr && window->wanted();
 }
 
-void MainFrame::infoFollowsFrame(bool frame_hidden) {
-    if (closing_ || !info_window_) {
+void MainFrame::floatingWindowsFollow(bool frame_hidden) {
+    if (closing_) {
         return;
     }
-    if (frame_hidden && info_window_->IsShown()) {
-        info_hidden_by_iconize_ = true;
-        info_window_->hideKeepingPlace();
-    } else if (!frame_hidden && std::exchange(info_hidden_by_iconize_, false)) {
-        info_window_->restoreAfterIconize();
+    for (const wxWeakRef<FloatingWindow>& window : floating_) {
+        if (window) {
+            window->followOwner(frame_hidden);
+        }
     }
 }
 
@@ -1961,13 +2095,24 @@ void MainFrame::saveLogPaneState() {
     }
 }
 
+void MainFrame::saveOverlayState() {
+    (void)wxGetApp().saveOverlay(grid_, rulers_, /*closing=*/true);  // a failure is only logged
+}
+
 void MainFrame::onClose(wxCloseEvent& event) {
     if (closing_) {
         event.Skip();
         return;
     }
+    // Before closing_, which stops setOverlay: what the Grid and Rulers window has pending is
+    // applied for the save below, and its quiet period can no longer run.
+    if (auto* const grid_window =
+            dynamic_cast<GridWindow*>(floatingWindow(FloatingKind::GridAndRulers))) {
+        grid_window->endPending();
+    }
     closing_ = true;
     saveLogPaneState();
+    saveOverlayState();
     stopStatusUpdates();
     if (selftest_) {
         selftest_->stop();  // the runner lives until ~MainFrame
@@ -1979,9 +2124,11 @@ void MainFrame::onClose(wxCloseEvent& event) {
     if (settings_) {
         settings_->dismiss();  // spec §5.1: before the Session shuts down
     }
-    if (info_window_) {
-        info_window_->Destroy();  // §10: it closes with the main window, before the Session goes
-        info_window_ = nullptr;
+    for (wxWeakRef<FloatingWindow>& window : floating_) {
+        if (window) {
+            window->Destroy();  // §10: it closes with the main window, before the Session goes
+            window = nullptr;
+        }
     }
     if (viewport_ != nullptr) {
         viewport_->detachStack();  // setOnChanged({}), presenter, renderer, context

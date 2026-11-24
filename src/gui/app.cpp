@@ -368,7 +368,14 @@ bool App::startLogAndConfig() {
         DVV_LOG_INFO("config '{}': {} {}, {} {} entries", shown, config_key::GUI_RECENT_SIZE,
                      history.size, config_key::GUI_RECENT, history.entries.size());
         recent_ = RecentList(history.size, std::move(history.entries));
+        // The grid and ruler settings: a bad value falls back to its default with a warning.
+        overlay_ = parseOverlayConfig(loaded.text);
+        for (const std::string& warning : overlay_.warnings) {
+            DVV_LOG_WARN("config '{}': {}", shown, warning);
+        }
     }
+    saved_overlay_ = overlayConfigValues(overlay_.grid, overlay_.rulers, overlay_.gridSavable,
+                                         overlay_.rulersSavable);
     // The claim before the first log file: only the settings owner appends to the newest log
     // file (addendum §5.1, D10).
     if (!config_path_.empty()) {
@@ -509,6 +516,68 @@ bool App::saveSettings(std::span<const ConfigValue> values, bool closing) {
     return false;
 }
 
+void App::refreshOverlaySavable() {
+    if (config_path_.empty()) {
+        return;
+    }
+    std::error_code error;
+    if (!std::filesystem::exists(config_path_, error)) {
+        overlay_.gridSavable = overlay_.rulersSavable = true;  // the writer creates the file
+        return;
+    }
+    const dvv::Result<std::string> text = readConfigText(config_path_);
+    if (!text) {
+        return;  // the save reports the file's failure itself
+    }
+    const OverlayConfig now = parseOverlayConfig(*text);
+    const std::string shown = dvv::pathDisplayText(config_path_);
+    const auto follow = [&shown](bool& savable, bool savable_now, std::string_view part,
+                                 std::string_view key) {
+        if (savable && !savable_now) {
+            DVV_LOG_WARN(
+                "config '{}': {} or a part of it is not an object now; the {} settings "
+                "are not saved",
+                shown, key, part);
+        } else if (!savable && savable_now) {
+            DVV_LOG_INFO("config '{}': {} can be written again; the {} settings are saved", shown,
+                         key, part);
+        }
+        savable = savable_now;
+    };
+    follow(overlay_.gridSavable, now.gridSavable, "grid", "gui.grid");
+    follow(overlay_.rulersSavable, now.rulersSavable, "ruler", "gui.rulers");
+}
+
+void App::reloadOverlayForTest() {
+    const dvv::Result<std::string> text = readConfigText(config_path_);
+    overlay_ = parseOverlayConfig(text ? *text : std::string());
+    for (const std::string& warning : overlay_.warnings) {
+        DVV_LOG_WARN("config '{}': {}", dvv::pathDisplayText(config_path_), warning);
+    }
+    saved_overlay_ = overlayConfigValues(overlay_.grid, overlay_.rulers, overlay_.gridSavable,
+                                         overlay_.rulersSavable);
+}
+
+bool App::saveOverlay(const GridConfig& grid, const RulerConfig& rulers, bool closing) {
+    refreshOverlaySavable();
+    if (!overlay_.gridSavable && !overlay_.rulersSavable) {
+        return false;
+    }
+    std::vector<ConfigValue> values =
+        overlayConfigValues(grid, rulers, overlay_.gridSavable, overlay_.rulersSavable);
+    const auto same = [](const ConfigValue& a, const ConfigValue& b) {
+        return a.key == b.key && a.value == b.value;
+    };
+    if (std::ranges::equal(values, saved_overlay_, same)) {
+        return false;
+    }
+    if (!saveSettings(values, closing)) {
+        return false;
+    }
+    saved_overlay_ = std::move(values);
+    return true;
+}
+
 bool App::saveHistory(std::span<const ConfigValue> values) {
     if (!ownsSettings()) {
         return false;  // spec §7: only the settings owner saves
@@ -524,6 +593,24 @@ bool App::saveHistory(std::span<const ConfigValue> values) {
                      saved.error().message);
     }
     return false;
+}
+
+void App::checkSavedOverlay(const OverlayConfig& expected) {
+    std::string found;
+    if (dvv::Result<std::string> text = readConfigText(config_path_); !text) {
+        found = text.error().message;
+    } else if (const OverlayConfig saved = parseOverlayConfig(*text);
+               (overlay_.gridSavable && saved.grid != expected.grid) ||
+               (overlay_.rulersSavable && saved.rulers != expected.rulers)) {
+        found = "other values";
+    } else {
+        return;
+    }
+    // One line, exit 6, unless an earlier failure decided the code (as checkSavedLogPane).
+    record(exit_code::SELFTEST_FAILED,
+           std::format("rawreel-gui --selftest: the close did not save the grid and ruler "
+                       "settings: '{}' has {}",
+                       dvv::pathDisplayText(config_path_), found));
 }
 
 void App::checkSavedLogPane(bool saved) {
@@ -806,9 +893,13 @@ void App::shutdownSession() {
 
 int App::OnExit() {
     // 1. Selftest only (spec §2, §7.3): the gui.showLogPane value the close saved is in the
-    // selftest's config file. Nothing is checked when nothing was saved.
+    // selftest's config file. Nothing is checked when nothing was saved. So are the grid and ruler
+    // settings a step left for the close to save.
     if (selftest() && saved_log_pane_) {
         checkSavedLogPane(*saved_log_pane_);
+    }
+    if (selftest() && expected_overlay_) {
+        checkSavedOverlay(*expected_overlay_);
     }
     // Every viewport, and so every presenter, is gone: MainFrame::onClose destroyed it.
     if (session_) {

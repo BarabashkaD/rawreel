@@ -25,6 +25,7 @@ enum class Icon : std::uint8_t {
     SkipForward,
     Repeat,
     SlidersHorizontal,
+    Grid,
     Info,
     ZoomOut,
     ZoomIn,

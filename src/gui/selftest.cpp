@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -30,6 +31,7 @@
 
 #include <wx/anybutton.h>
 #include <wx/aui/framemanager.h>
+#include <wx/clrpicker.h>
 // clang-format off
 #include <wx/infobar.h>  // wxInfoBarBase, before the generic class
 #include <wx/generic/infobar.h>
@@ -38,17 +40,23 @@
 #include <wx/aboutdlg.h>  // wxAboutDialogInfo, before the generic dialog
 #include <wx/generic/aboutdlgg.h>
 // clang-format on
+#include <wx/bookctrl.h>
+#include <wx/checkbox.h>
 #include <wx/clipbrd.h>
 #include <wx/collpane.h>
 #include <wx/dirdlg.h>
 #include <wx/filedlg.h>
 #include <wx/filename.h>
 #include <wx/hyperlink.h>
+#include <wx/menu.h>
 #include <wx/preferences.h>
+#include <wx/scrolwin.h>
 #include <wx/settings.h>
+#include <wx/simplebook.h>
 #include <wx/slider.h>
 #include <wx/stdpaths.h>
 #include <wx/textdlg.h>
+#include <wx/tglbtn.h>
 
 #include "core/commands.h"
 #include "core/config.h"
@@ -62,11 +70,13 @@
 #include "core/log_store.h"
 #include "core/log_text.h"
 #include "core/native_os.h"
+#include "core/overlay.h"
 #include "core/perf_stats.h"
 #include "core/recent.h"
 #include "core/session.h"
 #include "core/settings_claim.h"
 #include "core/startup.h"
+#include "core/status_text.h"
 #include "core/stream_name.h"
 #include "core/timeline.h"
 #include "core/version_text.h"
@@ -84,13 +94,18 @@
 #include "dvv/media/format_json.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
+#include "dvv/media/view.h"
+#include "dvv/media/view_lines.h"
 #include "dvv/platform/pixel_size.h"
 #include "dvv/registry/module.h"
 #include "gui/about.h"
 #include "gui/app.h"
 #include "gui/app_icon.h"
 #include "gui/drop_target.h"
+#include "gui/edit_dispatch.h"
+#include "gui/floating_window.h"
 #include "gui/format_dialog.h"
+#include "gui/grid_window.h"
 #include "gui/icons.h"
 #include "gui/info_window.h"
 #include "gui/log_list.h"
@@ -105,6 +120,13 @@
 #include "gui/transport_bar.h"
 #include "gui/viewport.h"
 #include "render/display_state.h"
+
+using dvv::media::imagePointAt;
+using dvv::media::PointD;
+using dvv::media::resolveView;
+using dvv::media::ViewMode;
+using dvv::media::ViewRequest;
+using dvv::media::ViewTransform;
 
 namespace rawreel {
 
@@ -138,6 +160,11 @@ SelfTestStep step(std::string name, dvv::MoveOnlyFunction<void()> start,
 }
 
 namespace {
+
+// The Info window, if the main window has made one.
+InfoWindow* infoWindowOf(const MainFrame& frame) {
+    return dynamic_cast<InfoWindow*>(frame.floatingWindow(FloatingKind::Info));
+}
 
 // Set while the script injects an event (injectInput).
 bool& injecting() {
@@ -787,8 +814,9 @@ SelfTestStep cutFieldTooltipStep(SelfTest* test) {
             ok = ok && (ellipsized ? tip == texts[n] : tip.empty());
         }
         seen += std::format(
-            "client width {} (minimum {}, fixed fields {} + {} DIP){}", frame.GetClientSize().x,
-            frame.GetMinClientSize().x,
+            "client width {} (minimum {}, fixed fields {} + {} + {} DIP){}",
+            frame.GetClientSize().x, frame.GetMinClientSize().x,
+            frame.ToDIP(bar->GetStatusWidth(static_cast<int>(MainFrame::CURSOR_FIELD))),
             frame.ToDIP(bar->GetStatusWidth(static_cast<int>(MainFrame::MAPPING_FIELD))),
             frame.ToDIP(bar->GetStatusWidth(static_cast<int>(MainFrame::LOG_NOTICE_FIELD))),
             cut == 0 ? "; no cut field" : "");
@@ -866,18 +894,31 @@ bool focusInside(const wxWindow* window) {
     return window != nullptr && focus != nullptr && wxGetTopLevelParent(focus) == window;
 }
 
-// §10 Place, computed again from the frame as InfoWindow::showBesideOwner does.
+// Whether the focus is inside `window`; when it is, the focus's class and label and which of the
+// two windows is active.
+std::string focusText(MainFrame& frame, wxTopLevelWindow& window) {
+    if (!focusInside(&window)) {
+        return "focus inside false";
+    }
+    const wxWindow* const focus = wxWindow::FindFocus();
+    return std::format("focus inside true ({} \"{}\", main window active {}, window active {})",
+                       wxString(focus->GetClassInfo()->GetClassName()).utf8_string(),
+                       focus->GetLabel().utf8_string(), frame.IsActive(), window.IsActive());
+}
+
+// §10 Place, computed again from the frame as FloatingWindow::showBesideOwner does.
 wxRect expectedInfoPlace(MainFrame& frame, const InfoWindow& info) {
     const wxRect work = workAreaOf(frame);
     const wxRect outer = frame.GetScreenRect();
     const wxPoint client_origin = frame.ClientToScreen(wxPoint(0, 0));
     const wxSize client = frame.GetClientSize();
     const wxSize size = info.GetSize();
-    const ScreenRect place = infoWindowPlace(
+    const ScreenRect place = floatingWindowPlace(
         {.x = outer.x, .y = outer.y, .width = outer.width, .height = outer.height},
         {.x = client_origin.x, .y = client_origin.y, .width = client.x, .height = client.y},
         {.width = size.x, .height = size.y},
-        {.x = work.x, .y = work.y, .width = work.width, .height = work.height}, info.FromDIP(8));
+        {.x = work.x, .y = work.y, .width = work.width, .height = work.height}, std::nullopt,
+        info.FromDIP(8));
     return {place.x, place.y, place.width, place.height};
 }
 
@@ -930,9 +971,10 @@ SelfTestStep infoWindowOpensStep(SelfTest* test, const std::shared_ptr<InfoWindo
     };
     auto passed = [test, state](std::string& seen) {
         MainFrame& frame = test->frame();
-        const InfoWindow* const info = frame.infoWindow();
+        const InfoWindow* const info = infoWindowOf(frame);
         if (info == nullptr) {
-            seen = std::format("no Info window (infoShown {})", frame.infoShown());
+            seen = std::format("no Info window (windowShown {})",
+                               frame.windowShown(FloatingKind::Info));
             return false;
         }
         const wxRect requested = info->requestedRectForTest();
@@ -943,10 +985,12 @@ SelfTestStep infoWindowOpensStep(SelfTest* test, const std::shared_ptr<InfoWindo
         std::string item;
         const bool keyed = infoItemHasKey(frame, item);
         seen = std::format(
-            "infoShown {}, window shown {}, requested {}, computed {}, on screen {}, focus inside "
+            "windowShown {}, window shown {}, requested {}, computed {}, on screen {}, focus "
+            "inside "
             "{}, frame active {} (before {}), {}",
-            frame.infoShown(), info->IsShown(), rectText(requested), rectText(expected),
-            rectText(actual), focus_inside, active, state->frameWasActive, item);
+            frame.windowShown(FloatingKind::Info), info->IsShown(), rectText(requested),
+            rectText(expected), rectText(actual), focus_inside, active, state->frameWasActive,
+            item);
         if (!keyed) {
             return false;
         }
@@ -955,8 +999,8 @@ SelfTestStep infoWindowOpensStep(SelfTest* test, const std::shared_ptr<InfoWindo
 #else
         const bool placed = requested == expected;  // X11: the window manager may move it
 #endif
-        return frame.infoShown() && info->IsShown() && placed && !focus_inside &&
-               (!state->frameWasActive || active);
+        return frame.windowShown(FloatingKind::Info) && info->IsShown() && placed &&
+               !focus_inside && (!state->frameWasActive || active);
     };
     return step("info window opens", std::move(start), std::move(passed));
 }
@@ -965,7 +1009,7 @@ SelfTestStep infoWindowOpensStep(SelfTest* test, const std::shared_ptr<InfoWindo
 SelfTestStep infoWindowRowsStep(SelfTest* test, const std::shared_ptr<InfoWindowState>& state) {
     auto passed = [test, state](std::string& seen) {
         const MainFrame& frame = test->frame();
-        const InfoWindow* const info = frame.infoWindow();
+        const InfoWindow* const info = infoWindowOf(frame);
         if (info == nullptr || frame.streams().empty()) {
             seen = "no Info window or no stream";
             return false;
@@ -997,7 +1041,7 @@ SelfTestStep infoWindowAfterCloseStep(SelfTest* test,
     };
     auto passed = [test, state](std::string& seen) {
         const MainFrame& frame = test->frame();
-        const InfoWindow* const info = frame.infoWindow();
+        const InfoWindow* const info = infoWindowOf(frame);
         if (info == nullptr) {
             seen = "no Info window";
             return false;
@@ -1030,7 +1074,7 @@ SelfTestStep infoWindowMinimisedStep(SelfTest* test,
                                      const std::shared_ptr<InfoWindowState>& state) {
     auto start = [test, state] {
         state->phase = 0;
-        const InfoWindow* const info = test->frame().infoWindow();
+        const InfoWindow* const info = infoWindowOf(test->frame());
         state->requestedBefore = info != nullptr ? info->requestedRectForTest() : wxRect();
 #if defined(__WXMSW__) || defined(__WXOSX__)
         test->frame().Iconize(true);
@@ -1040,7 +1084,7 @@ SelfTestStep infoWindowMinimisedStep(SelfTest* test,
     };
     auto passed = [test, state](std::string& seen) {
         MainFrame& frame = test->frame();
-        const InfoWindow* const info = frame.infoWindow();
+        const InfoWindow* const info = infoWindowOf(frame);
         if (info == nullptr) {
             seen = "no Info window";
             return false;
@@ -1051,19 +1095,20 @@ SelfTestStep infoWindowMinimisedStep(SelfTest* test,
         const wxRect requested = info->requestedRectForTest();
         const wxRect actual = info->GetScreenRect();
         seen = std::format(
-            "phase {}: frame iconized {} shown {}, infoShown {}, window shown {}, focus inside {}, "
+            "phase {}: frame iconized {} shown {}, windowShown {}, window shown {}, focus inside "
+            "{}, "
             "presenting {}, requested {} (before {}), on screen {}",
-            state->phase, frame.IsIconized(), frame.IsShown(), frame.infoShown(), info->IsShown(),
-            focus_inside, presenting, rectText(requested), rectText(state->requestedBefore),
-            rectText(actual));
+            state->phase, frame.IsIconized(), frame.IsShown(),
+            frame.windowShown(FloatingKind::Info), info->IsShown(), focus_inside, presenting,
+            rectText(requested), rectText(state->requestedBefore), rectText(actual));
         if (state->phase == 0) {
-            if (!info->IsShown() && frame.infoShown()) {
+            if (!info->IsShown() && frame.windowShown(FloatingKind::Info)) {
                 state->phase = 1;
                 DVV_LOG_INFO("selftest: info window minimised: {}", seen);
                 // View -> Info off and on while minimised (the menu bar stays usable on macOS):
                 // shown again by the restore.
-                frame.setInfoShown(false);
-                frame.setInfoShown(true);
+                frame.setWindowShown(FloatingKind::Info, false);
+                frame.setWindowShown(FloatingKind::Info, true);
 #if defined(__WXMSW__) || defined(__WXOSX__)
                 frame.Iconize(false);
 #else
@@ -1077,8 +1122,8 @@ SelfTestStep infoWindowMinimisedStep(SelfTest* test,
 #else
         const bool placed = requested == state->requestedBefore;  // X11: the WM may move it
 #endif
-        return info->IsShown() && frame.infoShown() && !frame.IsIconized() && frame.IsShown() &&
-               !focus_inside && presenting && placed;
+        return info->IsShown() && frame.windowShown(FloatingKind::Info) && !frame.IsIconized() &&
+               frame.IsShown() && !focus_inside && presenting && placed;
     };
     return step("info window with the main window minimised", std::move(start), std::move(passed));
 }
@@ -1090,8 +1135,8 @@ SelfTestStep infoWindowFirstShownMinimisedStep(SelfTest* test,
     auto start = [test, state] {
         state->phase = 0;
         MainFrame& frame = test->frame();
-        frame.setInfoShown(false);
-        if (InfoWindow* const info = frame.infoWindow(); info != nullptr) {
+        frame.setWindowShown(FloatingKind::Info, false);
+        if (InfoWindow* const info = infoWindowOf(frame); info != nullptr) {
             info->forgetPlaceForTest();
         }
 #if defined(__WXMSW__) || defined(__WXOSX__)
@@ -1102,7 +1147,7 @@ SelfTestStep infoWindowFirstShownMinimisedStep(SelfTest* test,
     };
     auto passed = [test, state](std::string& seen) {
         MainFrame& frame = test->frame();
-        InfoWindow* const info = frame.infoWindow();
+        InfoWindow* const info = infoWindowOf(frame);
         if (info == nullptr) {
             seen = "no Info window";
             return false;
@@ -1119,20 +1164,20 @@ SelfTestStep infoWindowFirstShownMinimisedStep(SelfTest* test,
         const wxRect expected = expectedInfoPlace(frame, *info);
         const wxRect actual = info->GetScreenRect();
         seen = std::format(
-            "phase {}: frame down {}, infoShown {}, window shown {}, focus inside {}, presenting "
+            "phase {}: frame down {}, windowShown {}, window shown {}, focus inside {}, presenting "
             "{}, requested {}, computed {}, on screen {}",
-            state->phase, frame_down, frame.infoShown(), info->IsShown(), focus_inside, presenting,
-            rectText(requested), rectText(expected), rectText(actual));
+            state->phase, frame_down, frame.windowShown(FloatingKind::Info), info->IsShown(),
+            focus_inside, presenting, rectText(requested), rectText(expected), rectText(actual));
         switch (state->phase) {
             case 0:  // minimised, the window hidden and never placed: View -> Info
-                if (frame_down && !info->IsShown() && !frame.infoShown()) {
+                if (frame_down && !info->IsShown() && !frame.windowShown(FloatingKind::Info)) {
                     DVV_LOG_INFO("selftest: info window first shown minimised: {}", seen);
                     state->phase = 1;
-                    frame.setInfoShown(true);
+                    frame.setWindowShown(FloatingKind::Info, true);
                 }
                 return false;
             case 1:  // it waits for the restore
-                if (frame_down && !info->IsShown() && frame.infoShown()) {
+                if (frame_down && !info->IsShown() && frame.windowShown(FloatingKind::Info)) {
                     DVV_LOG_INFO("selftest: info window first shown minimised: {}", seen);
                     state->phase = 2;
 #if defined(__WXMSW__) || defined(__WXOSX__)
@@ -1149,8 +1194,8 @@ SelfTestStep infoWindowFirstShownMinimisedStep(SelfTest* test,
 #else
         const bool placed = requested == expected;  // X11: the window manager may move it
 #endif
-        return !frame_down && info->IsShown() && frame.infoShown() && !focus_inside && presenting &&
-               placed;
+        return !frame_down && info->IsShown() && frame.windowShown(FloatingKind::Info) &&
+               !focus_inside && presenting && placed;
     };
     return step("info window first shown while minimised", std::move(start), std::move(passed));
 }
@@ -1160,12 +1205,13 @@ SelfTestStep viewInfoClosesStep(SelfTest* test) {
     auto start = [test] { test->frame().execute(Command::InfoWindow); };
     auto passed = [test](std::string& seen) {
         MainFrame& frame = test->frame();
-        const InfoWindow* const info = frame.infoWindow();
+        const InfoWindow* const info = infoWindowOf(frame);
         const bool shown = info != nullptr && info->IsShown();
         std::string item;
         const bool keyed = infoItemHasKey(frame, item);
-        seen = std::format("infoShown {}, window shown {}, {}", frame.infoShown(), shown, item);
-        return info != nullptr && !frame.infoShown() && !shown && keyed;
+        seen = std::format("windowShown {}, window shown {}, {}",
+                           frame.windowShown(FloatingKind::Info), shown, item);
+        return info != nullptr && !frame.windowShown(FloatingKind::Info) && !shown && keyed;
     };
     return step("view info closes", std::move(start), std::move(passed));
 }
@@ -1251,17 +1297,18 @@ SelfTestStep infoButtonStep(SelfTest* test) {
         MainFrame& frame = test->frame();
         wxAnyButton& any = frame.transportBar().buttonForTest(Command::InfoWindow);
         auto* const toggle = dynamic_cast<wxBitmapToggleButton*>(&any);
-        const InfoWindow* const info = frame.infoWindow();
+        const InfoWindow* const info = infoWindowOf(frame);
         const bool window = info != nullptr && info->IsShown();
         const bool value = toggle != nullptr && toggle->GetValue();
         seen = std::format(
-            "phase {}: toggle {}, enabled {}, value {}, infoShown {}, window shown {}", *phase,
-            toggle != nullptr, any.IsEnabled(), value, frame.infoShown(), window);
+            "phase {}: toggle {}, enabled {}, value {}, windowShown {}, window shown {}", *phase,
+            toggle != nullptr, any.IsEnabled(), value, frame.windowShown(FloatingKind::Info),
+            window);
         if (toggle == nullptr || !any.IsEnabled()) {
             return false;
         }
         const bool want = *phase % 2 == 0;  // 0: shown by a click, 1: hidden by a click, ...
-        if (value != want || frame.infoShown() != want || window != want) {
+        if (value != want || frame.windowShown(FloatingKind::Info) != want || window != want) {
             return false;
         }
         DVV_LOG_INFO("selftest: info button: {}", seen);
@@ -1833,6 +1880,12 @@ bool sendKey(wxWindow& target, int keycode, bool shift = false, bool ctrl = fals
 
 }  // namespace
 
+void showRulers(MainFrame& frame, bool show) {
+    RulerConfig rulers = frame.rulers();
+    rulers.show = show;
+    frame.setOverlay(frame.grid(), rulers, OverlaySave::Later);
+}
+
 // A menu item of the frame (the Edit items on Windows and Linux, or on macOS when the responder
 // chain did not handle it): the frame's wxEVT_MENU handler.
 bool sendMenu(wxFrame& frame, int id) {
@@ -1998,55 +2051,140 @@ SelfTestStep logCopyStep(SelfTest* test, const std::shared_ptr<EditState>& state
     return step("log copy", std::move(start), std::move(passed));
 }
 
-// --- The Info window's keys, Copy and ⌘W (window title and Info design §10) ---
+// --- The Info window's keys, Copy and ⌘W ---
+
+// The window wx gives the focus to when `window` first takes it (wxControlContainer's
+// SetFocusToChild, wxSimplebook::SetFocus): the first client-area child that can take the focus
+// from the keyboard, down through panels and a simple book's current page; `window` itself when no
+// child can.
+wxWindow* focusLanding(wxWindow& window) {
+    for (wxWindow* const child : window.GetChildren()) {
+        if (!window.IsClientAreaChild(child) || child->IsTopLevel() ||
+            !child->CanAcceptFocusFromKeyboard()) {
+            continue;
+        }
+        if (auto* const book = dynamic_cast<wxSimplebook*>(child); book != nullptr) {
+            wxWindow* const page = book->GetCurrentPage();
+            return page != nullptr ? focusLanding(*page) : child;
+        }
+        return dynamic_cast<wxPanel*>(child) != nullptr ? focusLanding(*child) : child;
+    }
+    return &window;
+}
+
+// The real focus once the content of the shown Info window takes it, where the OS gives the window
+// the focus; null where it does not (the window not activated). focusLanding names it only until
+// the book first shows a page on screen: wxSimplebook gives that page the focus, and the content
+// gives the focus back to the child it remembers where wx moves the focus itself (no native tab
+// traversal: Windows).
+wxWindow* realInfoFocus(MainFrame& frame) {
+    InfoWindow* const info = infoWindowOf(frame);
+    if (info == nullptr || info->contentForTest() == nullptr) {
+        return nullptr;
+    }
+    info->contentForTest()->SetFocus();
+    wxWindow* const real = wxWindow::FindFocus();
+    return real != nullptr && wxGetTopLevelParent(real) == info ? real : nullptr;
+}
+
+// `focus` is the Info window's content or inside it, at no native control that keeps Space.
+bool focusKeepsNoKey(MainFrame& frame, const wxWindow* focus) {
+    const InfoWindow* const info = infoWindowOf(frame);
+    const wxWindow* const content = info != nullptr ? info->contentForTest() : nullptr;
+    if (focus == nullptr || content == nullptr || controlKeepsKey(focus, chord(Key::Space))) {
+        return false;
+    }
+    for (const wxWindow* window = focus; window != nullptr; window = window->GetParent()) {
+        if (window == content) {
+            return true;
+        }
+    }
+    return false;
+}
 
 }  // namespace
 
-// The Info window's content panel (it takes the focus, §10), shown first; null without a window.
-wxWindow* shownInfoContent(MainFrame& frame) {
-    frame.setInfoShown(true);
-    InfoWindow* const info = frame.infoWindow();
-    return info != nullptr ? info->contentForTest() : nullptr;
-}
-
-// A char-hook key event at the Info window's panel, with the focus there: whether a handler took
-// it.
-bool sendInfoKey(MainFrame& frame, int keycode, bool ctrl) {
-    wxWindow* const panel = shownInfoContent(frame);
-    if (panel == nullptr) {
-        return false;
-    }
-    frame.setFocusForTest(panel);
-    const bool consumed = sendKey(*panel, keycode, false, ctrl);
-    frame.setFocusForTest(nullptr);
-    return consumed;
+wxWindow* shownInfoFocus(MainFrame& frame) {
+    frame.setWindowShown(FloatingKind::Info, true);
+    InfoWindow* const info = infoWindowOf(frame);
+    return info != nullptr && info->contentForTest() != nullptr
+               ? focusLanding(*info->contentForTest())
+               : nullptr;
 }
 
 namespace {
 
-// §10 Keys: Space in the Info window plays, and again pauses, as in the main window.
+// A char-hook key event at `focus`, with the focus there: whether a handler took it.
+bool sendKeyWithFocus(MainFrame& frame, wxWindow* focus, int keycode, bool ctrl = false) {
+    if (focus == nullptr) {
+        return false;
+    }
+    frame.setFocusForTest(focus);
+    const bool consumed = sendKey(*focus, keycode, false, ctrl);
+    frame.setFocusForTest(nullptr);
+    return consumed;
+}
+
+// The shown Info window's current book page; null without the window or a book.
+wxWindow* shownInfoPage(MainFrame& frame) {
+    frame.setWindowShown(FloatingKind::Info, true);
+    InfoWindow* const info = infoWindowOf(frame);
+    if (info == nullptr || info->contentForTest() == nullptr) {
+        return nullptr;
+    }
+    for (wxWindow* const child : info->contentForTest()->GetChildren()) {
+        if (auto* const book = dynamic_cast<wxBookCtrlBase*>(child); book != nullptr) {
+            return book->GetCurrentPage();
+        }
+    }
+    return nullptr;
+}
+
+}  // namespace
+
+bool sendInfoKey(MainFrame& frame, int keycode, bool ctrl) {
+    return sendKeyWithFocus(frame, shownInfoFocus(frame), keycode, ctrl);
+}
+
+namespace {
+
+// Space with the focus on the Info window's book page (no native control there) plays, and Space
+// again pauses, as in the main window. The second Space goes to the real focus where the OS gives
+// the window the focus (realInfoFocus), else where wx first puts it (shownInfoFocus); either is in
+// the content at no native control.
 SelfTestStep infoWindowKeysStep(SelfTest* test, const std::shared_ptr<InfoKeysState>& state) {
     auto start = [test, state] {
         state->phase = 0;
         state->consumedAgain = false;
-        state->consumed = sendInfoKey(test->frame(), WXK_SPACE);
+        MainFrame& frame = test->frame();
+        wxWindow* const page = shownInfoPage(frame);
+        state->onPage = page != nullptr;
+        wxWindow* const real = realInfoFocus(frame);
+        state->focusReal = real != nullptr;
+        state->focusAgain = real != nullptr ? real : shownInfoFocus(frame);
+        state->focusKeepsNoKey = focusKeepsNoKey(frame, state->focusAgain);
+        state->consumed = sendKeyWithFocus(frame, page, WXK_SPACE);
     };
     auto passed = [test, state](std::string& seen) {
         MainFrame& frame = test->frame();
         const SessionStatus status = frame.session().status();
         seen = std::format(
-            "phase {}: Space taken by the Info window {} (again {}), playing {}, position {}",
-            state->phase, state->consumed, state->consumedAgain, status.player.playing,
-            status.player.position);
+            "phase {}: focus on a page {} (the second focus real {}, keeps no key {}), Space "
+            "taken by the Info window {} (again {}), playing {}, position {}",
+            state->phase, state->onPage, state->focusReal, state->focusKeepsNoKey, state->consumed,
+            state->consumedAgain, status.player.playing, status.player.position);
         if (state->phase == 0) {
-            if (state->consumed && status.player.playing) {
+            if (state->onPage && state->focusKeepsNoKey && state->consumed &&
+                status.player.playing) {
                 DVV_LOG_INFO("selftest: info window keys: {}", seen);
                 state->phase = 1;
-                state->consumedAgain = sendInfoKey(frame, WXK_SPACE);  // checked in a later turn
+                // checked in a later turn
+                state->consumedAgain = sendKeyWithFocus(frame, state->focusAgain, WXK_SPACE);
             }
             return false;
         }
-        return state->consumedAgain && !status.player.playing && frame.infoShown();
+        return state->consumedAgain && !status.player.playing &&
+               frame.windowShown(FloatingKind::Info);
     };
     return step("info window keys", std::move(start), std::move(passed));
 }
@@ -2056,27 +2194,31 @@ SelfTestStep infoWindowEscStep(SelfTest* test, const std::shared_ptr<InfoKeysSta
     auto start = [test, state] { state->consumed = sendInfoKey(test->frame(), WXK_ESCAPE); };
     auto passed = [test, state](std::string& seen) {
         const MainFrame& frame = test->frame();
-        const InfoWindow* const info = frame.infoWindow();
-        seen = std::format("Esc taken {}, infoShown {}, window shown {}", state->consumed,
-                           frame.infoShown(), info != nullptr && info->IsShown());
-        return state->consumed && !frame.infoShown() && info != nullptr && !info->IsShown();
+        const InfoWindow* const info = infoWindowOf(frame);
+        seen =
+            std::format("Esc taken {}, windowShown {}, window shown {}", state->consumed,
+                        frame.windowShown(FloatingKind::Info), info != nullptr && info->IsShown());
+        return state->consumed && !frame.windowShown(FloatingKind::Info) && info != nullptr &&
+               !info->IsShown();
     };
     return step("info window Esc", std::move(start), std::move(passed));
 }
 
 // §10 Keys: Ctrl+I (Cmd+I on macOS) in the Info window closes it. The key comes in the turn that
 // reopened the window: on X11 the map notification of that show arrives after the hide, which
-// must leave the window hidden (InfoWindow::onShow).
+// must leave the window hidden (FloatingWindow::onShow).
 SelfTestStep infoWindowCtrlIStep(SelfTest* test, const std::shared_ptr<InfoKeysState>& state) {
     auto start = [test, state] {
         state->consumed = sendInfoKey(test->frame(), 'I', true);  // reopens it first
     };
     auto passed = [test, state](std::string& seen) {
         const MainFrame& frame = test->frame();
-        const InfoWindow* const info = frame.infoWindow();
-        seen = std::format("Ctrl+I taken {}, infoShown {}, window shown {}", state->consumed,
-                           frame.infoShown(), info != nullptr && info->IsShown());
-        return state->consumed && !frame.infoShown() && info != nullptr && !info->IsShown();
+        const InfoWindow* const info = infoWindowOf(frame);
+        seen =
+            std::format("Ctrl+I taken {}, windowShown {}, window shown {}", state->consumed,
+                        frame.windowShown(FloatingKind::Info), info != nullptr && info->IsShown());
+        return state->consumed && !frame.windowShown(FloatingKind::Info) && info != nullptr &&
+               !info->IsShown();
     };
     return step("info window Ctrl+I", std::move(start), std::move(passed));
 }
@@ -2086,8 +2228,8 @@ SelfTestStep infoWindowCtrlIStep(SelfTest* test, const std::shared_ptr<InfoKeysS
 SelfTestStep infoWindowCloseBoxStep(SelfTest* test, const std::shared_ptr<InfoKeysState>& state) {
     auto start = [test, state] {
         MainFrame& frame = test->frame();
-        frame.setInfoShown(true);
-        InfoWindow* const info = frame.infoWindow();
+        frame.setWindowShown(FloatingKind::Info, true);
+        InfoWindow* const info = infoWindowOf(frame);
         state->consumed = info != nullptr && info->IsShown();  // shown before the close box
         if (info != nullptr) {
             info->Close();  // as the close box: the close can be vetoed
@@ -2095,17 +2237,17 @@ SelfTestStep infoWindowCloseBoxStep(SelfTest* test, const std::shared_ptr<InfoKe
     };
     auto passed = [test, state](std::string& seen) {
         MainFrame& frame = test->frame();
-        const InfoWindow* const info = frame.infoWindow();
+        const InfoWindow* const info = infoWindowOf(frame);
         auto* const toggle = dynamic_cast<wxBitmapToggleButton*>(
             &frame.transportBar().buttonForTest(Command::InfoWindow));
         const bool value = toggle != nullptr && toggle->GetValue();
         seen = std::format(
-            "shown before {}, window kept {}, window shown {}, infoShown {}, "
+            "shown before {}, window kept {}, window shown {}, windowShown {}, "
             "\"i\" toggle {}, value {}",
-            state->consumed, info != nullptr, info != nullptr && info->IsShown(), frame.infoShown(),
-            toggle != nullptr, value);
-        return state->consumed && info != nullptr && !info->IsShown() && !frame.infoShown() &&
-               toggle != nullptr && !value;
+            state->consumed, info != nullptr, info != nullptr && info->IsShown(),
+            frame.windowShown(FloatingKind::Info), toggle != nullptr, value);
+        return state->consumed && info != nullptr && !info->IsShown() &&
+               !frame.windowShown(FloatingKind::Info) && toggle != nullptr && !value;
     };
     return step("info window close box", std::move(start), std::move(passed));
 }
@@ -2123,13 +2265,137 @@ SelfTestStep infoWindowCopyStep(SelfTest* test, const std::shared_ptr<EditState>
         copyInInfoWindow(frame, state);
     };
     auto passed = [test, edit, state](std::string& seen) {
-        seen = std::format("Copy enabled {}, taken {}, infoShown {}, copied '{}' (want '{}')",
-                           state->copyEnabled, state->consumed, test->frame().infoShown(),
+        seen = std::format("Copy enabled {}, taken {}, windowShown {}, copied '{}' (want '{}')",
+                           state->copyEnabled, state->consumed,
+                           test->frame().windowShown(FloatingKind::Info),
                            edit->copied.value_or("nothing"), edit->expected);
-        return state->copyEnabled && state->consumed && test->frame().infoShown() &&
-               !edit->expected.empty() && edit->copied == edit->expected;
+        return state->copyEnabled && state->consumed &&
+               test->frame().windowShown(FloatingKind::Info) && !edit->expected.empty() &&
+               edit->copied == edit->expected;
     };
     return step("info window copy", std::move(start), std::move(passed));
+}
+
+struct InfoForwardState {
+    int phase = 0;
+    bool consumed = false;  // the Info window's char hook took the key
+    bool found = false;     // plain key: a page to put the checkbox on
+    bool playing = false;   // plain key: playing before the key
+    int hookRuns = 0;       // modified chord: the Settings hook ran
+    wxPoint computed;       // kept place: the place beside the main window
+    wxPoint moved;          // kept place: where the step moved the window
+};
+
+// A modified chord in the Info window reaches the main window where the menu bar does not take a
+// floating window's key equivalents: Settings... (Ctrl+,) opens the Settings window once. Where the
+// menu bar takes them (macOS) the window's char hook leaves the chord alone.
+SelfTestStep infoWindowChordStep(SelfTest* test, const std::shared_ptr<InfoForwardState>& state) {
+    auto start = [test, state] {
+        state->hookRuns = 0;
+        dialogHooks().settings = [state](SettingsWindow& settings) {
+            ++state->hookRuns;
+            settings.pressOk();
+            if (wxPreferencesEditor::ShownModally() && settings.shown()) {
+                settings.dismiss();
+            }
+        };
+        const std::optional<KeyChord> key =
+            commandTable()[static_cast<std::size_t>(Command::Settings)].key;
+        state->consumed = key.has_value() && sendInfoKey(test->frame(), key->key, key->ctrl);
+    };
+    auto passed = [state](std::string& seen) {
+        const bool forwards = native_policy::floatingForwardsAccelerators();
+        seen = std::format("forwards {}, taken {}, Settings hook runs {}", forwards,
+                           state->consumed, state->hookRuns);
+        const bool done = forwards ? state->consumed && state->hookRuns == 1
+                                   : !state->consumed && state->hookRuns == 0;
+        if (done) {
+            dialogHooks().settings = nullptr;
+        }
+        return done;
+    };
+    return step("info window modified chord", std::move(start), std::move(passed));
+}
+
+// A plain key with the focus on a native control that uses it stays with the control: Space on a
+// checkbox placed on the Info window's page for the step is not taken and does not play.
+SelfTestStep infoWindowControlKeyStep(SelfTest* test,
+                                      const std::shared_ptr<InfoForwardState>& state) {
+    auto start = [test, state] {
+        dialogHooks().settings = nullptr;  // defensive: the chord step resets it when it passes
+        MainFrame& frame = test->frame();
+        wxWindow* const page = shownInfoFocus(frame);
+        state->found = page != nullptr;
+        state->playing = frame.session().status().player.playing;
+        state->consumed = false;
+        if (page != nullptr) {
+            auto* const control = new wxCheckBox(page, wxID_ANY, "Space");
+            frame.setFocusForTest(control);
+            state->consumed = sendKey(*control, WXK_SPACE);
+            frame.setFocusForTest(nullptr);
+            control->Destroy();
+        }
+    };
+    auto passed = [test, state](std::string& seen) {
+        const bool playing = test->frame().session().status().player.playing;
+        seen = std::format("checkbox {}, Space taken {}, playing before {}, playing {}",
+                           state->found, state->consumed, state->playing, playing);
+        return state->found && !state->consumed && !state->playing && !playing;
+    };
+    return step("info window plain key on a control", std::move(start), std::move(passed));
+}
+
+// The Info window keeps the place the user moved it to: hidden and shown again, it asks for the
+// moved top-left, not the place beside the main window. Leaves the window shown there.
+SelfTestStep infoWindowKeptPlaceStep(SelfTest* test,
+                                     const std::shared_ptr<InfoForwardState>& state) {
+    auto start = [test, state] {
+        state->phase = 0;
+        MainFrame& frame = test->frame();
+        frame.setWindowShown(FloatingKind::Info, false);
+        InfoWindow* const info = infoWindowOf(frame);
+        if (info == nullptr) {
+            return;
+        }
+        info->forgetPlaceForTest();
+        frame.setWindowShown(FloatingKind::Info, true);
+        state->computed = info->requestedRectForTest().GetTopLeft();
+        // Towards the middle of the work area, so the moved place stays on the display.
+        const wxRect work = workAreaOf(*info);
+        const wxPoint middle(work.x + (work.width / 2), work.y + (work.height / 2));
+        const int step_x = info->FromDIP(40);
+        const int step_y = info->FromDIP(30);
+        state->moved =
+            wxPoint(state->computed.x + (state->computed.x < middle.x ? step_x : -step_x),
+                    state->computed.y + (state->computed.y < middle.y ? step_y : -step_y));
+        info->Move(state->moved);
+    };
+    auto passed = [test, state](std::string& seen) {
+        MainFrame& frame = test->frame();
+        const InfoWindow* const info = infoWindowOf(frame);
+        if (info == nullptr) {
+            seen = "no Info window";
+            return false;
+        }
+        const wxPoint at = info->GetPosition();
+        const wxPoint requested = info->requestedRectForTest().GetTopLeft();
+        seen = std::format(
+            "phase {}: computed ({}, {}), moved ({}, {}), at ({}, {}), requested "
+            "({}, {}), windowShown {}",
+            state->phase, state->computed.x, state->computed.y, state->moved.x, state->moved.y,
+            at.x, at.y, requested.x, requested.y, frame.windowShown(FloatingKind::Info));
+        if (state->phase == 0) {
+            if (at == state->moved) {  // X11: the move lands later
+                state->phase = 1;
+                frame.setWindowShown(FloatingKind::Info, false);
+                frame.setWindowShown(FloatingKind::Info, true);
+            }
+            return false;
+        }
+        return frame.windowShown(FloatingKind::Info) && requested == state->moved &&
+               requested != state->computed;
+    };
+    return step("info window kept place", std::move(start), std::move(passed));
 }
 
 // The selftest config folder (spec §7.1), where the save steps write.
@@ -2456,6 +2722,10 @@ void addEditSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     steps.push_back(infoWindowCtrlIStep(test, info_keys));
     steps.push_back(infoWindowCloseBoxStep(test, info_keys));
     steps.push_back(infoWindowCopyStep(test, state, info_keys));
+    const auto info_forward = std::make_shared<InfoForwardState>();
+    steps.push_back(infoWindowChordStep(test, info_forward));
+    steps.push_back(infoWindowControlKeyStep(test, info_forward));
+    steps.push_back(infoWindowKeptPlaceStep(test, info_forward));
     addInfoWindowCloseKeySteps(steps, test, info_keys);
     // The Info window stays shown: the scenario's close covers quitting with it open.
     steps.push_back(saveLogStep(test, state));
@@ -3612,8 +3882,9 @@ SelfTestStep menuLevelStep(SelfTest* test, const std::shared_ptr<SettingsState>&
         level->menuItems.clear();
         level->levelItems.clear();
         level->checked.clear();
-        dialogHooks().logMenu = [level](const wxMenu& menu) {
+        dialogHooks().popupMenu = [level](const wxMenu& menu) {
             describeMenu(menu, level->menuItems, level->levelItems, level->checked);
+            return wxID_NONE;
         };
         panel.showContextMenu();
         level->settingsShows.reset();
@@ -3782,7 +4053,8 @@ std::vector<SelfTestStep> smokeScenario(SelfTest& test) {
             text.utf8_string(), fields, bar_min, status_min);
         return text == wxString::FromUTF8(NO_ZOOM_TEXT.data(), NO_ZOOM_TEXT.size()) &&
                zoomControlsMatch(frame, seen) &&
-               fields == static_cast<int>(MainFrame::STATUS_FIELD_COUNT) && bar_min <= status_min;
+               fields == static_cast<int>(MainFrame::STATUS_FIELD_COUNT) && bar_min <= status_min &&
+               frame.statusTexts()[MainFrame::CURSOR_FIELD].empty();
     }));
     steps.push_back(openStreamStep(t, state));
     steps.push_back(cutFieldTooltipStep(t));
@@ -4135,20 +4407,23 @@ int showModal(wxDirDialog& dialog) {
     return wxID_OK;
 }
 
-int showLogMenu(wxWindow& window, wxMenu& menu) {
+int showPopupMenu(wxWindow& window, wxMenu& menu, wxPoint position) {
     if (App::arguments().selftest == Scenario::None) {
-        return window.GetPopupMenuSelectionFromUser(menu);
+        return window.GetPopupMenuSelectionFromUser(menu, position);
     }
     // A popup menu is modal on every OS: in a selftest it is never shown.
-    dvv::MoveOnlyFunction<void(const wxMenu&)>& slot = dialogHooks().logMenu;
+    dvv::MoveOnlyFunction<int(const wxMenu&)>& slot = dialogHooks().popupMenu;
     if (!slot) {
-        DVV_LOG_WARN("rawreel-gui --selftest: a context menu without a hook was dismissed");
+        // A missing hook fails the step: the menu is never opened, so it cannot hang the run.
+        DVV_LOG_ERROR("rawreel-gui --selftest: a context menu without a hook was dismissed");
         return wxID_NONE;
     }
     auto hook = std::move(slot);  // one shot
     slot = nullptr;
-    hook(menu);
-    return wxID_NONE;
+    // Every OS runs the items' update events before it shows a popup menu: the hook reads the
+    // items as the user would see them.
+    menu.UpdateUI(&window);
+    return hook(menu);
 }
 
 std::string chosenFolder(const wxDirDialog& dialog) {
@@ -4466,8 +4741,9 @@ const char* viewModeName(ViewMode mode) {
     return mode == ViewMode::Fit ? "Fit" : "Zoom";
 }
 
-// The last record shows the viewport's view request resolved against the viewport's extent and
-// the clip, the zoom button shows its text and the zoom controls match (zoomControlsMatch).
+// The last record shows the viewport's view request resolved against its picture region P and the
+// clip (P the viewport's pictureSize() in its physicalClientSize()), the zoom button shows its text
+// and the zoom controls match (zoomControlsMatch).
 bool viewMatches(const MainFrame& frame, std::string& seen) {
     const Viewport& viewport = frame.viewport();
     const dvv::platform::PixelSize extent = viewport.physicalClientSize();
@@ -4479,18 +4755,20 @@ bool viewMatches(const MainFrame& frame, std::string& seen) {
         return false;
     }
     const ViewTransform resolved =
-        resolveView(viewport.view(), recorded->extent, viewport.imageSize());
+        resolveView(viewport.view(), recorded->picture.size(), viewport.imageSize());
     const wxString text = wxString::FromUTF8(zoomText(resolved.mode(), resolved.zoom()));
     seen = std::format(
-        "extent {}x{}, recorded {}x{} zoom {} origin ({}, {}) {}, resolved zoom {} origin ({}, {}) "
+        "extent {}x{}, recorded {}x{} P {}x{} zoom {} origin ({}, {}) {}, resolved zoom {} origin "
+        "({}, {}) "
         "{}, zoom button '{}' (wanted '{}')",
         extent.width, extent.height, recorded->extent.width, recorded->extent.height,
-        recorded->zoom, recorded->origin.x, recorded->origin.y, viewModeName(recorded->mode),
-        resolved.zoom(), resolved.origin().x, resolved.origin().y, viewModeName(resolved.mode()),
-        field.utf8_string(), text.utf8_string());
-    return recorded->extent == extent && recorded->zoom == resolved.zoom() &&
-           recorded->origin == resolved.origin() && recorded->mode == resolved.mode() &&
-           field == text && zoomControlsMatch(frame, seen);
+        recorded->picture.width, recorded->picture.height, recorded->zoom, recorded->origin.x,
+        recorded->origin.y, viewModeName(recorded->mode), resolved.zoom(), resolved.origin().x,
+        resolved.origin().y, viewModeName(resolved.mode()), field.utf8_string(),
+        text.utf8_string());
+    return recorded->extent == extent && recorded->picture.size() == viewport.pictureSize() &&
+           recorded->zoom == resolved.zoom() && recorded->origin == resolved.origin() &&
+           recorded->mode == resolved.mode() && field == text && zoomControlsMatch(frame, seen);
 }
 
 // The viewport's client size at the frame's minimum client size (window units).
@@ -4645,6 +4923,38 @@ void addOpenSizingSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
             }
             return st->openedInFit && st->shrinks && frame.GetClientSize() == st->shrunk && fit &&
                    zoom < 1 && matches;
+        }));
+    // Still on the clip that fits. P is at least the clip and less than scale + 1 pixels more: the
+    // clip itself at a scale of 1 or 2 (an even clip), more at a fractional scale.
+    steps.push_back(step(
+        "rulers: Resize window to actual size includes the strips",
+        [&frame] {
+            showRulers(frame, true);
+            frame.execute(Command::ResizeWindowToActualSize);
+        },
+        [&frame, st](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const Viewport& viewport = frame.viewport();
+            const dvv::platform::PixelSize picture = viewport.pictureSize();
+            const double scale = viewport.contentScale();
+            // P is the clip rounded up to whole window units: the clip itself at an integer
+            // scale (the clip is even), within one window unit above it at a fractional one.
+            const bool integer_scale = scale == std::floor(scale);
+            const auto covers = [scale, integer_scale](std::uint32_t p, std::uint32_t clip) {
+                return integer_scale ? p == clip : p >= clip && p < clip + scale + 1;
+            };
+            const std::optional<RecordedInfo> recorded = viewport.lastRecorded();
+            seen = std::format("P {}x{} (wanted {}x{}), strip {} window units, zoom {}; {}",
+                               picture.width, picture.height, st->fits.width, st->fits.height,
+                               viewport.stripWindowUnits(), recorded ? recorded->zoom : 0.0, seen);
+            return matches && viewport.stripWindowUnits() > 0 && recorded && recorded->zoom == 1 &&
+                   covers(picture.width, st->fits.width) && covers(picture.height, st->fits.height);
+        }));
+    steps.push_back(step(
+        "rulers: hidden again after the resize", [&frame] { showRulers(frame, false); },
+        [&frame](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            return matches && frame.viewport().stripWindowUnits() == 0;
         }));
     steps.push_back(step(
         "open: a clip larger than the work area opens in Fit",
@@ -4831,6 +5141,119 @@ wxPoint viewportCentre(const Viewport& viewport) {
     return {size.x / 2, size.y / 2};
 }
 
+// The rulers' strips around the picture region P: P is the viewport minus the strips, every view
+// computation resolves against it, a press on a strip starts no pan. On a clip of its own; the
+// rulers are hidden again at the end.
+void addRulerLayoutSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
+    struct State {
+        bool stripDrag = false;    // draggingForTest() after a press on the top strip
+        bool pictureDrag = false;  // draggingForTest() after a press in P
+    };
+    auto st = std::make_shared<State>();
+    static constexpr dvv::platform::PixelSize CLIP{.width = 640, .height = 480};
+    const auto shown = [&frame](bool show) { showRulers(frame, show); };
+    // P = the viewport minus the top strip's height and the left strip's width, as recorded.
+    const auto picture_matches = [&frame](std::string& seen) {
+        const Viewport& viewport = frame.viewport();
+        const dvv::platform::PixelSize extent = viewport.physicalClientSize();
+        const dvv::media::ViewStrips strips = viewport.overlayParams().strips;
+        const dvv::platform::PixelSize picture = viewport.pictureSize();
+        const std::optional<RecordedInfo> recorded = viewport.lastRecorded();
+        const bool recorded_p = recorded && recorded->picture.x == strips.left &&
+                                recorded->picture.y == strips.top &&
+                                recorded->picture.size() == picture;
+        seen = std::format("extent {}x{}, strips {} / {} ({} window units), P {}x{}, recorded P {}",
+                           extent.width, extent.height, strips.top, strips.left,
+                           viewport.stripWindowUnits(), picture.width, picture.height, recorded_p);
+        return picture.width == extent.width - strips.left &&
+               picture.height == extent.height - strips.top && recorded_p;
+    };
+
+    steps.push_back(step(
+        "rulers: open a clip",
+        [&frame] {
+            frame.openUri(0,
+                          std::format("synthetic:gradient?w={}&h={}&fmt=gray&frames=1", CLIP.width,
+                                      CLIP.height),
+                          std::nullopt);
+        },
+        [&frame](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            return matches && frame.viewport().imageSize() == CLIP;
+        }));
+    steps.push_back(step(
+        "rulers: P is the viewport minus the strips", [shown] { shown(true); },
+        [&frame, picture_matches](std::string& seen) {
+            std::string view;
+            const bool matches = viewMatches(frame, view);
+            const bool picture = picture_matches(seen);
+            seen += "; " + view;
+            return matches && picture && frame.viewport().stripWindowUnits() > 0 &&
+                   frame.viewport().overlayParams().strips.top > 0;
+        }));
+    steps.push_back(step(
+        "rulers: Fit refits when the rulers are toggled",
+        [&frame, shown] {
+            frame.viewport().setView({});
+            shown(false);
+        },
+        [&frame, picture_matches](std::string& seen) {
+            std::string view;
+            const bool matches = viewMatches(frame, view);
+            const bool picture = picture_matches(seen);
+            const Viewport& viewport = frame.viewport();
+            const std::optional<RecordedInfo> recorded = viewport.lastRecorded();
+            const double fit = ViewTransform::fit(viewport.pictureSize(), CLIP).zoom();
+            seen += std::format(", fit zoom {}; {}", fit, view);
+            return matches && picture && viewport.stripWindowUnits() == 0 &&
+                   viewport.pictureSize() == viewport.physicalClientSize() && recorded &&
+                   recorded->mode == ViewMode::Fit && recorded->zoom == fit;
+        }));
+    steps.push_back(step(
+        "rulers: Fit refits when the rulers are shown again", [shown] { shown(true); },
+        [&frame, picture_matches](std::string& seen) {
+            std::string view;
+            const bool matches = viewMatches(frame, view);
+            const bool picture = picture_matches(seen);
+            const Viewport& viewport = frame.viewport();
+            const std::optional<RecordedInfo> recorded = viewport.lastRecorded();
+            const double fit = ViewTransform::fit(viewport.pictureSize(), CLIP).zoom();
+            seen += std::format(", fit zoom {}; {}", fit, view);
+            return matches && picture && viewport.stripWindowUnits() > 0 && recorded &&
+                   recorded->mode == ViewMode::Fit && recorded->zoom == fit;
+        }));
+    steps.push_back(step(
+        "rulers: a press on a strip starts no pan",
+        [&frame, st] {
+            Viewport& viewport = frame.viewport();
+            viewport.setView(centredView(viewport, 2));
+            // The top strip's middle, and P's centre.
+            const wxPoint on_strip(viewport.GetClientSize().x / 2, viewport.stripWindowUnits() / 2);
+            sendViewportMouse(viewport, wxEVT_LEFT_DOWN, on_strip, true, false);
+            st->stripDrag = viewport.draggingForTest();
+            sendViewportMouse(viewport, wxEVT_LEFT_UP, on_strip, false, false);
+            const wxPoint in_picture = viewportCentre(viewport);
+            sendViewportMouse(viewport, wxEVT_LEFT_DOWN, in_picture, true, false);
+            st->pictureDrag = viewport.draggingForTest();
+            sendViewportMouse(viewport, wxEVT_LEFT_UP, in_picture, false, false);
+        },
+        [&frame, st](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const Viewport& viewport = frame.viewport();
+            seen = std::format("drag from the strip {}, from P {}, dragging now {}; {}",
+                               st->stripDrag, st->pictureDrag, viewport.draggingForTest(), seen);
+            return matches && !st->stripDrag && st->pictureDrag && !viewport.draggingForTest();
+        }));
+    steps.push_back(step(
+        "rulers: hidden again", [shown] { shown(false); },
+        [&frame](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const Viewport& viewport = frame.viewport();
+            return matches && viewport.stripWindowUnits() == 0 &&
+                   viewport.pictureSize() == viewport.physicalClientSize();
+        }));
+}
+
 // View zoom design §5: a left- or middle-button drag pans, on the clip of "view: open a clip".
 // Each pair starts from the Zoom view at 200 % centred on the clip, which overflows the viewport.
 void addDragSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
@@ -4997,17 +5420,18 @@ constexpr int TEST_WHEEL_DELTA = NATIVE_OS == Os::MacOs ? 10 : 120;
 constexpr int TEST_WHEEL_LINES = NATIVE_OS == Os::MacOs ? 1 : 3;
 
 // A wheel event of `rotation` on `axis` on the viewport at the client point `at` (window units),
-// with Ctrl (Cmd on macOS) down when `control`.
+// with Ctrl (Cmd on macOS) down when `control`; `lines` per notch, -1 for a page scroll.
 void sendViewportWheel(Viewport& viewport, wxPoint at, int rotation, bool control,
-                       wxMouseWheelAxis axis = wxMOUSE_WHEEL_VERTICAL) {
+                       wxMouseWheelAxis axis = wxMOUSE_WHEEL_VERTICAL,
+                       int lines = TEST_WHEEL_LINES) {
     wxMouseEvent event(wxEVT_MOUSEWHEEL);
     event.SetEventObject(&viewport);
     event.SetId(viewport.GetId());
     event.SetPosition(at);
     event.m_wheelRotation = rotation;
     event.m_wheelDelta = TEST_WHEEL_DELTA;
-    event.m_linesPerAction = TEST_WHEEL_LINES;
-    event.m_columnsPerAction = TEST_WHEEL_LINES;
+    event.m_linesPerAction = lines;
+    event.m_columnsPerAction = lines;
     event.m_wheelAxis = axis;
     event.m_controlDown = control;
     injectInput(*viewport.GetEventHandler(), event);
@@ -5031,7 +5455,7 @@ void addWheelSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
         const Viewport& viewport = frame.viewport();
         const ViewRequest& view = viewport.view();
         const double per_dip = viewport.backingPerDip();
-        const double page_dip = viewport.physicalClientSize().height / per_dip;
+        const double page_dip = viewport.pictureSize().height / per_dip;
         const double move = wheelPanDip(TEST_WHEEL_DELTA, TEST_WHEEL_DELTA, TEST_WHEEL_LINES,
                                         WHEEL_LINE_DIP, page_dip) *
                             per_dip;
@@ -5084,7 +5508,7 @@ void addWheelSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
             const Viewport& viewport = frame.viewport();
             const ViewRequest& view = viewport.view();
             const double per_dip = viewport.backingPerDip();
-            const double page_dip = viewport.physicalClientSize().width / per_dip;
+            const double page_dip = viewport.pictureSize().width / per_dip;
             const double move = wheelPanDip(TEST_WHEEL_DELTA, TEST_WHEEL_DELTA, TEST_WHEEL_LINES,
                                             WHEEL_LINE_DIP, page_dip) *
                                 per_dip;
@@ -5139,18 +5563,15 @@ void addWheelSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
                 ctrl_start(viewport);
                 const wxSize client = viewport.GetClientSize();
                 st->at = wxPoint(client.x / 4, client.y / 4);
-                const double scale = viewport.contentScale();
-                st->before = imagePointAt(viewport.shownView(),
-                                          {.x = st->at.x * scale, .y = st->at.y * scale});
+                st->before = imagePointAt(viewport.shownView(), viewport.picturePoint(st->at));
                 sendViewportWheel(viewport, st->at, TEST_WHEEL_DELTA, true);
             },
             [&frame, st](std::string& seen) {
                 const bool matches = viewMatches(frame, seen);
                 const Viewport& viewport = frame.viewport();
                 const ViewRequest& view = viewport.view();
-                const double scale = viewport.contentScale();
-                const PointD after = imagePointAt(viewport.shownView(),
-                                                  {.x = st->at.x * scale, .y = st->at.y * scale});
+                const PointD after =
+                    imagePointAt(viewport.shownView(), viewport.picturePoint(st->at));
                 // Offsets are whole backing pixels: the clip point may move by half a pixel.
                 const double tolerance = (0.5 / view.zoom) + 1e-9;
                 seen = std::format("view {} {}, clip point under q ({}, {}) (before ({}, {})); {}",
@@ -5207,6 +5628,734 @@ void sendViewportPinchGesture(Viewport& viewport, wxPoint at, double factor) {
     sendViewportPinch(viewport, at, factor, false, true);
 }
 
+// With the rulers shown, a wheel or pinch zoom keeps the clip point under its anchor in P (clamped
+// into P over a strip), a drag pans by its move and Zoom in keeps P's centre. Each expected point
+// comes from the strip's window units and the window's scale, not from Viewport::picturePoint(): an
+// anchor off by the strip (its offset dropped or of the wrong sign) moves the clip point under the
+// pointer by strip x (1 / 4 - 1 / 8) clip pixels from 400 % to 800 %, at least 2 at a strip of 20
+// backing pixels, far over the tolerance of 1 / 16. On the clip of addRulerLayoutSteps; the rulers
+// are hidden again at the end.
+void addRulerInputSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
+    struct State {
+        PointD q{};       // the expected anchor in P, backing pixels
+        PointD before{};  // the clip point at q before the input
+        double zoom = 0;  // the requested zoom before the input
+    };
+    auto st = std::make_shared<State>();
+    static constexpr double START_ZOOM = 4;
+    // The strip in backing pixels from its window units and the window's scale.
+    const auto strip_backing = [](const Viewport& viewport) {
+        return std::round(viewport.stripWindowUnits() * viewport.contentScale());
+    };
+    // P's point under a window position: its backing centre minus the strip, on both axes.
+    const auto anchor_of = [strip_backing](const Viewport& viewport, wxPoint at) {
+        const double scale = viewport.contentScale();
+        const double strip = strip_backing(viewport);
+        return PointD{.x = ((at.x + 0.5) * scale) - strip, .y = ((at.y + 0.5) * scale) - strip};
+    };
+    const auto set_rulers = [&frame](bool show) { showRulers(frame, show); };
+    // START_ZOOM centred, a wheel without Ctrl (it drops a Ctrl+wheel rotation left from an
+    // earlier step), and the clip point at P's `q` recorded.
+    const auto start = [&frame, st](PointD q) {
+        Viewport& viewport = frame.viewport();
+        viewport.setView(centredView(viewport, START_ZOOM));
+        sendViewportWheel(viewport, viewportCentre(viewport), 0, false);
+        st->q = q;
+        st->before = imagePointAt(viewport.shownView(), q);
+        st->zoom = viewport.view().zoom;
+    };
+    // The clip point at st->q is st->before + `shift` within half a backing pixel, the rulers
+    // shown, and the zoom grew when `zoomed`.
+    const auto kept = [&frame, st](std::string& seen, PointD shift, bool zoomed) {
+        const bool matches = viewMatches(frame, seen);
+        const Viewport& viewport = frame.viewport();
+        const ViewTransform view = viewport.shownView();
+        const PointD after = imagePointAt(view, st->q);
+        const PointD wanted{.x = st->before.x + shift.x, .y = st->before.y + shift.y};
+        const double tolerance = (0.5 / view.zoom()) + 1e-9;
+        const double zoom = viewport.view().zoom;
+        seen = std::format(
+            "zoom {} (was {}), strip {} window units, clip point at P ({}, {}) is "
+            "({}, {}) (wanted ({}, {})); {}",
+            zoom, st->zoom, viewport.stripWindowUnits(), st->q.x, st->q.y, after.x, after.y,
+            wanted.x, wanted.y, seen);
+        return matches && viewport.stripWindowUnits() > 0 && (zoomed ? zoom > st->zoom : true) &&
+               std::abs(after.x - wanted.x) <= tolerance &&
+               std::abs(after.y - wanted.y) <= tolerance;
+    };
+
+    steps.push_back(step(
+        "rulers input: the strips shown", [set_rulers] { set_rulers(true); },
+        [&frame, strip_backing](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            const Viewport& viewport = frame.viewport();
+            const dvv::media::ViewStrips strips = viewport.overlayParams().strips;
+            seen = std::format("strip {} window units ({} backing), strips {} / {}; {}",
+                               viewport.stripWindowUnits(), strip_backing(viewport), strips.top,
+                               strips.left, seen);
+            return matches && viewport.stripWindowUnits() > 0 &&
+                   strips.top == strip_backing(viewport) && strips.left == strips.top;
+        }));
+    if (native_policy::ctrlWheelZooms()) {
+        steps.push_back(step(
+            "rulers input: Ctrl+wheel zooms at the pointer in P",
+            [&frame, start, anchor_of] {
+                Viewport& viewport = frame.viewport();
+                const wxPoint at(viewport.GetClientSize().x / 4, viewport.GetClientSize().y / 4);
+                start(anchor_of(viewport, at));
+                sendViewportWheel(viewport, at, TEST_WHEEL_DELTA, true);
+            },
+            [kept](std::string& seen) { return kept(seen, {}, true); }));
+    }
+    steps.push_back(step(
+        "rulers input: a pinch zooms at the pointer in P",
+        [&frame, start, anchor_of] {
+            Viewport& viewport = frame.viewport();
+            const wxPoint at((viewport.GetClientSize().x * 3) / 4, viewport.GetClientSize().y / 3);
+            start(anchor_of(viewport, at));
+            sendViewportPinchGesture(viewport, at, 2);
+        },
+        [kept](std::string& seen) { return kept(seen, {}, true); }));
+    steps.push_back(step(
+        "rulers input: a pinch over the top strip anchors at P's top edge",
+        [&frame, start, anchor_of] {
+            Viewport& viewport = frame.viewport();
+            const wxPoint at(viewport.GetClientSize().x / 3, viewport.stripWindowUnits() / 2);
+            start({.x = anchor_of(viewport, at).x, .y = 0});
+            sendViewportPinchGesture(viewport, at, 2);
+        },
+        [kept](std::string& seen) { return kept(seen, {}, true); }));
+    // A plain wheel pans on every OS. A half-page notch moves the picture by half of P's height,
+    // P from the client minus the strip: a page from the whole client would move it by strip / 2
+    // backing pixels more, strip / 8 clip pixels at 400 %, over the tolerance of 1 / 8.
+    steps.push_back(step(
+        "rulers input: a page wheel pans by half of P's height",
+        [&frame, start, anchor_of] {
+            Viewport& viewport = frame.viewport();
+            const wxPoint at = viewportCentre(viewport);
+            start(anchor_of(viewport, at));
+            sendViewportWheel(viewport, at, TEST_WHEEL_DELTA / 2, false, wxMOUSE_WHEEL_VERTICAL,
+                              -1);
+        },
+        [&frame, kept, strip_backing](std::string& seen) {
+            const Viewport& viewport = frame.viewport();
+            const double page = viewport.physicalClientSize().height - strip_backing(viewport);
+            return kept(seen, {.x = 0, .y = -(page / 2) / START_ZOOM}, false);
+        }));
+    steps.push_back(step(
+        "rulers input: a drag in P pans by its move",
+        [&frame, start, anchor_of] {
+            Viewport& viewport = frame.viewport();
+            const wxPoint at = viewportCentre(viewport);
+            start(anchor_of(viewport, at));
+            const wxPoint to = at + wxPoint(40, 30);
+            sendViewportMouse(viewport, wxEVT_LEFT_DOWN, at, true, false);
+            sendViewportMouse(viewport, wxEVT_MOTION, to, true, false);
+            sendViewportMouse(viewport, wxEVT_LEFT_UP, to, false, false);
+        },
+        [&frame, kept](std::string& seen) {
+            // The picture follows the pointer: the clip point at q is the one 40 x 30 window
+            // units up and left of it before.
+            const double move = frame.viewport().contentScale() / START_ZOOM;
+            return kept(seen, {.x = -40 * move, .y = -30 * move}, false);
+        }));
+    steps.push_back(step(
+        "rulers input: Zoom in keeps P's centre",
+        [&frame, start, strip_backing] {
+            Viewport& viewport = frame.viewport();
+            const dvv::platform::PixelSize client = viewport.physicalClientSize();
+            const double strip = strip_backing(viewport);
+            start({.x = (client.width - strip) / 2, .y = (client.height - strip) / 2});
+            frame.execute(Command::ZoomIn);
+        },
+        [kept](std::string& seen) { return kept(seen, {}, true); }));
+    steps.push_back(step(
+        "rulers input: hidden again", [set_rulers] { set_rulers(false); },
+        [&frame](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            return matches && frame.viewport().stripWindowUnits() == 0;
+        }));
+}
+
+// The rulers hug the visible picture, and presses follow them: a press on a ruler starts no pan, a
+// press on the background beside it pans. The viewport is made wider than the clip, so the picture
+// is narrower than P in Fit; the window, the view and the hidden rulers are restored at the end.
+void addHuggingRulerSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
+    struct State {
+        wxSize client;            // the frame's client size before the steps
+        ViewRequest view{};       // the view request before the steps
+        ViewRequest pressed{};    // the view request before a press
+        PointD before{};          // shownView().origin() before a press
+        RecordedInfo recorded{};  // lastRecorded() before a press
+        wxPoint at;               // the press, window units
+    };
+    auto st = std::make_shared<State>();
+    // P's width over its height at least WIDE times the clip's aspect: room for a picture taller
+    // than P at TALL times Fit's height zoom that stays narrower than P.
+    static constexpr double WIDE = 1.6;
+    static constexpr double TALL = 1.25;
+    static constexpr int DRAG = 10;  // window units, within the pan room TALL leaves
+    const auto aspect = [&frame] {
+        const dvv::platform::PixelSize image = frame.viewport().imageSize();
+        return image.height == 0 ? 0.0 : static_cast<double>(image.width) / image.height;
+    };
+    // The drawn rulers are the ones the hit test uses.
+    const auto drawn = [&frame](std::string& seen) -> std::optional<dvv::media::RulerRects> {
+        const bool matches = viewMatches(frame, seen);
+        const Viewport& viewport = frame.viewport();
+        const std::optional<RecordedInfo> recorded = viewport.lastRecorded();
+        const dvv::media::RulerRects rects = dvv::media::rulerRects(
+            viewport.physicalClientSize(), viewport.overlayParams().strips, viewport.shownView());
+        if (!matches || !recorded || recorded->rulers != rects || rects.left.empty()) {
+            seen += std::format("; recorded rulers match the GUI's {}, left {}x{}",
+                                recorded && recorded->rulers == rects, rects.left.width,
+                                rects.left.height);
+            return std::nullopt;
+        }
+        return rects;
+    };
+    // Zoom so the clip is TALL times P's height, centred.
+    const auto tall = [&frame, st] {
+        Viewport& viewport = frame.viewport();
+        const double zoom = TALL * viewport.pictureSize().height / viewport.imageSize().height;
+        viewport.setView(centredView(viewport, zoom));
+        st->pressed = viewport.view();
+    };
+    // A press at `at`, a drag DRAG window units down, a release; the state before it recorded.
+    const auto press_drag = [&frame, st](wxPoint at) {
+        Viewport& viewport = frame.viewport();
+        st->at = at;
+        st->before = viewport.shownView().origin();
+        st->recorded = viewport.lastRecorded().value_or(RecordedInfo{});
+        const wxPoint to = at + wxPoint(0, DRAG);
+        sendViewportMouse(viewport, wxEVT_LEFT_DOWN, at, true, false);
+        sendViewportMouse(viewport, wxEVT_MOTION, to, true, false);
+        sendViewportMouse(viewport, wxEVT_LEFT_UP, to, false, false);
+    };
+    // The window position whose backing pixels hold the backing point (x, y).
+    const auto window_at = [&frame](double x, double y) {
+        const double scale = frame.viewport().contentScale();
+        return wxPoint(static_cast<int>(std::floor(x / scale)),
+                       static_cast<int>(std::floor(y / scale)));
+    };
+
+    steps.push_back(step(
+        "hugging rulers: the drawn rulers hug a narrower picture",
+        [&frame, st, aspect] {
+            Viewport& viewport = frame.viewport();
+            st->client = frame.GetClientSize();
+            st->view = viewport.view();
+            showRulers(frame, true);
+            frame.execute(Command::FitToWindow);
+            // The viewport's height cut, or its width grown where the minimum window stops the
+            // cut, so its width is WIDE times the clip's aspect times its height (and some).
+            const wxSize around = frame.GetClientSize() - viewport.GetClientSize();
+            const wxSize least = frame.GetMinClientSize() - around;
+            const wxSize now = viewport.GetClientSize();
+            const double wide = (WIDE * aspect()) + 0.1;
+            const int height = std::max(least.y, std::min(now.y, static_cast<int>(now.x / wide)));
+            const int width = std::max(now.x, static_cast<int>(std::ceil(height * wide)) + 2);
+            frame.SetClientSize(wxSize(width, height) + around);
+        },
+        [&frame, aspect, drawn](std::string& seen) {
+            const std::optional<dvv::media::RulerRects> rects = drawn(seen);
+            const Viewport& viewport = frame.viewport();
+            const dvv::platform::PixelSize p = viewport.pictureSize();
+            const bool wide = p.height > 0 && p.width >= WIDE * aspect() * p.height;
+            seen = std::format("P {}x{} wide {}, Fit {}; {}", p.width, p.height, wide,
+                               viewport.view().mode == ViewMode::Fit, seen);
+            if (!rects || !wide || viewport.view().mode != ViewMode::Fit) {
+                return false;
+            }
+            seen =
+                std::format("hugged x {}, left x {} width {}, top x {} y {}; {}", rects->hugged.x,
+                            rects->left.x, rects->left.width, rects->top.x, rects->top.y, seen);
+            return rects->left.x > 0 && rects->left.x + rects->left.width == rects->hugged.x &&
+                   rects->top.x == rects->hugged.x && rects->top.y == 0;
+        }));
+    steps.push_back(step(
+        "hugging rulers: past P the rulers are the reserved strips",
+        [&frame] {
+            Viewport& viewport = frame.viewport();
+            const dvv::platform::PixelSize p = viewport.pictureSize();
+            const dvv::platform::PixelSize image = viewport.imageSize();
+            const double zoom = 2 * std::max(static_cast<double>(p.width) / image.width,
+                                             static_cast<double>(p.height) / image.height);
+            viewport.setView(centredView(viewport, zoom));
+        },
+        [&frame, drawn](std::string& seen) {
+            const std::optional<dvv::media::RulerRects> rects = drawn(seen);
+            const std::optional<RecordedInfo> recorded = frame.viewport().lastRecorded();
+            if (!rects || !recorded) {
+                return false;
+            }
+            seen = std::format("hugged is P {}, left x {}; {}", rects->hugged == recorded->picture,
+                               rects->left.x, seen);
+            return rects->hugged == recorded->picture && rects->left.x == 0;
+        }));
+    steps.push_back(step(
+        "hugging rulers: a press on the left ruler starts no pan",
+        [&frame, tall, press_drag, window_at] {
+            tall();
+            const Viewport& viewport = frame.viewport();
+            const dvv::media::RulerRects rects =
+                dvv::media::rulerRects(viewport.physicalClientSize(),
+                                       viewport.overlayParams().strips, viewport.shownView());
+            press_drag(window_at(rects.left.x + (rects.left.width / 2.0),
+                                 rects.left.y + (rects.left.height / 2.0)));
+        },
+        [&frame, st, drawn](std::string& seen) {
+            const std::optional<dvv::media::RulerRects> rects = drawn(seen);
+            const Viewport& viewport = frame.viewport();
+            const bool picture_taller =
+                rects && rects->hugged.height == viewport.pictureSize().height && rects->left.x > 0;
+            // On the hugging ruler, inside P: a press a P test alone would take for a pan.
+            const bool on = viewport.onRuler(st->at) && viewport.inPicture(st->at);
+            seen = std::format(
+                "press at ({}, {}) on the ruler {}, in P {}, taller {}, view kept {}; {}", st->at.x,
+                st->at.y, viewport.onRuler(st->at), viewport.inPicture(st->at), picture_taller,
+                viewport.view() == st->pressed, seen);
+            return rects && picture_taller && on && viewport.view() == st->pressed;
+        }));
+    // The pan step takes the counters before its press, so the view it pans is drawn first.
+    steps.push_back(step(
+        "hugging rulers: the picture taller than P again", [tall] { tall(); },
+        [&frame, st, drawn](std::string& seen) {
+            const std::optional<dvv::media::RulerRects> rects = drawn(seen);
+            const bool kept = frame.viewport().view() == st->pressed;
+            seen = std::format("view kept {}; {}", kept, seen);
+            return rects && kept;
+        }));
+    steps.push_back(step(
+        "hugging rulers: a press on the background beside it pans",
+        [&frame, press_drag, window_at] {
+            const Viewport& viewport = frame.viewport();
+            const dvv::media::RulerRects rects =
+                dvv::media::rulerRects(viewport.physicalClientSize(),
+                                       viewport.overlayParams().strips, viewport.shownView());
+            // In the reserved strip, left of the hugging left ruler.
+            press_drag(window_at(viewport.overlayParams().strips.left / 2.0,
+                                 rects.left.y + (rects.left.height / 2.0)));
+        },
+        [&frame, st, drawn](std::string& seen) {
+            const std::optional<dvv::media::RulerRects> rects = drawn(seen);
+            const Viewport& viewport = frame.viewport();
+            const ViewTransform view = viewport.shownView();
+            const RecordedInfo now = viewport.lastRecorded().value_or(RecordedInfo{});
+            // The picture follows the pointer: DRAG window units down move the origin up.
+            const double wanted = st->before.y - (DRAG * viewport.contentScale() / view.zoom());
+            const double tolerance = (0.5 / view.zoom()) + 1e-9;
+            const bool beside = !viewport.onRuler(st->at) && !viewport.inPicture(st->at);
+            seen = std::format(
+                "press at ({}, {}) beside {}, origin ({}, {}) (wanted ({}, {})), picture records "
+                "+{}, ruler records +{}; {}",
+                st->at.x, st->at.y, beside, view.origin().x, view.origin().y, st->before.x, wanted,
+                now.pictureRecords - st->recorded.pictureRecords,
+                now.rulerRecords - st->recorded.rulerRecords, seen);
+            return rects && beside && std::abs(view.origin().x - st->before.x) <= tolerance &&
+                   std::abs(view.origin().y - wanted) <= tolerance &&
+                   now.pictureRecords > st->recorded.pictureRecords &&
+                   now.rulerRecords > st->recorded.rulerRecords;
+        }));
+    steps.push_back(step(
+        "hugging rulers: the window, the view and the hidden rulers restored",
+        [&frame, st] {
+            showRulers(frame, false);
+            frame.SetClientSize(st->client);
+            frame.viewport().setView(st->view);
+        },
+        [&frame, st](std::string& seen) {
+            const bool matches = viewMatches(frame, seen);
+            return matches && frame.GetClientSize() == st->client &&
+                   frame.viewport().stripWindowUnits() == 0;
+        }));
+}
+
+// The image pixel under the pointer in the status bar's cursor field and on the rulers, driven by
+// injected wxEVT_MOTION and wxEVT_LEAVE_WINDOW events. Under a still pointer the field and the
+// marker follow every change of the view, P or the image. On the clip of "view: open a clip", the
+// rulers hidden at the start and at the end.
+void addCursorSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
+    struct State {
+        std::uint64_t pushes = 0;                      // cursorPushesForTest() at the step's start
+        std::uint64_t viewChanges = 0;                 // viewChangesForTest() at the step's start
+        RecordedInfo recorded{};                       // lastRecorded() at the step's start
+        dvv::media::ImagePixel wanted{};               // the pixel the field shows
+        wxPoint at;                                    // the stored pointer (window units)
+        dvv::media::PointD kept;                       // the display's point (backing pixels)
+        std::optional<dvv::media::ImagePixel> before;  // the pixel under it before a change
+        wxSize client;                                 // the frame's client size before a resize
+        dvv::platform::PixelSize image{};              // the clip's size before a new image size
+    };
+    auto st = std::make_shared<State>();
+    static constexpr double ZOOM = 4;
+    const auto set_rulers = [&frame](bool show) { showRulers(frame, show); };
+    // The window position whose backing centre lies in the centre of image pixel `pixel`.
+    const auto window_at = [&frame](dvv::media::ImagePixel pixel) {
+        const Viewport& viewport = frame.viewport();
+        const ViewTransform view = viewport.shownView();
+        const dvv::media::PixelRect picture = dvv::media::pictureRegion(
+            viewport.physicalClientSize(), viewport.overlayParams().strips);
+        const double scale = viewport.contentScale();
+        const auto axis = [&view, scale](std::uint32_t image, double origin, std::uint32_t start) {
+            const double backing = start + ((image + 0.5 - origin) * view.zoom());
+            return static_cast<int>(std::lround((backing / scale) - 0.5));
+        };
+        return wxPoint(axis(pixel.x, view.origin().x, picture.x),
+                       axis(pixel.y, view.origin().y, picture.y));
+    };
+    // The pixel `dx`, `dy` right of and below the first whole pixel shown in P.
+    const auto shown_pixel = [&frame](std::uint32_t dx, std::uint32_t dy) {
+        const PointD origin = frame.viewport().shownView().origin();
+        return dvv::media::ImagePixel{
+            .x = static_cast<std::uint32_t>(std::ceil(std::max(origin.x, 0.0))) + dx,
+            .y = static_cast<std::uint32_t>(std::ceil(std::max(origin.y, 0.0))) + dy};
+    };
+    const auto begin = [&frame, st] {
+        const Viewport& viewport = frame.viewport();
+        st->pushes = viewport.cursorPushesForTest();
+        st->viewChanges = viewport.viewChangesForTest();
+        st->recorded = viewport.lastRecorded().value_or(RecordedInfo{});
+    };
+    const auto move = [&frame, st](wxPoint at) {
+        st->at = at;
+        sendViewportMouse(frame.viewport(), wxEVT_MOTION, at, false, false);
+    };
+    // The field and cursorPixel() show `pixel` (none: empty).
+    const auto field_shows = [&frame](std::optional<dvv::media::ImagePixel> pixel,
+                                      std::string& seen) {
+        const wxString field = frame.statusTexts()[MainFrame::CURSOR_FIELD];
+        const std::optional<dvv::media::ImagePixel> at = frame.viewport().cursorPixel();
+        const std::string wanted = cursorText(pixel);
+        seen = std::format("field '{}' (wanted '{}'), cursorPixel {}", field.utf8_string(), wanted,
+                           cursorText(at));
+        return field == wxString::FromUTF8(wanted) && at == pixel;
+    };
+    const auto pushes = [&frame, st](std::uint64_t added, std::string& seen) {
+        const std::uint64_t now = frame.viewport().cursorPushesForTest();
+        seen += std::format(", pushes +{} (wanted +{})", now - st->pushes, added);
+        return now == st->pushes + added;
+    };
+    // The pixel under the stored pointer in the shown view, P and image, as the renderer maps it.
+    const auto under = [&frame, st] {
+        const Viewport& viewport = frame.viewport();
+        const double scale = viewport.contentScale();
+        return dvv::media::cursorPixel(
+            viewport.shownView(),
+            dvv::media::pictureRegion(viewport.physicalClientSize(),
+                                      viewport.overlayParams().strips),
+            {.x = (st->at.x + 0.5) * scale, .y = (st->at.y + 0.5) * scale});
+    };
+    // Before a change under a still pointer: the pointer on a pixel well inside P, that pixel kept.
+    const auto still = [st, begin, move, window_at, shown_pixel, under] {
+        move(window_at(shown_pixel(40, 30)));
+        st->before = under();
+        begin();
+    };
+    // After it: the field shows the pixel now under the pointer, another one than before, and the
+    // rulers got it in one push.
+    const auto followed = [st, field_shows, pushes, under](std::string& seen) {
+        const std::optional<dvv::media::ImagePixel> now = under();
+        const bool shows = field_shows(now, seen);
+        seen += std::format(", before {}", cursorText(st->before));
+        const bool pushed = pushes(1, seen);
+        return shows && now && st->before && now != st->before && pushed;
+    };
+
+    steps.push_back(step(
+        "cursor: the status field follows the cursor",
+        [&frame, st, set_rulers, begin, move, window_at, shown_pixel] {
+            set_rulers(false);
+            Viewport& viewport = frame.viewport();
+            viewport.setView(centredView(viewport, ZOOM));
+            begin();
+            st->wanted = shown_pixel(10, 7);
+            move(window_at(st->wanted));
+        },
+        [st, field_shows, pushes](std::string& seen) {
+            const bool shows = field_shows(st->wanted, seen);
+            return shows && pushes(0, seen);  // the rulers hidden: the display gets no cursor
+        }));
+    steps.push_back(step(
+        "cursor: the last image column",
+        [&frame, st, move, window_at] {
+            Viewport& viewport = frame.viewport();
+            const dvv::platform::PixelSize image = viewport.imageSize();
+            // The view's right edge at the image's right edge: its last column in P.
+            viewport.setView(
+                {.mode = ViewMode::Zoom,
+                 .zoom = ZOOM,
+                 .centre = {.x = static_cast<double>(image.width), .y = image.height / 2.0},
+                 .image = image});
+            st->wanted = {.x = image.width - 1, .y = image.height / 2};
+            move(window_at(st->wanted));
+        },
+        [&frame, st, field_shows](std::string& seen) {
+            const bool shows = field_shows(st->wanted, seen);
+            seen += std::format(", image width {}", frame.viewport().imageSize().width);
+            return shows;
+        }));
+    // Still-pointer steps: each change maps the pointer to another pixel without a motion.
+    steps.push_back(step(
+        "cursor: the rulers shown under a still pointer",
+        [&frame, set_rulers, still] {
+            Viewport& viewport = frame.viewport();
+            viewport.setView(centredView(viewport, ZOOM));
+            still();
+            set_rulers(true);  // P moves by the strips
+        },
+        [&frame, followed](std::string& seen) {
+            const bool ok = followed(seen);
+            return ok && frame.viewport().stripWindowUnits() > 0;
+        }));
+    steps.push_back(step(
+        "cursor: a zoom under a still pointer",
+        [&frame, still] {
+            still();
+            frame.execute(Command::ZoomIn);  // keeps P's centre, not the pointer's pixel
+        },
+        [&frame, followed](std::string& seen) {
+            const bool ok = followed(seen);
+            seen += std::format(", zoom {}", frame.viewport().view().zoom);
+            return ok && frame.viewport().view().zoom > ZOOM;
+        }));
+    steps.push_back(step(
+        "cursor: a pan under a still pointer",
+        [&frame, still] {
+            Viewport& viewport = frame.viewport();
+            ViewRequest panned = viewport.view();
+            panned.centre.x += 5;
+            panned.centre.y += 3;
+            still();
+            viewport.setView(panned);
+        },
+        followed));
+    steps.push_back(step(
+        "cursor: a resize under a still pointer",
+        [&frame, st, still] {
+            still();
+            st->client = frame.GetClientSize();
+            frame.SetClientSize(st->client + frame.FromDIP(wxSize(80, 60)));
+        },
+        [&frame, st, followed](std::string& seen) {
+            const bool ok = followed(seen);
+            return ok && frame.GetClientSize() != st->client;
+        }));
+    steps.push_back(step(
+        "cursor: back to the earlier size under a still pointer",
+        [&frame, st, still] {
+            still();
+            frame.SetClientSize(st->client);
+        },
+        [&frame, st, followed](std::string& seen) {
+            const bool ok = followed(seen);
+            return ok && frame.GetClientSize() == st->client;
+        }));
+    steps.push_back(step(
+        "cursor: a new image size under a still pointer",
+        [&frame, st, still] {
+            Viewport& viewport = frame.viewport();
+            viewport.setView({});  // Fit: the zoom follows the image size
+            st->image = viewport.imageSize();
+            still();
+            viewport.setImageSize({.width = st->image.width * 2, .height = st->image.height * 2});
+        },
+        followed));
+    steps.push_back(step(
+        "cursor: the clip's size again under a still pointer",
+        [&frame, st, still] {
+            still();
+            frame.viewport().setImageSize(st->image);
+        },
+        [&frame, st, followed](std::string& seen) {
+            const bool ok = followed(seen);
+            return ok && frame.viewport().imageSize() == st->image;
+        }));
+    steps.push_back(step(
+        "cursor: empty over the Fit border",
+        [&frame, set_rulers, move, window_at, shown_pixel] {
+            set_rulers(true);  // the border point lies in P, past the strips
+            Viewport& viewport = frame.viewport();
+            viewport.setView({});
+            move(window_at(shown_pixel(1, 1)));  // on the image first
+            // Half the Fit zoom: the image inside P with a border on every side.
+            viewport.setView(centredView(viewport, viewport.shownView().zoom() / 2));
+            const int strip = viewport.stripWindowUnits();
+            move({strip + 1, strip + 1});
+        },
+        [&frame, st, field_shows](std::string& seen) {
+            const bool shows = field_shows(std::nullopt, seen);
+            const Viewport& viewport = frame.viewport();
+            seen += std::format(", strip {}, in P {}", viewport.stripWindowUnits(),
+                                viewport.inPicture(st->at));
+            return shows && viewport.stripWindowUnits() > 0 && viewport.inPicture(st->at);
+        }));
+    steps.push_back(step(
+        "cursor: empty after a leave",
+        [&frame, move, window_at, shown_pixel] {
+            Viewport& viewport = frame.viewport();
+            viewport.setView(centredView(viewport, ZOOM));
+            move(window_at(shown_pixel(3, 3)));
+            sendViewportMouse(viewport, wxEVT_LEAVE_WINDOW, {-1, -1}, false, false);
+        },
+        [field_shows](std::string& seen) { return field_shows(std::nullopt, seen); }));
+    steps.push_back(step(
+        "cursor: empty over a strip",
+        [&frame, set_rulers, move] {
+            set_rulers(true);
+            Viewport& viewport = frame.viewport();
+            viewport.setView(centredView(viewport, ZOOM));
+            move({viewport.GetClientSize().x / 2, viewport.stripWindowUnits() / 2});
+        },
+        [&frame, field_shows](std::string& seen) {
+            const bool shows = field_shows(std::nullopt, seen);
+            return shows && frame.viewport().stripWindowUnits() > 0;
+        }));
+    // Five moves into five pixels: each pushes the cursor once and redraws only the rulers.
+    for (std::uint32_t n = 0; n < 5; ++n) {
+        steps.push_back(step(
+            std::format("cursor: a move into pixel {} of 5 redraws only the rulers", n + 1),
+            [st, begin, move, window_at, shown_pixel, n] {
+                begin();
+                st->wanted = shown_pixel(5 + n, 5);
+                move(window_at(st->wanted));
+            },
+            [&frame, st, field_shows, pushes](std::string& seen) {
+                const bool shows = field_shows(st->wanted, seen);
+                const bool pushed = pushes(1, seen);
+                const RecordedInfo now = frame.viewport().lastRecorded().value_or(RecordedInfo{});
+                seen += std::format(", picture records +{}, ruler records +{}",
+                                    now.pictureRecords - st->recorded.pictureRecords,
+                                    now.rulerRecords - st->recorded.rulerRecords);
+                return shows && pushed && now.pictureRecords == st->recorded.pictureRecords &&
+                       now.rulerRecords > st->recorded.rulerRecords;
+            }));
+    }
+    steps.push_back(step(
+        "cursor: a move inside the same pixel pushes nothing",
+        [&frame, st, begin, move] {
+            begin();
+            move(st->at + wxPoint(frame.viewport().contentScale() < 2 ? 1 : 0, 0));
+        },
+        [st, field_shows, pushes](std::string& seen) {
+            const bool shows = field_shows(st->wanted, seen);
+            return shows && pushes(0, seen);
+        }));
+    // The display keeps the point it last got while the pointer moves inside that point's pixel:
+    // a view change that keeps the pointer's pixel but maps the kept point to another one pushes
+    // the cursor again.
+    steps.push_back(step(
+        "cursor: a view change that moves the display's point to another pixel pushes it",
+        [&frame, st, begin, move, window_at, shown_pixel] {
+            Viewport& viewport = frame.viewport();
+            viewport.setView(centredView(viewport, 2 * ZOOM));
+            st->wanted = shown_pixel(4, 4);
+            const ViewTransform view = viewport.shownView();
+            const double scale = viewport.contentScale();
+            // The pixel's left edge and the first window position in it (the display's point).
+            const double left =
+                viewport.pictureOffset().x + ((st->wanted.x - view.origin().x) * view.zoom());
+            const int first = static_cast<int>(std::ceil((left / scale) - 0.5));
+            const int row = window_at(st->wanted).y;
+            st->kept = {.x = (first + 0.5) * scale, .y = (row + 0.5) * scale};
+            move(window_at(shown_pixel(12, 12)));  // another pixel first: the next move pushes
+            move({first, row});
+            move({first + 1, row});  // the same pixel: the display keeps the first point
+            begin();
+            // The image moves right by half a window unit more than the first point lies past
+            // the pixel's left edge: the second point stays in the pixel, the first one leaves it.
+            ViewRequest panned = viewport.view();
+            panned.centre.x -= ((st->kept.x - left) + (scale / 2)) / view.zoom();
+            viewport.setView(panned);
+        },
+        [&frame, st, field_shows, pushes](std::string& seen) {
+            const bool shows = field_shows(st->wanted, seen);
+            const Viewport& viewport = frame.viewport();
+            const std::optional<dvv::media::ImagePixel> kept =
+                dvv::media::cursorPixel(viewport.shownView(),
+                                        dvv::media::pictureRegion(viewport.physicalClientSize(),
+                                                                  viewport.overlayParams().strips),
+                                        st->kept);
+            seen += std::format(", the display's point now in {}", cursorText(kept));
+            const bool pushed = pushes(1, seen);
+            return shows && kept != st->wanted && pushed;
+        }));
+    steps.push_back(step(
+        "cursor: moves do not run the view handler",
+        [&frame, begin, move, window_at, shown_pixel] {
+            begin();
+            for (std::uint32_t n = 0; n < 5; ++n) {
+                move(window_at(shown_pixel(12 + n, 9)));
+            }
+            sendViewportMouse(frame.viewport(), wxEVT_MOTION, viewportCentre(frame.viewport()),
+                              false, false);
+        },
+        [&frame, st](std::string& seen) {
+            const std::uint64_t now = frame.viewport().viewChangesForTest();
+            seen = std::format("view handler +{}", now - st->viewChanges);
+            return now == st->viewChanges;
+        }));
+    steps.push_back(step(
+        "cursor: a drag leaving the window empties the field",
+        [&frame, move] {
+            Viewport& viewport = frame.viewport();
+            const wxPoint at = viewportCentre(viewport);
+            move(at);
+            sendViewportMouse(viewport, wxEVT_LEFT_DOWN, at, true, false);
+            sendViewportMouse(viewport, wxEVT_MOTION, at + wxPoint(20, 10), true, false);
+            // The pointer leaves during the drag.
+            sendViewportMouse(viewport, wxEVT_LEAVE_WINDOW, {-1, -1}, true, false);
+        },
+        [&frame, field_shows](std::string& seen) {
+            const bool shows = field_shows(std::nullopt, seen);
+            seen += std::format(", dragging {}", frame.viewport().draggingForTest());
+            return shows && frame.viewport().draggingForTest();
+        }));
+    steps.push_back(step(
+        "cursor: the drag back in shows the field again",
+        [&frame, st, move] {
+            Viewport& viewport = frame.viewport();
+            st->at = viewportCentre(viewport);
+            sendViewportMouse(viewport, wxEVT_MOTION, st->at, true, false);
+            sendViewportMouse(viewport, wxEVT_LEFT_UP, st->at, false, false);
+        },
+        [&frame, field_shows, under](std::string& seen) {
+            const std::optional<dvv::media::ImagePixel> wanted = under();
+            const bool shows = field_shows(wanted, seen);
+            return shows && wanted && !frame.viewport().draggingForTest();
+        }));
+    steps.push_back(step(
+        "cursor: the rulers hidden under the pointer push one empty cursor",
+        [begin, set_rulers] {
+            begin();
+            set_rulers(false);
+        },
+        [&frame, field_shows, pushes, under](std::string& seen) {
+            const std::optional<dvv::media::ImagePixel> now = under();
+            const bool shows = field_shows(now, seen);
+            const bool pushed = pushes(1, seen);
+            return shows && now && pushed && frame.viewport().stripWindowUnits() == 0;
+        }));
+    steps.push_back(step(
+        "cursor: moves with the rulers hidden push nothing",
+        [st, begin, move, window_at, shown_pixel] {
+            begin();
+            move(window_at(shown_pixel(20, 12)));
+            st->wanted = shown_pixel(21, 13);
+            move(window_at(st->wanted));
+        },
+        [st, field_shows, pushes](std::string& seen) {
+            const bool shows = field_shows(st->wanted, seen);
+            return shows && pushes(0, seen);
+        }));
+    steps.push_back(step(
+        "cursor: empty after a leave with the rulers hidden",
+        [&frame] {
+            sendViewportMouse(frame.viewport(), wxEVT_LEAVE_WINDOW, {-1, -1}, false, false);
+        },
+        [field_shows](std::string& seen) { return field_shows(std::nullopt, seen); }));
+}
+
 // View zoom design §5: a pinch zooms smoothly at the gesture position, up to the zoom limit. On
 // the clip of "view: open a clip".
 void addPinchSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
@@ -5228,8 +6377,7 @@ void addPinchSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
             Viewport& viewport = frame.viewport();
             viewport.setView(centredView(viewport, 1));
             st->at = viewportCentre(viewport) + wxPoint(40, 20);
-            const double scale = viewport.contentScale();
-            const PointD p{.x = st->at.x * scale, .y = st->at.y * scale};
+            const PointD p = viewport.picturePoint(st->at);
             st->before = imagePointAt(viewport.shownView(), p);
             sendViewportPinchGesture(viewport, st->at, 2.5);
             st->pinched = viewport.view();
@@ -5596,7 +6744,7 @@ void addZoomButtonSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
                 Viewport& viewport = frame.viewport();
                 viewport.setView(entry.start == 0 ? ViewRequest{}
                                                   : centredView(viewport, entry.start));
-                const dvv::platform::PixelSize extent = viewport.physicalClientSize();
+                const dvv::platform::PixelSize extent = viewport.pictureSize();
                 *start_centre = imagePointAt(viewport.shownView(),
                                              {.x = extent.width / 2.0, .y = extent.height / 2.0});
                 sendZoomMenu(frame, entry.id);
@@ -5605,7 +6753,7 @@ void addZoomButtonSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
                 const bool matches = viewMatches(frame, seen);
                 const Viewport& viewport = frame.viewport();
                 const ViewRequest& view = viewport.view();
-                const dvv::platform::PixelSize extent = viewport.physicalClientSize();
+                const dvv::platform::PixelSize extent = viewport.pictureSize();
                 const dvv::platform::PixelSize image = viewport.imageSize();
                 // The clip point at the viewport's centre is kept, exactly: the request's centre
                 // is the start view's shown centre; on an axis where the zoomed clip fits the
@@ -5630,6 +6778,1021 @@ void addZoomButtonSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
 }
 
 // Right before the Open Recent steps, with no stream open; the last step closes the clip.
+// --- Grid and Rulers: the commands, the Grid button, the View items, the context menu ---
+
+// The View item of `command` after an update of the menus: checked (Windows, Linux) or titled
+// `hide` (macOS) when `shown`; unchecked or `show` otherwise. `text` describes the item.
+bool shownItemFollows(MainFrame& frame, Command command, bool shown, std::string_view show,
+                      std::string_view hide, std::string& text) {
+    wxMenuBar* bar = frame.GetMenuBar();
+    if (bar == nullptr) {
+        text = "no menu bar";
+        return false;
+    }
+    bar->UpdateMenus();
+    const wxMenuItem* item = bar->FindItem(menuId(command));
+    if (item == nullptr) {
+        text = std::format("no View item for {}",
+                           commandTable()[static_cast<std::size_t>(command)].id);
+        return false;
+    }
+    const std::string title = item->GetItemLabelText().utf8_string();
+    if (native_policy::logItemHasChangingTitle()) {
+        text = std::format("item '{}'", title);
+        return title == (shown ? hide : show);
+    }
+    text = std::format("item '{}' checkable {} checked {}", title, item->IsCheckable(),
+                       item->IsChecked());
+    return item->IsCheckable() && item->IsChecked() == shown;
+}
+
+// A popup menu's item as its hook reads it: "label checked". An item that is not checkable reads
+// unchecked: wxGTK asserts on IsChecked() of one, and the assert's dialog is modal.
+std::string popupItemText(const wxMenuItem& item) {
+    return std::format("{} {}", item.GetItemLabelText().utf8_string(),
+                       item.IsCheckable() && item.IsChecked());
+}
+
+void addGridCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
+    MainFrame& frame = test.frame();
+    struct State {
+        RecordedInfo recorded{};         // the last recorded pass before the input
+        std::vector<std::string> items;  // the context menu's items: label and check
+    };
+    auto st = std::make_shared<State>();
+    const auto grid_toggle = [&frame] {
+        return dynamic_cast<wxBitmapToggleButton*>(
+            &frame.transportBar().buttonForTest(Command::Grid));
+    };
+    // The selftest's config file read back: gui.grid.major.show and gui.rulers.show.
+    const auto saved = [&test](std::string& text) -> std::optional<std::pair<bool, bool>> {
+        const dvv::Result<std::string> read = readConfigText(test.app().configPath());
+        if (!read) {
+            text = read.error().message;
+            return std::nullopt;
+        }
+        const OverlayConfig overlay = parseOverlayConfig(*read);
+        text = std::format("saved grid {} rulers {}", overlay.grid.levels[0].show,
+                           overlay.rulers.show);
+        return std::pair{overlay.grid.levels[0].show, overlay.rulers.show};
+    };
+    // The grid and the rulers as wanted, in effect, on the Grid button and in the file.
+    const auto follows = [&frame, grid_toggle, saved](bool grid, bool rulers, std::string& seen) {
+        const wxBitmapToggleButton* const toggle = grid_toggle();
+        const bool value = toggle != nullptr && toggle->GetValue();
+        std::string file;
+        const std::optional<std::pair<bool, bool>> in_file = saved(file);
+        seen = std::format("grid {} rulers {} button {}, strip {}; {}", frame.grid().levels[0].show,
+                           frame.rulers().show, value, frame.viewport().stripWindowUnits(), file);
+        return frame.grid().levels[0].show == grid && frame.rulers().show == rulers &&
+               value == grid && (frame.viewport().stripWindowUnits() > 0) == rulers &&
+               in_file == std::pair{grid, rulers};
+    };
+    steps.push_back(step(
+        "grid: the grid and the rulers hidden",
+        [&frame] {
+            GridConfig grid = frame.grid();
+            grid.levels[0].show = false;
+            RulerConfig rulers = frame.rulers();
+            rulers.show = false;
+            frame.setOverlay(grid, rulers, OverlaySave::Later);
+        },
+        [&frame](std::string& seen) {
+            seen = std::format("grid {} rulers {}, strip {}", frame.grid().levels[0].show,
+                               frame.rulers().show, frame.viewport().stripWindowUnits());
+            return !frame.grid().levels[0].show && !frame.rulers().show &&
+                   frame.viewport().stripWindowUnits() == 0;
+        }));
+    steps.push_back(step(
+        "grid: G toggles the grid and the button",
+        [&frame, st] {
+            st->recorded = frame.viewport().lastRecorded().value_or(RecordedInfo{});
+            (void)sendKey(frame, 'G');
+        },
+        [&frame, st, follows](std::string& seen) {
+            const bool ok = follows(true, false, seen);
+            const RecordedInfo now = frame.viewport().lastRecorded().value_or(RecordedInfo{});
+            seen += std::format(", picture records +{}",
+                                now.pictureRecords - st->recorded.pictureRecords);
+            return ok && now.pictureRecords == st->recorded.pictureRecords + 1;
+        }));
+    steps.push_back(step(
+        "grid: the View items follow (grid shown)", [] {},
+        [&frame](std::string& seen) {
+            std::string grid;
+            std::string rulers;
+            const bool ok = shownItemFollows(frame, Command::Grid, true, "Show Grid (G)",
+                                             "Hide Grid (G)", grid) &&
+                            shownItemFollows(frame, Command::Rulers, false, "Show Rulers (R)",
+                                             "Hide Rulers (R)", rulers);
+            seen = std::format("Grid {}, Rulers {}", grid, rulers);
+            return ok;
+        }));
+    steps.push_back(step(
+        "grid: the Grid button toggles",
+        [grid_toggle] { clickBarButton(*grid_toggle(), wxEVT_TOGGLEBUTTON); },
+        [follows](std::string& seen) { return follows(false, false, seen); }));
+    steps.push_back(step(
+        "rulers: R toggles the strips", [&frame] { (void)sendKey(frame, 'R'); },
+        [follows](std::string& seen) { return follows(false, true, seen); }));
+    steps.push_back(step(
+        "grid: the View items follow (rulers shown)", [] {},
+        [&frame](std::string& seen) {
+            std::string grid;
+            std::string rulers;
+            const bool ok = shownItemFollows(frame, Command::Grid, false, "Show Grid (G)",
+                                             "Hide Grid (G)", grid) &&
+                            shownItemFollows(frame, Command::Rulers, true, "Show Rulers (R)",
+                                             "Hide Rulers (R)", rulers);
+            seen = std::format("Grid {}, Rulers {}", grid, rulers);
+            return ok;
+        }));
+    steps.push_back(step(
+        "grid: the context menu",
+        [&frame, st] {
+            st->items.clear();
+            dialogHooks().popupMenu = [st](const wxMenu& menu) {
+                for (const wxMenuItem* item : menu.GetMenuItems()) {
+                    st->items.push_back(popupItemText(*item));
+                }
+                return menuId(Command::Rulers);
+            };
+            Viewport& viewport = frame.viewport();
+            wxContextMenuEvent event(wxEVT_CONTEXT_MENU, viewport.GetId(),
+                                     viewport.ClientToScreen(viewportCentre(viewport)));
+            event.SetEventObject(&viewport);
+            (void)injectInput(*viewport.GetEventHandler(), event);  // as wx sends it
+        },
+        [st, follows](std::string& seen) {
+            const bool ok = follows(false, false, seen);
+            std::string items;
+            for (const std::string& item : st->items) {
+                items += (items.empty() ? "" : "|") + item;
+            }
+            seen = std::format("menu '{}'; {}", items, seen);
+            return ok && items == "Grid (G) false|Rulers (R) true|Grid and Rulers... false";
+        }));
+    // The Menu key and Shift+F10 send no point: the menu opens all the same.
+    steps.push_back(step(
+        "grid: the context menu from the keyboard",
+        [&frame, st] {
+            st->items.clear();
+            dialogHooks().popupMenu = [st](const wxMenu& menu) {
+                for (const wxMenuItem* item : menu.GetMenuItems()) {
+                    st->items.push_back(popupItemText(*item));
+                }
+                return wxID_NONE;  // dismissed
+            };
+            Viewport& viewport = frame.viewport();
+            wxContextMenuEvent event(wxEVT_CONTEXT_MENU, viewport.GetId(), wxDefaultPosition);
+            event.SetEventObject(&viewport);
+            (void)injectInput(*viewport.GetEventHandler(), event);
+        },
+        [st, follows](std::string& seen) {
+            const bool ok = follows(false, false, seen);
+            std::string items;
+            for (const std::string& item : st->items) {
+                items += (items.empty() ? "" : "|") + item;
+            }
+            seen = std::format("menu '{}'; {}", items, seen);
+            return ok && items == "Grid (G) false|Rulers (R) false|Grid and Rulers... false";
+        }));
+    // Unchanged values write nothing: the file keeps its time.
+    steps.push_back(step(
+        "grid: an unchanged save writes nothing", [] {},
+        [&frame, &test](std::string& seen) {
+            std::error_code error;
+            const auto before = std::filesystem::last_write_time(test.app().configPath(), error);
+            const bool saved = test.app().saveOverlay(frame.grid(), frame.rulers(), false);
+            const auto after = std::filesystem::last_write_time(test.app().configPath(), error);
+            seen =
+                std::format("saved {}, time kept {}, {}", saved, before == after, error.message());
+            return !saved && before == after && !error;
+        }));
+    // A window the key rule does not know keeps the arrows and Space; a plain panel keeps none.
+    steps.push_back(step(
+        "keys: an unknown window keeps the arrows and Space", [] {},
+        [&frame](std::string& seen) {
+            auto* const scrolled = new wxScrolledWindow(&frame);
+            auto* const panel = new wxPanel(&frame);
+            const KeyChord right = chord(Key::Right);
+            const KeyChord space = chord(Key::Space);
+            const bool unknown =
+                controlKeepsKey(scrolled, right) && controlKeepsKey(scrolled, space);
+            const bool plain = !controlKeepsKey(panel, right) && !controlKeepsKey(panel, space) &&
+                               !controlKeepsKey(&frame, right);
+            scrolled->Destroy();
+            panel->Destroy();
+            seen = std::format("scrolled window keeps {}, plain panel and frame keep none {}",
+                               unknown, plain);
+            return unknown && plain;
+        }));
+}
+
+GridWindow* gridWindowOf(const MainFrame& frame) {
+    return dynamic_cast<GridWindow*>(frame.floatingWindow(FloatingKind::GridAndRulers));
+}
+
+// Where FloatingWindow::showBesideOwner puts `window`, beside the Info window when it is shown.
+wxRect expectedGridPlace(MainFrame& frame, const GridWindow& window) {
+    const wxRect work = workAreaOf(frame);
+    const wxRect client(frame.ClientToScreen(wxPoint(0, 0)), frame.GetClientSize());
+    const wxSize size = window.GetSize();
+    std::optional<ScreenRect> other;
+    if (const FloatingWindow* const info = frame.floatingWindow(FloatingKind::Info);
+        info != nullptr && info->IsShown()) {
+        other = screenRect(info->GetScreenRect());
+    }
+    return wxRectOf(floatingWindowPlace(screenRect(frame.GetScreenRect()), screenRect(client),
+                                        {.width = size.x, .height = size.y}, screenRect(work),
+                                        other, window.FromDIP(8)));
+}
+
+// A control event as the native control sends it.
+void sendControlEvent(wxWindow& control, wxEventType type, int value) {
+    wxCommandEvent event(type, control.GetId());
+    event.SetEventObject(&control);
+    event.SetInt(value);
+    (void)injectInput(*control.GetEventHandler(), event);
+}
+
+void addGridWindowSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
+    MainFrame& frame = test.frame();
+    struct State {
+        GridConfig grid{};  // the settings before the steps, restored after them
+        RulerConfig rulers{};
+        RecordedInfo recorded{};
+        int phase = 0;
+        bool consumed = true;
+        wxPoint place;
+        std::string seen;
+    };
+    auto st = std::make_shared<State>();
+    const auto window = [&frame]() -> GridWindow& { return *gridWindowOf(frame); };
+    const auto placed = [&frame](std::string& seen) {
+        GridWindow* const grid = gridWindowOf(frame);
+        if (grid == nullptr) {
+            seen = "no Grid and Rulers window";
+            return false;
+        }
+        const wxRect requested = grid->requestedRectForTest();
+        const wxRect expected = expectedGridPlace(frame, *grid);
+        seen = std::format("shown {}, requested {}, computed {}, {}", grid->IsShown(),
+                           rectText(requested), rectText(expected), focusText(frame, *grid));
+        return frame.windowShown(FloatingKind::GridAndRulers) && grid->IsShown() &&
+               requested == expected && !focusInside(grid);
+    };
+    // Both windows hidden and never placed, the Info window shown when `info`, then the command.
+    const auto open_fresh = [&frame](bool info) {
+        frame.setWindowShown(FloatingKind::GridAndRulers, false);
+        frame.setWindowShown(FloatingKind::Info, false);
+        for (const FloatingKind kind : {FloatingKind::Info, FloatingKind::GridAndRulers}) {
+            if (FloatingWindow* const floating = frame.floatingWindow(kind); floating != nullptr) {
+                floating->forgetPlaceForTest();
+            }
+        }
+        frame.setWindowShown(FloatingKind::Info, info);
+        frame.execute(Command::GridWindow);
+    };
+    steps.push_back(step(
+        "grid window: opens beside the player",
+        [&frame, st, open_fresh] {
+            st->grid = frame.grid();
+            st->rulers = frame.rulers();
+            open_fresh(false);
+        },
+        placed));
+    steps.push_back(step(
+        "grid window: opens below the Info window", [open_fresh] { open_fresh(true); },
+        [&frame, placed](std::string& seen) {
+            const bool ok = placed(seen);
+            frame.setWindowShown(FloatingKind::Info, false);
+            return ok;
+        }));
+    steps.push_back(step(
+        "grid window: the Major checkbox and the Grid button stay in sync",
+        [&frame, st, window] {
+            frame.execute(Command::Grid);  // the button's command
+            st->seen = std::format("after Grid: grid {} box {}", frame.grid().levels[0].show,
+                                   window().levelBoxForTest(GridLevel::Major).GetValue());
+            st->consumed = frame.grid().levels[0].show ==
+                           window().levelBoxForTest(GridLevel::Major).GetValue();
+            wxCheckBox& major = window().levelBoxForTest(GridLevel::Major);
+            major.SetValue(!major.GetValue());
+            sendControlEvent(major, wxEVT_CHECKBOX, major.GetValue() ? 1 : 0);
+        },
+        [&frame, st, window](std::string& seen) {
+            const auto* const button = dynamic_cast<wxBitmapToggleButton*>(
+                &frame.transportBar().buttonForTest(Command::Grid));
+            const bool box = window().levelBoxForTest(GridLevel::Major).GetValue();
+            seen =
+                std::format("{}; after the box: box {} grid {} button {}", st->seen, box,
+                            frame.grid().levels[0].show, button != nullptr && button->GetValue());
+            return st->consumed && frame.grid().levels[0].show == box && button != nullptr &&
+                   button->GetValue() == box;
+        }));
+    steps.push_back(step(
+        "grid window: the controls change the picture",
+        [&frame, st, window] {
+            GridConfig grid = frame.grid();
+            grid.levels[0].show = true;
+            grid.levels[1].step = 16;
+            frame.setOverlay(grid, frame.rulers(), OverlaySave::Later);
+            st->recorded = frame.viewport().lastRecorded().value_or(RecordedInfo{});
+            wxSlider& slider = window().opacitySliderForTest(GridLevel::Minor);
+            slider.SetValue(30);
+            sendControlEvent(slider, wxEVT_SLIDER, 30);
+            wxChoice& second = window().stepChoiceForTest(GridLevel::SecondMinor);
+            const int eight = second.FindString("8");
+            second.SetSelection(eight);
+            sendControlEvent(second, wxEVT_CHOICE, eight);
+        },
+        [&frame, &test, st, window](std::string& seen) {
+            const RecordedInfo now = frame.viewport().lastRecorded().value_or(RecordedInfo{});
+            const auto items = [](const wxChoice& choice) {
+                std::string text;
+                for (unsigned int i = 0; i < choice.GetCount(); ++i) {
+                    text += (text.empty() ? "" : " ") + choice.GetString(i).utf8_string();
+                }
+                return text;
+            };
+            const std::string minor = items(window().stepChoiceForTest(GridLevel::Minor));
+            const std::string major = items(window().stepChoiceForTest(GridLevel::Major));
+            std::string major_valid;
+            for (const std::uint32_t value : validSteps(GridLevel::Major, {32, 16, 8})) {
+                major_valid += (major_valid.empty() ? "" : " ") + std::to_string(value);
+            }
+            const dvv::Result<std::string> read = readConfigText(test.app().configPath());
+            const std::uint32_t saved = read ? parseOverlayConfig(*read).grid.levels[2].step : 0;
+            const GridConfig& grid = frame.grid();
+            seen = std::format(
+                "opacity {}, steps {} / {} / {} (second minor saved {}), major list '{}' (valid "
+                "'{}'), minor list '{}', picture records +{}",
+                grid.levels[1].opacity, grid.levels[0].step, grid.levels[1].step,
+                grid.levels[2].step, saved, major, major_valid, minor,
+                now.pictureRecords - st->recorded.pictureRecords);
+            return grid.levels[1].opacity == 30 && saved == 8 && grid.levels[0].step == 32 &&
+                   grid.levels[2].step == 8 && grid.levels[1].step == 16 && minor == "16" &&
+                   major == major_valid && now.pictureRecords > st->recorded.pictureRecords;
+        }));
+    steps.push_back(step(
+        "grid window: a hidden level shows its note",
+        [&frame] {
+            GridConfig grid;
+            grid.levels[0].show = true;
+            grid.levels[2].show = true;
+            frame.setOverlay(grid, frame.rulers(), OverlaySave::Later);
+            frame.execute(Command::ActualSize);
+        },
+        [&frame, window](std::string& seen) {
+            const double zoom = frame.viewport().shownView().zoom();
+            const double backing = frame.viewport().backingPerDip();
+            const std::string expected = levelHiddenNote(2, zoom, backing, 3);
+            const std::string note = window().noteForTest(GridLevel::SecondMinor).utf8_string();
+            const std::string minor = window().noteForTest(GridLevel::Minor).utf8_string();
+            seen = std::format("zoom {}, backing per pt {}: second minor '{}', minor '{}'", zoom,
+                               backing, note, minor);
+            const bool retina =
+                backing != 2.0 || note == "hidden at this zoom (2 px at 100 % = 1 pt, needs 3 pt)";
+            return zoom == 1.0 && !expected.empty() && note == expected && retina && minor.empty();
+        }));
+    // The rulers shown or hidden with numbers on, the other ruler settings kept.
+    const auto show_numbered = [&frame](bool show) {
+        RulerConfig rulers = frame.rulers();
+        rulers.show = show;
+        rulers.numbers = true;
+        frame.setOverlay(frame.grid(), rulers, OverlaySave::Later);
+    };
+    steps.push_back(step(
+        "grid window: Ruler numbers is disabled while the rulers are hidden",
+        [show_numbered] { show_numbered(false); },
+        [window, show_numbered](std::string& seen) {
+            const bool hidden = !window().numbersBoxForTest().IsEnabled();
+            show_numbered(true);
+            const bool shown =
+                window().numbersBoxForTest().IsEnabled() && window().rulersBoxForTest().GetValue();
+            show_numbered(false);
+            seen = std::format("disabled while hidden {}, enabled while shown {}", hidden, shown);
+            return hidden && shown;
+        }));
+    steps.push_back(step(
+        "grid window: Esc hides it and keeps the place; keys reach the player",
+        [&frame, st, window] {
+            st->phase = 0;
+            st->place = window().GetPosition() + window().FromDIP(wxPoint(20, 20));
+            window().SetPosition(st->place);
+            st->consumed = sendKeyWithFocus(frame, window().contentForTest(), WXK_SPACE);
+        },
+        [&frame, st, window](std::string& seen) {
+            const bool playing = frame.session().status().player.playing;
+            seen = std::format("phase {}: Space taken {}, playing {}, shown {}, requested {}",
+                               st->phase, st->consumed, playing,
+                               frame.windowShown(FloatingKind::GridAndRulers),
+                               rectText(window().requestedRectForTest()));
+            if (st->phase == 0) {
+                if (st->consumed && playing) {
+                    st->phase = 1;
+                    (void)sendKeyWithFocus(frame, window().contentForTest(), WXK_SPACE);
+                    st->consumed = sendKeyWithFocus(frame, window().contentForTest(), WXK_ESCAPE);
+                }
+                return false;
+            }
+            if (st->phase == 1 && st->consumed && !playing &&
+                !frame.windowShown(FloatingKind::GridAndRulers)) {
+                st->phase = 2;
+                frame.execute(Command::GridWindow);
+            }
+            return st->phase == 2 && window().requestedRectForTest().GetTopLeft() == st->place;
+        }));
+    steps.push_back(step(
+        "grid window: a focused control keeps its keys",
+        [&frame, st, window] {
+            const bool grid = frame.grid().levels[0].show;
+            const std::int64_t position = frame.session().status().player.position;
+            const bool box = sendKeyWithFocus(frame, &window().rulersBoxForTest(), WXK_SPACE);
+            const bool choice =
+                sendKeyWithFocus(frame, &window().stepChoiceForTest(GridLevel::Major), 'G');
+            const bool slider = sendKeyWithFocus(
+                frame, &window().opacitySliderForTest(GridLevel::Major), WXK_RIGHT);
+            st->seen = std::format("taken: checkbox {} choice {} slider {}", box, choice, slider);
+            st->consumed = box || choice || slider || frame.grid().levels[0].show != grid ||
+                           frame.session().status().player.position != position;
+        },
+        [&frame, st](std::string& seen) {
+            const bool playing = frame.session().status().player.playing;
+            seen = std::format("{}, playing {}", st->seen, playing);
+            return !st->consumed && !playing;
+        }));
+    // Windows and GTK: a modified chord typed on a focused control reaches the main window (the
+    // Settings command through its hook); macOS: the menu bar takes it, the char hook leaves it.
+    steps.push_back(step(
+        "grid window: a modified chord on a focused control reaches the main window",
+        [&frame, st, window] {
+            st->phase = 0;  // the Settings hook's runs
+            dialogHooks().settings = [st](SettingsWindow& settings) {
+                ++st->phase;
+                settings.pressOk();
+                if (wxPreferencesEditor::ShownModally() && settings.shown()) {
+                    settings.dismiss();
+                }
+            };
+            const std::optional<KeyChord> key =
+                commandTable()[static_cast<std::size_t>(Command::Settings)].key;
+            st->consumed = key.has_value() && sendKeyWithFocus(frame, &window().rulersBoxForTest(),
+                                                               key->key, key->ctrl);
+        },
+        [st](std::string& seen) {
+            const bool forwards = native_policy::floatingForwardsAccelerators();
+            seen = std::format("forwards {}, taken {}, Settings hook runs {}", forwards,
+                               st->consumed, st->phase);
+            const bool done =
+                forwards ? st->consumed && st->phase == 1 : !st->consumed && st->phase == 0;
+            if (done) {
+                dialogHooks().settings = nullptr;
+            }
+            return done;
+        }));
+    steps.push_back(step(
+        "grid window: View > Grid and Rulers... and a right-click on the Grid button open it",
+        [&frame, st] {
+            frame.setWindowShown(FloatingKind::GridAndRulers, false);
+            (void)sendMenu(frame, menuId(Command::GridWindow));
+            st->consumed = frame.windowShown(FloatingKind::GridAndRulers);
+            frame.setWindowShown(FloatingKind::GridAndRulers, false);
+            wxWindow& button = frame.transportBar().buttonForTest(Command::Grid);
+            wxContextMenuEvent event(wxEVT_CONTEXT_MENU, button.GetId(),
+                                     button.ClientToScreen(wxPoint(2, 2)));
+            event.SetEventObject(&button);
+            (void)injectInput(*button.GetEventHandler(), event);
+        },
+        [&frame, st](std::string& seen) {
+            const bool shown = frame.windowShown(FloatingKind::GridAndRulers);
+            seen = std::format("after the menu {}, after the right-click {}", st->consumed, shown);
+            const bool ok = st->consumed && shown;
+            if (ok) {
+                frame.setWindowShown(FloatingKind::GridAndRulers, false);
+                frame.setOverlay(st->grid, st->rulers, OverlaySave::Now);
+            }
+            return ok;
+        }));
+}
+
+// The saving rules of the grid and ruler settings, in the selftest's own rawreel.json: every
+// control but a slider saves at its change, a slider at its release (the value the release
+// carries) and never at a move, a hide saves, an unchanged save writes nothing, and a part whose
+// parent is not an object in the file is skipped without a dialog. The file and the settings are
+// restored at the end; then one change is left for the main window's close to save, which
+// OnExit checks.
+void addGridSaveSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
+    MainFrame& frame = test.frame();
+    App& app = test.app();
+    struct State {
+        GridConfig grid{};  // the settings before the steps, restored after them
+        RulerConfig rulers{};
+        std::optional<std::string> original;  // the file's text before the steps; none: no file
+        int messages = 0;                     // message dialogs shown
+        std::string fails;                    // the checks that failed, with what was seen
+        RecordedInfo recorded{};              // the counters before a change
+        RecordedInfo last{};                  // the counters at the last poll
+        int stable = 0;                       // polls in a row that saw the same counters
+    };
+    auto st = std::make_shared<State>();
+    const auto window = [&frame]() -> GridWindow& { return *gridWindowOf(frame); };
+    const auto file = [&app]() -> std::optional<OverlayConfig> {
+        const dvv::Result<std::string> text = readConfigText(app.configPath());
+        return text ? std::optional(parseOverlayConfig(*text)) : std::nullopt;
+    };
+    const auto text = [&app]() {
+        const dvv::Result<std::string> read = readConfigText(app.configPath());
+        return read ? *read : std::string();
+    };
+    const auto write = [&app](std::string_view content) {
+        std::ofstream(app.configPath(), std::ios::binary | std::ios::trunc) << content;
+    };
+    const auto check = [st](bool ok, std::string_view what) {
+        if (!ok) {
+            st->fails += std::format("{}; ", what);
+        }
+    };
+    const auto choose = [](wxChoice& choice, int index) {
+        choice.SetSelection(index);
+        sendControlEvent(choice, wxEVT_CHOICE, index);
+    };
+    const auto release = [](wxSlider& slider, wxEventType type, int position) {
+        wxScrollEvent event(type, slider.GetId(), position, wxHORIZONTAL);
+        event.SetEventObject(&slider);
+        (void)injectInput(*slider.GetEventHandler(), event);
+    };
+    const auto passed = [st](std::string& seen) {
+        seen = st->fails.empty() ? "all checks pass" : st->fails;
+        return st->fails.empty();
+    };
+    const auto grid_step = [&steps, st, passed](const char* name, const auto& run) {
+        steps.push_back(step(
+            name,
+            [st, run] {
+                st->fails.clear();
+                run();
+            },
+            passed));
+    };
+    grid_step("grid save: a style sets colours and opacities, not thickness",
+              [&frame, &app, st, window, file, check, choose] {
+                  const dvv::Result<std::string> before = readConfigText(app.configPath());
+                  st->original = before ? std::optional(*before) : std::nullopt;
+                  st->grid = frame.grid();
+                  st->rulers = frame.rulers();
+                  st->messages = 0;
+                  dialogHooks().message = [st](wxMessageDialog&) { ++st->messages; };
+                  frame.setWindowShown(FloatingKind::GridAndRulers, true);
+                  GridConfig grid;
+                  grid.levels[0].thickness = 3;
+                  frame.setOverlay(grid, frame.rulers(), OverlaySave::Later);
+                  wxChoice& style = window().styleChoiceForTest();
+                  choose(style, static_cast<int>(OverlayStyle::Halo));
+                  const GridConfig& now = frame.grid();
+                  check(now.levels[0].thickness == 3 && now.levels[1].thickness == 1,
+                        std::format("thickness {} / {}", now.levels[0].thickness,
+                                    now.levels[1].thickness));
+                  check(now.levels[0].opacity == 95 && now.levels[1].opacity == 75 &&
+                            now.levels[2].opacity == 30,
+                        std::format("opacities {} / {} / {}", now.levels[0].opacity,
+                                    now.levels[1].opacity, now.levels[2].opacity));
+                  check(now.levels[0].halo && now.levels[1].halo && !now.levels[2].halo, "halo");
+                  check(style.GetStringSelection() == "Halo" && style.GetCount() == 4,
+                        std::format("style '{}' of {}", style.GetStringSelection().utf8_string(),
+                                    style.GetCount()));
+                  const std::optional<OverlayConfig> saved = file();
+                  check(saved && saved->grid == now, "the style saved at once");
+              });
+    grid_step("grid save: a colour shows Custom and saves; a preset drops Custom",
+              [&frame, window, file, check, choose] {
+                  wxColourPickerCtrl& picker = window().colourPickerForTest(GridLevel::Minor);
+                  const wxColour colour(0x10, 0x20, 0x30);
+                  picker.SetColour(colour);
+                  wxColourPickerEvent event(&picker, picker.GetId(), colour);
+                  (void)injectInput(*picker.GetEventHandler(), event);
+                  wxChoice& style = window().styleChoiceForTest();
+                  const Rgb8 expected{.r = 0x10, .g = 0x20, .b = 0x30};
+                  check(frame.grid().levels[1].colour == expected, "the colour applied");
+                  check(style.GetStringSelection() == "Custom" && style.GetCount() == 5,
+                        std::format("after the colour: style '{}' of {}",
+                                    style.GetStringSelection().utf8_string(), style.GetCount()));
+                  std::optional<OverlayConfig> saved = file();
+                  check(saved && saved->grid.levels[1].colour == expected,
+                        "the colour saved at once");
+                  choose(style, static_cast<int>(OverlayStyle::Plain));
+                  check(style.GetStringSelection() == "Plain" && style.GetCount() == 4,
+                        std::format("after Plain: style '{}' of {}",
+                                    style.GetStringSelection().utf8_string(), style.GetCount()));
+                  saved = file();
+                  check(saved && saved->grid == frame.grid() &&
+                            overlayStyleOf(saved->grid, saved->rulers) == OverlayStyle::Plain,
+                        "Plain saved at once");
+              });
+    grid_step("grid save: the colour dialog's changes apply unsaved; Cancel restores, OK saves",
+              [&frame, window, file, check] {
+                  wxColourPickerCtrl& picker = window().colourPickerForTest(GridLevel::Major);
+                  const Rgb8 before = frame.grid().levels[0].colour;
+                  const auto send = [&picker](wxEventType type, const wxColour& colour) {
+                      wxColourPickerEvent event(&picker, picker.GetId(), colour, type);
+                      (void)injectInput(*picker.GetEventHandler(), event);
+                  };
+                  const auto saved_colour = [file] {
+                      const std::optional<OverlayConfig> saved = file();
+                      return saved ? saved->grid.levels[0].colour : Rgb8{};
+                  };
+                  const Rgb8 kept = saved_colour();
+                  send(wxEVT_COLOURPICKER_CURRENT_CHANGED, wxColour(0x40, 0x50, 0x60));
+                  send(wxEVT_COLOURPICKER_CURRENT_CHANGED, wxColour(0x41, 0x51, 0x61));
+                  const Rgb8 live{.r = 0x41, .g = 0x51, .b = 0x61};
+                  check(frame.grid().levels[0].colour == live && saved_colour() == kept,
+                        "the live change applied unsaved");
+                  // The cancel carries the button's colour, which showOverlay set to the live one.
+                  send(wxEVT_COLOURPICKER_DIALOG_CANCELLED, picker.GetColour());
+                  check(frame.grid().levels[0].colour == before && saved_colour() == kept,
+                        "Cancel restored the colour unsaved");
+                  send(wxEVT_COLOURPICKER_CURRENT_CHANGED, wxColour(0x70, 0x80, 0x90));
+                  picker.SetColour(wxColour(0x70, 0x80, 0x90));
+                  send(wxEVT_COLOURPICKER_CHANGED, wxColour(0x70, 0x80, 0x90));
+                  const Rgb8 chosen{.r = 0x70, .g = 0x80, .b = 0x90};
+                  check(frame.grid().levels[0].colour == chosen && saved_colour() == chosen,
+                        "OK applied and saved the colour");
+                  send(wxEVT_COLOURPICKER_DIALOG_CANCELLED, picker.GetColour());
+                  check(frame.grid().levels[0].colour == chosen,
+                        "a Cancel after OK changed the colour");
+              });
+    // The rulers shown and every frame they caused recorded, so the next step counts its own.
+    steps.push_back(step(
+        "grid window: the rulers shown, the frames settled",
+        [&frame, st] {
+            RulerConfig rulers = frame.rulers();
+            rulers.show = true;
+            frame.setOverlay(frame.grid(), rulers, OverlaySave::Later);
+            st->stable = 0;
+            st->last = {};
+        },
+        [&frame, st](std::string& seen) {
+            const RecordedInfo now = frame.viewport().lastRecorded().value_or(RecordedInfo{});
+            const bool same = now.pictureRecords == st->last.pictureRecords &&
+                              now.rulerRecords == st->last.rulerRecords;
+            st->stable = same ? st->stable + 1 : 0;
+            st->last = now;
+            seen = std::format("rulers {}, strip {}, unchanged polls {}", frame.rulers().show,
+                               frame.viewport().stripWindowUnits(), st->stable);
+            return frame.rulers().show && frame.viewport().stripWindowUnits() > 0 &&
+                   st->stable >= 3;
+        }));
+    steps.push_back(step(
+        "grid window: the Cursor row changes the cursor colour",
+        [&frame, st, window] {
+            st->recorded = frame.viewport().lastRecorded().value_or(RecordedInfo{});
+            wxColourPickerCtrl& picker = window().cursorColourPickerForTest();
+            const wxColour colour(0x34, 0xc7, 0x59);
+            picker.SetColour(colour);
+            wxColourPickerEvent event(&picker, picker.GetId(), colour);
+            (void)injectInput(*picker.GetEventHandler(), event);
+        },
+        [&frame, st, file, text](std::string& seen) {
+            const Rgb8 expected{.r = 0x34, .g = 0xc7, .b = 0x59};
+            const std::optional<OverlayConfig> saved = file();
+            const bool in_file = saved && saved->rulers.cursorColour == expected &&
+                                 text().find("\"#34c759\"") != std::string::npos;
+            const RecordedInfo now = frame.viewport().lastRecorded().value_or(RecordedInfo{});
+            seen = std::format("applied {}, saved {}, picture records +{}, ruler records +{}",
+                               frame.rulers().cursorColour == expected, in_file,
+                               now.pictureRecords - st->recorded.pictureRecords,
+                               now.rulerRecords - st->recorded.rulerRecords);
+            return frame.rulers().cursorColour == expected && in_file &&
+                   now.pictureRecords == st->recorded.pictureRecords &&
+                   now.rulerRecords > st->recorded.rulerRecords;
+        }));
+    grid_step("grid window: a style sets the cursor colour", [&frame, window, check, choose] {
+        wxChoice& style = window().styleChoiceForTest();
+        choose(style, static_cast<int>(OverlayStyle::Coloured));
+        const Rgb8 magenta{.r = 0xff, .g = 0x2d, .b = 0xd2};
+        check(frame.rulers().cursorColour == magenta && style.GetStringSelection() == "Coloured",
+              std::format("after Coloured: style '{}'", style.GetStringSelection().utf8_string()));
+        wxColourPickerCtrl& picker = window().cursorColourPickerForTest();
+        const wxColour red(0xff, 0x3b, 0x30);
+        picker.SetColour(red);
+        wxColourPickerEvent event(&picker, picker.GetId(), red);
+        (void)injectInput(*picker.GetEventHandler(), event);
+        check(frame.rulers().cursorColour == Rgb8{.r = 0xff, .g = 0x3b, .b = 0x30} &&
+                  style.GetStringSelection() == "Custom",
+              std::format("after the red cursor: style '{}'",
+                          style.GetStringSelection().utf8_string()));
+    });
+    grid_step("grid window: Style is in the level label column", [window, check] {
+        wxStaticText& style = window().styleLabelForTest();
+        style.GetParent()->Layout();
+        const wxRect style_label = style.GetRect();
+        const wxRect level_label =
+            window().appearanceLabelForTest(GridLevel::SecondMinor).GetRect();
+        const bool right = native_policy::labelAlignment() == wxALIGN_RIGHT;
+        check(right ? style_label.GetRight() == level_label.GetRight()
+                    : style_label.GetLeft() == level_label.GetLeft(),
+              std::format("labels: Style {}..{}, Second minor {}..{}", style_label.GetLeft(),
+                          style_label.GetRight(), level_label.GetLeft(), level_label.GetRight()));
+        const wxRect cursor_label = window().cursorLabelForTest().GetRect();
+        check(right ? cursor_label.GetRight() == level_label.GetRight()
+                    : cursor_label.GetLeft() == level_label.GetLeft(),
+              std::format("labels: Cursor {}..{}, Second minor {}..{}", cursor_label.GetLeft(),
+                          cursor_label.GetRight(), level_label.GetLeft(), level_label.GetRight()));
+        const int choice = window().styleChoiceForTest().GetPosition().x;
+        const int colour = window().colourPickerForTest(GridLevel::Major).GetPosition().x;
+        check(choice == colour, std::format("Style list at {}, colours at {}", choice, colour));
+    });
+    grid_step("grid save: thickness, Adaptive, Halo and Show rulers save at once",
+              [&frame, window, file, check, choose] {
+                  choose(window().thicknessChoiceForTest(GridLevel::Minor), 3);
+                  std::optional<OverlayConfig> saved = file();
+                  check(frame.grid().levels[1].thickness == 4 && saved &&
+                            saved->grid.levels[1].thickness == 4,
+                        "thickness 4 pt applied and saved");
+                  wxCheckBox& adaptive = window().adaptiveBoxForTest(GridLevel::SecondMinor);
+                  adaptive.SetValue(true);
+                  sendControlEvent(adaptive, wxEVT_CHECKBOX, 1);
+                  saved = file();
+                  check(frame.grid().levels[2].adaptive && saved && saved->grid.levels[2].adaptive,
+                        "Adaptive applied and saved");
+                  wxCheckBox& halo = window().haloBoxForTest(GridLevel::SecondMinor);
+                  halo.SetValue(true);
+                  sendControlEvent(halo, wxEVT_CHECKBOX, 1);
+                  saved = file();
+                  check(frame.grid().levels[2].halo && saved && saved->grid.levels[2].halo,
+                        "Halo applied and saved");
+                  wxCheckBox& rulers = window().rulersBoxForTest();
+                  rulers.SetValue(!rulers.GetValue());
+                  sendControlEvent(rulers, wxEVT_CHECKBOX, rulers.GetValue() ? 1 : 0);
+                  saved = file();
+                  check(saved && saved->rulers.show == rulers.GetValue() &&
+                            frame.rulers().show == rulers.GetValue(),
+                        "Show rulers applied and saved");
+              });
+    grid_step("grid save: slider moves do not save; the release and a key's release save the value",
+              [&frame, window, file, check, release] {
+                  wxSlider& slider = window().opacitySliderForTest(GridLevel::Major);
+                  const std::optional<OverlayConfig> before = file();
+                  const std::uint32_t kept = before ? before->grid.levels[0].opacity : 0;
+                  for (const int value : {40, 41, 42}) {
+                      slider.SetValue(value);
+                      sendControlEvent(slider, wxEVT_SLIDER, value);
+                  }
+                  std::optional<OverlayConfig> saved = file();
+                  check(frame.grid().levels[0].opacity == 42 && saved &&
+                            saved->grid.levels[0].opacity == kept,
+                        std::format("after the moves: live {}, saved {} (kept {})",
+                                    frame.grid().levels[0].opacity,
+                                    saved ? saved->grid.levels[0].opacity : 0, kept));
+                  // As macOS sends it: the thumb's release, at a position the last move did not
+                  // carry.
+                  slider.SetValue(45);
+                  sendControlEvent(slider, wxEVT_SLIDER, 45);
+                  slider.SetValue(46);
+                  release(slider, wxEVT_SCROLL_THUMBRELEASE, 46);
+                  saved = file();
+                  check(frame.grid().levels[0].opacity == 46 && slider.GetValue() == 46 && saved &&
+                            saved->grid.levels[0].opacity == 46,
+                        std::format("after the thumb's release: live {}, slider {}, saved {}",
+                                    frame.grid().levels[0].opacity, slider.GetValue(),
+                                    saved ? saved->grid.levels[0].opacity : 0));
+                  // macOS: a key moves the slider with no release event; its key-up saves.
+                  slider.SetValue(44);
+                  sendControlEvent(slider, wxEVT_SLIDER, 44);
+                  wxKeyEvent key_up(wxEVT_KEY_UP);
+                  key_up.m_keyCode = WXK_RIGHT;
+                  key_up.SetEventObject(&slider);
+                  (void)injectInput(*slider.GetEventHandler(), key_up);
+                  saved = file();
+                  check(saved && saved->grid.levels[0].opacity == 44,
+                        std::format("after the key-up: saved {}",
+                                    saved ? saved->grid.levels[0].opacity : 0));
+              });
+    grid_step("grid save: an unchanged release writes nothing", [&app, window, check, release] {
+        namespace fs = std::filesystem;
+        std::error_code error;
+        const fs::file_time_type old =
+            fs::last_write_time(app.configPath(), error) - std::chrono::hours(1);
+        fs::last_write_time(app.configPath(), old, error);
+        wxSlider& slider = window().opacitySliderForTest(GridLevel::Major);
+        release(slider, wxEVT_SCROLL_THUMBRELEASE, slider.GetValue());
+        check(!error && fs::last_write_time(app.configPath(), error) == old,
+              "the file was written");
+    });
+    // As GTK sends a held key's steps and Windows and GTK the wheel's notches: each scroll's end
+    // before its wxEVT_SLIDER. Nothing is saved until the quiet period after the last one.
+    steps.push_back(step(
+        "grid save: the scroll's ends save once, after a quiet period",
+        [&frame, st, window, file, check, release] {
+            st->fails.clear();
+            wxSlider& slider = window().opacitySliderForTest(GridLevel::Major);
+            const std::optional<OverlayConfig> before = file();
+            const std::uint32_t kept = before ? before->grid.levels[0].opacity : 0;
+            for (const int value : {50, 51, 52}) {
+                slider.SetValue(value);
+                release(slider, wxEVT_SCROLL_CHANGED, value);
+                sendControlEvent(slider, wxEVT_SLIDER, value);
+            }
+            const std::optional<OverlayConfig> saved = file();
+            check(frame.grid().levels[0].opacity == 52 && saved &&
+                      saved->grid.levels[0].opacity == kept && window().savePendingForTest(),
+                  std::format("after the ends: live {}, saved {} (kept {}), pending {}",
+                              frame.grid().levels[0].opacity,
+                              saved ? saved->grid.levels[0].opacity : 0, kept,
+                              window().savePendingForTest()));
+        },
+        [st, window, file](std::string& seen) {
+            const std::optional<OverlayConfig> saved = file();
+            const std::uint32_t opacity = saved ? saved->grid.levels[0].opacity : 0;
+            const bool pending = window().savePendingForTest();
+            seen = std::format("{}saved {}, pending {}", st->fails, opacity, pending);
+            return st->fails.empty() && opacity == 52 && !pending;
+        }));
+    grid_step("grid save: G saves at once", [&frame, file, check] {
+        const bool shown = frame.grid().levels[0].show;
+        frame.execute(Command::Grid);
+        const std::optional<OverlayConfig> saved = file();
+        check(frame.grid().levels[0].show != shown && saved &&
+                  saved->grid.levels[0].show == frame.grid().levels[0].show,
+              "the grid's on/off saved");
+    });
+    grid_step("grid save: closing the window saves", [&frame, window, file, check] {
+        wxSlider& slider = window().opacitySliderForTest(GridLevel::Minor);
+        slider.SetValue(61);
+        sendControlEvent(slider, wxEVT_SLIDER, 61);
+        std::optional<OverlayConfig> saved = file();
+        check(saved && saved->grid.levels[1].opacity != 61, "the move saved");
+        window().Close();
+        saved = file();
+        check(!frame.windowShown(FloatingKind::GridAndRulers) && saved &&
+                  saved->grid.levels[1].opacity == 61,
+              "the close saved");
+    });
+    // B-C1: nothing the window has pending outlives a hide (the main window's close ends it the
+    // same way): the quiet period stops, and a live colour OK did not confirm goes back.
+    grid_step(
+        "grid save: a hide ends a pending save and an unconfirmed colour",
+        [&frame, window, file, check, release] {
+            frame.setWindowShown(FloatingKind::GridAndRulers, true);
+            wxSlider& slider = window().opacitySliderForTest(GridLevel::Minor);
+            const int value = slider.GetValue() == 40 ? 41 : 40;
+            slider.SetValue(value);
+            release(slider, wxEVT_SCROLL_CHANGED, value);
+            wxColourPickerCtrl& picker = window().colourPickerForTest(GridLevel::Minor);
+            const Rgb8 before = frame.grid().levels[1].colour;
+            const Rgb8 live = before == Rgb8{.r = 0x12, .g = 0x34, .b = 0x56}
+                                  ? Rgb8{.r = 0x65, .g = 0x43, .b = 0x21}
+                                  : Rgb8{.r = 0x12, .g = 0x34, .b = 0x56};
+            wxColourPickerEvent event(&picker, picker.GetId(), wxColour(live.r, live.g, live.b),
+                                      wxEVT_COLOURPICKER_CURRENT_CHANGED);
+            (void)injectInput(*picker.GetEventHandler(), event);
+            wxColourPickerCtrl& cursor_picker = window().cursorColourPickerForTest();
+            const Rgb8 cursor_before = frame.rulers().cursorColour;
+            const Rgb8 cursor_live = cursor_before == Rgb8{.r = 0x0a, .g = 0x84, .b = 0xff}
+                                         ? Rgb8{.r = 0xff, .g = 0x84, .b = 0x0a}
+                                         : Rgb8{.r = 0x0a, .g = 0x84, .b = 0xff};
+            wxColourPickerEvent cursor_event(&cursor_picker, cursor_picker.GetId(),
+                                             wxColour(cursor_live.r, cursor_live.g, cursor_live.b),
+                                             wxEVT_COLOURPICKER_CURRENT_CHANGED);
+            (void)injectInput(*cursor_picker.GetEventHandler(), cursor_event);
+            check(window().savePendingForTest() && frame.grid().levels[1].colour == live &&
+                      frame.rulers().cursorColour == cursor_live,
+                  "no save pending or no live colours before the hide");
+            frame.setWindowShown(FloatingKind::GridAndRulers, false);
+            check(!window().savePendingForTest(), "a save is still pending after the hide");
+            const std::optional<OverlayConfig> saved = file();
+            check(frame.grid().levels[1].colour == before && saved &&
+                      saved->grid.levels[1].colour == before &&
+                      saved->grid.levels[1].opacity == static_cast<std::uint32_t>(value),
+                  std::format("after the hide: live colour back {}, saved opacity {} (moved {})",
+                              frame.grid().levels[1].colour == before,
+                              saved ? saved->grid.levels[1].opacity : 0, value));
+            check(frame.rulers().cursorColour == cursor_before && saved &&
+                      saved->rulers.cursorColour == cursor_before,
+                  std::format("after the hide: live cursor colour back {}, saved {}",
+                              frame.rulers().cursorColour == cursor_before,
+                              saved && saved->rulers.cursorColour == cursor_before));
+        });
+    grid_step("grid save: the settings are neither set nor saved during the close",
+              [&frame, text, check] {
+                  const GridConfig kept = frame.grid();
+                  const std::string kept_text = text();
+                  GridConfig grid = kept;
+                  grid.levels[2].opacity = kept.levels[2].opacity == 33 ? 34 : 33;
+                  frame.setOverlayWhileClosingForTest(grid, frame.rulers());
+                  check(frame.grid() == kept && text() == kept_text,
+                        "a setOverlay during the close changed the settings or the file");
+              });
+    grid_step("grid save: a non-object grid in the file is not saved and shows no dialog",
+              [&frame, &app, st, file, write, check] {
+                  write(R"({"gui":{"grid":5}})");
+                  app.reloadOverlayForTest();
+                  st->messages = 0;
+                  const bool shown = frame.grid().levels[0].show;
+                  frame.execute(Command::Grid);
+                  check(frame.grid().levels[0].show != shown, "G changed the picture");
+                  std::optional<OverlayConfig> saved = file();
+                  check(saved && !saved->gridSavable, "the grid in the file changed");
+                  frame.execute(Command::Rulers);
+                  saved = file();
+                  check(saved && !saved->gridSavable && saved->rulers.show == frame.rulers().show &&
+                            saved->rulersSavable,
+                        "R saved the rulers alone");
+                  check(st->messages == 0, std::format("{} dialogs", st->messages));
+              });
+    grid_step("grid save: a grid made a non-object while running stops its saves with one warning",
+              [&frame, &app, st, file, write, check] {
+                  write(R"({"gui":{}})");
+                  app.reloadOverlayForTest();
+                  write(R"({"gui":{"grid":5}})");
+                  const std::uint64_t since = logNext(app);
+                  const auto count = [&app, since](std::string_view needle) {
+                      const std::string logged = loggedSince(app, since);
+                      std::size_t found = 0;
+                      for (std::size_t at = logged.find(needle); at != std::string::npos;
+                           at = logged.find(needle, at + needle.size())) {
+                          ++found;
+                      }
+                      return found;
+                  };
+                  frame.execute(Command::Rulers);
+                  std::optional<OverlayConfig> saved = file();
+                  check(saved && !saved->gridSavable && saved->rulers.show == frame.rulers().show,
+                        "R saved the rulers alone");
+                  const std::size_t first = count("is not an object now");
+                  frame.execute(Command::Rulers);
+                  const std::size_t second = count("is not an object now");
+                  check(first == 1 && second == 1,
+                        std::format("warnings {} then {}", first, second));
+                  write(R"({"gui":{"grid":{}}})");
+                  frame.execute(Command::Grid);
+                  saved = file();
+                  check(saved && saved->gridSavable &&
+                            saved->grid.levels[0].show == frame.grid().levels[0].show,
+                        "the grid saved again once it is an object");
+                  check(st->messages == 0, std::format("{} dialogs", st->messages));
+              });
+    grid_step("grid save: both parts non-object: nothing saved, no dialog", [&frame, &app, st, text,
+                                                                             write, check] {
+        const std::string both = R"({"gui":{"grid":5,"rulers":5}})";
+        write(both);
+        app.reloadOverlayForTest();
+        frame.execute(Command::Grid);
+        frame.execute(Command::Rulers);
+        const bool saved = app.saveOverlay(frame.grid(), frame.rulers(), false);
+        check(!saved && text() == both && st->messages == 0,
+              std::format("saved {}, file '{}', {} dialogs", saved, text(), st->messages));
+    });
+    grid_step("grid save: the file and the settings are restored", [&frame, &app, st, check] {
+        dialogHooks().message = nullptr;
+        if (st->original) {
+            std::ofstream(app.configPath(), std::ios::binary | std::ios::trunc) << *st->original;
+        } else {
+            std::error_code error;
+            std::filesystem::remove(app.configPath(), error);
+        }
+        app.reloadOverlayForTest();
+        frame.setOverlay(st->grid, st->rulers, OverlaySave::Later);
+        check(frame.grid() == st->grid && frame.rulers() == st->rulers, "restored");
+    });
+}
+
+// The run's last grid change, made just before the close: a slider's scroll end leaves its save
+// pending for the quiet period, so the main window's close must end it and save the value;
+// OnExit checks the file against it.
+void addGridCloseSaveStep(std::vector<SelfTestStep>& steps, SelfTest& test) {
+    MainFrame& frame = test.frame();
+    App& app = test.app();
+    steps.push_back(step(
+        "grid save: a save left pending is for the close to save",
+        [&frame, &app] {
+            frame.setWindowShown(FloatingKind::GridAndRulers, true);
+            GridWindow& window = *gridWindowOf(frame);
+            wxSlider& slider = window.opacitySliderForTest(GridLevel::SecondMinor);
+            const int value = slider.GetValue() == 17 ? 18 : 17;
+            slider.SetValue(value);
+            wxScrollEvent event(wxEVT_SCROLL_CHANGED, slider.GetId(), value, wxHORIZONTAL);
+            event.SetEventObject(&slider);
+            // The save stays pending until the close however slow the run is: this scroll's end
+            // waits a minute; later ones wait the default again.
+            const std::chrono::milliseconds quiet =
+                window.setSaveQuietForTest(std::chrono::minutes{1});
+            (void)injectInput(*slider.GetEventHandler(), event);
+            (void)window.setSaveQuietForTest(quiet);
+            app.expectOverlayAtCloseForTest(frame.grid(), frame.rulers());
+        },
+        [&frame, &app](std::string& seen) {
+            const GridWindow* const window = gridWindowOf(frame);
+            const bool pending = window != nullptr && window->savePendingForTest();
+            const dvv::Result<std::string> text = readConfigText(app.configPath());
+            const bool unsaved = !text || parseOverlayConfig(*text).grid != frame.grid();
+            seen = std::format("opacity {}, pending {}, unsaved {}", frame.grid().levels[2].opacity,
+                               pending, unsaved);
+            return pending && unsaved;
+        }));
+}
+
 void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
     MainFrame& frame = test.frame();
     struct State {
@@ -5791,16 +7954,19 @@ void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
         [&frame, st, shown](std::string& seen) {
             const bool matches = viewMatches(frame, seen);
             const Viewport& viewport = frame.viewport();
-            const dvv::platform::PixelSize extent = viewport.physicalClientSize();
+            const dvv::platform::PixelSize extent = viewport.pictureSize();
+            const dvv::platform::PixelSize client = viewport.physicalClientSize();
             const ViewTransform view = viewport.shownView();
             const PointD centre =
                 imagePointAt(view, {.x = extent.width / 2.0, .y = extent.height / 2.0});
             const double tolerance = (0.5 / view.zoom()) + 1e-9;
             seen = std::format(
-                "extent {}x{} (was {}x{}), centre ({}, {}) (wanted ({}, {})); {}; {}", extent.width,
-                extent.height, st->extent.width, st->extent.height, centre.x, centre.y,
-                st->request.centre.x, st->request.centre.y, shown(), seen);
-            return matches && !(extent == st->extent) && viewport.view() == st->request &&
+                "P {}x{}, extent {}x{} (was {}x{}), centre ({}, {}) (wanted ({}, {})); {}; {}",
+                extent.width, extent.height, client.width, client.height, st->extent.width,
+                st->extent.height, centre.x, centre.y, st->request.centre.x, st->request.centre.y,
+                shown(), seen);
+            // st->extent is the whole viewport's: compare it with the whole viewport, not P.
+            return matches && !(client == st->extent) && viewport.view() == st->request &&
                    std::abs(centre.x - st->request.centre.x) <= tolerance &&
                    std::abs(centre.y - st->request.centre.y) <= tolerance;
         }));
@@ -5889,6 +8055,13 @@ void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
     addPinchSteps(steps, frame);
     addZoomButtonSteps(steps, frame);
     addOpenSizingSteps(steps, frame);
+    addRulerLayoutSteps(steps, frame);
+    addRulerInputSteps(steps, frame);
+    addHuggingRulerSteps(steps, frame);
+    addCursorSteps(steps, frame);
+    addGridCommandSteps(steps, test);
+    addGridWindowSteps(steps, test);
+    addGridSaveSteps(steps, test);
     // Later view steps go before this one.
     steps.push_back(step(
         "view: Close stream shows Fit",
@@ -9152,7 +11325,8 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             }
             return true;
         }));
-    // Last: the app closes with the seek still pending; App::shutdownSession() stops the delay.
+    // Last but the grid save step: the app closes with the seek still pending;
+    // App::shutdownSession() stops the delay.
     steps.push_back(reopen_clip("reopen the clip for the close"));
     steps.push_back(step(
         "close during a slow seek",
@@ -9166,6 +11340,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             seen = "the seek is pending";
             return true;
         }));
+    addGridCloseSaveStep(steps, test);  // reads no frame, so the seek stays pending
     return steps;  // the runner appends the close step (validation 0, leak check)
 }
 

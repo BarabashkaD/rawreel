@@ -1,6 +1,10 @@
 #include "render/display_state.h"
 
+#include <mutex>
+#include <optional>
 #include <utility>
+
+#include "dvv/media/view.h"
 
 namespace rawreel {
 
@@ -31,11 +35,35 @@ void DisplayState::clear() {
     notify();
 }
 
-void DisplayState::setParams(CompositeParams params) {
+void DisplayState::setView(dvv::media::ViewRequest view) {
     {
         std::lock_guard lock(mutex_);
-        params_ = params;
-        ++version_;
+        if (params_.view == view) {
+            return;
+        }
+        params_.view = view;
+    }
+    notify();
+}
+
+void DisplayState::setOverlay(const OverlayParams& overlay) {
+    {
+        std::lock_guard lock(mutex_);
+        if (params_.overlay == overlay) {
+            return;
+        }
+        params_.overlay = overlay;
+    }
+    notify();
+}
+
+void DisplayState::setCursor(std::optional<dvv::media::PointD> cursor) {
+    {
+        std::lock_guard lock(mutex_);
+        if (params_.cursor == cursor) {
+            return;
+        }
+        params_.cursor = cursor;
     }
     notify();
 }
