@@ -54,6 +54,7 @@
 #include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/gpu_info_json.h"
+#include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
 #include "dvv/media/view.h"
 #include "dvv/media/view_lines.h"
@@ -496,13 +497,16 @@ void MainFrame::buildMenus() {
         if (native_policy::settingsAtEndOfEdit() && info.command == Command::Settings) {
             continue;  // Edit -> Preferences..., below
         }
-        if (native_policy::logItemHasChangingTitle()) {
+        if (info.command == Command::Alpha) {
+            menu->AppendSeparator();  // after Grid and Rulers...
+        }
+        if (info.check == MenuCheck::Shown && native_policy::shownItemHasChangingTitle()) {
             // macOS shows and hides a part of a window with a title that changes, not a check
-            // mark ("checkable" does not apply); onUpdateUi keeps the title.
-            const std::optional<bool> shown = shownBy(info.command);
-            menu->Append(menuId(info.command),
-                         shown ? wxString::FromUTF8(shownItemTitle(info, *shown)) : label, help);
-        } else if (info.checkable) {
+            // mark; onUpdateUi keeps the title. A mode (Alpha) stays a check item there too.
+            const bool shown = menuState(info.command);
+            menu->Append(menuId(info.command), wxString::FromUTF8(shownItemTitle(info, shown)),
+                         help);
+        } else if (info.check != MenuCheck::None) {
             menu->AppendCheckItem(menuId(info.command), label, help);  // onUpdateUi checks it
         } else {
             menu->Append(menuId(info.command), label, help);
@@ -920,6 +924,7 @@ bool MainFrame::isAvailable(Command command) const {
         // Spec §4.3: disabled when no row is selected (a hidden pane shows none).
         case Command::SaveSelectedLines: return logShown() && log_->hasSelection();
         case Command::Format: return hasStream() && !streams_.empty();
+        case Command::Alpha: return hasStream() && clipHasAlpha();
     }
     return false;
 }
@@ -943,6 +948,9 @@ void MainFrame::execute(Command command, CommandSource source) {
     }
     if (!isAvailable(command)) {
         DVV_LOG_DEBUG("command {} is not available", commandId(command));
+        if (command == Command::Alpha) {
+            updateAlphaControls();  // a refused click on the bar toggle has flipped its value
+        }
         return;
     }
     if (command == Command::Quit) {
@@ -1009,6 +1017,13 @@ void MainFrame::execute(Command command, CommandSource source) {
         resizeWindowToActualSize();
         return;
     }
+    if (command == Command::Alpha) {
+        alpha_ = !alpha_;
+        DVV_LOG_INFO("alpha {} ({})", alpha_ ? "on" : "off", sourceName(source));
+        viewport_->setAlpha(alpha_);
+        updateAlphaControls();
+        return;
+    }
     Session* session = wxGetApp().session();
     if (session == nullptr) {
         return;
@@ -1067,6 +1082,7 @@ void MainFrame::execute(Command command, CommandSource source) {
         case Command::Grid:
         case Command::Rulers:
         case Command::GridWindow:
+        case Command::Alpha:
         case Command::Settings:
         case Command::About: return;
     }
@@ -1591,6 +1607,7 @@ void MainFrame::onStreamsChanged(const std::vector<StreamInfo>& streams) {
         dismissMessage();
     }
     streams_ = streams;
+    updateAlphaControls();  // another clip keeps the state; the button follows its format
     // The view's frame size; the renderer resolves the view against the frame it shows.
     if (streams_.empty()) {
         viewport_->setImageSize({});
@@ -1773,33 +1790,84 @@ void MainFrame::onMenu(wxCommandEvent& event) {
 void MainFrame::onUpdateUi(wxUpdateUIEvent& event) {
     const std::optional<Command> command = commandOfMenuId(event.GetId());
     event.Enable(!closing_ && command && isAvailable(*command));
-    // A show-or-hide item follows its part however it changed. Only the menu bar's items change
-    // their title; a popup menu's (the picture's context menu) stay check items on every OS.
-    if (const std::optional<bool> shown = command ? shownBy(*command) : std::nullopt) {
-        const auto* const menu = dynamic_cast<const wxMenu*>(event.GetEventObject());
-        const bool in_menu_bar = menu == nullptr || menu->GetMenuBar() != nullptr;
-        if (native_policy::logItemHasChangingTitle() && in_menu_bar) {
-            event.SetText(wxString::FromUTF8(shownItemTitle(commandInfo(*command), *shown)));
-        } else {
-            event.Check(*shown);
+    if (!command) {
+        return;
+    }
+    switch (commandInfo(*command).check) {
+        case MenuCheck::None: break;
+        case MenuCheck::Shown: {
+            // A show-or-hide item follows its part however it changed. Only the menu bar's items
+            // change their title; a popup menu's (the picture's context menu) stay check items on
+            // every OS.
+            const auto* const menu = dynamic_cast<const wxMenu*>(event.GetEventObject());
+            const bool in_menu_bar = menu == nullptr || menu->GetMenuBar() != nullptr;
+            if (native_policy::shownItemHasChangingTitle() && in_menu_bar) {
+                event.SetText(
+                    wxString::FromUTF8(shownItemTitle(commandInfo(*command), menuState(*command))));
+            } else {
+                event.Check(menuState(*command));
+            }
+            break;
         }
+        // A mode item is a check item everywhere; disabled, it keeps showing the kept state.
+        case MenuCheck::Mode: event.Check(menuState(*command)); break;
     }
 }
 
-std::optional<bool> MainFrame::shownBy(Command command) const {
-    if (command == Command::LogPane) {
-        return logShown();
+// Every command is listed (no default), so a new one gets its case here: its state when the
+// table gives it a check item, or the plain list below.
+bool MainFrame::menuState(Command command) const {
+    switch (command) {
+        case Command::LogPane: return logShown();
+        case Command::InfoWindow: return windowShown(FloatingKind::Info);
+        case Command::Grid: return grid_.levels[0].show;
+        case Command::Rulers: return rulers_.show;
+        case Command::Alpha: return alpha_;
+        case Command::Open:
+        case Command::OpenUri:
+        case Command::SaveLog:
+        case Command::SaveSelectedLines:
+        case Command::CloseStreams:
+        case Command::Settings:
+        case Command::Quit:
+        case Command::PlayPause:
+        case Command::Stop:
+        case Command::StepBack:
+        case Command::StepForward:
+        case Command::StepBack10:
+        case Command::StepForward10:
+        case Command::First:
+        case Command::Last:
+        case Command::Loop:
+        case Command::FitToWindow:
+        case Command::ActualSize:
+        case Command::ZoomIn:
+        case Command::ZoomOut:
+        case Command::ResizeWindowToActualSize:
+        case Command::Format:
+        case Command::Reopen:
+        case Command::GridWindow:
+        case Command::GpuInfo:
+        case Command::Diagnostics:
+        case Command::About: return false;  // MenuCheck::None
     }
-    if (command == Command::InfoWindow) {
-        return windowShown(FloatingKind::Info);
+    return false;
+}
+
+bool MainFrame::clipHasAlpha() const {
+    if (streams_.empty()) {
+        return false;
     }
-    if (command == Command::Grid) {
-        return grid_.levels[0].show;
-    }
-    if (command == Command::Rulers) {
-        return rulers_.show;
-    }
-    return std::nullopt;
+    const dvv::media::PixelFormatDesc& desc =
+        dvv::media::formatDesc(streams_.front().info.desc.format);
+    const auto components = std::span(desc.components).first(desc.componentCount);
+    return std::ranges::any_of(components, [](const dvv::media::ComponentDesc& component) {
+        return component.kind == dvv::media::ComponentKind::A;
+    });
+}
+
+void MainFrame::updateAlphaControls() {
+    transportBar().setAlpha(alpha_, isAvailable(Command::Alpha));
 }
 
 void MainFrame::popUpViewportMenu(wxPoint point) {
@@ -1807,11 +1875,13 @@ void MainFrame::popUpViewportMenu(wxPoint point) {
         return;
     }
     wxMenu menu;
-    for (const Command command : {Command::Grid, Command::Rulers}) {
+    // Check items on every OS: a popup's show-or-hide items keep a check mark on macOS too.
+    for (const Command command : {Command::Grid, Command::Rulers, Command::Alpha}) {
         const CommandInfo& info = commandInfo(command);
-        menu.AppendCheckItem(menuId(command), wxString::FromUTF8(menuLabel(info)),
-                             wxString::FromUTF8(info.help))
-            ->Check(shownBy(command).value_or(false));
+        wxMenuItem* const item = menu.AppendCheckItem(
+            menuId(command), wxString::FromUTF8(menuLabel(info)), wxString::FromUTF8(info.help));
+        item->Check(menuState(command));
+        item->Enable(isAvailable(command));
     }
     const CommandInfo& window = commandInfo(Command::GridWindow);
     menu.Append(menuId(Command::GridWindow), wxString::FromUTF8(menuLabel(window)),
@@ -1926,9 +1996,10 @@ void MainFrame::onStatusChanged() {
                      status.player.playing ? 1 : 0);
     }
     player_->transportBar().update(barStatus(status));
-    // isAvailable depends on the session's stream state: the zoom controls follow every status
-    // notification too (three isAvailable calls per notification).
+    // isAvailable depends on the session's stream state: the zoom controls and the Alpha button
+    // follow every status notification too (four isAvailable calls per notification).
     showZoom();
+    updateAlphaControls();
     const StatusFields fields = statusFields(status);
     const std::array<wxString, 3> texts{wxString::FromUTF8(fields.position),
                                         wxString::FromUTF8(fields.fps),

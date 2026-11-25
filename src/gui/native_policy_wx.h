@@ -23,7 +23,7 @@ namespace rawreel::wx_generic {
 inline void applySettingsPageStyle(wxWindow& /*page*/,
                                    dvv::MoveOnlyFunction<void(wxWindow& top)> /*bind_shown*/) {}
 
-[[nodiscard]] constexpr bool logItemHasChangingTitle() noexcept {  // MSW, GTK
+[[nodiscard]] constexpr bool shownItemHasChangingTitle() noexcept {  // MSW, GTK
     return false;
 }
 

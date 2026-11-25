@@ -164,11 +164,32 @@ TEST_CASE("display state: a setter with an unchanged value does not notify") {
     state.setOnChanged({});
 }
 
+TEST_CASE("display state: setAlpha notifies once and leaves the version") {
+    DisplayState state;
+    state.show(frameSet(3));
+    int calls = 0;
+    state.setOnChanged([&calls] { ++calls; });
+    state.setAlpha(false);  // unchanged: the default is off
+    CHECK(calls == 0);
+    state.setAlpha(true);
+    CHECK(calls == 1);
+    const rawreel::DisplaySnapshot snapshot = state.snapshot();
+    CHECK(snapshot.params.alpha);
+    CHECK(snapshot.version == 1);
+    CHECK(snapshot.params == DisplayParams{.alpha = true});  // only its own part
+    state.setAlpha(true);
+    CHECK(calls == 1);
+    state.setAlpha(false);
+    CHECK(calls == 2);
+    CHECK_FALSE(state.snapshot().params.alpha);
+    state.setOnChanged({});
+}
+
 TEST_CASE("display state: the setters and snapshot on two threads") {
     // Race case (TSan): the GUI thread sets the params while the presenter thread reads them. The
     // callback runs outside the state's mutex: it takes a snapshot itself, which a notify() under
-    // that mutex would deadlock on. Each snapshot is one cut of the writes view, overlay, cursor
-    // of round i, seen through each part's parity (before the first round: the parity of -1).
+    // that mutex would deadlock on. Each snapshot is one cut of the writes view, overlay, cursor,
+    // alpha of round i, seen through each part's parity (before the first round: the parity of -1).
     constexpr int ROUNDS = 10000;
     DisplayState state;
     std::atomic<int> calls{0};
@@ -187,6 +208,7 @@ TEST_CASE("display state: the setters and snapshot on two threads") {
                 state.setView(ViewRequest{.mode = ViewMode::Zoom, .zoom = 1.0 + at});
                 state.setOverlay(OverlayParams{.dark = i % 2 == 0});
                 state.setCursor(PointD{.x = at, .y = at});
+                state.setAlpha(i % 2 == 0);
             }
         });
         std::jthread reader([&state, &start, &bumped, &inconsistent] {
@@ -201,23 +223,27 @@ TEST_CASE("display state: the setters and snapshot on two threads") {
                     params.view.mode == ViewMode::Zoom ? static_cast<int>(params.view.zoom) - 1 : 1;
                 const int overlay = params.overlay.dark ? 0 : 1;
                 const int cursor = params.cursor ? static_cast<int>(params.cursor->x) : 1;
-                // A cut after view i, overlay i or cursor i: the overlay is of the view's round,
-                // else the overlay and the cursor are both of the round before.
-                if ((params.cursor && params.cursor->x != params.cursor->y) ||
-                    (overlay != view && cursor != overlay)) {
+                const int alpha = params.alpha ? 0 : 1;
+                // A cut after view i, overlay i, cursor i or alpha i: in write order the parts
+                // change round at most once, from the view's round to the round before.
+                const int changes = static_cast<int>(overlay != view) +
+                                    static_cast<int>(cursor != overlay) +
+                                    static_cast<int>(alpha != cursor);
+                if ((params.cursor && params.cursor->x != params.cursor->y) || changes > 1) {
                     inconsistent = true;
                 }
             }
         });
     }
     state.setOnChanged({});
-    CHECK(calls.load() == 3 * ROUNDS);
+    CHECK(calls.load() == 4 * ROUNDS);
     CHECK_FALSE(bumped);
     CHECK_FALSE(inconsistent);
     CHECK(state.snapshot().params ==
           DisplayParams{.view = ViewRequest{.mode = ViewMode::Zoom, .zoom = 2.0},
                         .overlay = OverlayParams{.dark = false},
-                        .cursor = PointD{.x = 1, .y = 1}});
+                        .cursor = PointD{.x = 1, .y = 1},
+                        .alpha = false});
 }
 
 TEST_CASE("display state: overwritten") {

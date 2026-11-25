@@ -30,9 +30,9 @@ namespace rawreel::native_policy {
 // other toolkits.
 void applySettingsPageStyle(wxWindow& page, dvv::MoveOnlyFunction<void(wxWindow& top)> bind_shown);
 
-// Spec §2: View -> Log and View -> Info have a title that changes (Show/Hide) instead of a check
-// mark (macOS).
-[[nodiscard]] bool logItemHasChangingTitle() noexcept;
+// Spec §2: a show-or-hide item (MenuCheck::Shown: View -> Log, Info, Grid, Rulers) has a title
+// that changes (Show/Hide) instead of a check mark (macOS).
+[[nodiscard]] bool shownItemHasChangingTitle() noexcept;
 
 // The wx stock id that the toolkit gives `command` instead of rawreel's own menu id (macOS: About
 // and Quit, which wxOSX moves to the application menu); nullopt otherwise.

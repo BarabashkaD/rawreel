@@ -185,7 +185,7 @@ ViewportRenderer::Drawn ViewportRenderer::prepare(dvv::platform::PixelSize exten
         dvv::media::pictureRegion(extent, params.overlay.strips).size();
     drawn.view = resolveView(params.view, picture, image_size);
     drawn.regions = passRegions(extent, params.overlay.strips, drawn.view);
-    drawn.composite = compositeConstants(params.overlay, drawn.view, drawn.regions, skip_encode);
+    drawn.composite = compositeConstants(params, drawn.view, drawn.regions, skip_encode);
     const std::optional<dvv::media::ImagePixel> cursor =
         params.cursor ? dvv::media::cursorPixel(drawn.view, drawn.regions.picture, *params.cursor)
                       : std::nullopt;
@@ -197,7 +197,8 @@ ViewportRenderer::Recording ViewportRenderer::record(const Targets& targets,
                                                      dvv::platform::PixelSize extent,
                                                      const FrameSet& frames, const Drawn& drawn,
                                                      bool picture, bool build_lines,
-                                                     RulerPass rulers, GlyphBinding glyphs) {
+                                                     RulerPass rulers, GlyphBinding glyphs,
+                                                     std::optional<std::uint64_t> version) {
     const dvv::media::PixelRect region = drawn.regions.picture;
     const dvv::media::PixelRect dispatched = drawn.regions.pictureDrawn;
     const bool picture_dispatched = picture && !dispatched.empty();
@@ -251,9 +252,13 @@ ViewportRenderer::Recording ViewportRenderer::record(const Targets& targets,
             recorded_.origin = drawn.view.origin();
             recorded_.mode = drawn.view.mode();
             recorded_.pictureDrawn = dispatched;
+            if (version) {
+                recorded_.version = *version;
+            }
         }
         if (picture_dispatched) {
             ++recorded_.pictureRecords;
+            recorded_.pictureFlags = drawn.composite.flags;
         }
         if (rulers_dispatched) {
             ++recorded_.rulerRecords;
@@ -429,7 +434,7 @@ dvv::Result<dvv::gpu::PresentFrame> ViewportRenderer::frame(
         return dvv::gpu::PresentFrame{.record = {}, .image = targets_.output};
     }
     Recording recording = record(targets_, params.extent, snapshot.frames, drawn, record_picture,
-                                 build_lines, ruler_pass, std::move(glyphs));
+                                 build_lines, ruler_pass, std::move(glyphs), snapshot.version);
     if (recording.uploads) {  // the upload counts only when the record carries it
         glyph_source_ = strip;
         glyph_image_ = uploaded;
@@ -451,7 +456,7 @@ dvv::Result<dvv::gpu::PresentFrame> ViewportRenderer::render(dvv::platform::Pixe
         }
     }
     Recording recording = record(targets, extent, frames, drawn, true, gridDrawn(drawn.composite),
-                                 RulerPass::Bands, std::move(glyphs));
+                                 RulerPass::Bands, std::move(glyphs), std::nullopt);
     return dvv::gpu::PresentFrame{.record = std::move(recording.commands),
                                   .image = std::move(targets.output)};
 }

@@ -134,6 +134,14 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
     row->Add(group);
     row->AddStretchSpacer();
     right_pad_ = row->Add(0, 0);
+    // Alpha in its own group before the zoom group; its enabled state follows setAlpha alone.
+    alpha_ =
+        new wxBitmapToggleButton(this, wxID_ANY, bundles_[static_cast<std::size_t>(Icon::Blend)],
+                                 wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+    alpha_->Bind(wxEVT_TOGGLEBUTTON,
+                 [this](wxCommandEvent& /*event*/) { execute_(Command::Alpha); });
+    setUp(*alpha_, Command::Alpha, Icon::Blend);
+    row->Add(alpha_, wxSizerFlags().Border(wxALL, border));
     zoom_out_ = addButton(*row, Command::ZoomOut, Icon::ZoomOut);
     // Zoom buttons design §3: a text button without a command; it takes no focus either.
     zoom_ = new wxButton(this, wxID_ANY, wxString());
@@ -158,8 +166,8 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
                 [this](wxCommandEvent& /*event*/) { execute_(Command::InfoWindow); });
     setUp(*info_, Command::InfoWindow, Icon::Info);
     row->Add(info_, wxSizerFlags().Border(wxALL, border));
-    right_items_ = {row->GetItem(zoom_out_), row->GetItem(zoom_), row->GetItem(zoom_in_),
-                    row->GetItem(grid_), row->GetItem(info_)};
+    right_items_ = {row->GetItem(alpha_),   row->GetItem(zoom_out_), row->GetItem(zoom_),
+                    row->GetItem(zoom_in_), row->GetItem(grid_),     row->GetItem(info_)};
     applyZoomMinSize();
     syncSpacer();
 
@@ -309,6 +317,15 @@ void TransportBar::syncSpacer() {
 void TransportBar::setGridShown(bool shown) {
     if (grid_->GetValue() != shown) {
         grid_->SetValue(shown);
+    }
+}
+
+void TransportBar::setAlpha(bool on, bool available) {
+    if (alpha_->GetValue() != on) {
+        alpha_->SetValue(on);
+    }
+    if (alpha_->IsEnabled() != available) {
+        alpha_->Enable(available);
     }
 }
 
@@ -675,11 +692,12 @@ void TransportBar::applyIdleView(bool fresh) {
 // CP-D4, as MainFrame::isAvailable: every button but Open and "i" waits for a stream, Last also for
 // a known length. Enable states, bitmaps and values change only when they differ. Zoom out and
 // Zoom in follow showZoom alone (zoom buttons design §4): a notification never enables them at a
-// limit.
+// limit. Alpha follows setAlpha alone: a notification never enables it for a clip without alpha.
 void TransportBar::showStatus() {
     const PlayerStatus& status = last_status_.player;
     for (const IconButton& entry : buttons_) {
-        if (entry.command == Command::ZoomOut || entry.command == Command::ZoomIn) {
+        if (entry.command == Command::ZoomOut || entry.command == Command::ZoomIn ||
+            entry.command == Command::Alpha) {
             continue;
         }
         bool enabled = true;

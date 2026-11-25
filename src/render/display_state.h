@@ -1,8 +1,8 @@
 #pragma once
 
 // The viewport's shared state (design M3 v2 §4.4, D23): the latest FrameSet (the Session's
-// IDisplaySink) and the display parameters (GUI): the view, the overlay and the cursor, each set
-// on its own. Thread-safe and non-blocking.
+// IDisplaySink) and the display parameters (GUI): the view, the overlay, the cursor and the alpha
+// toggle, each set on its own. Thread-safe and non-blocking.
 
 #include <array>
 #include <cstdint>
@@ -47,6 +47,7 @@ struct OverlayParams {  // backing pixels; OverlayParams{} draws no grid and no 
     LastValue lastValue = LastValue::Pixel;
     LabelSpacing labelSpacing{};
     bool cursorTagTextBlack = false;  // the cursor tag's text: black, else white
+    std::uint32_t checkerSize = 0;    // the alpha checkerboard's square; the pass draws at least 1
     bool operator==(const OverlayParams&) const = default;
 };
 struct DisplayParams {
@@ -54,6 +55,7 @@ struct DisplayParams {
     dvv::media::ViewRequest view{};
     OverlayParams overlay{};
     std::optional<dvv::media::PointD> cursor{};  // backing pixels in the whole viewport; none: off
+    bool alpha = false;  // the picture blended over a checkerboard by its alpha, else opaque
     bool operator==(const DisplayParams&) const = default;
 };
 struct DisplaySnapshot {  // one consistent read, taken under one lock
@@ -73,6 +75,7 @@ public:
     void setView(dvv::media::ViewRequest view);
     void setOverlay(const OverlayParams& overlay);
     void setCursor(std::optional<dvv::media::PointD> cursor);
+    void setAlpha(bool on);
     // show(), clear() and a setter that changed its value call the callback while holding
     // callback_mutex_ (never mutex_). Binding: once setOnChanged({}) returns, no callback is
     // running and none will run. The callback must not block (the viewport calls

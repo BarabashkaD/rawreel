@@ -16,7 +16,8 @@ public static const uint LEVEL_ADAPTIVE = 1 << 12;
 public static const uint LEVEL_HALO = 1 << 13;
 public static const uint LEVEL_DRAWN = 1 << 14;
 
-// = rawreel::CompositeConstants, 80 bytes.
+// = rawreel::CompositeConstants, 96 bytes. The pads are scalar words: a uint3 would align to 16
+// bytes and grow the block.
 public struct PushConstants
 {
     public uint viewportW;  // P's size
@@ -33,6 +34,10 @@ public struct PushConstants
     public uint drawY;  // levelColour starts at 48
     public uint4 levelColour;  // per grid level: r | g << 8 | b << 16 | a << 24, sRGB-encoded; [3] unused
     public uint4 levelShape;   // per grid level: the bits above; [3] unused
+    public uint checkerSize;   // the alpha checkerboard's square, backing pixels, at least 1
+    public uint pad0;
+    public uint pad1;
+    public uint pad2;
 };
 
 // Any grid level drawn: the same for every thread of a dispatch.

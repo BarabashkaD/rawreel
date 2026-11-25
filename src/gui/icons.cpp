@@ -17,15 +17,7 @@ namespace rawreel {
 namespace {
 
 // In Icon order.
-constexpr std::array<std::string_view, ICON_COUNT> SVGS{
-    lucide::FOLDER_OPEN,  lucide::SKIP_BACK,
-    lucide::STEP_BACK,    lucide::PLAY,
-    lucide::PAUSE,        lucide::SQUARE,
-    lucide::STEP_FORWARD, lucide::SKIP_FORWARD,
-    lucide::REPEAT,       lucide::SLIDERS_HORIZONTAL,
-    lucide::GRID_3X3,     lucide::INFO,
-    lucide::ZOOM_OUT,     lucide::ZOOM_IN,
-};
+constexpr std::array<std::string_view, ICON_COUNT> SVGS = lucide::ICONS;
 
 }  // namespace
 

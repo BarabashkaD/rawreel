@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 
 #include "core/layout.h"
 #include "core/overlay.h"
@@ -150,5 +151,18 @@ TEST_CASE("overlay params: every size is at least one backing pixel") {
             CHECK(params.levels[level].thickness >= 1);
             CHECK(params.tickLength[level] >= 1);
         }
+        CHECK(params.checkerSize >= 1);
     }
+}
+
+TEST_CASE("overlay params: the checker square is 8 DIP in backing pixels") {
+    // It follows a DPI or backing-scale change as the grid's thickness does.
+    const std::array<std::pair<double, std::uint32_t>, 4> cases{
+        {{1.0, 8}, {1.25, 10}, {1.5, 12}, {2.0, 16}}};
+    for (const auto& [per_dip, square] : cases) {
+        CAPTURE(per_dip);
+        CHECK(rawreel::convertOverlay(GridConfig{}, RulerConfig{}, {.display = {per_dip, 1}}, false)
+                  .params.checkerSize == square);
+    }
+    CHECK(OverlayParams{}.checkerSize == 0);
 }

@@ -45,10 +45,14 @@ struct RecordedInfo {
     std::array<dvv::media::PixelRect, 2> rulerDispatched{};
     bool rulerNumbers = false;         // whether a band it dispatched draws numbers (RULER_NUMBERS)
     std::uint64_t pictureRecords = 0;  // picture passes recorded (frame() and render())
+    std::uint32_t pictureFlags = 0;    // the last recorded picture pass's CompositeConstants::flags
     std::uint64_t rulerRecords = 0;    // ruler passes recorded
     std::uint64_t linePasses = 0;      // grid prepasses recorded (the line table built)
     std::uint64_t glyphUploads = 0;    // glyph strip uploads recorded
     std::uint64_t glyphFailures = 0;   // glyph strip uploads tried that failed
+    // The DisplaySnapshot version of the last frame() record whose picture pass was due (render()
+    // leaves it).
+    std::uint64_t version = 0;
     bool operator==(const RecordedInfo&) const = default;
 };
 
@@ -203,10 +207,13 @@ private:
     // (or the glyph dummy) and recording `glyphs.upload` before it (only when a band part is
     // dispatched: Recording::uploads); empty commands when nothing is dispatched. The grid prepass
     // rebuilds the line table over P before the picture pass when `build_lines`, which the caller
-    // sets only when a grid level is drawn; else the picture pass reads the table in place.
+    // sets only when a grid level is drawn; else the picture pass reads the table in place. A due
+    // picture pass sets RecordedInfo::version to `version` (frame()'s snapshot; render() passes
+    // none) with the rest of the record.
     [[nodiscard]] Recording record(const Targets& targets, dvv::platform::PixelSize extent,
                                    const FrameSet& frames, const Drawn& drawn, bool picture,
-                                   bool build_lines, RulerPass rulers, GlyphBinding glyphs);
+                                   bool build_lines, RulerPass rulers, GlyphBinding glyphs,
+                                   std::optional<std::uint64_t> version);
     // The display image of a lease, or null when the lease is not a display view (one
     // DISPLAY_IMAGE_FORMAT plane in GENERAL). A display view bound otherwise logs one Error per
     // `epoch` (FrameSet::epoch). Presenter thread only. The image is valid while the lease (or a

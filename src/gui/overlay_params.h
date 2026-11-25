@@ -31,7 +31,8 @@ struct OverlayConversion {
 // a = opacity x 255 / 100 rounded half up; `dark` is the theme. The label spacing is
 // RULER_NUMBER_GAP_DIP, RULER_TAG_PAD_DIP, RULER_TAG_INSET_DIP and RULER_TAG_MARGIN_DIP each as a
 // pt size above, at most 255; lastValue is the rulers'; cursorTagTextBlack is
-// cursorTagTextBlack(the cursor colour). The glyph strip is the GUI's: params.glyphs stays null.
+// cursorTagTextBlack(the cursor colour); checkerSize, the alpha checkerboard's square, is 8 DIP
+// as a pt size above. The glyph strip is the GUI's: params.glyphs stays null.
 // Precondition: stepsValid() of the grid's steps (each one of GRID_STEP_VALUES, a power of two), as
 // parseOverlayConfig() and the settings keep them; a level's stepLog2 is the log2 of its step.
 [[nodiscard]] OverlayConversion convertOverlay(const GridConfig& grid, const RulerConfig& rulers,

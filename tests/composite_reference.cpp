@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <type_traits>
 
 #include "dvv/media/display.h"
 #include "dvv/media/view.h"
@@ -25,22 +26,33 @@ namespace rawreel {
 namespace {
 
 using Rgb = std::array<float, 3>;
+using Rgba = std::array<float, 4>;  // premultiplied by its alpha, the alpha pass's texel
 
 float mix(float a, float b, float t) {
-    return a + t * (b - a);  // the shader's mix3, per channel
+    return a + t * (b - a);  // the shader's mix3 and mix4, per channel
 }
 
-Rgb texel(const HostDisplayImage& image, int x, int y) {
+// The texel at (x, y), edges clamped: Rgb as stored, the shader's texel; Rgba premultiplied by
+// its alpha clamped to [0, 1], the shader's texel4.
+template <typename Colour>
+Colour texel(const HostDisplayImage& image, int x, int y) {
     const int cx = std::clamp(x, 0, static_cast<int>(image.width) - 1);
     const int cy = std::clamp(y, 0, static_cast<int>(image.height) - 1);
     const std::size_t base =
         (static_cast<std::size_t>(cy) * image.width + static_cast<std::size_t>(cx)) * 4;
-    return {dvv::media::halfToFloat(image.rgba16f[base]),
-            dvv::media::halfToFloat(image.rgba16f[base + 1]),
-            dvv::media::halfToFloat(image.rgba16f[base + 2])};
+    const float r = dvv::media::halfToFloat(image.rgba16f[base]);
+    const float g = dvv::media::halfToFloat(image.rgba16f[base + 1]);
+    const float b = dvv::media::halfToFloat(image.rgba16f[base + 2]);
+    if constexpr (std::is_same_v<Colour, Rgba>) {
+        const float a = std::clamp(dvv::media::halfToFloat(image.rgba16f[base + 3]), 0.0F, 1.0F);
+        return {r * a, g * a, b * a, a};
+    } else {
+        return {r, g, b};
+    }
 }
 
-Rgb bilinear(const HostDisplayImage& image, float u, float v) {
+template <typename Colour>
+Colour bilinear(const HostDisplayImage& image, float u, float v) {
     const float x = u - 0.5F;
     const float y = v - 0.5F;
     const float x0 = std::floor(x);
@@ -49,12 +61,12 @@ Rgb bilinear(const HostDisplayImage& image, float u, float v) {
     const float fy = y - y0;
     const int ix = static_cast<int>(x0);
     const int iy = static_cast<int>(y0);
-    const Rgb t00 = texel(image, ix, iy);
-    const Rgb t10 = texel(image, ix + 1, iy);
-    const Rgb t01 = texel(image, ix, iy + 1);
-    const Rgb t11 = texel(image, ix + 1, iy + 1);
-    Rgb out{};
-    for (std::size_t c = 0; c < 3; ++c) {
+    const Colour t00 = texel<Colour>(image, ix, iy);
+    const Colour t10 = texel<Colour>(image, ix + 1, iy);
+    const Colour t01 = texel<Colour>(image, ix, iy + 1);
+    const Colour t11 = texel<Colour>(image, ix + 1, iy + 1);
+    Colour out{};
+    for (std::size_t c = 0; c < out.size(); ++c) {
         const float top = mix(t00[c], t10[c], fx);
         const float bottom = mix(t01[c], t11[c], fx);
         out[c] = mix(top, bottom, fy);
@@ -62,28 +74,47 @@ Rgb bilinear(const HostDisplayImage& image, float u, float v) {
     return out;
 }
 
-Rgb sample(const CompositeConstants& k, const HostDisplayImage& image, float u, float v) {
+template <typename Colour>
+Colour sample(const CompositeConstants& k, const HostDisplayImage& image, float u, float v) {
     if (k.zoom >= 1.0F) {
-        return texel(image, static_cast<int>(std::floor(u)), static_cast<int>(std::floor(v)));
+        return texel<Colour>(image, static_cast<int>(std::floor(u)),
+                             static_cast<int>(std::floor(v)));
     }
     std::uint32_t n = 1;  // min(COMPOSITE_MAX_TAPS, ceil(0.5 / zoom)), as the shader
     while (n < COMPOSITE_MAX_TAPS && static_cast<float>(n) * k.zoom < 0.5F) {
         ++n;
     }
     const float nf = static_cast<float>(n);
-    Rgb sum{0.0F, 0.0F, 0.0F};
+    Colour sum{};
     for (std::uint32_t b = 0; b < n; ++b) {
         const float vb = v + ((static_cast<float>(b) + 0.5F) / nf - 0.5F) / k.zoom;
         for (std::uint32_t a = 0; a < n; ++a) {
             const float ua = u + ((static_cast<float>(a) + 0.5F) / nf - 0.5F) / k.zoom;
-            const Rgb tap = bilinear(image, ua, vb);
-            for (std::size_t c = 0; c < 3; ++c) {
+            const Colour tap = bilinear<Colour>(image, ua, vb);
+            for (std::size_t c = 0; c < sum.size(); ++c) {
                 sum[c] = sum[c] + tap[c];
             }
         }
     }
     const float count = static_cast<float>(n * n);
-    return {sum[0] / count, sum[1] / count, sum[2] / count};
+    Colour out{};
+    for (std::size_t c = 0; c < out.size(); ++c) {
+        out[c] = sum[c] / count;
+    }
+    return out;
+}
+
+// The checkerboard's linear grey at P pixel (x, y): square (0, 0) at the image origin is even.
+float checker(const CompositeConstants& k, std::int32_t x, std::int32_t y) {
+    const std::uint32_t sx =
+        static_cast<std::uint32_t>(std::int64_t{x} - k.offsetX) / k.checkerSize;
+    const std::uint32_t sy =
+        static_cast<std::uint32_t>(std::int64_t{y} - k.offsetY) / k.checkerSize;
+    const bool odd = ((sx + sy) & 1U) != 0;
+    const bool dark = (k.flags & COMPOSITE_DARK) != 0;
+    const float grey = dark ? (odd ? CHECKER_DARK_ODD : CHECKER_DARK_EVEN)
+                            : (odd ? CHECKER_LIGHT_ODD : CHECKER_LIGHT_EVEN);
+    return dvv::media::srgbDecode(grey);
 }
 
 std::uint8_t unorm8(float x) {
@@ -162,8 +193,16 @@ std::array<std::uint8_t, 4> compositePixel(const CompositeConstants& k, std::uin
                                                                               : BACKGROUND_LIGHT);
     Rgb colour{grey, grey, grey};
     if (inside) {
-        colour = sample(k, *image, dvv::media::imageCoordinateAt(ax, x),
-                        dvv::media::imageCoordinateAt(ay, y));
+        const float u = dvv::media::imageCoordinateAt(ax, x);
+        const float v = dvv::media::imageCoordinateAt(ay, y);
+        if ((k.flags & COMPOSITE_ALPHA) != 0) {
+            // The premultiplied picture over the checkerboard, in linear light.
+            const Rgba s = sample<Rgba>(k, *image, u, v);
+            const float under = checker(k, x, y) * (1.0F - s[3]);
+            colour = Rgb{s[0] + under, s[1] + under, s[2] + under};
+        } else {
+            colour = sample<Rgb>(k, *image, u, v);
+        }
     }
     const bool skip = (k.flags & COMPOSITE_SKIP_ENCODE) != 0;
     const Rgb encoded = encode3(colour);
@@ -191,9 +230,8 @@ std::array<std::uint8_t, 4> compositeReference(std::uint32_t px, std::uint32_t p
     const dvv::platform::PixelSize size =
         image ? dvv::platform::PixelSize{image->width, image->height} : dvv::platform::PixelSize{};
     const dvv::media::ViewTransform view = resolveView(params.view, viewport, size);
-    return compositePixel(
-        compositeConstants(params.overlay, view, passRegions(viewport, {}, view), false), px, py,
-        image);
+    return compositePixel(compositeConstants(params, view, passRegions(viewport, {}, view), false),
+                          px, py, image);
 }
 
 }  // namespace rawreel

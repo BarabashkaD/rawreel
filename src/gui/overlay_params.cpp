@@ -40,6 +40,7 @@ std::uint32_t packedColour(Rgb8 colour, std::uint32_t opacity) {
 constexpr std::array<double, GRID_LEVELS> TICK_LENGTH_PT{9, 5, 3};
 constexpr double TICK_WIDTH_PT = 0.75;
 constexpr double MARKER_DEPTH_PT = 3;
+constexpr double CHECKER_SQUARE_DIP = 8;  // the alpha checkerboard's square
 // How far the lit tick reaches past the tick band, pt.
 constexpr double LIT_REACH_PT = 4;
 
@@ -79,6 +80,7 @@ OverlayConversion convertOverlay(const GridConfig& grid, const RulerConfig& rule
                            .tagInset = spacingOf(RULER_TAG_INSET_DIP, per_dip),
                            .tagMargin = spacingOf(RULER_TAG_MARGIN_DIP, per_dip)};
     params.cursorTagTextBlack = cursorTagTextBlack(rulers.cursorColour);
+    params.checkerSize = backingOf(CHECKER_SQUARE_DIP, per_dip);
     params.dark = dark;
     return {.params = params, .strip = strip};
 }

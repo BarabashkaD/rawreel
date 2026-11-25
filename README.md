@@ -18,7 +18,7 @@ are built on the dvv libraries, which this repository pins as git submodules in 
 
 ## Packages
 
-A release has these files (`<v>` is the version, e.g. `0.14.0`):
+A release has these files (`<v>` is the version, e.g. `0.15.0`):
 
 - `rawreel-<v>-windows-x64.zip`: the application. Unzip it anywhere and start `rawreel-gui.exe`;
   nothing is installed. The zip is not code-signed, so Windows SmartScreen may warn at the first
@@ -217,11 +217,11 @@ in light and dark appearance.
 The control panel has two rows. The upper row is a timeline strip over the slider: ticks, the first
 and last frame numbers, and above the thumb the number of the frame on screen. The lower row has
 Open and Format on the left; centred, First, Step back, Play/Pause, Stop, Step forward, Last and
-Loop; on the right Zoom out, a button that shows the zoom, e.g. "Fit (47 %)" or "200 %", and opens
-a menu with Fit to window, Actual size, 25–1600 % and Resize window to actual size (on macOS: Zoom
-to Fit, Actual Size, 25–1600 % and Resize Window to Actual Size), then Zoom in
-and "i". The icon buttons have tooltips. While you drag the slider, a marker shows the frame where
-the drag started.
+Loop; on the right Alpha (enabled only for a clip with alpha), Zoom out, a button that shows the
+zoom, e.g. "Fit (47 %)" or "200 %", and opens a menu with Fit to window, Actual size, 25–1600 % and
+Resize window to actual size (on macOS: Zoom to Fit, Actual Size, 25–1600 % and Resize Window to
+Actual Size), then Zoom in, Grid and "i". The icon buttons have tooltips. While you drag the slider,
+a marker shows the frame where the drag started.
 
 While the video is paused, holding ⌥ Option (macOS) or Ctrl (Windows, Linux) and moving over the
 slider skims: the thumb, the frame number and the picture follow the pointer, and the marker shows
@@ -338,7 +338,7 @@ then stalls; it never skips a frame.
 | Ctrl+U | File → Open URI… | Left / Right | Step back / forward |
 | Ctrl+W | File → Close stream | Shift+Left / Shift+Right | 10 frames back / forward |
 | Ctrl+Q | File → Quit | Home / End | First / last frame |
-| | | L | Loop on or off |
+| A | View → Alpha (on or off) | L | Loop on or off |
 | G | View → Grid (on or off) | R | View → Rulers (on or off) |
 
 View keys:
@@ -380,13 +380,21 @@ URI"), or the GUI could not start; 4 GPU error (no Vulkan loader, no usable devi
 failure in a selftest); 6 a `--selftest` check failed; 77 (`--selftest` only) no usable device or
 no display, unless `DVV_REQUIRE_GPU=1` (then 4).
 
+### Alpha
+
+A clip whose pixel format has an alpha component (for example rgba) shows its alpha over a
+checkerboard when A, the bar's Alpha button or View → Alpha (a check item on every OS, also in
+the picture's context menu) turns it on; off, the alpha is ignored and the picture is opaque. Alpha
+is off at every start and is not saved; opening another clip keeps it. For a clip without alpha the
+item and the button are disabled and A does nothing.
+
 ### Grid and rulers
 
 The grid draws lines over the picture at three levels, Major, Minor and Second minor, every 32, 8
 and 2 image pixels by default (the steps are 2 to 256, a power of two; major at least twice minor,
 minor at least twice second minor). G, View → Grid or the Grid button (right of Zoom in) shows and
 hides it; R or View → Rulers the rulers (on macOS: Show Grid / Hide Grid, Show Rulers / Hide
-Rulers). The picture's context menu has the same two items and Grid and Rulers…. View → Grid and
+Rulers). The picture's context menu has Grid, Rulers, Alpha and Grid and Rulers…. View → Grid and
 Rulers… or a right-click on the Grid button (Ctrl-click on macOS) opens the Grid and Rulers
 window:
 
@@ -901,7 +909,7 @@ the report with the symbols of the same release, `rawreel-<v>-macos-arm64-symbol
 `SHA256SUMS` lists the SHA256 of every release file. In PowerShell, in the download folder:
 
 ```powershell
-$f = 'rawreel-0.14.0-windows-x64.zip'
+$f = 'rawreel-0.15.0-windows-x64.zip'
 $want = (Select-String -Path SHA256SUMS -SimpleMatch $f).Line.Split(' ')[0]
 (Get-FileHash $f -Algorithm SHA256).Hash -eq $want    # True
 ```
@@ -911,12 +919,12 @@ On Linux (or wherever coreutils exist), and on macOS: `sha256sum -c --ignore-mis
 attestation from the release workflow; with the GitHub CLI:
 
 ```powershell
-gh attestation verify rawreel-0.14.0-windows-x64.zip --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.15.0-windows-x64.zip --repo BarabashkaD/rawreel
 ```
 
 ```sh
-gh attestation verify rawreel-0.14.0-linux-x64.tar.xz --repo BarabashkaD/rawreel
-gh attestation verify rawreel-0.14.0-macos-arm64.dmg --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.15.0-linux-x64.tar.xz --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.15.0-macos-arm64.dmg --repo BarabashkaD/rawreel
 ```
 
 ## Getting the source
