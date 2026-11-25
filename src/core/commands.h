@@ -42,6 +42,7 @@ enum class Command : std::uint8_t {
     Grid,        // View -> Grid: the grid on the picture
     Rulers,      // View -> Rulers: the ruler strips
     GridWindow,  // View -> Grid and Rulers...: the Grid and Rulers window
+    Alpha,       // View -> Alpha: apply or ignore the clip's alpha
     GpuInfo,
     Diagnostics,
     About,
@@ -78,13 +79,18 @@ struct KeyChord {
 // and the keypad keys).
 enum class KeyRoute : std::uint8_t { Accelerator, CharHook, AcceleratorAndCharHook };
 
+// How a command's menu item shows its state. Shown: the command shows or hides a part (View ->
+// Log, Info, Grid, Rulers): a check item on Windows and Linux, the changing "Show "/"Hide " title
+// on macOS (shownItemTitle). Mode: the command turns a mode on or off (View -> Alpha): a check
+// item on every OS.
+enum class MenuCheck : std::uint8_t { None, Shown, Mode };
+
 struct CommandInfo {
     Command command;
     std::string_view id, menu, label, help;
     std::optional<KeyChord> key;
     KeyRoute route;
-    // A check item on Windows and Linux (View -> Log); macOS changes the item's title instead.
-    bool checkable = false;
+    MenuCheck check = MenuCheck::None;
 };
 
 [[nodiscard]] std::span<const CommandInfo> commandTable() noexcept;  // in Command order

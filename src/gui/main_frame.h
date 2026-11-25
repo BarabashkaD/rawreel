@@ -192,6 +192,9 @@ public:
     // The grid and ruler settings in effect.
     [[nodiscard]] const GridConfig& grid() const noexcept { return grid_; }
     [[nodiscard]] const RulerConfig& rulers() const noexcept { return rulers_; }
+    // View -> Alpha (key A): the clip's alpha applied. Off at every launch, never saved; another
+    // clip keeps it.
+    [[nodiscard]] bool alpha() const noexcept { return alpha_; }
     // The one apply path of the grid and ruler settings: stored, applied to the viewport
     // (setOverlayConfig) and the Grid button, then saved through App::saveOverlay when `save` is
     // Now. Nothing is done once the close began (closing_): the close saved the settings, and the
@@ -359,16 +362,22 @@ private:
     void openRecent(std::size_t index);
     void showWarning(const std::string& text);  // log + infobar (wxICON_WARNING)
     [[nodiscard]] bool hasStream() const;
+    // The open clip's format (the first stream's, not the display's) has an alpha component.
+    [[nodiscard]] bool clipHasAlpha() const;
     void onCharHook(wxKeyEvent& event);
     void onActivate(wxActivateEvent& event);
     void onSkimKeyUp();  // the skim key's release anywhere: the bar returns from a skim
     void onMenu(wxCommandEvent& event);
     void onUpdateUi(wxUpdateUIEvent& event);
-    // Whether the part a show-or-hide command (Log pane, Info, Grid, Rulers) names is shown;
-    // nullopt for every other command. Its menu item shows it: a check mark, or on macOS its title.
-    [[nodiscard]] std::optional<bool> shownBy(Command command) const;
-    // The viewport's context menu at `point` (viewport client coordinates): Grid and Rulers as
-    // check items with their menu ids; the chosen item runs as a menu command.
+    // The state the menu item of `command` shows, as commandInfo(command).check says: whether the
+    // part is shown (MenuCheck::Shown: a check mark, or on macOS its title) or the mode is on
+    // (MenuCheck::Mode: a check item on every OS); false for MenuCheck::None.
+    [[nodiscard]] bool menuState(Command command) const;
+    // The bar's Alpha button follows the state and whether the clip has alpha (execute(Alpha),
+    // onStreamsChanged, onStatusChanged).
+    void updateAlphaControls();
+    // The viewport's context menu at `point` (viewport client coordinates): Grid, Rulers and Alpha
+    // as check items with their menu ids; the chosen item runs as a menu command.
     void popUpViewportMenu(wxPoint point);
     // The Edit items (spec §4.2): runEdit and canEdit on focusedWindow().
     void onEditMenu(wxCommandEvent& event);
@@ -444,6 +453,7 @@ private:
     bool stack_lost_ = false;                            // the last stackChanged had no context
     bool reopen_offered_ = false;  // the current message carries the Reopen button
     bool loop_ = false;            // mirrors the Session's loop flag (Command::Loop)
+    bool alpha_ = false;           // View -> Alpha (Command::Alpha); never saved
     std::string last_open_uri_;    // of the last openUri (onError's scheme hint and Format...)
     // The folder of the last opened file (drop, File -> Open, a file: URI): the file dialogs'
     // start folder (M4 GUI D6). Empty until a file is opened.

@@ -68,6 +68,17 @@ void DisplayState::setCursor(std::optional<dvv::media::PointD> cursor) {
     notify();
 }
 
+void DisplayState::setAlpha(bool on) {
+    {
+        std::lock_guard lock(mutex_);
+        if (params_.alpha == on) {
+            return;
+        }
+        params_.alpha = on;
+    }
+    notify();
+}
+
 DisplaySnapshot DisplayState::snapshot() const {
     std::lock_guard lock(mutex_);
     read_ = true;

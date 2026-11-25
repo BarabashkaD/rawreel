@@ -30,7 +30,7 @@ void applySettingsPageStyle(wxWindow& page, dvv::MoveOnlyFunction<void(wxWindow&
 }
 
 // Spec §2: macOS shows and hides a part of a window with a title that changes, not a check mark.
-bool logItemHasChangingTitle() noexcept {
+bool shownItemHasChangingTitle() noexcept {
     return true;
 }
 

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -123,6 +124,7 @@
 #include "gui/timeline_strip.h"
 #include "gui/transport_bar.h"
 #include "gui/viewport.h"
+#include "render/composite_constants.h"
 #include "render/display_state.h"
 
 using dvv::media::imagePointAt;
@@ -1416,7 +1418,7 @@ bool logItemFollows(MainFrame& frame, bool shown, std::string& text) {
         text = "no View -> Log item";
         return false;
     }
-    if (native_policy::logItemHasChangingTitle()) {
+    if (native_policy::shownItemHasChangingTitle()) {
         const wxString title = item->GetItemLabelText();
         text = std::format("item '{}'", title.utf8_string());
         return title == (shown ? "Hide Log" : "Show Log");
@@ -6801,7 +6803,7 @@ bool shownItemFollows(MainFrame& frame, Command command, bool shown, std::string
         return false;
     }
     const std::string title = item->GetItemLabelText().utf8_string();
-    if (native_policy::logItemHasChangingTitle()) {
+    if (native_policy::shownItemHasChangingTitle()) {
         text = std::format("item '{}'", title);
         return title == (shown ? hide : show);
     }
@@ -6934,7 +6936,9 @@ void addGridCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
                 items += (items.empty() ? "" : "|") + item;
             }
             seen = std::format("menu '{}'; {}", items, seen);
-            return ok && items == "Grid (G) false|Rulers (R) true|Grid and Rulers... false";
+            return ok &&
+                   items ==
+                       "Grid (G) false|Rulers (R) true|Alpha (A) false|Grid and Rulers... false";
         }));
     // The Menu key and Shift+F10 send no point: the menu opens all the same.
     steps.push_back(step(
@@ -6959,7 +6963,9 @@ void addGridCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
                 items += (items.empty() ? "" : "|") + item;
             }
             seen = std::format("menu '{}'; {}", items, seen);
-            return ok && items == "Grid (G) false|Rulers (R) false|Grid and Rulers... false";
+            return ok &&
+                   items ==
+                       "Grid (G) false|Rulers (R) false|Alpha (A) false|Grid and Rulers... false";
         }));
     // Unchanged values write nothing: the file keeps its time.
     steps.push_back(step(
@@ -6990,6 +6996,406 @@ void addGridCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
             seen = std::format("scrolled window keeps {}, plain panel and frame keep none {}",
                                unknown, plain);
             return unknown && plain;
+        }));
+}
+
+// --- Alpha: View -> Alpha, key A and the state across clips ---
+
+constexpr std::string_view ALPHA_RGBA = "synthetic:gradient?w=64&h=48&fmt=rgba&frames=40";
+constexpr std::string_view ALPHA_YUV = "synthetic:gradient?w=64&h=48&fmt=yuv420p&frames=40";
+
+// View -> Alpha after an update of the menus: a check item (on every OS), its check and whether
+// it is enabled. `text` describes the item.
+bool alphaItemIs(MainFrame& frame, bool checked, bool enabled, std::string& text) {
+    wxMenuBar* bar = frame.GetMenuBar();
+    if (bar == nullptr) {
+        text = "no menu bar";
+        return false;
+    }
+    bar->UpdateMenus();
+    const wxMenuItem* item = bar->FindItem(menuId(Command::Alpha));
+    if (item == nullptr) {
+        text = "no View item for alpha";
+        return false;
+    }
+    text = std::format("item '{}' checkable {} checked {} enabled {}, alpha {}",
+                       item->GetItemLabelText().utf8_string(), item->IsCheckable(),
+                       item->IsCheckable() && item->IsChecked(), item->IsEnabled(), frame.alpha());
+    return item->GetItemLabelText() == "Alpha (A)" && item->IsCheckable() &&
+           item->IsChecked() == checked && item->IsEnabled() == enabled;
+}
+
+// Whether the open clip's own format (its SourceInfo's, not the display lease's) has alpha.
+bool streamHasAlpha(const MainFrame& frame) {
+    if (frame.streams().empty()) {
+        return false;
+    }
+    const dvv::media::PixelFormatDesc& desc =
+        dvv::media::formatDesc(frame.streams().front().info.desc.format);
+    const auto components = std::span(desc.components).first(desc.componentCount);
+    return std::ranges::any_of(components, [](const dvv::media::ComponentDesc& component) {
+        return component.kind == dvv::media::ComponentKind::A;
+    });
+}
+
+// The open clip is `uri` (requested; its format has alpha exactly when `has_alpha`) and its picture
+// is drawn: the display shows a frame of a FrameSet version other than `before` (the one at the
+// open, which cleared the display first, so a later frame is the new clip's), and the last due
+// picture pass drew that version. The alpha flag checks then read the new clip's picture, never
+// the one before.
+bool clipShown(MainFrame& frame, std::string_view uri, bool has_alpha, std::uint64_t before,
+               std::string& text) {
+    const std::optional<RecordedInfo> recorded = frame.viewport().lastRecorded();
+    const DisplaySnapshot snapshot = frame.viewport().display()->snapshot();
+    const std::string open =
+        frame.streams().size() == 1 ? frame.streams().front().requestedUri : "";
+    text = std::format(
+        "streams {}, open '{}', alpha format {}, display version {} (open at {}), index {}, drawn "
+        "version {} index {}",
+        frame.streams().size(), open, streamHasAlpha(frame), snapshot.version, before,
+        snapshot.frames.index, recorded ? recorded->version : 0, recorded ? recorded->index : -1);
+    return open == uri && streamHasAlpha(frame) == has_alpha && snapshot.version != before &&
+           snapshot.frames.index >= 0 && recorded && recorded->version == snapshot.version &&
+           recorded->index == snapshot.frames.index;
+}
+
+// The last recorded picture pass applies the alpha (COMPOSITE_ALPHA) exactly when `on`.
+bool alphaFlagIs(MainFrame& frame, bool on, std::string& text) {
+    const std::optional<RecordedInfo> recorded = frame.viewport().lastRecorded();
+    const std::uint32_t flags = recorded ? recorded->pictureFlags : 0;
+    text += std::format(", picture flags {}", flags);
+    return recorded && ((flags & COMPOSITE_ALPHA) != 0) == on;
+}
+
+// Whether a key at any depth of `value` contains "alpha" (any case); the first one in `found`.
+bool hasAlphaKey(const dvv::json::Value& value, std::string& found) {
+    if (value.is_object()) {
+        for (const auto& [key, child] : value.items()) {
+            std::string lower = key;
+            std::ranges::transform(lower, lower.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (lower.find("alpha") != std::string::npos) {
+                found = key;
+                return true;
+            }
+            if (hasAlphaKey(child, found)) {
+                return true;
+            }
+        }
+    } else if (value.is_array()) {
+        return std::ranges::any_of(
+            value, [&found](const dvv::json::Value& child) { return hasAlphaKey(child, found); });
+    }
+    return false;
+}
+
+// The bar's Alpha button: a toggle that does not have the focus (after a click too: the steps
+// after a click check it) in its own group between the playback group and Zoom out, with its
+// tooltip, its value `on` and enabled exactly when `enabled`; the playback group stays centred on
+// the bar (± 1 px). `text` gets a description. The focus is checked by where it is, on every OS:
+// wxGTK's CanAcceptFocusFromKeyboard() stays true for an enabled button after SetCanFocus(false),
+// although GTK gives the button no focus.
+bool alphaButtonIs(MainFrame& frame, bool on, bool enabled, std::string& text) {
+    TransportBar& bar = frame.transportBar();
+    wxAnyButton& button = bar.buttonForTest(Command::Alpha);
+    const auto* const toggle = dynamic_cast<const wxBitmapToggleButton*>(&button);
+    const wxRect rect = button.GetRect();
+    const wxRect zoom_out = bar.buttonForTest(Command::ZoomOut).GetRect();
+    const wxRect group = bar.groupRectForTest();
+    const int centre = group.GetLeft() + (group.GetWidth() / 2);
+    const int bar_centre = bar.GetClientSize().GetWidth() / 2;
+    const std::string tip = button.GetToolTipText().utf8_string();
+    const bool focus = wxWindow::FindFocus() == &button;
+    text += std::format(
+        "; button toggle {} value {} enabled {} focus {}, x {}..{} (group right {}, zoom out left "
+        "{}), group centre {} bar centre {}, tip '{}'",
+        toggle != nullptr, toggle != nullptr && toggle->GetValue(), button.IsEnabled(), focus,
+        rect.GetLeft(), rect.GetRight(), group.GetRight(), zoom_out.GetLeft(), centre, bar_centre,
+        tip);
+    return toggle != nullptr && toggle->GetValue() == on && button.IsEnabled() == enabled &&
+           !focus && rect.GetLeft() > group.GetRight() && rect.GetRight() < zoom_out.GetLeft() &&
+           std::abs(centre - bar_centre) <= 1 && tip == "Apply or ignore the clip's alpha (A)";
+}
+
+void addAlphaCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
+    MainFrame& frame = test.frame();
+    struct State {
+        RecordedInfo recorded{};          // the last recorded pass before the input
+        std::uint64_t version = 0;        // the display's FrameSet version before the input
+        std::uint64_t notifications = 0;  // the frame's status notifications before the input
+        bool taken = false;               // the char hook took the key (sendKey)
+        std::vector<std::string> items;   // the context menu's items: label and check
+        bool enabled = false;             // the context menu's Alpha item
+        GridConfig grid{};                // the grid before the save step
+        std::string config;               // the config text before the save step
+    };
+    auto st = std::make_shared<State>();
+    const auto open = [&frame, st](std::string_view uri) {
+        return [&frame, st, uri] {
+            st->version = frame.viewport().display()->snapshot().version;
+            frame.openUri(0, std::string(uri), std::nullopt);
+        };
+    };
+    // The key reaches the dispatch (the char hook takes it) and execute refuses it there.
+    const auto refused_key = [&frame, st] { st->taken = sendKey(frame, 'A'); };
+    const auto context_menu = [&frame, st](std::string_view name, std::string_view alpha_item,
+                                           bool enabled) {
+        return step(
+            std::string(name),
+            [&frame, st] {
+                st->items.clear();
+                dialogHooks().popupMenu = [st](const wxMenu& menu) {
+                    for (const wxMenuItem* item : menu.GetMenuItems()) {
+                        st->items.push_back(popupItemText(*item));
+                        if (item->GetId() == menuId(Command::Alpha)) {
+                            st->enabled = item->IsEnabled();
+                        }
+                    }
+                    return wxID_NONE;  // dismissed
+                };
+                Viewport& viewport = frame.viewport();
+                wxContextMenuEvent event(wxEVT_CONTEXT_MENU, viewport.GetId(),
+                                         viewport.ClientToScreen(viewportCentre(viewport)));
+                event.SetEventObject(&viewport);
+                (void)injectInput(*viewport.GetEventHandler(), event);
+            },
+            [&frame, st, alpha_item = std::string(alpha_item), enabled](std::string& seen) {
+                std::string items;
+                for (const std::string& item : st->items) {
+                    items += (items.empty() ? "" : "|") + item;
+                }
+                seen = std::format("menu '{}', alpha enabled {}, alpha {}", items, st->enabled,
+                                   frame.alpha());
+                // Grid and Rulers keep what the steps before left; Alpha is the third item.
+                return st->items.size() == 4 && st->items[2] == alpha_item &&
+                       st->items[3] == "Grid and Rulers... false" && st->enabled == enabled;
+            });
+    };
+    // A fresh launch: off before any toggle (the "off after a relaunch" check).
+    steps.push_back(
+        step("alpha: off at the start, View -> Alpha disabled for yuv420p", open(ALPHA_YUV),
+             [&frame, st](std::string& seen) {
+                 std::string item;
+                 const bool shown = clipShown(frame, ALPHA_YUV, false, st->version, seen);
+                 const bool ok = alphaItemIs(frame, false, false, item);
+                 seen += "; " + item;
+                 return shown && ok && !frame.alpha() && alphaFlagIs(frame, false, seen);
+             }));
+    steps.push_back(step(
+        "alpha button: on the bar, disabled for yuv420p", [] {},
+        [&frame](std::string& seen) { return alphaButtonIs(frame, false, false, seen); }));
+    steps.push_back(
+        step("alpha: key A does nothing for yuv420p", refused_key, [&frame, st](std::string& seen) {
+            const bool ok = alphaItemIs(frame, false, false, seen);
+            seen += std::format(", key taken {}", st->taken);
+            return st->taken && ok && !frame.alpha() && alphaFlagIs(frame, false, seen);
+        }));
+    steps.push_back(step(
+        "alpha: View -> Alpha enabled for rgba", open(ALPHA_RGBA), [&frame, st](std::string& seen) {
+            std::string item;
+            const bool shown = clipShown(frame, ALPHA_RGBA, true, st->version, seen);
+            const bool ok = alphaItemIs(frame, false, true, item);
+            seen += "; " + item;
+            return shown && ok && alphaFlagIs(frame, false, seen);
+        }));
+    steps.push_back(context_menu("alpha: the context menu has it", "Alpha (A) false", true));
+    steps.push_back(step(
+        "alpha button: enabled for rgba", [] {},
+        [&frame](std::string& seen) { return alphaButtonIs(frame, false, true, seen); }));
+    // The button follows the session status too: a stale disabled state (streamsChanged handled
+    // before the status shows the stream) is refreshed by the next status notification.
+    steps.push_back(step(
+        "alpha button: a status notification refreshes it",
+        [&test, &frame, st] {
+            frame.transportBar().setAlpha(false, false);
+            st->notifications = frame.statusNotificationsForTest();
+            if (Session* session = test.app().session(); session != nullptr) {
+                session->togglePlay();  // a new status revision
+            }
+        },
+        [&frame, st](std::string& seen) {
+            const std::uint64_t now = frame.statusNotificationsForTest();
+            seen = std::format("notifications {} (before {})", now, st->notifications);
+            return now > st->notifications && alphaButtonIs(frame, false, true, seen);
+        }));
+    // Paused: a toggle redraws the shown frame (one picture pass), with no new frame.
+    steps.push_back(step(
+        "alpha: paused",
+        [&test] {
+            Session* session = test.app().session();
+            if (session != nullptr && session->status().player.playing) {
+                session->togglePlay();
+            }
+        },
+        [&test](std::string& seen) {
+            const Session* session = test.app().session();
+            const bool playing = session == nullptr || session->status().player.playing;
+            seen = std::format("playing {}", playing);
+            return !playing;
+        }));
+    const auto toggled = [&frame, st](bool on, std::string& seen) {
+        const RecordedInfo now = frame.viewport().lastRecorded().value_or(RecordedInfo{});
+        const std::uint64_t version = frame.viewport().display()->snapshot().version;
+        std::string item;
+        const bool ok = alphaItemIs(frame, on, true, item);
+        seen = std::format("{}; picture records +{}, index {} (was {}), version {} (was {})", item,
+                           now.pictureRecords - st->recorded.pictureRecords, now.index,
+                           st->recorded.index, version, st->version);
+        return ok && frame.alpha() == on && alphaFlagIs(frame, on, seen) &&
+               now.pictureRecords == st->recorded.pictureRecords + 1 &&
+               now.index == st->recorded.index && version == st->version;
+    };
+    const auto before = [&frame, st] {
+        st->recorded = frame.viewport().lastRecorded().value_or(RecordedInfo{});
+        st->version = frame.viewport().display()->snapshot().version;
+    };
+    steps.push_back(step(
+        "alpha button: a click turns it on in pause",
+        [&frame, before] {
+            before();
+            auto& button = dynamic_cast<wxBitmapToggleButton&>(
+                frame.transportBar().buttonForTest(Command::Alpha));
+            button.SetValue(true);  // as the native toggle does before it sends the event
+            clickBarButton(button, wxEVT_TOGGLEBUTTON);
+        },
+        [&frame, toggled](std::string& seen) {
+            const bool ok = toggled(true, seen);
+            return alphaButtonIs(frame, true, true, seen) && ok;
+        }));
+    steps.push_back(step(
+        "alpha button: key A turns it off",
+        [&frame, before] {
+            before();
+            (void)sendKey(frame, 'A');
+        },
+        [&frame, toggled](std::string& seen) {
+            const bool ok = toggled(false, seen);
+            return alphaButtonIs(frame, false, true, seen) && ok;
+        }));
+    steps.push_back(step(
+        "alpha: key A turns it on in pause",
+        [&frame, before] {
+            before();
+            (void)sendKey(frame, 'A');
+        },
+        [toggled](std::string& seen) { return toggled(true, seen); }));
+    steps.push_back(step(
+        "alpha: View -> Alpha turns it off",
+        [&frame, before] {
+            before();
+            (void)sendMenu(frame, menuId(Command::Alpha));
+        },
+        [toggled](std::string& seen) { return toggled(false, seen); }));
+    steps.push_back(step(
+        "alpha: View -> Alpha turns it on",
+        [&frame, before] {
+            before();
+            (void)sendMenu(frame, menuId(Command::Alpha));
+        },
+        [toggled](std::string& seen) { return toggled(true, seen); }));
+    // Another clip keeps the state; disabled, the item keeps showing it.
+    steps.push_back(step(
+        "alpha: yuv420p keeps it on, disabled", open(ALPHA_YUV), [&frame, st](std::string& seen) {
+            std::string item;
+            const bool shown = clipShown(frame, ALPHA_YUV, false, st->version, seen);
+            const bool ok = alphaItemIs(frame, true, false, item);
+            seen += "; " + item;
+            return shown && ok && frame.alpha() && alphaFlagIs(frame, true, seen);
+        }));
+    steps.push_back(
+        context_menu("alpha: the context menu keeps it on, disabled", "Alpha (A) true", false));
+    // A status update (play, then pause) does not enable the button again.
+    const auto play_icon = [&frame, &test](Icon icon, std::string& seen) {
+        const Session* session = test.app().session();
+        const bool playing = session != nullptr && session->status().player.playing;
+        seen = std::format("playing {}, play icon pause {}", playing,
+                           frame.transportBar().playIconForTest() == Icon::Pause);
+        return frame.transportBar().playIconForTest() == icon && playing == (icon == Icon::Pause);
+    };
+    const auto toggle_play = [&test] {
+        if (Session* session = test.app().session(); session != nullptr) {
+            session->togglePlay();
+        }
+    };
+    steps.push_back(step("alpha button: on, disabled for yuv420p while playing", toggle_play,
+                         [&frame, play_icon](std::string& seen) {
+                             const bool shown = play_icon(Icon::Pause, seen);
+                             return alphaButtonIs(frame, true, false, seen) && shown;
+                         }));
+    steps.push_back(step("alpha button: on, disabled for yuv420p paused again", toggle_play,
+                         [&frame, play_icon](std::string& seen) {
+                             const bool shown = play_icon(Icon::Play, seen);
+                             return alphaButtonIs(frame, true, false, seen) && shown;
+                         }));
+    steps.push_back(step(
+        "alpha: key A does nothing while disabled", refused_key, [&frame, st](std::string& seen) {
+            const bool ok = alphaItemIs(frame, true, false, seen);
+            seen += std::format(", key taken {}", st->taken);
+            return st->taken && ok && frame.alpha() && alphaFlagIs(frame, true, seen);
+        }));
+    // The native toggle flips its value before it sends the event; execute refuses the
+    // disabled command, and the button shows the state it had again.
+    steps.push_back(step(
+        "alpha button: a refused click leaves it on",
+        [&frame] {
+            auto& button = dynamic_cast<wxBitmapToggleButton&>(
+                frame.transportBar().buttonForTest(Command::Alpha));
+            button.SetValue(false);
+            clickBarButton(button, wxEVT_TOGGLEBUTTON);
+        },
+        [&frame](std::string& seen) {
+            const bool ok = alphaButtonIs(frame, true, false, seen);
+            return ok && frame.alpha() && alphaFlagIs(frame, true, seen);
+        }));
+    steps.push_back(step(
+        "alpha: rgba again, enabled and on", open(ALPHA_RGBA), [&frame, st](std::string& seen) {
+            std::string item;
+            const bool shown = clipShown(frame, ALPHA_RGBA, true, st->version, seen);
+            const bool ok = alphaItemIs(frame, true, true, item);
+            seen += "; " + item;
+            return shown && ok && frame.alpha() && alphaFlagIs(frame, true, seen);
+        }));
+    steps.push_back(step(
+        "alpha button: enabled and on for rgba again", [] {},
+        [&frame](std::string& seen) { return alphaButtonIs(frame, true, true, seen); }));
+    // A save while alpha is on (a Grid change saves at once): no key at any depth names it.
+    steps.push_back(step(
+        "alpha: not saved",
+        [&test, &frame, st] {
+            const dvv::Result<std::string> read = readConfigText(test.app().configPath());
+            st->config = read ? *read : std::string();
+            st->grid = frame.grid();
+            GridConfig grid = frame.grid();
+            grid.levels[0].show = !grid.levels[0].show;
+            frame.setOverlay(grid, frame.rulers(), OverlaySave::Now);
+        },
+        [&test, &frame, st](std::string& seen) {
+            const dvv::Result<std::string> read = readConfigText(test.app().configPath());
+            if (!read) {
+                seen = read.error().message;
+                return false;
+            }
+            const dvv::Result<dvv::json::Value> parsed = dvv::json::parse(*read);
+            if (!parsed) {
+                seen = parsed.error().message;
+                return false;
+            }
+            std::string key;
+            const bool alpha_key = hasAlphaKey(*parsed, key);
+            const bool saved = *read != st->config;
+            seen = std::format("saved {}, alpha {}, alpha key '{}'", saved, frame.alpha(), key);
+            const bool ok = saved && frame.alpha() && !alpha_key;
+            if (ok) {
+                frame.setOverlay(st->grid, frame.rulers(), OverlaySave::Now);
+            }
+            return ok;
+        }));
+    steps.push_back(step(
+        "alpha: turned off for the next steps", [&frame] { frame.execute(Command::Alpha); },
+        [&frame](std::string& seen) {
+            seen = std::format("alpha {}", frame.alpha());
+            return !frame.alpha() && alphaFlagIs(frame, false, seen);
         }));
 }
 
@@ -8407,6 +8813,7 @@ void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
     addGridWindowSteps(steps, test);
     addRulerNumberSteps(steps, test);
     addGridSaveSteps(steps, test);
+    addAlphaCommandSteps(steps, test);
     // Later view steps go before this one.
     steps.push_back(step(
         "view: Close stream shows Fit",
@@ -10924,7 +11331,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                    frame.statusTexts()[MainFrame::FILE_FIELD] == wxString::FromUTF8(first_name) &&
                    frame.streamPath() == path && tip == path && represented == path;
         }));
-    // Review focus 1: a long UTF-8 name at the minimum width is cut in the middle, keeps its
+    // A long UTF-8 name at the minimum width is cut in the middle, keeps its
     // extension, and the tooltip still gives the whole path.
     const std::string long_name =
         std::string(100, 'a') + "\xD0\xBA\xD0\xB0\xD0\xB4\xD1\x80_32x16_gray.yuv";
@@ -10950,7 +11357,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                 wxString::FromUTF8(dvv::pathDisplayText(st->dir / dvv::pathFromText(long_name)));
             const wxString field = frame.statusTexts()[MainFrame::FILE_FIELD];
             const wxString tip = fieldTooltip(frame, MainFrame::FILE_FIELD);
-            // Review focus 1: the title is never cut, whatever the field shows.
+            // The title is never cut, whatever the field shows.
             const wxString title = wxString::FromUTF8(windowTitle(long_name, NATIVE_TITLE_STYLE));
             seen = std::format(
                 "client width {} (minimum {}), file field '{}', tooltip '{}', title '{}'",

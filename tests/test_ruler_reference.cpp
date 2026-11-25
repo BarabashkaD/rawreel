@@ -253,8 +253,9 @@ TEST_CASE("ruler constants: the bands take the view's axes, as the grid does") {
     const ViewTransform view = ViewTransform::fit({181, 67}, {37, 23});
     const PixelSize extent{300, 200};
     const auto bands = bandsOf(overlay, view, extent, std::nullopt, false);
-    const rawreel::CompositeConstants grid = rawreel::compositeConstants(
-        overlay, view, rawreel::passRegions(extent, overlay.strips, view), false);
+    const rawreel::CompositeConstants grid =
+        rawreel::compositeConstants(rawreel::DisplayParams{.overlay = overlay}, view,
+                                    rawreel::passRegions(extent, overlay.strips, view), false);
     for (std::uint32_t axis = 0; axis < 2; ++axis) {
         const dvv::media::AxisView expected =
             axis == 0 ? dvv::media::axisX(view) : dvv::media::axisY(view);

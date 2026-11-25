@@ -37,24 +37,27 @@ std::array<bool, GRID_LEVELS> gridLevelsDrawn(const OverlayParams& overlay,
     return drawn;
 }
 
-CompositeConstants compositeConstants(const OverlayParams& overlay, const ViewTransform& view,
+CompositeConstants compositeConstants(const DisplayParams& params, const ViewTransform& view,
                                       const PassRegions& regions, bool skip_encode) {
+    const OverlayParams& overlay = params.overlay;
     const bool shown = view.zoom() > 0.0;
     const dvv::media::AxisView x = dvv::media::axisX(view);
     const dvv::media::AxisView y = dvv::media::axisY(view);
-    CompositeConstants constants{
-        .viewportW = view.viewport().width,
-        .viewportH = view.viewport().height,
-        .imageW = shown ? view.image().width : 0,
-        .imageH = shown ? view.image().height : 0,
-        .zoom = x.zoom,
-        .flags = (overlay.dark ? COMPOSITE_DARK : 0U) | (skip_encode ? COMPOSITE_SKIP_ENCODE : 0U),
-        .regionX = regions.picture.x,
-        .regionY = regions.picture.y,
-        .offsetX = x.offset,
-        .offsetY = y.offset,
-        .drawX = regions.pictureDrawn.x - regions.picture.x,
-        .drawY = regions.pictureDrawn.y - regions.picture.y};
+    CompositeConstants constants{.viewportW = view.viewport().width,
+                                 .viewportH = view.viewport().height,
+                                 .imageW = shown ? view.image().width : 0,
+                                 .imageH = shown ? view.image().height : 0,
+                                 .zoom = x.zoom,
+                                 .flags = (overlay.dark ? COMPOSITE_DARK : 0U) |
+                                          (skip_encode ? COMPOSITE_SKIP_ENCODE : 0U) |
+                                          (params.alpha ? COMPOSITE_ALPHA : 0U),
+                                 .regionX = regions.picture.x,
+                                 .regionY = regions.picture.y,
+                                 .offsetX = x.offset,
+                                 .offsetY = y.offset,
+                                 .drawX = regions.pictureDrawn.x - regions.picture.x,
+                                 .drawY = regions.pictureDrawn.y - regions.picture.y,
+                                 .checkerSize = std::max(overlay.checkerSize, 1U)};
     const std::array<bool, GRID_LEVELS> drawn = gridLevelsDrawn(overlay, view);
     for (std::size_t l = 0; l < GRID_LEVELS; ++l) {
         const GridLevelParams& level = overlay.levels[l];

@@ -30,8 +30,8 @@ void applySettingsPageStyle(wxWindow& page, dvv::MoveOnlyFunction<void(wxWindow&
     }
 }
 
-bool logItemHasChangingTitle() noexcept {
-    return wx_generic::logItemHasChangingTitle();
+bool shownItemHasChangingTitle() noexcept {
+    return wx_generic::shownItemHasChangingTitle();
 }
 
 std::optional<int> stockId(Command command) noexcept {

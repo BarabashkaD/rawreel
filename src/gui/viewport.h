@@ -105,6 +105,8 @@ public:
     // when it changed, display->setView(request), then the view handler.
     void setView(const dvv::media::ViewRequest& request);
     [[nodiscard]] const dvv::media::ViewRequest& view() const noexcept { return view_; }
+    // Apply (true) or ignore the clip's alpha: display->setAlpha(on), which redraws the picture.
+    void setAlpha(bool on);
     // The stream's frame size; {} without a stream (MainFrame::onStreamsChanged). A new size drops
     // the Ctrl+wheel rotation not yet a whole notch. Then updateCursor() and the view handler.
     void setImageSize(dvv::platform::PixelSize image);

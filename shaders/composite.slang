@@ -1,6 +1,7 @@
 // rawreel's picture pass. One thread per pixel of the part of P it draws, from P pixel (drawX,
 // drawY) (the part right of and below the hugged rect's top-left): the display image (RGBA16F,
-// linear light, BT.709 primaries) shown with the background around it, the grid drawn over it, then
+// linear light, BT.709 primaries) shown with the background around it (with FLAG_ALPHA: the
+// picture premultiplied per texel and blended over a checkerboard), the grid drawn over it, then
 // the sRGB encode into the RGBA8 output, which the presenter blits 1:1. Viewport pixel p shows the
 // image when it lies in dvv-media's imageSpan on both axes and samples at its pixel centre,
 // imageCoordinateAt; the grid lines come from lineAt, run once per column and per row by the grid
@@ -15,6 +16,7 @@ using namespace dvv::media;
 
 static const uint FLAG_DARK = 1;
 static const uint FLAG_SKIP_ENCODE = 2;
+static const uint FLAG_ALPHA = 4;
 static const uint MAX_TAPS = 4;
 
 // The halo darkens the pixel by this share of the level's opacity.
@@ -95,6 +97,74 @@ float3 sampleDisplay(float u, float v)
     return sum / float(n * n);
 }
 
+// The alpha pass's texel: premultiplied by its alpha clamped to [0, 1], edges clamped.
+float4 texel4(int x, int y)
+{
+    uint2 p = uint2(clamp(x, 0, int(pc.imageW) - 1), clamp(y, 0, int(pc.imageH) - 1));
+    const float4 t = display[p];
+    const float a = clamp(t.a, 0.0, 1.0);
+    precise const float3 rgb = t.rgb * a;
+    return float4(rgb, a);
+}
+
+float4 mix4(float4 a, float4 b, float t)
+{
+    precise const float4 mixed = a + t * (b - a);
+    return mixed;
+}
+
+// bilinear over texel4.
+float4 bilinear4(float u, float v)
+{
+    float x = u - 0.5;
+    float y = v - 0.5;
+    float x0 = floor(x);
+    float y0 = floor(y);
+    float fx = x - x0;
+    float fy = y - y0;
+    int ix = int(x0);
+    int iy = int(y0);
+    float4 top = mix4(texel4(ix, iy), texel4(ix + 1, iy), fx);
+    float4 bottom = mix4(texel4(ix, iy + 1), texel4(ix + 1, iy + 1), fx);
+    return mix4(top, bottom, fy);
+}
+
+// sampleDisplay over texel4: the same taps and weights.
+float4 sampleDisplay4(float u, float v)
+{
+    if (pc.zoom >= 1.0)
+    {
+        return texel4(int(floor(u)), int(floor(v)));
+    }
+    uint n = 1;
+    while (n < MAX_TAPS && float(n) * pc.zoom < 0.5)
+    {
+        n = n + 1;
+    }
+    float nf = float(n);
+    float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+    for (uint b = 0; b < n; b = b + 1)
+    {
+        float vb = v + ((float(b) + 0.5) / nf - 0.5) / pc.zoom;
+        for (uint a = 0; a < n; a = a + 1)
+        {
+            float ua = u + ((float(a) + 0.5) / nf - 0.5) / pc.zoom;
+            sum = sum + bilinear4(ua, vb);
+        }
+    }
+    return sum / float(n * n);
+}
+
+// The checkerboard's linear grey at P pixel (px, py), inside the image span (px - offsetX >= 0):
+// square (0, 0) at the image origin is even.
+float checker(int px, int py, bool dark)
+{
+    const uint sx = uint(px - pc.offsetX) / pc.checkerSize;
+    const uint sy = uint(py - pc.offsetY) / pc.checkerSize;
+    const bool odd = ((sx + sy) & 1) != 0;
+    return srgbDecode(checkerGrey(dark, odd));
+}
+
 float3 encode3(float3 c)
 {
     return float3(srgbEncode(c.r), srgbEncode(c.g), srgbEncode(c.b));
@@ -166,11 +236,25 @@ void main(uint3 id: SV_DispatchThreadID)
     const int px = int(p.x);
     const int py = int(p.y);
     const bool inside = inSpan(imageSpan(ax), px) && inSpan(imageSpan(ay), py);
-    float grey = srgbDecode(viewportBackground((pc.flags & FLAG_DARK) != 0));
+    const bool dark = (pc.flags & FLAG_DARK) != 0;
+    float grey = srgbDecode(viewportBackground(dark));
     float3 colour = float3(grey, grey, grey);
     if (inside)
     {
-        colour = sampleDisplay(imageCoordinateAt(ax, px), imageCoordinateAt(ay, py));
+        const float u = imageCoordinateAt(ax, px);
+        const float v = imageCoordinateAt(ay, py);
+        if ((pc.flags & FLAG_ALPHA) != 0)
+        {
+            // The premultiplied picture over the checkerboard, in linear light.
+            const float4 s = sampleDisplay4(u, v);
+            precise const float under = checker(px, py, dark) * (1.0 - s.a);
+            precise const float3 blended = s.rgb + float3(under, under, under);
+            colour = blended;
+        }
+        else
+        {
+            colour = sampleDisplay(u, v);
+        }
     }
     const bool skip = (pc.flags & FLAG_SKIP_ENCODE) != 0;
     float3 result = skip ? colour : encode3(colour);

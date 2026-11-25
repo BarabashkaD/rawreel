@@ -31,6 +31,7 @@ using dvv::media::srgbDecode;
 using dvv::media::ViewMode;
 using dvv::media::ViewTransform;
 using dvv::platform::PixelSize;
+using rawreel::COMPOSITE_ALPHA;
 using rawreel::COMPOSITE_DARK;
 using rawreel::COMPOSITE_SKIP_ENCODE;
 using rawreel::CompositeConstants;
@@ -107,7 +108,8 @@ TEST_CASE("composite constants: layout") {
     CHECK(offsetof(CompositeConstants, drawY) == 44);
     CHECK(offsetof(CompositeConstants, levelColour) == 48);
     CHECK(offsetof(CompositeConstants, levelShape) == 64);
-    CHECK(sizeof(CompositeConstants) == 80);
+    CHECK(offsetof(CompositeConstants, checkerSize) == 80);
+    CHECK(sizeof(CompositeConstants) == 96);
 }
 
 TEST_CASE("composite shaders: the push block matches CompositeConstants") {
@@ -125,24 +127,25 @@ TEST_CASE("composite shaders: the push block matches CompositeConstants") {
         REQUIRE(block != nullptr);
         const auto& type = block->at("type");
         CHECK(dvv::json::get<std::uint32_t>(type.at("elementVarLayout").at("binding"), "size") ==
-              80U);
+              96U);
         std::map<std::string, std::uint32_t> offsets;
         for (const auto& field : type.at("elementType").at("fields")) {
             offsets[dvv::json::get<std::string>(field, "name").value_or("?")] =
                 dvv::json::get<std::uint32_t>(field.at("binding"), "offset").value_or(~0U);
         }
         const std::map<std::string, std::uint32_t> expected{
-            {"viewportW", 0},    {"viewportH", 4},  {"imageW", 8},   {"imageH", 12},
-            {"zoom", 16},        {"flags", 20},     {"regionX", 24}, {"regionY", 28},
-            {"offsetX", 32},     {"offsetY", 36},   {"drawX", 40},   {"drawY", 44},
-            {"levelColour", 48}, {"levelShape", 64}};
+            {"viewportW", 0},    {"viewportH", 4},   {"imageW", 8},       {"imageH", 12},
+            {"zoom", 16},        {"flags", 20},      {"regionX", 24},     {"regionY", 28},
+            {"offsetX", 32},     {"offsetY", 36},    {"drawX", 40},       {"drawY", 44},
+            {"levelColour", 48}, {"levelShape", 64}, {"checkerSize", 80}, {"pad0", 84},
+            {"pad1", 88},        {"pad2", 92}};
         CHECK(offsets == expected);
     }
 }
 
 TEST_CASE("composite constants: mapping") {
     const CompositeConstants c =
-        compositeConstants(DARK.overlay, ViewTransform::fit({211, 97}, {37, 23}), {}, false);
+        compositeConstants(DARK, ViewTransform::fit({211, 97}, {37, 23}), {}, false);
     CHECK(c.viewportW == 211);
     CHECK(c.viewportH == 97);
     CHECK(c.imageW == 37);
@@ -153,7 +156,7 @@ TEST_CASE("composite constants: mapping") {
     CHECK(c.regionX == 0);
     CHECK(c.regionY == 0);
     const CompositeConstants placed = compositeConstants(
-        DARK.overlay, ViewTransform::fit({211, 97}, {37, 23}),
+        DARK, ViewTransform::fit({211, 97}, {37, 23}),
         rawreel::PassRegions{.picture = {5, 7, 211, 97}, .pictureDrawn = {5, 7, 211, 97}}, false);
     CHECK(placed.regionX == 5);
     CHECK(placed.regionY == 7);
@@ -162,13 +165,11 @@ TEST_CASE("composite constants: mapping") {
         CHECK((shape & rawreel::LEVEL_DRAWN) == 0);  // OverlayParams{}: no grid
     }
     CHECK(c.flags == COMPOSITE_DARK);
-    CHECK(
-        compositeConstants(DARK.overlay, ViewTransform::fit({211, 97}, {37, 23}), {}, true).flags ==
-        (COMPOSITE_DARK | COMPOSITE_SKIP_ENCODE));
-    CHECK(compositeConstants(LIGHT.overlay, ViewTransform::fit({211, 97}, {37, 23}), {}, false)
-              .flags == 0);
+    CHECK(compositeConstants(DARK, ViewTransform::fit({211, 97}, {37, 23}), {}, true).flags ==
+          (COMPOSITE_DARK | COMPOSITE_SKIP_ENCODE));
+    CHECK(compositeConstants(LIGHT, ViewTransform::fit({211, 97}, {37, 23}), {}, false).flags == 0);
     const CompositeConstants empty =
-        compositeConstants(DARK.overlay, ViewTransform::fit({211, 97}, {0, 0}), {}, false);
+        compositeConstants(DARK, ViewTransform::fit({211, 97}, {0, 0}), {}, false);
     CHECK(empty.imageW == 0);
     CHECK(empty.imageH == 0);
     CHECK(empty.zoom == 0.0F);
@@ -178,7 +179,7 @@ TEST_CASE("composite constants: mapping") {
 
 TEST_CASE("composite constants: from a zoomed view") {
     const auto view = resolveView({ViewMode::Zoom, 2, {10, 8}, {37, 23}}, {30, 19}, {37, 23});
-    const CompositeConstants c = compositeConstants({.dark = true}, view, {}, false);
+    const CompositeConstants c = compositeConstants({.overlay = {.dark = true}}, view, {}, false);
     CHECK(c.zoom == 2.0F);
     CHECK(c.offsetX == view.offset().x);
     CHECK(c.offsetY == view.offset().y);
@@ -187,9 +188,33 @@ TEST_CASE("composite constants: from a zoomed view") {
     CHECK(c.imageW == 37);
     CHECK(c.imageH == 23);
     CHECK(c.flags == COMPOSITE_DARK);
-    CHECK(compositeConstants({.dark = true}, view, {}, true).flags ==
+    CHECK(compositeConstants({.overlay = {.dark = true}}, view, {}, true).flags ==
           (COMPOSITE_DARK | COMPOSITE_SKIP_ENCODE));
-    CHECK(compositeConstants({.dark = false}, view, {}, false).flags == 0);
+    CHECK(compositeConstants({.overlay = {.dark = false}}, view, {}, false).flags == 0);
+}
+
+TEST_CASE("composite constants: the alpha flag and the checker size") {
+    const auto view = resolveView({ViewMode::Zoom, 2, {10, 8}, {37, 23}}, {30, 19}, {37, 23});
+    rawreel::DisplayParams params{.overlay = {.dark = true}};
+    params.overlay.levels[0].shown = true;
+    params.overlay.checkerSize = 16;
+    for (const bool skip : {false, true}) {
+        CAPTURE(skip);
+        const CompositeConstants off = compositeConstants(params, view, {}, skip);
+        CHECK((off.flags & COMPOSITE_ALPHA) == 0);
+        CHECK(off.checkerSize == 16);
+        rawreel::DisplayParams with_alpha = params;
+        with_alpha.alpha = true;
+        const CompositeConstants on = compositeConstants(with_alpha, view, {}, skip);
+        CHECK(on.flags == (off.flags | COMPOSITE_ALPHA));
+        CompositeConstants expected = off;  // every other field as with the flag clear
+        expected.flags |= COMPOSITE_ALPHA;
+        CHECK(on == expected);
+    }
+    // Never 0: the shader and the reference divide by it.
+    params.overlay.checkerSize = 0;
+    CHECK(compositeConstants(params, view, {}, false).checkerSize == 1);
+    CHECK(compositeConstants({}, view, {}, false).checkerSize == 1);
 }
 
 TEST_CASE("composite reference: a request for another frame size draws the fit") {
@@ -217,9 +242,8 @@ TEST_CASE("composite reference: background") {
         CHECK(compositeReference(210, 96, {211, 97}, params, std::nullopt) == bg(dark));
     }
     const auto linear = static_cast<std::uint8_t>(std::lround(255.0F * srgbDecode(0.12F)));
-    CHECK(compositePixel(
-              compositeConstants(DARK.overlay, ViewTransform::fit({4, 4}, {0, 0}), {}, true), 0, 0,
-              std::nullopt) == grey8(linear));
+    CHECK(compositePixel(compositeConstants(DARK, ViewTransform::fit({4, 4}, {0, 0}), {}, true), 0,
+                         0, std::nullopt) == grey8(linear));
 }
 
 TEST_CASE("composite reference: fit placement") {
@@ -293,9 +317,8 @@ TEST_CASE("composite reference: skip encode") {
     const std::vector<std::uint16_t> texels =
         filled(1, 1, [](std::uint32_t, std::uint32_t, std::uint32_t) { return 0.25F; });
     const std::optional<HostDisplayImage> image = hostImage(1, 1, texels);
-    CHECK(compositePixel(
-              compositeConstants(LIGHT.overlay, ViewTransform::fit({1, 1}, {1, 1}), {}, true), 0, 0,
-              image) == Rgba8{64, 64, 64, 255});
+    CHECK(compositePixel(compositeConstants(LIGHT, ViewTransform::fit({1, 1}, {1, 1}), {}, true), 0,
+                         0, image) == Rgba8{64, 64, 64, 255});
 }
 
 namespace {
@@ -394,7 +417,8 @@ TEST_CASE("composite reference: adaptive, halo and skip encode") {
     SUBCASE("skip encode") {
         const rawreel::OverlayParams overlay = plainGrid();
         const CompositeConstants constants =
-            compositeConstants(overlay, resolveView(AT_400, P_400, {64, 48}), {}, true);
+            compositeConstants(rawreel::DisplayParams{.overlay = overlay},
+                               resolveView(AT_400, P_400, {64, 48}), {}, true);
         CHECK(compositePixel(constants, 128, 50, image) ==
               blended(on_line, {1.0F, 1.0F, 1.0F}, a, true));
     }
@@ -448,7 +472,7 @@ TEST_CASE("composite reference: a draw start shifts the pixel, not the lines") {
     const ViewTransform view = resolveView(params.view, p, {100, 50});
     const rawreel::PassRegions regions = rawreel::passRegions(extent, strips, view);
     REQUIRE(regions.pictureDrawn != regions.picture);
-    const CompositeConstants constants = compositeConstants(params.overlay, view, regions, false);
+    const CompositeConstants constants = compositeConstants(params, view, regions, false);
     REQUIRE(constants.drawX == regions.pictureDrawn.x - regions.picture.x);
     REQUIRE(constants.drawY == regions.pictureDrawn.y - regions.picture.y);
     REQUIRE(constants.drawX > 0);
@@ -476,7 +500,8 @@ TEST_CASE("composite constants: the thickness field holds 16 and more") {
     overlay.levels[0].thickness = 16;
     overlay.levels[1].thickness = 300;
     const CompositeConstants c =
-        compositeConstants(overlay, resolveView(AT_400, P_400, {64, 48}), {}, false);
+        compositeConstants(rawreel::DisplayParams{.overlay = overlay},
+                           resolveView(AT_400, P_400, {64, 48}), {}, false);
     CHECK(((c.levelShape[0] >> rawreel::LEVEL_THICKNESS_SHIFT) & 0xFFU) == 16);
     CHECK(((c.levelShape[1] >> rawreel::LEVEL_THICKNESS_SHIFT) & 0xFFU) == 255);
     CHECK((c.levelShape[0] & rawreel::LEVEL_ADAPTIVE) == 0);
@@ -490,14 +515,17 @@ TEST_CASE("composite constants: a stepLog2 above 15 is drawn as 15, not wrapped"
     rawreel::OverlayParams overlay = plainGrid();
     overlay.levels[0].stepLog2 = 16;
     const ViewTransform view = resolveView(AT_400, P_400, {64, 48});
-    const CompositeConstants c = compositeConstants(overlay, view, {}, false);
+    const CompositeConstants c =
+        compositeConstants(rawreel::DisplayParams{.overlay = overlay}, view, {}, false);
     CHECK((c.levelShape[0] & rawreel::LEVEL_STEP_MASK) == 15);
     CHECK((c.levelShape[0] & rawreel::LEVEL_DRAWN) != 0);
     // Visible at 2^16 x 4 but not at 2^15 x 4: the visibility uses the clamped step too.
     overlay.levels[0].minimumSpacing = 200000;
     CHECK(rawreel::gridLevelsDrawn(overlay, view) ==
           std::array<bool, rawreel::GRID_LEVELS>{false, false, false});
-    CHECK((compositeConstants(overlay, view, {}, false).levelShape[0] & rawreel::LEVEL_DRAWN) == 0);
+    CHECK((compositeConstants(rawreel::DisplayParams{.overlay = overlay}, view, {}, false)
+               .levelShape[0] &
+           rawreel::LEVEL_DRAWN) == 0);
 }
 
 TEST_CASE("composite constants: gridLevelsDrawn") {
@@ -524,5 +552,168 @@ TEST_CASE("composite constants: gridLevelsDrawn") {
     }
     SUBCASE("second minor hidden by spacing (2 x 1 < 6)") {
         CHECK(rawreel::gridLevelsDrawn(overlay, at_100) == Drawn{true, true, false});
+    }
+}
+
+namespace {
+
+// w x h texels of value(x, y) = {r, g, b, a}.
+std::vector<std::uint16_t> rgbaImage(std::uint32_t w, std::uint32_t h, auto value) {
+    std::vector<std::uint16_t> texels(std::size_t{w} * h * 4);
+    for (std::uint32_t y = 0; y < h; ++y) {
+        for (std::uint32_t x = 0; x < w; ++x) {
+            const std::array<float, 4> rgba = value(x, y);
+            const std::size_t base = ((std::size_t{y} * w) + x) * 4;
+            for (std::size_t c = 0; c < 4; ++c) {
+                texels[base + c] = floatToHalf(rgba[c]);
+            }
+        }
+    }
+    return texels;
+}
+
+// pattern37x23() with alpha `a` in every texel.
+std::vector<std::uint16_t> pattern37x23Alpha(float a) {
+    std::vector<std::uint16_t> texels = pattern37x23();
+    for (std::size_t i = 3; i < texels.size(); i += 4) {
+        texels[i] = floatToHalf(a);
+    }
+    return texels;
+}
+
+// The alpha pass over a w x h image at `zoom`, P of vw x vh, offset (0, 0), square 8.
+CompositeConstants alphaConstants(std::uint32_t w, std::uint32_t h, float zoom, std::uint32_t vw,
+                                  std::uint32_t vh, bool dark) {
+    return CompositeConstants{.viewportW = vw,
+                              .viewportH = vh,
+                              .imageW = w,
+                              .imageH = h,
+                              .zoom = zoom,
+                              .flags = COMPOSITE_ALPHA | (dark ? COMPOSITE_DARK : 0U),
+                              .checkerSize = 8};
+}
+
+// The spec's sRGB-encoded checker greys as literals, the way bg() pins the background's.
+Rgba8 checker8(bool dark, bool odd) {
+    const float grey = dark ? (odd ? 0.25F : 0.35F) : (odd ? 0.70F : 1.0F);
+    return grey8(encodeSrgb8(srgbDecode(grey)));
+}
+
+}  // namespace
+
+TEST_CASE("composite reference: flag clear ignores alpha") {
+    const std::vector<std::uint16_t> opaque = pattern37x23Alpha(1.0F);
+    for (const float a : {0.0F, 0.5F}) {
+        CAPTURE(a);
+        const std::vector<std::uint16_t> texels = pattern37x23Alpha(a);
+        for (const double zoom : {1.0, 2.0, 0.375}) {
+            CAPTURE(zoom);
+            const rawreel::DisplayParams params{.view = {.mode = ViewMode::Zoom, .zoom = zoom}};
+            std::size_t wrong = 0;
+            for (std::uint32_t y = 0; y < 48; ++y) {
+                for (std::uint32_t x = 0; x < 64; ++x) {
+                    wrong +=
+                        compositeReference(x, y, {64, 48}, params, hostImage(37, 23, texels)) !=
+                                compositeReference(x, y, {64, 48}, params,
+                                                   hostImage(37, 23, opaque))
+                            ? 1
+                            : 0;
+                }
+            }
+            CHECK(wrong == 0);
+        }
+    }
+}
+
+TEST_CASE("composite reference: alpha 1 equals flag clear") {
+    const std::vector<std::uint16_t> texels = pattern37x23Alpha(1.0F);
+    for (const bool dark : {false, true}) {
+        for (const double zoom : {1.0, 2.0, 0.375}) {
+            CAPTURE(dark);
+            CAPTURE(zoom);
+            const rawreel::DisplayParams clear{.view = {.mode = ViewMode::Zoom, .zoom = zoom},
+                                               .overlay = {.dark = dark, .checkerSize = 8}};
+            rawreel::DisplayParams on = clear;
+            on.alpha = true;
+            std::size_t wrong = 0;
+            for (std::uint32_t y = 0; y < 48; ++y) {
+                for (std::uint32_t x = 0; x < 64; ++x) {
+                    wrong +=
+                        compositeReference(x, y, {64, 48}, on, hostImage(37, 23, texels)) !=
+                                compositeReference(x, y, {64, 48}, clear, hostImage(37, 23, texels))
+                            ? 1
+                            : 0;
+                }
+            }
+            CHECK(wrong == 0);
+        }
+    }
+}
+
+TEST_CASE("composite reference: alpha 0 shows the checker") {
+    const std::vector<std::uint16_t> texels = rgbaImage(16, 16, [](std::uint32_t, std::uint32_t) {
+        return std::array<float, 4>{1.0F, 0.5F, 0.25F, 0.0F};
+    });
+    const HostDisplayImage image = hostImage(16, 16, texels);
+    for (const bool dark : {false, true}) {
+        CAPTURE(dark);
+        const CompositeConstants k = alphaConstants(16, 16, 1.0F, 16, 16, dark);
+        CHECK(compositePixel(k, 0, 0, image) == checker8(dark, false));
+        CHECK(compositePixel(k, 7, 0, image) == checker8(dark, false));
+        CHECK(compositePixel(k, 8, 8, image) == checker8(dark, false));
+        CHECK(compositePixel(k, 8, 0, image) == checker8(dark, true));
+        CHECK(compositePixel(k, 0, 8, image) == checker8(dark, true));
+        CHECK(compositePixel(k, 15, 7, image) == checker8(dark, true));
+    }
+    // The header's greys, which the GPU test compares the shader with, are the spec's.
+    CHECK(rawreel::CHECKER_LIGHT_EVEN == 1.0F);
+    CHECK(rawreel::CHECKER_LIGHT_ODD == 0.70F);
+    CHECK(rawreel::CHECKER_DARK_EVEN == 0.35F);
+    CHECK(rawreel::CHECKER_DARK_ODD == 0.25F);
+    CHECK(checker8(false, false) != checker8(false, true));
+    CHECK(checker8(true, false) != checker8(true, true));
+    CHECK(checker8(false, true) != checker8(true, false));
+}
+
+TEST_CASE("composite reference: the checker is anchored to a corner off-screen") {
+    // The squares follow the image origin, not the first visible pixel.
+    const std::vector<std::uint16_t> texels = rgbaImage(
+        64, 64, [](std::uint32_t, std::uint32_t) { return std::array<float, 4>{0, 0, 0, 0}; });
+    CompositeConstants k = alphaConstants(64, 64, 1.0F, 32, 32, false);
+    k.offsetX = -13;
+    k.offsetY = -29;
+    const HostDisplayImage image = hostImage(64, 64, texels);
+    CHECK(compositePixel(k, 0, 0, image) == checker8(false, false));  // square (1, 3)
+    CHECK(compositePixel(k, 2, 0, image) == checker8(false, false));  // square (1, 3)
+    CHECK(compositePixel(k, 3, 0, image) == checker8(false, true));   // square (2, 3)
+    CHECK(compositePixel(k, 0, 3, image) == checker8(false, true));   // square (1, 4)
+}
+
+TEST_CASE("composite reference: the blend is in linear light") {
+    const std::vector<std::uint16_t> texels = rgbaImage(
+        16, 16, [](std::uint32_t, std::uint32_t) { return std::array<float, 4>{0, 0, 0, 0.5F}; });
+    const CompositeConstants k = alphaConstants(16, 16, 1.0F, 16, 16, false);
+    const std::uint8_t linear = encodeSrgb8(0.5F * srgbDecode(rawreel::CHECKER_LIGHT_ODD));
+    CHECK(compositePixel(k, 8, 0, hostImage(16, 16, texels)) == grey8(linear));
+    // A blend of the encoded values would give this.
+    CHECK(std::lround(255.0 * 0.5 * 0.70) != linear);
+}
+
+TEST_CASE("composite reference: a soft edge zoomed out is premultiplied per texel") {
+    // [white a=1][black a=0] columns at 50 %: half the white over half the checker; an
+    // average of the unpremultiplied colours would give 0.25 + 0.5 x checker.
+    const std::vector<std::uint16_t> texels = rgbaImage(32, 8, [](std::uint32_t x, std::uint32_t) {
+        return x % 2 == 0 ? std::array<float, 4>{1, 1, 1, 1} : std::array<float, 4>{0, 0, 0, 0};
+    });
+    const HostDisplayImage image = hostImage(32, 8, texels);
+    for (const bool dark : {false, true}) {
+        CAPTURE(dark);
+        const CompositeConstants k = alphaConstants(32, 8, 0.5F, 16, 4, dark);
+        const float odd = srgbDecode(dark ? rawreel::CHECKER_DARK_ODD : rawreel::CHECKER_LIGHT_ODD);
+        const float even =
+            srgbDecode(dark ? rawreel::CHECKER_DARK_EVEN : rawreel::CHECKER_LIGHT_EVEN);
+        CHECK(compositePixel(k, 8, 0, image) == grey8(encodeSrgb8(0.5F + (odd * 0.5F))));
+        CHECK(compositePixel(k, 0, 0, image) == grey8(encodeSrgb8(0.5F + (even * 0.5F))));
+        CHECK(compositePixel(k, 8, 0, image) != grey8(encodeSrgb8(0.25F + (odd * 0.5F))));
     }
 }

@@ -29,8 +29,9 @@ enum class Icon : std::uint8_t {
     Info,
     ZoomOut,
     ZoomIn,
+    Blend,
 };
-inline constexpr std::size_t ICON_COUNT = static_cast<std::size_t>(Icon::ZoomIn) + 1;
+inline constexpr std::size_t ICON_COUNT = static_cast<std::size_t>(Icon::Blend) + 1;
 inline constexpr int ICON_DIP = 18;
 
 // The icon with its `currentColor` replaced by `colour`, from wxBitmapBundle::FromSVG.

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <string_view>
 
 // clang-format off
@@ -289,6 +290,37 @@ inline constexpr std::string_view ZOOM_IN = R"svg(<!-- @license lucide-static v1
   <line x1="8" x2="14" y1="11" y2="11" />
 </svg>
 )svg";
+
+// blend.svg
+inline constexpr std::string_view BLEND = R"svg(<!-- @license lucide-static v1.70.0 - ISC -->
+<svg
+  class="lucide lucide-blend"
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <circle cx="15" cy="9" r="7" />
+  <circle cx="9" cy="15" r="7" />
+</svg>
+)svg";
+
+// Every icon above, in the transport bar's Icon order (gui/icons.h).
+inline constexpr std::array ICONS{
+    FOLDER_OPEN,  SKIP_BACK,
+    STEP_BACK,    PLAY,
+    PAUSE,        SQUARE,
+    STEP_FORWARD, SKIP_FORWARD,
+    REPEAT,       SLIDERS_HORIZONTAL,
+    GRID_3X3,     INFO,
+    ZOOM_OUT,     ZOOM_IN,
+    BLEND,
+};
 
 }  // namespace rawreel::lucide
 // clang-format on

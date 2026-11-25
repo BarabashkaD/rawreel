@@ -18,6 +18,7 @@ using rawreel::commandTable;
 using rawreel::Key;
 using rawreel::KeyChord;
 using rawreel::KeyRoute;
+using rawreel::MenuCheck;
 
 namespace {
 
@@ -38,7 +39,7 @@ constexpr std::string_view SETTINGS_LABEL =
 
 TEST_SUITE("core") {
     TEST_CASE("commands: the table lists every command once, in order") {
-        static_assert(COMMAND_COUNT == 31);
+        static_assert(COMMAND_COUNT == 32);
         const auto table = commandTable();
         REQUIRE(table.size() == COMMAND_COUNT);
         std::set<std::string_view> ids;
@@ -88,7 +89,7 @@ TEST_SUITE("core") {
         CHECK(log.menu == "View");
         CHECK(log.label == "Log");  // "Show Log"/"Hide Log" on macOS, set by the GUI
         CHECK(log.help == "Show or hide the Log pane");
-        CHECK(log.checkable);
+        CHECK(log.check == MenuCheck::Shown);
         CHECK_FALSE(log.key);
         CHECK(log.route == KeyRoute::Accelerator);
         CHECK(rawreel::menuLabel(log) == "Log");
@@ -104,7 +105,7 @@ TEST_SUITE("core") {
         CHECK(info_window.help == "Show or hide the Info window");
         CHECK(info_window.key == letter('I', true));
         CHECK(info_window.route == KeyRoute::Accelerator);
-        CHECK(info_window.checkable);
+        CHECK(info_window.check == MenuCheck::Shown);
         CHECK(rawreel::menuLabel(info_window) == "Info\tCtrl+I");
     }
 
@@ -120,7 +121,7 @@ TEST_SUITE("core") {
         CHECK(save.help == "Save the lines of the Log pane to a file");
         CHECK_FALSE(save.key);  // spec §4.3: Ctrl+S stays free
         CHECK(save.route == KeyRoute::Accelerator);
-        CHECK_FALSE(save.checkable);
+        CHECK(save.check == MenuCheck::None);
         CHECK(rawreel::menuLabel(save) == "Save Log...");
         const rawreel::CommandInfo& selected = info(Command::SaveSelectedLines);
         CHECK(selected.id == "save_selected_lines");
@@ -129,7 +130,7 @@ TEST_SUITE("core") {
         CHECK(selected.help == "Save the selected lines of the Log pane to a file");
         CHECK_FALSE(selected.key);
         CHECK(selected.route == KeyRoute::Accelerator);
-        CHECK_FALSE(selected.checkable);
+        CHECK(selected.check == MenuCheck::None);
         CHECK(rawreel::menuLabel(selected) == "Save Selected Lines...");
     }
 
@@ -161,16 +162,45 @@ TEST_SUITE("core") {
             CHECK(*settings.key == letter(',', true));
         }
         CHECK(settings.route == KeyRoute::Accelerator);
-        CHECK_FALSE(settings.checkable);
+        CHECK(settings.check == MenuCheck::None);
         CHECK(rawreel::menuLabel(settings) == std::string(SETTINGS_LABEL) + "\tCtrl+,");
     }
 
-    TEST_CASE("commands: only View -> Log and View -> Info are checkable") {
+    TEST_CASE("commands: Log, Info, Grid and Rulers are shown parts, Alpha a mode") {
         for (const rawreel::CommandInfo& entry : commandTable()) {
             CAPTURE(entry.id);
-            CHECK(entry.checkable ==
-                  (entry.command == Command::LogPane || entry.command == Command::InfoWindow ||
-                   entry.command == Command::Grid || entry.command == Command::Rulers));
+            const bool shown = entry.command == Command::LogPane ||
+                               entry.command == Command::InfoWindow ||
+                               entry.command == Command::Grid || entry.command == Command::Rulers;
+            MenuCheck expected = MenuCheck::None;
+            if (shown) {
+                expected = MenuCheck::Shown;
+            } else if (entry.command == Command::Alpha) {
+                expected = MenuCheck::Mode;
+            }
+            CHECK(entry.check == expected);
+        }
+    }
+
+    TEST_CASE("commands: View -> Alpha") {
+        static_assert(static_cast<std::size_t>(Command::Alpha) ==
+                      static_cast<std::size_t>(Command::GridWindow) + 1);
+        const rawreel::CommandInfo& alpha = info(Command::Alpha);
+        CHECK(alpha.id == "alpha");
+        CHECK(alpha.menu == "View");
+        CHECK(alpha.label == "Alpha");
+        CHECK(alpha.help == "Apply or ignore the clip's alpha");
+        CHECK(alpha.key == letter('A'));
+        CHECK(alpha.route == KeyRoute::CharHook);
+        CHECK(alpha.check == MenuCheck::Mode);
+        CHECK(rawreel::menuLabel(alpha) == "Alpha (A)");
+        CHECK(commandForKey(letter('A'), false) == Command::Alpha);
+        CHECK(rawreel::commandOfChord(letter('A')) == Command::Alpha);
+        for (const rawreel::CommandInfo& entry : commandTable()) {
+            CAPTURE(entry.id);
+            if (entry.command != Command::Alpha) {
+                CHECK(entry.key != letter('A'));
+            }
         }
     }
 
@@ -227,8 +257,8 @@ TEST_SUITE("core") {
         CHECK(rulers.help == "Show or hide the rulers");
         CHECK(grid.route == rawreel::KeyRoute::CharHook);
         CHECK(rulers.route == rawreel::KeyRoute::CharHook);
-        CHECK(grid.checkable);
-        CHECK(rulers.checkable);
+        CHECK(grid.check == MenuCheck::Shown);
+        CHECK(rulers.check == MenuCheck::Shown);
         CHECK(rawreel::menuLabel(grid) == "Grid (G)");
         CHECK(rawreel::menuLabel(rulers) == "Rulers (R)");
         CHECK(commandForKey(letter('G'), false) == Command::Grid);
@@ -243,7 +273,7 @@ TEST_SUITE("core") {
         CHECK(window.help == "Show the Grid and Rulers window");
         CHECK_FALSE(window.key);
         CHECK(window.route == rawreel::KeyRoute::Accelerator);
-        CHECK_FALSE(window.checkable);
+        CHECK(window.check == MenuCheck::None);
         CHECK(rawreel::menuLabel(window) == "Grid and Rulers...");
     }
 
@@ -281,7 +311,7 @@ TEST_SUITE("core") {
             CHECK(row.help == helps[i]);
             CHECK(row.key == keys[i]);
             CHECK(row.route == ROUTE);
-            CHECK_FALSE(row.checkable);
+            CHECK(row.check == MenuCheck::None);
         }
     }
 

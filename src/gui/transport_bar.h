@@ -93,6 +93,9 @@ public:
     void skimKeyReleased();
     // The Grid toggle's value: whether the grid is shown (MainFrame::grid().levels[0].show).
     void setGridShown(bool shown);
+    // The Alpha toggle: its value (MainFrame::alpha()) and whether it is enabled
+    // (MainFrame::isAvailable(Command::Alpha)); no event. showStatus leaves it.
+    void setAlpha(bool on, bool available);
     // The "i" toggle's value: whether the Info window is shown
     // (MainFrame::windowShown(FloatingKind::Info)).
     void setInfoShown(bool shown);
@@ -198,11 +201,12 @@ private:
     dvv::MoveOnlyFunction<void(int)> update_observer_;
     dvv::MoveOnlyFunction<void(std::int64_t)> seek_observer_;
     dvv::MoveOnlyFunction<wxColour(wxSystemColour)> system_colour_;
-    // Child windows: wx owns them. `buttons_` in row order: Open, Format, the group, Zoom out,
-    // Zoom in, Grid, "i".
+    // Child windows: wx owns them. `buttons_` in row order: Open, Format, the group, Alpha, Zoom
+    // out, Zoom in, Grid, "i".
     std::vector<IconButton> buttons_;
     wxBitmapButton* open_ = nullptr;
     wxBitmapButton* format_ = nullptr;
+    wxBitmapToggleButton* alpha_ = nullptr;
     wxBitmapToggleButton* grid_ = nullptr;
     wxBitmapToggleButton* info_ = nullptr;
     wxBitmapButton* play_ = nullptr;
@@ -210,12 +214,12 @@ private:
     wxBitmapButton* zoom_out_ = nullptr;
     wxButton* zoom_ = nullptr;  // the zoom button: no command, not in `buttons_`
     wxBitmapButton* zoom_in_ = nullptr;
-    // The transport row's items left of the group (Open, Format) and right of it (Zoom out, the
-    // zoom button, Zoom in, Grid, "i"); the pads make the two sides equally wide (syncSpacer).
+    // The transport row's items left of the group (Open, Format) and right of it (Alpha, Zoom out,
+    // the zoom button, Zoom in, Grid, "i"); the pads make the two sides equally wide (syncSpacer).
     std::vector<wxSizerItem*> left_items_;
     std::vector<wxSizerItem*> right_items_;
     wxSizerItem* left_pad_ = nullptr;   // after Format
-    wxSizerItem* right_pad_ = nullptr;  // before Zoom out
+    wxSizerItem* right_pad_ = nullptr;  // before Alpha
     ZoomControls zoom_shown_;           // the last showZoom()
     int zoom_room_ = 0;  // the zoom text's room: "Fit (8888.8 %)" in the zoom button's font
     std::array<wxBitmapBundle, ICON_COUNT> bundles_;  // in Icon order, tinted with `tint_`

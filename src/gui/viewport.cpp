@@ -489,6 +489,10 @@ void Viewport::setView(const ViewRequest& request) {
     }
 }
 
+void Viewport::setAlpha(bool on) {
+    display_->setAlpha(on);
+}
+
 void Viewport::setImageSize(dvv::platform::PixelSize image) {
 #if !defined(__WXOSX__)
     if (image != image_) {
