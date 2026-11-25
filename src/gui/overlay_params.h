@@ -28,10 +28,12 @@ struct OverlayConversion {
 // and params.tickBand its tickBand; params.litDepth is min(strip, tickBand + 4 pt), the
 // whole strip with numbers off, where the strip is the tick band rounded up to whole window units
 // (the 4 pt converted as every pt size above). A colour packs r | g << 8 | b << 16 | a << 24 with
-// a = opacity x 255 / 100 rounded half up; digitAdvance = float(0.6 x fontDip x backingPerDip);
-// `dark` is the theme. Precondition: stepsValid() of the grid's steps (each one of
-// GRID_STEP_VALUES, a power of two), as parseOverlayConfig() and the settings keep them; a level's
-// stepLog2 is the log2 of its step.
+// a = opacity x 255 / 100 rounded half up; `dark` is the theme. The label spacing is
+// RULER_NUMBER_GAP_DIP, RULER_TAG_PAD_DIP, RULER_TAG_INSET_DIP and RULER_TAG_MARGIN_DIP each as a
+// pt size above, at most 255; lastValue is the rulers'; cursorTagTextBlack is
+// cursorTagTextBlack(the cursor colour). The glyph strip is the GUI's: params.glyphs stays null.
+// Precondition: stepsValid() of the grid's steps (each one of GRID_STEP_VALUES, a power of two), as
+// parseOverlayConfig() and the settings keep them; a level's stepLog2 is the log2 of its step.
 [[nodiscard]] OverlayConversion convertOverlay(const GridConfig& grid, const RulerConfig& rulers,
                                                const OverlayScale& scale, bool dark);
 

@@ -8,7 +8,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -82,15 +81,6 @@ std::string oneDecimal(double value) {
     return text;
 }
 
-std::uint32_t decimalDigits(std::uint32_t value) noexcept {
-    constexpr std::uint32_t BASE = 10;
-    std::uint32_t digits = 1;
-    for (; value >= BASE; value /= BASE) {
-        ++digits;
-    }
-    return digits;
-}
-
 // The log2 of a step, which is a power of two.
 std::uint32_t stepLog2(std::uint32_t step) noexcept {
     assert(std::has_single_bit(step));
@@ -157,22 +147,6 @@ float minimumSpacingBacking(std::uint32_t minimum_pt, double backing_per_dip) no
     return static_cast<float>(static_cast<double>(minimum_pt) * backing_per_dip);
 }
 
-float labelWidth(std::uint32_t size, float digit_advance) noexcept {
-    return static_cast<float>(decimalDigits(size)) * digit_advance;
-}
-
-bool labelFits(float label_width, float major_spacing) noexcept {
-    return label_width <= 2.0F * major_spacing;
-}
-
-bool rulerTicksShown(const RulerFit& fit) noexcept {
-    if (!dvv::media::levelVisible(fit.majorStepLog2, fit.zoom, fit.minimumSpacing)) {
-        return false;
-    }
-    return !fit.labelWidth ||
-           labelFits(*fit.labelWidth, static_cast<float>(1U << fit.majorStepLog2) * fit.zoom);
-}
-
 std::string levelHiddenNote(std::uint32_t step, double zoom, double backing_per_dip,
                             std::uint32_t minimum_pt) {
     if (dvv::media::levelVisible(stepLog2(step), static_cast<float>(zoom),
@@ -202,39 +176,17 @@ std::string gridLevelNote(const GridConfig& grid, GridLevel level, double zoom,
 }
 
 std::string rulerOffNote(const GridConfig& grid, const RulerConfig& rulers, double zoom,
-                         double backing_per_dip, std::array<float, 2> label_widths) {
+                         double backing_per_dip) {
     if (!rulers.show) {
         return {};
     }
     const GridLevelConfig& major = grid.levels[MAJOR];
-    const auto shown_zoom = static_cast<float>(zoom);
-    const float minimum = minimumSpacingBacking(major.minimumSpacing, backing_per_dip);
-    // The spacing is the same on both axes; the numbers differ by the image's digits per axis.
-    RulerFit fit{.majorStepLog2 = stepLog2(major.step),
-                 .zoom = shown_zoom,
-                 .minimumSpacing = minimum,
-                 .labelWidth = std::nullopt};
-    if (!rulerTicksShown(fit)) {
-        return std::format("Rulers off at this zoom: major ticks closer than {} pt",
-                           major.minimumSpacing);
-    }
-    if (!rulers.numbers) {
+    if (dvv::media::levelVisible(stepLog2(major.step), static_cast<float>(zoom),
+                                 minimumSpacingBacking(major.minimumSpacing, backing_per_dip))) {
         return {};
     }
-    fit.labelWidth = label_widths[0];
-    const bool top = rulerTicksShown(fit);
-    fit.labelWidth = label_widths[1];
-    const bool left = rulerTicksShown(fit);
-    if (!top && !left) {
-        return "Rulers off at this zoom: the numbers do not fit";
-    }
-    if (!top) {
-        return "Top ruler off at this zoom: the numbers do not fit";
-    }
-    if (!left) {
-        return "Left ruler off at this zoom: the numbers do not fit";
-    }
-    return {};
+    return std::format("Rulers off at this zoom: major ticks closer than {} pt",
+                       major.minimumSpacing);
 }
 
 }  // namespace rawreel

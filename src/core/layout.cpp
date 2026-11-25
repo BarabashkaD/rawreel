@@ -85,7 +85,7 @@ RulerStrip rulerStrip(const RulerConfig& rulers, double font_dip, DisplayScale s
     const double per_dip = positive(scale.backingPerDip, 1);
     const double content = positive(scale.contentScale, 1);
     const double font = positive(font_dip, 0);
-    const double dip = RULER_TICK_BAND_DIP + (rulers.numbers ? 2 * RULER_LABEL_LINE * font : 0);
+    const double dip = RULER_TICK_BAND_DIP + (rulers.numbers ? RULER_LABEL_LINE * font : 0);
     // The small epsilon keeps a product that lands a rounding error above a whole unit on it; no
     // strip is wider than MOST_UNITS, which keeps the conversions below in range.
     constexpr double EPSILON = 1e-9;

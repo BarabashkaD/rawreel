@@ -7,24 +7,33 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include <wx/checkbox.h>
+#include <wx/choice.h>
 #include <wx/clrpicker.h>
+#include <wx/fontenum.h>
 #include <wx/gbsizer.h>
 #include <wx/notebook.h>
+#include <wx/radiobut.h>
+#include <wx/spinctrl.h>
 #include <wx/statline.h>
+#include <wx/stattext.h>
 
 #include "core/overlay.h"
 #include "gui/floating_window.h"
 #include "gui/main_frame.h"
 #include "gui/native_controls.h"
 #include "gui/native_policy.h"
+#include "gui/viewport.h"  // rulerFontPoints
 
 namespace rawreel {
 
@@ -33,6 +42,10 @@ namespace {
 constexpr int ROW_GAP_DIP = 4;     // between the rows of a level, and around the static lines
 constexpr int COLUMN_GAP_DIP = 8;  // between a level's controls
 constexpr int SLIDER_WIDTH_DIP = 120;
+constexpr int FAMILY_WIDTH_DIP = 170;  // the family list: long family names never widen the window
+// The width the Last value examples are measured for, so the window keeps its size up to
+// five-digit clips.
+constexpr std::uint32_t WIDEST_EXAMPLE_WIDTH = 99999;
 // How long after a slider's scroll's end, with no other end following it, the value is saved.
 constexpr std::chrono::milliseconds SCROLL_SAVE_QUIET{400};
 constexpr long PERCENT_ALIGNMENT = wxALIGN_RIGHT;  // the "85 %" texts, on every OS
@@ -67,6 +80,61 @@ wxColour wxColourOf(Rgb8 colour) {
 
 Rgb8 rgbOf(const wxColour& colour) {
     return {.r = colour.Red(), .g = colour.Green(), .b = colour.Blue()};
+}
+
+// Case-insensitive, then exact for names that differ only in case: a total order, so equal names
+// sort next to each other even with case variants between them, and unique() removes them all.
+// Case variants stay apart (each may be its own family).
+bool familyBefore(const std::string& left, const std::string& right) {
+    const int nocase = wxString::FromUTF8(left).CmpNoCase(wxString::FromUTF8(right));
+    return nocase != 0 ? nocase < 0 : left < right;
+}
+
+// "" (System) first, then the OS's families without the hidden ones ("@" vertical variants,
+// "." system-private names), sorted case-insensitively.
+std::vector<std::string> osFamilies() {
+    std::vector<std::string> families;
+    for (const wxString& name : wxFontEnumerator::GetFacenames()) {
+        if (!name.empty() && name[0] != '@' && name[0] != '.') {
+            families.push_back(name.utf8_string());
+        }
+    }
+    std::ranges::sort(families, familyBefore);
+    const auto [first, last] = std::ranges::unique(families);
+    families.erase(first, last);
+    families.insert(families.begin(), std::string());
+    return families;
+}
+
+wxArrayString familyItems(const std::vector<std::string>& families) {
+    wxArrayString items;
+    for (const std::string& family : families) {
+        items.Add(family.empty() ? wxString("System") : wxString::FromUTF8(family));
+    }
+    return items;
+}
+
+// The size the spin control shows while System size is checked: the system size, whole points.
+int systemSizeShown() {
+    return std::clamp(static_cast<int>(std::lround(rulerFontPoints({}))),
+                      static_cast<int>(RULER_FONT_SIZE_RANGE.minimum),
+                      static_cast<int>(RULER_FONT_SIZE_RANGE.maximum));
+}
+
+std::uint32_t clampedFontSize(int value) {
+    return static_cast<std::uint32_t>(std::clamp(value,
+                                                 static_cast<int>(RULER_FONT_SIZE_RANGE.minimum),
+                                                 static_cast<int>(RULER_FONT_SIZE_RANGE.maximum)));
+}
+
+// "\xE2\x80\xA6" is U+2026 (horizontal ellipsis) in UTF-8.
+wxString lastPixelText(std::uint32_t width) {
+    return wxString::FromUTF8(
+        std::format("Last pixel (0 \xE2\x80\xA6 {})", width == 0 ? 0 : width - 1));
+}
+
+wxString edgeText(std::uint32_t width) {
+    return wxString::FromUTF8(std::format("Edge (0 \xE2\x80\xA6 {})", width));
 }
 
 }  // namespace
@@ -294,6 +362,7 @@ wxPanel* GridWindow::buildAppearance() {
     levels->Add(cursor_colour_, wxGBPosition(cursor_line, 1), wxDefaultSpan,
                 wxALIGN_CENTER_VERTICAL);
     bindColour(*cursor_colour_, rulers_.cursorColour, cursor_dialog_colour_);
+    buildRulerRows(*page, *levels, cursor_line + 1, label_flags);
     sizer->Add(levels);
 
     auto* const border = new wxBoxSizer(wxVERTICAL);
@@ -332,6 +401,94 @@ void GridWindow::bindColour(wxColourPickerCtrl& picker, Rgb8& colour,
                 });
 }
 
+void GridWindow::buildRulerRows(wxWindow& page, wxGridBagSizer& rows, int line, int label_flags) {
+    const int column_gap = FromDIP(COLUMN_GAP_DIP);
+    rows.Add(new wxStaticLine(&page), wxGBPosition(line, 0), wxGBSpan(1, 5),
+             wxEXPAND | wxTOP | wxBOTTOM, FromDIP(ROW_GAP_DIP));
+
+    // Ruler font: family, size, System size. Checked, the size is 0 (the OS's small system font
+    // size) and the spin control, disabled, shows the system size; unchecking stores the spin
+    // control's value.
+    font_label_ = new wxStaticText(&page, wxID_ANY, "Ruler font");
+    rows.Add(font_label_, wxGBPosition(line + 1, 0), wxDefaultSpan, label_flags);
+    families_ = osFamilies();
+    font_family_ = new wxChoice(&page, wxID_ANY, wxDefaultPosition,
+                                FromDIP(wxSize(FAMILY_WIDTH_DIP, -1)), familyItems(families_));
+    setAccessibleName(*font_family_, "Ruler font");
+    font_size_ = new wxSpinCtrl(&page, wxID_ANY, wxString(), wxDefaultPosition, wxDefaultSize,
+                                wxSP_ARROW_KEYS, static_cast<int>(RULER_FONT_SIZE_RANGE.minimum),
+                                static_cast<int>(RULER_FONT_SIZE_RANGE.maximum), systemSizeShown());
+    setAccessibleName(*font_size_, "Ruler font size");
+    font_unit_ = new wxStaticText(&page, wxID_ANY, "pt");
+    system_size_ = new wxCheckBox(&page, wxID_ANY, "System size");
+    auto* const font_row = new wxBoxSizer(wxHORIZONTAL);
+    font_row->Add(font_family_, wxSizerFlags().CenterVertical());
+    font_row->AddSpacer(column_gap);
+    font_row->Add(font_size_, wxSizerFlags().CenterVertical());
+    font_row->AddSpacer(column_gap / 2);
+    font_row->Add(font_unit_, wxSizerFlags().CenterVertical());
+    font_row->AddSpacer(column_gap);
+    font_row->Add(system_size_, wxSizerFlags().CenterVertical());
+    rows.Add(font_row, wxGBPosition(line + 1, 1), wxGBSpan(1, 4), wxALIGN_CENTER_VERTICAL);
+    font_family_->Bind(wxEVT_CHOICE, [this](wxCommandEvent& event) {
+        const int chosen = event.GetSelection();
+        if (chosen < 0 || static_cast<std::size_t>(chosen) >= families_.size()) {
+            return;
+        }
+        rulers_.font.family = families_[static_cast<std::size_t>(chosen)];
+        apply(OverlaySave::Now);
+    });
+    font_size_->Bind(wxEVT_SPINCTRL, [this](wxSpinEvent& event) {
+        if (rulers_.font.size == 0) {
+            return;  // System size: the spin control only shows the system size
+        }
+        rulers_.font.size = clampedFontSize(event.GetPosition());
+        apply(OverlaySave::Now);
+    });
+    system_size_->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent& event) {
+        rulers_.font.size = event.IsChecked() ? 0 : clampedFontSize(font_size_->GetValue());
+        apply(OverlaySave::Now);
+    });
+
+    // Last value: the number at a ruler's far end, each with its example for the open clip.
+    last_value_label_ = new wxStaticText(&page, wxID_ANY, "Last value");
+    rows.Add(last_value_label_, wxGBPosition(line + 2, 0), wxDefaultSpan, label_flags);
+    last_pixel_ = new wxRadioButton(&page, wxID_ANY, lastPixelText(image_width_), wxDefaultPosition,
+                                    wxDefaultSize, wxRB_GROUP);
+    edge_ = new wxRadioButton(&page, wxID_ANY, edgeText(image_width_));
+    auto* const last_row = new wxBoxSizer(wxHORIZONTAL);
+    last_row->Add(last_pixel_, wxSizerFlags().CenterVertical());
+    last_row->AddSpacer(column_gap);
+    last_row->Add(edge_, wxSizerFlags().CenterVertical());
+    rows.Add(last_row, wxGBPosition(line + 2, 1), wxGBSpan(1, 4), wxALIGN_CENTER_VERTICAL);
+    last_pixel_->Bind(wxEVT_RADIOBUTTON, [this](wxCommandEvent&) {
+        rulers_.lastValue = LastValue::Pixel;
+        apply(OverlaySave::Now);
+    });
+    edge_->Bind(wxEVT_RADIOBUTTON, [this](wxCommandEvent&) {
+        rulers_.lastValue = LastValue::Edge;
+        apply(OverlaySave::Now);
+    });
+}
+
+void GridWindow::listFamily(const std::string& family) {
+    if (std::ranges::find(families_, family) != families_.end()) {
+        return;
+    }
+    // After System, in the sorted place among the OS's families.
+    const auto place =
+        std::upper_bound(families_.begin() + 1, families_.end(), family, familyBefore);
+    families_.insert(place, family);
+    font_family_->Set(familyItems(families_));
+}
+
+void GridWindow::showImageWidth(std::optional<std::uint32_t> width) {
+    image_width_ = width.value_or(DEFAULT_EXAMPLE_WIDTH);
+    last_pixel_->SetLabel(lastPixelText(image_width_));
+    edge_->SetLabel(edgeText(image_width_));
+    book_->GetPage(1)->Layout();
+}
+
 const GridWindow::LevelRow& GridWindow::row(GridLevel level) const {
     return rows_[static_cast<std::size_t>(level)];
 }
@@ -357,6 +514,14 @@ void GridWindow::measure() {
         level.percent->SetMinSize(wxSize(percent_width, -1));
     }
     ruler_note_->SetMinSize(wxSize(note_width + indent, -1));
+    // The Last value radios: wide enough for the examples of a five-digit clip.
+    const auto example_width = [](wxRadioButton& radio, const wxString& widest) {
+        const int glyph = std::max(
+            0, radio.GetBestSize().GetWidth() - radio.GetTextExtent(radio.GetLabel()).GetWidth());
+        radio.SetMinSize(wxSize(glyph + radio.GetTextExtent(widest).GetWidth(), -1));
+    };
+    example_width(*last_pixel_, lastPixelText(WIDEST_EXAMPLE_WIDTH));
+    example_width(*edge_, edgeText(WIDEST_EXAMPLE_WIDTH));
 }
 
 void GridWindow::applyColours() {
@@ -412,14 +577,31 @@ void GridWindow::showOverlay(const GridConfig& grid, const RulerConfig& rulers) 
         level.halo->SetValue(config.halo);
     }
     cursor_colour_->SetColour(wxColourOf(rulers_.cursorColour));
+    listFamily(rulers_.font.family);
+    font_family_->SetSelection(
+        static_cast<int>(std::ranges::find(families_, rulers_.font.family) - families_.begin()));
+    const bool system_size = rulers_.font.size == 0;
+    system_size_->SetValue(system_size);
+    font_size_->SetValue(
+        system_size ? systemSizeShown()
+                    : static_cast<int>(clampedFontSize(static_cast<int>(rulers_.font.size))));
+    last_pixel_->SetValue(rulers_.lastValue == LastValue::Pixel);
+    edge_->SetValue(rulers_.lastValue == LastValue::Edge);
+    // The numbers' rows: off with the numbers, and with the rulers (Ruler numbers is disabled).
+    const bool numbered = rulers_.show && rulers_.numbers;
+    for (wxWindow* const control :
+         std::initializer_list<wxWindow*>{font_label_, font_family_, font_unit_, system_size_,
+                                          last_value_label_, last_pixel_, edge_}) {
+        control->Enable(numbered);
+    }
+    font_size_->Enable(numbered && !system_size);
     book_->GetPage(0)->Layout();  // the percent texts keep their right edge
     updateNotes();
 }
 
-void GridWindow::showNotes(double zoom, double backing_per_dip, std::array<float, 2> label_widths) {
+void GridWindow::showNotes(double zoom, double backing_per_dip) {
     zoom_ = zoom;
     backing_per_dip_ = backing_per_dip;
-    label_widths_ = label_widths;
     updateNotes();
 }
 
@@ -433,8 +615,7 @@ void GridWindow::updateNotes() {
         rows_[i].note->SetLabelText(wxString::FromUTF8(note));
     }
     ruler_note_->SetLabelText(wxString::FromUTF8(
-        known ? rulerOffNote(grid_, rulers_, zoom_, backing_per_dip_, label_widths_)
-              : std::string()));
+        known ? rulerOffNote(grid_, rulers_, zoom_, backing_per_dip_) : std::string()));
 }
 
 bool GridWindow::Destroy() {

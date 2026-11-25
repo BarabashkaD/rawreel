@@ -6,12 +6,15 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <optional>
 
 #include "core/overlay.h"
+#include "core/ruler_labels.h"
 #include "core/session_types.h"
 #include "dvv/base/move_only_function.h"
+#include "dvv/gpu/glyph_strip.h"
 #include "dvv/media/view.h"
 #include "dvv/media/view_lines.h"
 
@@ -36,9 +39,14 @@ struct OverlayParams {  // backing pixels; OverlayParams{} draws no grid and no 
     std::uint32_t markerDepth = 0;
     std::uint32_t litDepth = 0;  // the lit tick's depth from the inner edge, at most the strip
     std::array<std::uint32_t, GRID_LEVELS> tickLength{};
-    float digitAdvance = 0;          // an estimate of one digit's advance, backing pixels
     bool dark = false;               // the theme: background and strip colours
     std::uint32_t cursorColour = 0;  // the lit tick and the marker: 0xRRGGBB, sRGB-encoded
+    // The ruler labels' glyphs; null: no numbers drawn. Compared by pointer: a new strip is a new
+    // object.
+    std::shared_ptr<const dvv::gpu::GlyphStrip> glyphs{};
+    LastValue lastValue = LastValue::Pixel;
+    LabelSpacing labelSpacing{};
+    bool cursorTagTextBlack = false;  // the cursor tag's text: black, else white
     bool operator==(const OverlayParams&) const = default;
 };
 struct DisplayParams {

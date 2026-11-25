@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <random>
@@ -679,8 +680,9 @@ TEST_SUITE("core") {
         const RulerConfig r{.show = true, .numbers = false};
         // A parent that is not an object: not savable, and the writer refuses the grid keys and
         // the ruler keys.
-        for (const char* text : {R"({"gui":{"grid":{"major":true}}})", R"({"gui":{"grid":5}})",
-                                 R"({"gui":{"rulers":"yes"}})"}) {
+        for (const char* text :
+             {R"({"gui":{"grid":{"major":true}}})", R"({"gui":{"grid":5}})",
+              R"({"gui":{"rulers":"yes"}})", R"({"gui":{"rulers":{"font":5}}})"}) {
             CAPTURE(text);
             writeText(file, text);
             const OverlayConfig c = parseOverlayConfig(text);
@@ -693,7 +695,8 @@ TEST_SUITE("core") {
         // Bad leaves never block a save: the saved values replace them, with no warning left.
         const char* const leaves =
             R"({"gui":{"grid":{"major":{"step":24,"opacity":101,"colour":"#fff","thickness":0,)"
-            R"("minimumSpacing":-1},"minor":{"colour":5}},"rulers":{"show":"yes"}}})";
+            R"("minimumSpacing":-1},"minor":{"colour":5}},)"
+            R"("rulers":{"show":"yes","font":null,"lastValue":1}}})";
         writeText(file, leaves);
         const OverlayConfig before = parseOverlayConfig(leaves);
         REQUIRE(before.gridSavable);
@@ -714,7 +717,7 @@ TEST_SUITE("core") {
         CHECK(c.rulers.cursorColour == Rgb8{0x34, 0xc7, 0x59});
         const std::vector<rawreel::ConfigValue> values =
             overlayConfigValues(GridConfig{}, c.rulers, false, true);
-        REQUIRE(values.size() == 3);
+        REQUIRE(values.size() == 6);
         CHECK(values[1].key == "gui.rulers.numbers");
         CHECK(values[2].key == "gui.rulers.cursorColour");
         CHECK(std::get<std::string>(values[2].value) == "#34c759");
@@ -738,6 +741,117 @@ TEST_SUITE("core") {
         }
     }
 
+    TEST_CASE("config: ruler font and last value") {
+        using rawreel::LastValue;
+        using rawreel::RulerFont;
+        // The other ruler keys around the one under test, so a fallback is seen to stay alone.
+        const auto rulers = [](std::string_view font, std::string_view last_value) {
+            return parseOverlayConfig(std::format(
+                R"({{"gui":{{"rulers":{{"show":true,"numbers":false,"cursorColour":"#34c759",)"
+                R"("font":{},"lastValue":{}}}}}}})",
+                font, last_value));
+        };
+        const auto others_kept = [](const OverlayConfig& c) {
+            CHECK(c.rulers.show);
+            CHECK_FALSE(c.rulers.numbers);
+            CHECK(c.rulers.cursorColour == Rgb8{0x34, 0xc7, 0x59});
+            CHECK(c.rulersSavable);
+        };
+        SUBCASE("font.size") {
+            for (const std::uint32_t good : {0U, 6U, 11U, 24U}) {
+                CAPTURE(good);
+                const OverlayConfig c =
+                    rulers(std::format(R"({{"family":"Menlo","size":{}}})", good), R"("edge")");
+                CHECK(c.warnings.empty());
+                CHECK(c.rulers.font == RulerFont{.family = "Menlo", .size = good});
+                CHECK(c.rulers.lastValue == LastValue::Edge);
+                others_kept(c);
+            }
+            for (const std::string_view bad : {"5", "25", "11.5", R"("11")", "-1", "true"}) {
+                CAPTURE(bad);
+                const OverlayConfig c =
+                    rulers(std::format(R"({{"family":"Menlo","size":{}}})", bad), R"("edge")");
+                CHECK(c.rulers.font == RulerFont{.family = "Menlo", .size = 0});
+                CHECK(c.rulers.lastValue == LastValue::Edge);
+                others_kept(c);
+                REQUIRE(c.warnings.size() == 1);
+                CHECK(c.warnings[0] == std::format("gui.rulers.font.size: expected 0 or a whole "
+                                                   "number from 6 to 24, not {}; using 0",
+                                                   bad));
+            }
+        }
+        SUBCASE("font.family") {
+            // "\xC3\x9C" is U+00DC and "\xE5\xAD\x97\xE4\xBD\x93" U+5B57 U+4F53 in UTF-8.
+            for (const std::string_view good :
+                 {"Menlo", "", "\xC3\x9Cnknown \xE5\xAD\x97\xE4\xBD\x93"}) {
+                CAPTURE(good);
+                const OverlayConfig c =
+                    rulers(std::format(R"({{"family":"{}","size":11}})", good), R"("edge")");
+                CHECK(c.warnings.empty());
+                CHECK(c.rulers.font == RulerFont{.family = std::string(good), .size = 11});
+                others_kept(c);
+            }
+            for (const std::string_view bad : {"5", "null", R"(["Menlo"])"}) {
+                CAPTURE(bad);
+                const OverlayConfig c =
+                    rulers(std::format(R"({{"family":{},"size":11}})", bad), R"("edge")");
+                CHECK(c.rulers.font == RulerFont{.family = "", .size = 11});
+                CHECK(c.rulers.lastValue == LastValue::Edge);
+                others_kept(c);
+                REQUIRE(c.warnings.size() == 1);
+                CHECK(c.warnings[0] ==
+                      std::format(R"(gui.rulers.font.family: expected a string, not {}; using "")",
+                                  bad));
+            }
+        }
+        SUBCASE("lastValue") {
+            CHECK(rulers("{}", R"("pixel")").rulers.lastValue == LastValue::Pixel);
+            const OverlayConfig edge = rulers("{}", R"("edge")");
+            CHECK(edge.warnings.empty());
+            CHECK(edge.rulers.lastValue == LastValue::Edge);
+            for (const std::string_view bad : {R"("EDGE")", "1", R"("")"}) {
+                CAPTURE(bad);
+                const OverlayConfig c = rulers(R"({"family":"Menlo","size":11})", bad);
+                CHECK(c.rulers.lastValue == LastValue::Pixel);
+                CHECK(c.rulers.font == RulerFont{.family = "Menlo", .size = 11});
+                others_kept(c);
+                REQUIRE(c.warnings.size() == 1);
+                CHECK(c.warnings[0] == std::format(R"(gui.rulers.lastValue: expected "pixel" or )"
+                                                   R"("edge", not {}; using "pixel")",
+                                                   bad));
+            }
+        }
+        SUBCASE("every bad key falls back alone") {
+            const OverlayConfig c = rulers(R"({"family":5,"size":25})", "1");
+            CHECK(c.rulers.font == RulerFont{});
+            CHECK(c.rulers.lastValue == LastValue::Pixel);
+            others_kept(c);
+            // One warning per bad key, in the order they are read.
+            REQUIRE(c.warnings.size() == 3);
+            CHECK(c.warnings[0].starts_with("gui.rulers.font.family:"));
+            CHECK(c.warnings[1].starts_with("gui.rulers.font.size:"));
+            CHECK(c.warnings[2].starts_with("gui.rulers.lastValue:"));
+        }
+        SUBCASE("the font parent") {
+            const OverlayConfig not_object = rulers("5", R"("edge")");
+            CHECK(not_object.rulers.font == RulerFont{});
+            CHECK(not_object.rulers.lastValue == LastValue::Edge);
+            CHECK(not_object.rulers.show);
+            CHECK_FALSE(not_object.rulersSavable);
+            REQUIRE(not_object.warnings.size() == 1);
+            CHECK(not_object.warnings[0] ==
+                  "gui.rulers.font: expected an object, not 5; the defaults are used and not "
+                  "saved");
+            const OverlayConfig null_font = rulers("null", R"("edge")");
+            CHECK(null_font.rulers.font == RulerFont{});
+            CHECK(null_font.rulers.lastValue == LastValue::Edge);
+            others_kept(null_font);
+            REQUIRE(null_font.warnings.size() == 1);
+            CHECK(null_font.warnings[0] ==
+                  "gui.rulers.font: expected an object, not null; the defaults are used");
+        }
+    }
+
     TEST_CASE("config: overlayConfigValues writes only the asked parts") {
         GridConfig g;
         g.levels[0].colour = {255, 159, 26};
@@ -752,11 +866,17 @@ TEST_SUITE("core") {
         CHECK(std::get<bool>(grid_only[8].value));  // gui.grid.minor.show
         const std::vector<rawreel::ConfigValue> rulers_only =
             overlayConfigValues(g, {}, false, true);
-        REQUIRE(rulers_only.size() == 3);
+        REQUIRE(rulers_only.size() == 6);
         CHECK(rulers_only[0].key == "gui.rulers.show");
         CHECK(rulers_only[1].key == "gui.rulers.numbers");
         CHECK(rulers_only[2].key == "gui.rulers.cursorColour");
         CHECK(std::get<std::string>(rulers_only[2].value) == "#ff3b30");
+        CHECK(rulers_only[3].key == "gui.rulers.font.family");
+        CHECK(std::get<std::string>(rulers_only[3].value).empty());
+        CHECK(rulers_only[4].key == "gui.rulers.font.size");
+        CHECK(std::get<std::int64_t>(rulers_only[4].value) == 0);
+        CHECK(rulers_only[5].key == "gui.rulers.lastValue");
+        CHECK(std::get<std::string>(rulers_only[5].value) == "pixel");
         CHECK(overlayConfigValues(g, {}, false, false).empty());
     }
 }

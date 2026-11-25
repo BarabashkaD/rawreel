@@ -9,6 +9,7 @@
 #include <format>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <iterator>
 #include <optional>
 #include <string>
@@ -184,6 +185,21 @@ std::string colourText(Rgb8 colour) {
     return std::format("#{:02x}{:02x}{:02x}", colour.r, colour.g, colour.b);
 }
 
+// The last value's name in the config file: "pixel" or "edge".
+std::string_view lastValueName(LastValue value) noexcept {
+    return value == LastValue::Edge ? "edge" : "pixel";
+}
+
+// "pixel" or "edge", in lower case only.
+std::optional<LastValue> parseLastValue(std::string_view text) noexcept {
+    for (const LastValue value : {LastValue::Pixel, LastValue::Edge}) {
+        if (text == lastValueName(value)) {
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
 // The overlay leaf readers: the value at parent[memberName(key)], or `fallback` when it is
 // missing; a bad value gives `fallback` and one warning.
 class OverlayReader {
@@ -248,6 +264,50 @@ public:
             }
         }
         warn(key, R"("#rrggbb")", *found, std::format(R"("{}")", colourText(fallback)));
+        return fallback;
+    }
+
+    std::string text(const dvv::json::Value& parent, std::string_view key,
+                     std::string_view fallback) {
+        const auto found = parent.find(memberName(key));
+        if (found == parent.end()) {
+            return std::string(fallback);
+        }
+        if (found->is_string()) {
+            return found->get<std::string>();
+        }
+        warn(key, "a string", *found, std::format(R"("{}")", fallback));
+        return std::string(fallback);
+    }
+
+    // 0, or a whole number in `range`.
+    std::uint32_t zeroOrNumber(const dvv::json::Value& parent, std::string_view key,
+                               GridRange range, std::uint32_t fallback) {
+        const auto found = parent.find(memberName(key));
+        if (found == parent.end()) {
+            return fallback;
+        }
+        if (const std::optional<std::uint32_t> value = wholeNumber(*found, 0, range.maximum);
+            value && (*value == 0 || *value >= range.minimum)) {
+            return *value;
+        }
+        warn(key, std::format("0 or a whole number from {} to {}", range.minimum, range.maximum),
+             *found, std::format("{}", fallback));
+        return fallback;
+    }
+
+    LastValue lastValue(const dvv::json::Value& parent, std::string_view key, LastValue fallback) {
+        const auto found = parent.find(memberName(key));
+        if (found == parent.end()) {
+            return fallback;
+        }
+        if (found->is_string()) {
+            if (const std::optional<LastValue> value =
+                    parseLastValue(found->get_ref<const std::string&>())) {
+                return *value;
+            }
+        }
+        warn(key, R"("pixel" or "edge")", *found, std::format(R"("{}")", lastValueName(fallback)));
         return fallback;
     }
 
@@ -404,6 +464,15 @@ OverlayConfig parseOverlayConfig(std::string_view text) {
             read.flag(*rulers, config_key::GUI_RULERS_NUMBERS, defaults.numbers);
         result.rulers.cursorColour =
             read.colour(*rulers, config_key::GUI_RULERS_CURSOR_COLOUR, defaults.cursorColour);
+        if (const dvv::json::Value* const font = read.object(
+                *rulers, parentKey(config_key::GUI_RULERS_FONT_FAMILY), result.rulersSavable)) {
+            result.rulers.font.family =
+                read.text(*font, config_key::GUI_RULERS_FONT_FAMILY, defaults.font.family);
+            result.rulers.font.size = read.zeroOrNumber(*font, config_key::GUI_RULERS_FONT_SIZE,
+                                                        RULER_FONT_SIZE_RANGE, defaults.font.size);
+        }
+        result.rulers.lastValue =
+            read.lastValue(*rulers, config_key::GUI_RULERS_LAST_VALUE, defaults.lastValue);
     }
     return result;
 }
@@ -431,6 +500,11 @@ std::vector<ConfigValue> overlayConfigValues(const GridConfig& grid, const Ruler
         values.push_back({.key = config_key::GUI_RULERS_NUMBERS, .value = rulers.numbers});
         values.push_back({.key = config_key::GUI_RULERS_CURSOR_COLOUR,
                           .value = colourText(rulers.cursorColour)});
+        values.push_back({.key = config_key::GUI_RULERS_FONT_FAMILY, .value = rulers.font.family});
+        values.push_back(
+            {.key = config_key::GUI_RULERS_FONT_SIZE, .value = std::int64_t{rulers.font.size}});
+        values.push_back({.key = config_key::GUI_RULERS_LAST_VALUE,
+                          .value = std::string(lastValueName(rulers.lastValue))});
     }
     return values;
 }

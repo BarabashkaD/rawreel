@@ -8,11 +8,13 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <format>
 #include <memory>
 #include <optional>
 #include <print>
@@ -28,13 +30,18 @@
 #include <vulkan/vulkan_core.h>
 
 #include "composite_reference.h"
+#include "core/layout.h"
+#include "core/overlay.h"
+#include "core/ruler_labels.h"
 #include "core/session_types.h"
 #include "dvv/base/environment.h"
+#include "dvv/base/error.h"
 #include "dvv/base/log.h"
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
 #include "dvv/gpu/command_recorder.h"
 #include "dvv/gpu/context_vulkan.h"
+#include "dvv/gpu/glyph_strip.h"
 #include "dvv/gpu/gpu_instance.h"
 #include "dvv/gpu/presenter_vulkan.h"
 #include "dvv/media/display.h"
@@ -44,6 +51,8 @@
 #include "dvv/media/frame_vulkan.h"
 #include "dvv/media/source_factory.h"
 #include "dvv/media/view.h"
+#include "dvv/media/view_lines.h"
+#include "dvv/platform/pixel_size.h"
 #include "gpu_support.h"
 #include "render/composite_constants.h"
 #include "render/display_state.h"
@@ -80,8 +89,8 @@ constexpr PixelSize IMAGE{37, 23};
 // An image smaller than P at zoom 1, so the rulers hug it.
 constexpr std::string_view HUG_IMAGE_URI = "synthetic:gradient?w=100&h=50&fmt=yuv420p&frames=1";
 constexpr PixelSize HUG_IMAGE{100, 50};
-constexpr DisplayParams DARK{.overlay = {.dark = true}};
-constexpr DisplayParams LIGHT{.overlay = {.dark = false}};
+const DisplayParams DARK{.overlay = {.dark = true}};
+const DisplayParams LIGHT{.overlay = {.dark = false}};
 constexpr Rgba8 DARK_BG{31, 31, 31, 255};
 constexpr Rgba8 LIGHT_BG{217, 217, 217, 255};
 
@@ -242,18 +251,18 @@ std::size_t rulerMismatches(const std::vector<std::byte>& bytes, PixelSize exten
         for (std::uint32_t y = band.regionY; y < band.regionY + band.regionH; ++y) {
             for (std::uint32_t x = band.regionX; x < band.regionX + band.regionW; ++x) {
                 const Rgba8 gpu = pixelAt(bytes, extent, x, y);
-                bool match = withinOne(gpu, rawreel::rulerPixel(band, x, y));
+                bool match = withinOne(gpu, rawreel::rulerPixel(band, nullptr, x, y));
                 const bool top = band.axis == 0;
                 const std::uint32_t along = top ? x : y;
                 const std::uint32_t end =
                     top ? band.regionX + band.regionW : band.regionY + band.regionH;
                 if (!match && neighbour && along > (top ? band.regionX : band.regionY)) {
-                    match =
-                        withinOne(gpu, rawreel::rulerPixel(band, top ? x - 1 : x, top ? y : y - 1));
+                    match = withinOne(
+                        gpu, rawreel::rulerPixel(band, nullptr, top ? x - 1 : x, top ? y : y - 1));
                 }
                 if (!match && neighbour && along + 1 < end) {
-                    match =
-                        withinOne(gpu, rawreel::rulerPixel(band, top ? x + 1 : x, top ? y : y + 1));
+                    match = withinOne(
+                        gpu, rawreel::rulerPixel(band, nullptr, top ? x + 1 : x, top ? y : y + 1));
                 }
                 wrong += match ? 0 : 1;
             }
@@ -1220,10 +1229,12 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: the ruler pass matches its CPU re
                     const rawreel::RulerConstants& top = constants[0];
                     const std::uint32_t lit_x = top.pictureStart + (4 * top.litTick) - 1;
                     REQUIRE(top.litDepth == 28);
-                    REQUIRE(rawreel::rulerPixel(top, lit_x, top.rulerEdge - top.litDepth) ==
-                            rawreel::rulerPixel(top, lit_x, top.rulerEdge - 1));
-                    REQUIRE(rawreel::rulerPixel(top, lit_x, top.rulerEdge - top.litDepth - 1) !=
-                            rawreel::rulerPixel(top, lit_x, top.rulerEdge - 1));
+                    REQUIRE(
+                        rawreel::rulerPixel(top, nullptr, lit_x, top.rulerEdge - top.litDepth) ==
+                        rawreel::rulerPixel(top, nullptr, lit_x, top.rulerEdge - 1));
+                    REQUIRE(rawreel::rulerPixel(top, nullptr, lit_x,
+                                                top.rulerEdge - top.litDepth - 1) !=
+                            rawreel::rulerPixel(top, nullptr, lit_x, top.rulerEdge - 1));
                     const std::vector<std::byte> bytes =
                         draw(extent, frameSet(g, 0, 1), params, encoding);
                     CHECK(rulerMismatches(bytes, extent, constants, false) == 0);
@@ -1836,13 +1847,537 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: the cached line table draws the s
     }
 }
 
+namespace {
+
+// A strip of ten 3-pixel cells, 5 rows, its coverage a pattern of `seed`.
+std::shared_ptr<const dvv::gpu::GlyphStrip> syntheticStrip(std::uint8_t seed) {
+    auto strip = std::make_shared<dvv::gpu::GlyphStrip>();
+    strip->width = 30;
+    strip->height = 5;
+    strip->advance = 3;
+    strip->ascent = 4;
+    strip->descent = 1;
+    strip->coverage.resize(std::size_t{strip->width} * strip->height);
+    for (std::size_t i = 0; i < strip->coverage.size(); ++i) {
+        strip->coverage[i] = static_cast<std::uint8_t>((i * 7) + seed);
+    }
+    return strip;
+}
+
+// The coverage of `strip` in every channel of the RGBA8 `bytes`.
+bool holdsStrip(const std::vector<std::byte>& bytes, const dvv::gpu::GlyphStrip& strip) {
+    if (bytes.size() != strip.coverage.size() * 4) {
+        return false;
+    }
+    for (std::size_t i = 0; i < bytes.size(); ++i) {
+        if (std::to_integer<std::uint8_t>(bytes[i]) != strip.coverage[i / 4]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+TEST_CASE_FIXTURE(CompositorTest, "compositor: glyph strip uploads") {
+    const auto renderer = makeRenderer(context(), 1);
+    const DisplayFrame g = displayFrame(G);
+    const PixelSize extent{211, 97};
+    DisplaySnapshot snapshot{frameSet(g, 0, 1), DisplayParams{.overlay = testRulers(4)}, 1};
+    snapshot.params.overlay.numbers = true;
+    snapshot.params.overlay.glyphs = syntheticStrip(0);
+    std::uint64_t number = 0;
+    const auto next = [&](PixelSize size, bool completed) {
+        auto frame = renderer->frame(
+            frameParams(size, dvv::gpu::PresentEncoding::Linear, number++, completed), snapshot);
+        REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
+        return std::move(*frame);
+    };
+    const auto bound = [&] {
+        REQUIRE(renderer->glyphImage() != nullptr);
+        CHECK(renderer->glyphImage()->width() == 30);
+        CHECK(renderer->glyphImage()->height() == 5);
+        CHECK(dvv::gpu::vulkanFormat(*renderer->glyphImage()) == VK_FORMAT_R8G8B8A8_UNORM);
+        return read(renderer->glyphImage());
+    };
+
+    // The first frame: one upload, both passes.
+    dvv::gpu::PresentFrame first = next(extent, false);
+    REQUIRE(static_cast<bool>(first.record));
+    submit(std::move(first.record));
+    CHECK(renderer->lastRecorded().glyphUploads == 1);
+    CHECK(renderer->lastRecorded().rulerNumbers);
+    CHECK(renderer->lastRecorded().rulerRecords == 1);
+    CHECK(renderer->lastRecorded().pictureRecords == 1);
+    CHECK(holdsStrip(bound(), *snapshot.params.overlay.glyphs));
+    // The same strip again: nothing records.
+    CHECK_FALSE(static_cast<bool>(next(extent, true).record));
+    CHECK(renderer->lastRecorded().glyphUploads == 1);
+
+    // A new strip (a display scale change): one upload, a ruler record, no picture record.
+    snapshot.params.overlay.glyphs = syntheticStrip(1);
+    dvv::gpu::PresentFrame scaled = next(extent, true);
+    REQUIRE(static_cast<bool>(scaled.record));
+    submit(std::move(scaled.record));
+    CHECK(renderer->lastRecorded().glyphUploads == 2);
+    CHECK(renderer->lastRecorded().rulerRecords == 2);
+    CHECK(renderer->lastRecorded().pictureRecords == 1);
+    CHECK(holdsStrip(bound(), *snapshot.params.overlay.glyphs));
+
+    // A strip change whose frame is dropped (its record never runs): the next frame uploads again.
+    snapshot.params.overlay.glyphs = syntheticStrip(2);
+    REQUIRE(static_cast<bool>(next(extent, true).record));  // dropped unrun
+    CHECK(renderer->lastRecorded().glyphUploads == 3);
+    dvv::gpu::PresentFrame again = next(extent, false);
+    REQUIRE(static_cast<bool>(again.record));
+    submit(std::move(again.record));
+    CHECK(renderer->lastRecorded().glyphUploads == 4);
+    CHECK(holdsStrip(bound(), *snapshot.params.overlay.glyphs));
+
+    // A cursor move and a new extent with the same strip: no upload.
+    snapshot.params.cursor = dvv::media::PointD{80.5, 50.5};
+    dvv::gpu::PresentFrame moved = next(extent, true);
+    REQUIRE(static_cast<bool>(moved.record));
+    submit(std::move(moved.record));
+    CHECK(renderer->lastRecorded().rulerRecords == 5);
+    CHECK(renderer->lastRecorded().glyphUploads == 4);
+    dvv::gpu::PresentFrame resized = next({300, 120}, true);
+    REQUIRE(static_cast<bool>(resized.record));
+    submit(std::move(resized.record));
+    CHECK(renderer->lastRecorded().glyphUploads == 4);
+
+    // A strip change while no band shows numbers (an extent smaller than the strips: no picture,
+    // no image on the rulers), then a larger extent: one upload, in the larger frame.
+    snapshot.params.overlay.glyphs = syntheticStrip(3);
+    dvv::gpu::PresentFrame small = next({8, 8}, true);
+    REQUIRE(static_cast<bool>(small.record));
+    submit(std::move(small.record));
+    CHECK(renderer->lastRecorded().glyphUploads == 4);
+    dvv::gpu::PresentFrame grown = next(extent, true);
+    REQUIRE(static_cast<bool>(grown.record));
+    submit(std::move(grown.record));
+    CHECK(renderer->lastRecorded().glyphUploads == 5);
+    CHECK(holdsStrip(bound(), *snapshot.params.overlay.glyphs));
+
+    // Numbers off: the glyph dummy is bound, the strip released, nothing uploaded.
+    snapshot.params.overlay.numbers = false;
+    dvv::gpu::PresentFrame off = next(extent, true);
+    REQUIRE(static_cast<bool>(off.record));
+    submit(std::move(off.record));
+    CHECK(renderer->lastRecorded().glyphUploads == 5);
+    CHECK(renderer->glyphImage() == nullptr);
+    const auto fresh = makeRenderer(context(), 1);
+    auto unnumbered =
+        fresh->frame(frameParams(extent, dvv::gpu::PresentEncoding::Linear, 0, false), snapshot);
+    REQUIRE(unnumbered);
+    REQUIRE(static_cast<bool>(unnumbered->record));
+    submit(std::move(unnumbered->record));
+    CHECK(fresh->lastRecorded().glyphUploads == 0);
+    CHECK(fresh->glyphImage() == nullptr);
+}
+
+TEST_CASE_FIXTURE(CompositorTest, "compositor: a glyph strip that fails to upload") {
+    // An empty strip is refused: the rulers draw without numbers, with the glyph dummy bound, and
+    // the failure is logged once for that strip. The same strip is not tried again; another one is.
+    const auto warnings = std::make_shared<dvv::MemorySink>();
+    dvv::Logger::instance().addSink(warnings, dvv::LogLevel::Warn);
+    const DisplayFrame g = displayFrame(G);
+    const PixelSize extent{211, 97};
+    DisplaySnapshot snapshot{frameSet(g, 0, 1), DisplayParams{.overlay = testRulers(4)}, 1};
+    snapshot.params.overlay.numbers = true;
+    snapshot.params.overlay.glyphs = std::make_shared<const dvv::gpu::GlyphStrip>();
+    // A fresh renderer's frame of `params` at the last cursor below, read back.
+    const auto drawn = [&](const DisplayParams& params) {
+        const auto fresh = makeRenderer(context(), 1);
+        auto frame = fresh->frame(frameParams(extent, dvv::gpu::PresentEncoding::Linear, 0, false),
+                                  DisplaySnapshot{frameSet(g, 0, 1), params, 1});
+        REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
+        REQUIRE(static_cast<bool>(frame->record));
+        submit(std::move(frame->record));
+        return read(frame->image);
+    };
+    const auto renderer = makeRenderer(context(), 1);
+    std::vector<std::byte> last;
+    for (std::uint64_t i = 0; i < 2; ++i) {
+        snapshot.params.cursor = dvv::media::PointD{80.5 + (10.0 * static_cast<double>(i)), 50.5};
+        auto frame = renderer->frame(
+            frameParams(extent, dvv::gpu::PresentEncoding::Linear, i, i != 0), snapshot);
+        REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
+        REQUIRE(static_cast<bool>(frame->record));
+        submit(std::move(frame->record));
+        CHECK(renderer->lastRecorded().rulerRecords == i + 1);
+        CHECK(renderer->lastRecorded().glyphUploads == 0);
+        CHECK(renderer->lastRecorded().glyphFailures == 1);  // the cursor move does not retry
+        CHECK_FALSE(renderer->lastRecorded().rulerNumbers);  // the numbers cleared
+        CHECK(renderer->glyphImage() == nullptr);
+        last = read(frame->image);
+    }
+    // The numbers cleared: the pixels of a frame with the numbers off, which a strip changes.
+    DisplayParams plain = snapshot.params;
+    plain.overlay.numbers = false;
+    CHECK(last == drawn(plain));
+    DisplayParams labelled = snapshot.params;
+    labelled.overlay.glyphs = syntheticStrip(0);
+    CHECK(last != drawn(labelled));
+    // Another strip that fails: tried, and warned, once.
+    snapshot.params.overlay.glyphs = std::make_shared<const dvv::gpu::GlyphStrip>();
+    for (std::uint64_t i = 2; i < 4; ++i) {
+        auto frame = renderer->frame(
+            frameParams(extent, dvv::gpu::PresentEncoding::Linear, i, true), snapshot);
+        REQUIRE(frame);
+        if (frame->record) {
+            submit(std::move(frame->record));
+        }
+        CHECK(renderer->lastRecorded().glyphFailures == 2);
+        CHECK(renderer->glyphImage() == nullptr);
+    }
+    dvv::Logger::instance().flush();
+    dvv::Logger::instance().setSinkLevel(*warnings, dvv::LogLevel::Off);
+    CHECK(std::ranges::count_if(warnings->lines(), [](const std::string& line) {
+              return line.find("glyph strip") != std::string::npos;
+          }) == 2);
+}
+
+TEST_CASE_FIXTURE(CompositorTest, "compositor: a dropped glyph upload is never bound") {
+    // A strip change whose frame is dropped (its upload never runs), then a frame after it that
+    // binds no strip: the rulers hidden, no image on them, or another strip that fails to upload
+    // (the glyph dummy bound). With the strip back, it is uploaded again, not bound unfilled.
+    const DisplayFrame g = displayFrame(G);
+    const PixelSize extent{211, 97};
+    for (const std::string_view between : {"hidden", "no image", "failed upload"}) {
+        CAPTURE(between);
+        const auto renderer = makeRenderer(context(), 1);
+        DisplaySnapshot snapshot{frameSet(g, 0, 1), DisplayParams{.overlay = testRulers(4)}, 1};
+        snapshot.params.overlay.numbers = true;
+        snapshot.params.overlay.glyphs = syntheticStrip(0);
+        std::uint64_t number = 0;
+        const auto next = [&](bool completed) {
+            auto frame = renderer->frame(
+                frameParams(extent, dvv::gpu::PresentEncoding::Linear, number++, completed),
+                snapshot);
+            REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
+            return std::move(*frame);
+        };
+        dvv::gpu::PresentFrame first = next(false);
+        REQUIRE(static_cast<bool>(first.record));
+        submit(std::move(first.record));
+        const std::shared_ptr<const dvv::gpu::GlyphStrip> strip = syntheticStrip(1);
+        snapshot.params.overlay.glyphs = strip;
+        REQUIRE(static_cast<bool>(next(true).record));  // dropped unrun
+        CHECK(renderer->lastRecorded().glyphUploads == 2);
+
+        if (between == "hidden") {
+            snapshot.params.overlay.strips = {};
+        } else if (between == "no image") {
+            snapshot.frames = FrameSet{};
+        } else {
+            snapshot.params.overlay.glyphs = std::make_shared<const dvv::gpu::GlyphStrip>();
+        }
+        dvv::gpu::PresentFrame after = next(false);
+        REQUIRE(static_cast<bool>(after.record));
+        submit(std::move(after.record));
+        CHECK(renderer->lastRecorded().glyphUploads == 2);
+        CHECK(renderer->glyphImage() == nullptr);
+
+        snapshot.frames = frameSet(g, 0, 1);
+        snapshot.params.overlay.strips = testRulers(4).strips;
+        snapshot.params.overlay.glyphs = strip;
+        dvv::gpu::PresentFrame back = next(true);
+        REQUIRE(static_cast<bool>(back.record));
+        submit(std::move(back.record));
+        CHECK(renderer->lastRecorded().glyphUploads == 3);
+        REQUIRE(renderer->glyphImage() != nullptr);
+        CHECK(holdsStrip(read(renderer->glyphImage()), *strip));
+    }
+}
+
+namespace {
+
+// The band pixels of `bytes` that differ from rulerPixel with `glyphs`, and those that the labels
+// change (rulerPixel with and without `glyphs` differ). A channel may be one step off, as in
+// withinOne, at a text pixel (one where the reference with the strip all clear and all covered
+// differs) and at a pixel the labels leave as the ruler pass draws it (rulerMismatches allows the
+// same): the GPU may round a blend, of the text over its box or of the cursor marker, the other
+// way (NVIDIA rounds it one step lower). Tag fills and box edges stay exact. With `channel` (the
+// sRGB encode, whose pow decode may not be correctly rounded) every pixel may be one step off. With
+// `placement` (a zoom that is not dyadic, where a divide that is not correctly rounded may move a
+// boundary) a pixel that matches the reference of a neighbour on the band's axis counts as a match.
+// The coverage rows differ by 5 per row, 11 per column and 37 per cell before the blend, so a wrong
+// row, column or digit, or a text a pixel off, still shows; a box edge is no text pixel and stays
+// exact. `first` names the first wrong pixel; `rounded` counts the pixels that match only within
+// one step, `shifted` those that match only a neighbour's reference.
+struct LabelTolerance {
+    bool channel = false;
+    bool placement = false;
+};
+struct LabelCount {
+    std::size_t wrong = 0;
+    std::size_t rounded = 0;
+    std::size_t shifted = 0;
+    std::size_t labelled = 0;
+    std::string first;
+};
+LabelCount labelMismatches(const std::vector<std::byte>& bytes, PixelSize extent,
+                           const std::array<rawreel::RulerConstants, 2>& bands,
+                           const dvv::gpu::GlyphStrip& glyphs, LabelTolerance tolerance) {
+    const auto hex = [](const Rgba8& c) {
+        return std::format("{:02x}{:02x}{:02x}{:02x}", c[0], c[1], c[2], c[3]);
+    };
+    dvv::gpu::GlyphStrip clear = glyphs;
+    std::ranges::fill(clear.coverage, std::uint8_t{0});
+    dvv::gpu::GlyphStrip covered = glyphs;
+    std::ranges::fill(covered.coverage, std::uint8_t{255});
+    enum class Match : std::uint8_t { None, WithinOne, Exact };
+    LabelCount count;
+    for (const rawreel::RulerConstants& band : bands) {
+        const bool top = band.axis == 0;
+        const std::uint32_t begin = top ? band.regionX : band.regionY;
+        const std::uint32_t end = top ? band.regionX + band.regionW : band.regionY + band.regionH;
+        const auto step_allowed = [&](std::uint32_t rx, std::uint32_t ry, const Rgba8& want) {
+            return tolerance.channel || rawreel::rulerPixel(band, nullptr, rx, ry) == want ||
+                   rawreel::rulerPixel(band, &clear, rx, ry) !=
+                       rawreel::rulerPixel(band, &covered, rx, ry);
+        };
+        for (std::uint32_t y = band.regionY; y < band.regionY + band.regionH; ++y) {
+            for (std::uint32_t x = band.regionX; x < band.regionX + band.regionW; ++x) {
+                const Rgba8 gpu = pixelAt(bytes, extent, x, y);
+                const auto near = [&](std::uint32_t rx, std::uint32_t ry) {
+                    const Rgba8 want = rawreel::rulerPixel(band, &glyphs, rx, ry);
+                    if (gpu == want) {
+                        return Match::Exact;
+                    }
+                    return withinOne(gpu, want) && step_allowed(rx, ry, want) ? Match::WithinOne
+                                                                              : Match::None;
+                };
+                const Rgba8 expected = rawreel::rulerPixel(band, &glyphs, x, y);
+                const std::uint32_t along = top ? x : y;
+                const Match here = near(x, y);
+                const bool shifted =
+                    here == Match::None && tolerance.placement &&
+                    ((along > begin && near(top ? x - 1 : x, top ? y : y - 1) != Match::None) ||
+                     (along + 1 < end && near(top ? x + 1 : x, top ? y : y + 1) != Match::None));
+                count.shifted += shifted ? 1 : 0;
+                count.rounded += here == Match::WithinOne ? 1 : 0;
+                if (here == Match::None && !shifted && count.wrong++ == 0) {
+                    count.first = std::format("({}, {}): GPU {}, reference {}", x, y, hex(gpu),
+                                              hex(expected));
+                }
+                count.labelled += rawreel::rulerPixel(band, nullptr, x, y) == expected ? 0 : 1;
+            }
+        }
+    }
+    return count;
+}
+
+// The kinds of label rulerLabels() gives the band `constants` drawn with cells `advance` wide:
+// bit 1 << kind for each, and LABEL_CLIPPED for a box that reaches past the ruler's end.
+constexpr unsigned LABEL_CLIPPED = 1U << 4U;
+constexpr unsigned kindBit(rawreel::RulerLabelKind kind) {
+    return 1U << static_cast<unsigned>(kind);
+}
+unsigned labelKinds(const rawreel::RulerConstants& constants, std::uint32_t advance) {
+    unsigned kinds = 0;
+    for (const rawreel::RulerLabel& label :
+         rawreel::rulerLabels(rawreel::rulerLabelInput(constants, advance))) {
+        kinds |= kindBit(label.kind);
+        if (label.boxEnd > static_cast<std::int32_t>(constants.rulerEnd)) {
+            kinds |= LABEL_CLIPPED;
+        }
+    }
+    return kinds;
+}
+
+}  // namespace
+
+TEST_CASE_FIXTURE(CompositorTest, "compositor: ruler numbers match the reference") {
+    const auto draw = [this](PixelSize extent, const FrameSet& frames, const DisplayParams& params,
+                             dvv::gpu::PresentEncoding encoding) {
+        const auto renderer = makeRenderer(context(), 1);
+        auto frame = renderer->frame(frameParams(extent, encoding, 0, false),
+                                     DisplaySnapshot{frames.share(), params, 1});
+        REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
+        REQUIRE(static_cast<bool>(frame->record));
+        submit(std::move(frame->record));
+        return read(frame->image);
+    };
+    // The bands as frame() builds them: the cursor mapped in P.
+    const auto bands = [](PixelSize extent, const DisplayParams& params, PixelSize image,
+                          bool skip) {
+        const dvv::media::PixelRect p = dvv::media::pictureRegion(extent, params.overlay.strips);
+        const ViewTransform view = resolveView(params.view, p.size(), image);
+        const std::optional<dvv::media::ImagePixel> cursor =
+            dvv::media::imagePixelAt(view, {params.cursor->x - p.x, params.cursor->y - p.y});
+        REQUIRE(cursor.has_value());
+        return rawreel::rulerConstants(params.overlay, view,
+                                       regionsOf(extent, params.overlay, view), cursor, skip);
+    };
+    struct Scene {
+        const char* name;
+        std::string_view uri;
+        PixelSize image;
+        double zoom;
+        dvv::media::PointD cursor;
+        bool ticks;
+        std::array<unsigned, 2> kinds;  // labelKinds() of the top and the left band
+        std::uint32_t glyphHeight;      // the strip's rows; the label band holds 10
+    };
+    // Exact at the dyadic zooms (k / 2^n): at 0.5 and 0.25 every u(p) is exact, at 3 it lies at
+    // least 1/6 from an integer. At another zoom a divide that is not correctly rounded may move
+    // a boundary by a pixel.
+    const auto dyadic = [](double zoom) {
+        const double scaled = std::ldexp(zoom, 16);
+        return scaled == std::trunc(scaled);
+    };
+    constexpr unsigned NUMBER = kindBit(rawreel::RulerLabelKind::Number);
+    constexpr unsigned FIRST = kindBit(rawreel::RulerLabelKind::FirstTag);
+    constexpr unsigned LAST = kindBit(rawreel::RulerLabelKind::LastTag);
+    constexpr unsigned CURSOR = kindBit(rawreel::RulerLabelKind::CursorTag);
+    // P = 256 x 192 in a 286 x 222 output; at zoom 3 the 64 x 48 image is 192 x 144 from P's
+    // (32, 24), so output (62, 54); at 0.37 the 1920 x 1080 one is 710 x 400 in P = 908 x 511,
+    // with a major spacing of 8 (32 x 0.37 is below 24). The short rulers, with tags 17 ("0"
+    // to "9") and 22 ("10" to "99") long and a margin of 4: at zoom 0.5 the image is 32 x 24
+    // from output (142, 114), so R - L is 24 on the top (the first tag fits, the pair does not,
+    // the last tag alone would) and 16 on the left (no end tag; the cursor tag starts at L); the
+    // cursor tag of pixel 1 drops the first tag, and the last stays undrawn. At zoom 0.25 the
+    // image is 16 x 12 from (150, 120): both rulers are shorter than the cursor tag, which starts
+    // at L and is clipped at the ruler's end. The 15-row strip is taller than the 10-row label
+    // band: its text starts 2 rows (the signed half of 10 - 15) before the band, past the ruler's
+    // outer edge, and reaches 3 rows into the tick band, where the ticks must stay.
+    const std::array scenes{
+        Scene{"zoom 3",
+              "synthetic:gradient?w=64&h=48&fmt=yuv420p&frames=1",
+              {64, 48},
+              3,
+              {150.5, 100.5},
+              true,
+              {FIRST | LAST | CURSOR, NUMBER | FIRST | LAST | CURSOR},
+              7},
+        Scene{"zoom 3, a strip taller than the label band",
+              "synthetic:gradient?w=64&h=48&fmt=yuv420p&frames=1",
+              {64, 48},
+              3,
+              {150.5, 100.5},
+              true,
+              {FIRST | LAST | CURSOR, NUMBER | FIRST | LAST | CURSOR},
+              15},
+        Scene{"zoom 3, the cursor tag at the ends",
+              "synthetic:gradient?w=64&h=48&fmt=yuv420p&frames=1",
+              {64, 48},
+              3,
+              {62.5, 196.5},
+              true,
+              {NUMBER | LAST | CURSOR, NUMBER | FIRST | CURSOR},
+              7},
+        Scene{"zoom 0.37",
+              "synthetic:gradient?w=1920&h=1080&fmt=yuv420p&frames=1",
+              {1920, 1080},
+              0.37,
+              {500.5, 300.5},
+              true,
+              {NUMBER | FIRST | LAST | CURSOR, NUMBER | FIRST | LAST | CURSOR},
+              7},
+        Scene{"a disabled ruler: tags only",
+              "synthetic:gradient?w=64&h=48&fmt=yuv420p&frames=1",
+              {64, 48},
+              3,
+              {150.5, 100.5},
+              false,
+              {FIRST | LAST | CURSOR, FIRST | LAST | CURSOR},
+              7},
+        Scene{"zoom 0.5, short rulers",
+              "synthetic:gradient?w=64&h=48&fmt=yuv420p&frames=1",
+              {64, 48},
+              0.5,
+              {142.5, 114.5},
+              true,
+              {CURSOR, CURSOR},
+              7},
+        Scene{"zoom 0.25, rulers shorter than the cursor tag",
+              "synthetic:gradient?w=64&h=48&fmt=yuv420p&frames=1",
+              {64, 48},
+              0.25,
+              {150.5, 120.5},
+              true,
+              {CURSOR | LABEL_CLIPPED, CURSOR | LABEL_CLIPPED},
+              7},
+    };
+    for (const Scene& scene : scenes) {
+        const std::string name{scene.name};
+        CAPTURE(name);
+        const std::shared_ptr<const dvv::gpu::GlyphStrip> strip =
+            rawreel::labelStrip(5, scene.glyphHeight);
+        const DisplayFrame g = displayFrame(scene.uri, scene.image);
+        const PixelSize extent =
+            scene.image.width == 64 ? PixelSize{286, 222} : PixelSize{938, 541};
+        for (const auto encoding :
+             {dvv::gpu::PresentEncoding::Linear, dvv::gpu::PresentEncoding::Srgb}) {
+            for (const bool dark : {false, true}) {
+                for (const bool edge : {false, true}) {
+                    const bool skip = encoding == dvv::gpu::PresentEncoding::Srgb;
+                    CAPTURE(skip);
+                    CAPTURE(dark);
+                    CAPTURE(edge);
+                    DisplayParams params{
+                        .view = {ViewMode::Zoom,
+                                 scene.zoom,
+                                 {scene.image.width / 2.0, scene.image.height / 2.0},
+                                 scene.image},
+                        .overlay = testRulers(scene.zoom < 1 ? 8.0F : 24.0F),
+                        .cursor = scene.cursor};
+                    params.overlay.dark = dark;
+                    params.overlay.numbers = true;
+                    params.overlay.glyphs = strip;
+                    params.overlay.labelSpacing = {
+                        .numberGap = 4, .tagPad = 6, .tagInset = 2, .tagMargin = 4};
+                    params.overlay.lastValue =
+                        edge ? rawreel::LastValue::Edge : rawreel::LastValue::Pixel;
+                    params.overlay.cursorTagTextBlack = dark;
+                    if (!scene.ticks) {
+                        params.overlay.levels[0].minimumSpacing = 100000;
+                    }
+                    const auto constants = bands(extent, params, scene.image, skip);
+                    for (const rawreel::RulerConstants& band : constants) {
+                        REQUIRE((band.flags & rawreel::RULER_NUMBERS) != 0);
+                        REQUIRE(band.labelBand == 10);
+                        REQUIRE(((band.flags & rawreel::RULER_TICKS) != 0) == scene.ticks);
+                    }
+                    // The scene still shows the labels it is for.
+                    REQUIRE(labelKinds(constants[0], strip->advance) == scene.kinds[0]);
+                    REQUIRE(labelKinds(constants[1], strip->advance) == scene.kinds[1]);
+                    const std::vector<std::byte> bytes =
+                        draw(extent, frameSet(g, 0, 1), params, encoding);
+                    const LabelCount count =
+                        labelMismatches(bytes, extent, constants, *strip,
+                                        {.channel = skip, .placement = !dyadic(scene.zoom)});
+                    CHECK(count.labelled > 0);
+                    CHECK_MESSAGE(count.wrong == 0, count.first);
+                    MESSAGE(count.rounded << " pixels match only within one step");
+                    // A moved boundary shifts at most the two edges of a box, one pixel per
+                    // row across the band; a label drawn a pixel off as a whole shifts more.
+                    std::size_t bound = 0;
+                    for (const rawreel::RulerConstants& band : constants) {
+                        bound +=
+                            rawreel::rulerLabels(rawreel::rulerLabelInput(band, strip->advance))
+                                .size() *
+                            2 * (band.axis == 0 ? band.regionH : band.regionW);
+                    }
+                    MESSAGE(count.shifted << " pixels match only a neighbour (at most " << bound
+                                          << ")");
+                    CHECK(count.shifted <= bound);
+                }
+            }
+        }
+    }
+}
+
 // Wall time per frame, recorded, submitted and waited for (dvv-gpu has no GPU timestamps), at 100 %
 // of a 4K picture with every grid level drawn (the major one with its halo). Each number also holds
 // the submit-and-wait round trip, measured alone as "empty". "full": a new frame in the same view
 // (the line table read in place), the picture and the ruler passes; "cursor-only": the cursor
-// moved, the ruler pass alone. The grid's own cost is
-// measured in pairs below. The case prints its table to stdout (MESSAGE shows only with a
-// failure); run it with ctest -V.
+// moved, the ruler pass alone; "cursor-only, numbers": the same with the ruler numbers on, as on a
+// display of backing scale 2 with the system font at 11 pt (the OS's glyphs, the strips from
+// rulerStrip). The grid's own cost is measured in pairs below. The case prints its table to
+// stdout (MESSAGE shows only with a failure); run it with ctest -V.
 TEST_CASE_FIXTURE(CompositorTest, "compositor: frame cost (manual)") {
     if (dvv::getEnvironment("RAWREEL_MEASURE_FRAMES").value_or("") != "1") {
         MESSAGE("skipped: set RAWREEL_MEASURE_FRAMES=1");
@@ -1867,6 +2402,29 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame cost (manual)") {
     rulers.markerDepth = 6;
     rulers.litDepth = 28;
     rulers.tickLength = {20, 12, 6};
+    constexpr double SCALE = 2;
+    constexpr double FONT_POINTS = 11;
+    // The DIP per font point of native_policy::dipPerFontPoint(): 1 on macOS, 96 / 72 on Windows
+    // and GTK, so the strips and glyphs are the app's on each OS.
+#if defined(__APPLE__)
+    constexpr double DIP_PER_POINT = 1;
+#else
+    constexpr double DIP_PER_POINT = 96.0 / 72.0;
+#endif
+    dvv::Result<dvv::gpu::GlyphStrip> glyphs = dvv::gpu::rasterGlyphStrip(
+        {.family = "", .sizePoints = FONT_POINTS}, DIP_PER_POINT * SCALE, rawreel::RULER_DIGITS);
+    REQUIRE_MESSAGE(glyphs, (glyphs ? std::string() : glyphs.error().describe()));
+    rawreel::RulerConfig shown;
+    shown.show = true;
+    shown.numbers = true;
+    const rawreel::RulerStrip strip = rawreel::rulerStrip(
+        shown, FONT_POINTS * DIP_PER_POINT, {.backingPerDip = SCALE, .contentScale = SCALE});
+    REQUIRE(strip.tickBand == rulers.tickBand);
+    rawreel::OverlayParams numbers = rulers;
+    numbers.numbers = true;
+    numbers.strips = {.top = strip.backing, .left = strip.backing};
+    numbers.glyphs = std::make_shared<const dvv::gpu::GlyphStrip>(std::move(*glyphs));
+    numbers.labelSpacing = {.numberGap = 4, .tagPad = 6, .tagInset = 2, .tagMargin = 4};
     struct Cost {
         std::array<double, 2> ms;
         double picturePasses;  // per measured frame
@@ -1925,7 +2483,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame cost (manual)") {
         }
         const auto print = [&](std::string_view name, const Cost& cost) {
             std::println(
-                "{}x{} {:<12} median {:7.3f} p95 {:7.3f}; passes per frame: picture "
+                "{}x{} {:<20} median {:7.3f} p95 {:7.3f}; passes per frame: picture "
                 "{:.2f}, ruler {:.2f}",
                 extent.width, extent.height, name, cost.ms[0], cost.ms[1], cost.picturePasses,
                 cost.rulerPasses);
@@ -1933,6 +2491,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame cost (manual)") {
         print("empty", Cost{median_p95(std::move(empty)), 0, 0});
         print("full", measure(rulers, true));
         print("cursor-only", measure(rulers, false));
+        print("cursor-only, numbers", measure(numbers, false));
     }
     static_cast<void>(std::fflush(stdout));
 }

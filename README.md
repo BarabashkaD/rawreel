@@ -12,13 +12,13 @@ are built on the dvv libraries, which this repository pins as git submodules in 
 | [dvv-base](https://github.com/BarabashkaD/dvv-base) | errors, tasks and executors, logger, lifetime registry and leak check, JSON, URIs, paths |
 | [dvv-registry](https://github.com/BarabashkaD/dvv-registry) | component info, capability probing, loadable modules, the component registry |
 | [dvv-platform](https://github.com/BarabashkaD/dvv-platform) | native window handles, run-time libraries, `FileReader`, atomic file replacement, crash handler |
-| [dvv-gpu](https://github.com/BarabashkaD/dvv-gpu) | Vulkan 1.4 core: devices, buffers and images, submission, Slang shaders, compute pipelines, presentation |
-| [dvv-media](https://github.com/BarabashkaD/dvv-media) | pixel-format catalogue, custom JSON formats, frames and the frame store, synthetic, raw and Y4M sources |
+| [dvv-gpu](https://github.com/BarabashkaD/dvv-gpu) | Vulkan 1.4 core: devices, buffers and images, submission, Slang shaders, compute pipelines, presentation, glyph strips from the OS font |
+| [dvv-media](https://github.com/BarabashkaD/dvv-media) | pixel-format catalogue, custom JSON formats, frames and the frame store, synthetic, raw and Y4M sources, the view geometry and the ruler and grid line rule |
 | [dvv-components](https://github.com/BarabashkaD/dvv-components) | `dvv_add_component()`, the FFmpeg run-time binding, the `ffmpeg` and `lavfi` sources |
 
 ## Packages
 
-A release has these files (`<v>` is the version, e.g. `0.13.0`):
+A release has these files (`<v>` is the version, e.g. `0.14.0`):
 
 - `rawreel-<v>-windows-x64.zip`: the application. Unzip it anywhere and start `rawreel-gui.exe`;
   nothing is installed. The zip is not code-signed, so Windows SmartScreen may warn at the first
@@ -397,7 +397,12 @@ window:
 - Appearance: Style (Plain, Adaptive, Coloured or Halo; Custom when the values match none), and
   per level its colour, thickness (1–4 pt), Adaptive (black lines on light pixels, white on dark)
   and Halo (a dark edge beside the line); then the cursor colour. A style sets the colours,
-  opacities, Adaptive, Halo and the cursor colour.
+  opacities, Adaptive, Halo and the cursor colour. Below them, outside the styles (a style never
+  changes them): Ruler font, a family (System, then the OS's font families) and a size of 6–24
+  pt with System size (checked: the OS's small system font size, the default); and Last value,
+  Last pixel or Edge, each with its example from the open clip's width ("0 … 3839" and
+  "0 … 3840" on a 3840-wide clip). Both rows are disabled while the rulers or their numbers
+  are off.
 
 Every change applies at once and is saved in `rawreel.json` (see [Configuration](#configuration)).
 
@@ -405,11 +410,22 @@ The rulers run along the top and left edges of the picture, not of the window, s
 the picture when it is smaller than the window. Their ticks come from the same rule as the
 grid lines and land on the same pixels. The tick nearest the pointer is lit in the cursor colour
 (#ff3b30 by default), and a marker in that colour shows the pointer's position. A ruler shows no
-ticks when the major ticks are closer than the major level's minimum spacing or, with Ruler numbers
-on, too close for the digits of the image's size (its width on the top ruler, its height on the
-left one); the Quick tab's note gives the reason, e.g. "Rulers off at this zoom: major ticks closer
-than 2 pt" or "Left ruler off at this zoom: the numbers do not fit". A press on a ruler does not
-pan the picture.
+ticks when the major ticks are closer than the major level's minimum spacing; the Quick tab's note
+then says so, e.g. "Rulers off at this zoom: major ticks closer than 2 pt". Ruler numbers never turn
+a ruler off. A press on a ruler does not pan the picture.
+
+With Ruler numbers on (the default), the rulers show image pixel numbers in a line of 1.2 × the
+ruler font's size beside the ticks, so a bigger ruler font makes the rulers thicker. The top
+ruler reads left to right, the left ruler bottom to top. A number sits on every major tick when
+the numbers fit there, else on every 2nd, 4th, 8th … major tick, so they stay round multiples
+(0, 128, 256 …); the ticks stay. At the two ends of each ruler, end tags show the first and the
+last visible pixel at every zoom and pan, also while the ruler shows no ticks; with Last value
+Edge the last tag shows the edge after that pixel (0 … 3840 for a whole 3840-wide picture, in
+place of 0 … 3839). When the ruler is too short for both tags only the first shows, and a number
+that would touch a tag is left out. With the pointer on the picture, a tag in the cursor colour
+shows its pixel, centred on it and kept inside the ruler; it hides the numbers and the end tag
+it touches. Its text is black on a cursor colour of relative luminance above 0.5, else white
+(white on the default red).
 
 The status bar shows the image pixel under the pointer, e.g. `x 812  y 403`; the field is empty
 off the picture and with no stream.
@@ -760,6 +776,9 @@ creates it in the user data folder when a setting is saved or an open changes Op
 | `gui.rulers.show` | `true`, `false` | `false` | rawreel-gui |
 | `gui.rulers.numbers` | `true`, `false` (Ruler numbers) | `true` | rawreel-gui |
 | `gui.rulers.cursorColour` | `"#rrggbb"` (the lit tick and the marker) | `"#ff3b30"` | rawreel-gui |
+| `gui.rulers.font.family` | a font family name; `""` is the system font (a family the OS lacks is replaced as the OS replaces it for any text) | `""` | rawreel-gui |
+| `gui.rulers.font.size` | `0` (the small system font size) or a whole number from 6 to 24 (OS font points) | `0` | rawreel-gui |
+| `gui.rulers.lastValue` | `"pixel"` (the last number is the last pixel, 0 … 3839 on a 3840-wide picture) or `"edge"` (the edge after it, 0 … 3840) | `"pixel"` | rawreel-gui |
 | `gui.grid.<level>.show` | `true`, `false`; `major.show` is the grid's on/off | `false` / `true` / `false` | rawreel-gui |
 | `gui.grid.<level>.step` | 2, 4, 8, 16, 32, 64, 128 or 256 image pixels; major ≥ 2 × minor, minor ≥ 2 × second minor | `32` / `8` / `2` | rawreel-gui |
 | `gui.grid.<level>.opacity` | a whole number from 0 to 100 (%) | `85` / `50` / `25` | rawreel-gui |
@@ -810,10 +829,11 @@ a `gui` or `log` key that `rawreel-cli` does not use, makes both executables use
 two exceptions. First, the two Open Recent keys: a wrong `gui.recentSize` gives 5 and a wrong
 `gui.recent` an empty list (a wrong entry in it is dropped), each with a warning, and the rest of
 the file is used. Second, the `gui.grid` and `gui.rulers` keys: a wrong value gives that key's
-default with a warning, steps that break the step rule give 32 / 8 / 2, and a `gui.grid`, level or
-`gui.rulers` that is not an object gives its defaults (and is not written over, unless it is
-`null`). `rawreel-cli` ignores the keys of both exceptions. An older rawreel ignores a file that
-holds a value only a newer one knows. Unknown keys are ignored. To try another file:
+default with a warning, steps that break the step rule give 32 / 8 / 2, and a `gui.grid`, level,
+`gui.rulers` or `gui.rulers.font` that is not an object gives its defaults (and is not written
+over, unless it is `null`). `rawreel-cli` ignores the keys of both exceptions. An older rawreel
+ignores a file that holds a value only a newer one knows. Unknown keys are ignored. To try another
+file:
 
 ```powershell
 & $cli info <uri> --config <folder>/rawreel.json
@@ -881,7 +901,7 @@ the report with the symbols of the same release, `rawreel-<v>-macos-arm64-symbol
 `SHA256SUMS` lists the SHA256 of every release file. In PowerShell, in the download folder:
 
 ```powershell
-$f = 'rawreel-0.13.0-windows-x64.zip'
+$f = 'rawreel-0.14.0-windows-x64.zip'
 $want = (Select-String -Path SHA256SUMS -SimpleMatch $f).Line.Split(' ')[0]
 (Get-FileHash $f -Algorithm SHA256).Hash -eq $want    # True
 ```
@@ -891,12 +911,12 @@ On Linux (or wherever coreutils exist), and on macOS: `sha256sum -c --ignore-mis
 attestation from the release workflow; with the GitHub CLI:
 
 ```powershell
-gh attestation verify rawreel-0.13.0-windows-x64.zip --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.14.0-windows-x64.zip --repo BarabashkaD/rawreel
 ```
 
 ```sh
-gh attestation verify rawreel-0.13.0-linux-x64.tar.xz --repo BarabashkaD/rawreel
-gh attestation verify rawreel-0.13.0-macos-arm64.dmg --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.14.0-linux-x64.tar.xz --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.14.0-macos-arm64.dmg --repo BarabashkaD/rawreel
 ```
 
 ## Getting the source
@@ -984,7 +1004,8 @@ instrumented).
 Ubuntu 24.04 (also in WSL on Windows 11) with Clang 19, libstdc++ 14, CMake and Ninja (see
 `libs/dvv-build/README.md`). From the `rawreel` folder, in bash, after
 `libs/dvv-build/bootstrap.sh` (it names the apt packages it still needs), configure, build
-Debug and Release and run all tests:
+Debug and Release and run all tests. The ruler numbers are drawn with Pango: the build needs
+pangocairo 1.44 or later through pkg-config, which GTK 3's development packages bring.
 
 ```sh
 cmake --workflow --preset ninja-clang

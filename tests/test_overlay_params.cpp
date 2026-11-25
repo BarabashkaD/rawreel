@@ -6,6 +6,7 @@
 
 #include "core/layout.h"
 #include "core/overlay.h"
+#include "core/ruler_labels.h"
 #include "dvv/media/view_lines.h"
 #include "gui/overlay_params.h"
 #include "render/display_state.h"
@@ -29,7 +30,6 @@ TEST_CASE("overlay params: the defaults at a scale of 2") {
     CHECK(params.tickWidth == 2);  // 0.75 pt x 2 = 1.5, half up
     CHECK(params.tickLength == std::array<std::uint32_t, 3>{18, 10, 6});
     CHECK(params.markerDepth == 6);
-    CHECK(params.digitAdvance == doctest::Approx(13.2));
     CHECK(params.numbers);
     CHECK(params.strips == dvv::media::ViewStrips{});  // the rulers are hidden
     CHECK(params.tickBand == 0);
@@ -62,19 +62,19 @@ TEST_CASE("overlay params: the rulers shown at a Windows scale of 125 %") {
 TEST_CASE("overlay params: the lit tick reaches 4 pt past the tick band, within the strip") {
     const RulerConfig numbers{.show = true, .numbers = true};
     const OverlayScale retina{.display = {2, 2}, .fontDip = 11};
-    // 10 + 2 x 1.2 x 11 = 36.4 pt: a strip of 37 window units, 74 px, its tick band 20 px.
+    // 10 + 1.2 x 11 = 23.2 pt: a strip of 24 window units, 48 px, its tick band 20 px.
     const OverlayParams on = rawreel::convertOverlay(GridConfig{}, numbers, retina, false).params;
-    CHECK(on.strips.top == 74);
+    CHECK(on.strips.top == 48);
     CHECK(on.tickBand == 20);
     CHECK(on.litDepth == 28);  // 20 + 4 pt x 2
-    // A label band thinner than 4 pt: 10 + 2 x 1.2 x 1 = 12.4 pt, a strip of 13 window units,
-    // 26 px; its label band 26 - 20 = 6 px is less than 4 pt x 2 = 8 px, so the lit tick fills
+    // A label band thinner than 4 pt: 10 + 1.2 x 1 = 11.2 pt, a strip of 12 window units,
+    // 24 px; its label band 24 - 20 = 4 px is less than 4 pt x 2 = 8 px, so the lit tick fills
     // the strip.
     const OverlayParams thin =
         rawreel::convertOverlay(GridConfig{}, numbers, {.display = {2, 2}, .fontDip = 1}, false)
             .params;
-    CHECK(thin.strips.top == 26);
-    CHECK(thin.litDepth == 26);
+    CHECK(thin.strips.top == 24);
+    CHECK(thin.litDepth == 24);
     // Numbers off: the strip is the tick band, so the lit tick fills the strip, longer than the
     // major tick.
     for (const OverlayScale& scale :
@@ -102,6 +102,30 @@ TEST_CASE("overlay params: colour and opacity pack into one word") {
     CHECK(params.levels[0].colour == 0xE61A9FFF);
     CHECK(params.levels[1].colour == 0x00FFFFFF);
     CHECK(params.levels[2].colour == 0xFFFFFFFF);
+}
+
+TEST_CASE("overlay params: the label spacing, the last value and the tag text") {
+    // 2, 3, 1 and 2 pt, each half up and at least 1.
+    const RulerConfig rulers{.show = true, .lastValue = rawreel::LastValue::Edge};
+    const OverlayParams retina =
+        rawreel::convertOverlay(GridConfig{}, rulers, {.display = {2, 2}, .fontDip = 11}, false)
+            .params;
+    CHECK(retina.labelSpacing ==
+          rawreel::LabelSpacing{.numberGap = 4, .tagPad = 6, .tagInset = 2, .tagMargin = 4});
+    CHECK(retina.lastValue == rawreel::LastValue::Edge);
+    CHECK(retina.glyphs == nullptr);  // the GUI adds the strip
+    const OverlayParams windows =
+        rawreel::convertOverlay(GridConfig{}, RulerConfig{}, {.display = {1.25, 1}, .fontDip = 9},
+                                false)
+            .params;
+    CHECK(windows.labelSpacing ==
+          rawreel::LabelSpacing{.numberGap = 3, .tagPad = 4, .tagInset = 1, .tagMargin = 3});
+    CHECK(windows.lastValue == rawreel::LastValue::Pixel);
+    // The default red cursor takes white text, a light yellow one black.
+    CHECK_FALSE(windows.cursorTagTextBlack);
+    const RulerConfig yellow{.cursorColour = {.r = 0xff, .g = 0xd6, .b = 0x0a}};
+    CHECK(rawreel::convertOverlay(GridConfig{}, yellow, {.display = {1, 1}}, false)
+              .params.cursorTagTextBlack);
 }
 
 TEST_CASE("convertOverlay packs the cursor colour") {

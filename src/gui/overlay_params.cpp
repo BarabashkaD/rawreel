@@ -8,6 +8,11 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "core/layout.h"
+#include "core/overlay.h"
+#include "core/ruler_labels.h"
+#include "render/display_state.h"
+
 namespace rawreel {
 
 namespace {
@@ -16,6 +21,11 @@ namespace {
 std::uint32_t backingOf(double pt, double per_dip) {
     const double backing = std::floor(pt * per_dip + 0.5);
     return backing >= 1 ? static_cast<std::uint32_t>(backing) : 1U;
+}
+
+// A label spacing: backingOf, at most 255 (one byte of the ruler pass's packed word).
+std::uint32_t spacingOf(double pt, double per_dip) {
+    return std::min(backingOf(pt, per_dip), 255U);
 }
 
 // The colour word of the shaders: r | g << 8 | b << 16 | a << 24, a = opacity in % to 0-255,
@@ -32,8 +42,6 @@ constexpr double TICK_WIDTH_PT = 0.75;
 constexpr double MARKER_DEPTH_PT = 3;
 // How far the lit tick reaches past the tick band, pt.
 constexpr double LIT_REACH_PT = 4;
-// An estimate of one digit's advance, times the font size.
-constexpr double DIGIT_ADVANCE_EM = 0.6;
 
 }  // namespace
 
@@ -65,7 +73,12 @@ OverlayConversion convertOverlay(const GridConfig& grid, const RulerConfig& rule
     // With numbers off the strip is the tick band rounded up to whole window units, so the lit
     // tick fills the strip.
     params.litDepth = std::min(strip.backing, strip.tickBand + backingOf(LIT_REACH_PT, per_dip));
-    params.digitAdvance = static_cast<float>(DIGIT_ADVANCE_EM * scale.fontDip * per_dip);
+    params.lastValue = rulers.lastValue;
+    params.labelSpacing = {.numberGap = spacingOf(RULER_NUMBER_GAP_DIP, per_dip),
+                           .tagPad = spacingOf(RULER_TAG_PAD_DIP, per_dip),
+                           .tagInset = spacingOf(RULER_TAG_INSET_DIP, per_dip),
+                           .tagMargin = spacingOf(RULER_TAG_MARGIN_DIP, per_dip)};
+    params.cursorTagTextBlack = cursorTagTextBlack(rulers.cursorColour);
     params.dark = dark;
     return {.params = params, .strip = strip};
 }

@@ -21,6 +21,9 @@ inline constexpr std::uint32_t RULER_TICKS = 4;        // the ticks of the drawn
 inline constexpr std::uint32_t RULER_CURSOR = 8;       // the cursor marker at `cursor`
 inline constexpr std::uint32_t RULER_IMAGE = 16;       // an image is shown
 inline constexpr std::uint32_t RULER_LIT = 32;         // the lit tick at `litTick`
+inline constexpr std::uint32_t RULER_NUMBERS = 64;     // the labels: numbers on, a strip bound
+inline constexpr std::uint32_t RULER_EDGE = 128;       // the last value is the edge (LastValue)
+inline constexpr std::uint32_t RULER_TAG_TEXT_BLACK = 256;  // the cursor tag's text is black
 
 // = RulerConstants of shaders/rulers.slang, 128 bytes (the Vulkan guarantee) with no padding.
 struct RulerConstants {
@@ -51,7 +54,10 @@ struct RulerConstants {
     std::uint32_t litTick = 0;       // the lit tick's image coordinate on the axis (RULER_LIT)
     // The lit tick's depth from the inner edge: overlay.litDepth, at most `strip`.
     std::uint32_t litDepth = 0;
-    std::uint32_t reserved1 = 0;
+    // The label spacing in backing pixels, one byte each: numberGap | tagPad << 8 | tagInset << 16
+    // | tagMargin << 24. The glyph cell's width (the strip's width / 10) and height come from the
+    // bound strip.
+    std::uint32_t labelSpacing = 0;
     bool operator==(const RulerConstants&) const = default;
 };
 static_assert(sizeof(RulerConstants) == 128);
@@ -66,7 +72,7 @@ static_assert(
     offsetof(RulerConstants, rulerBegin) == 72 && offsetof(RulerConstants, rulerEnd) == 76 &&
     offsetof(RulerConstants, levelShape) == 80 && offsetof(RulerConstants, tickLength) == 96 &&
     offsetof(RulerConstants, cursorColour) == 112 && offsetof(RulerConstants, litTick) == 116 &&
-    offsetof(RulerConstants, litDepth) == 120);
+    offsetof(RulerConstants, litDepth) == 120 && offsetof(RulerConstants, labelSpacing) == 124);
 
 // The two bands of `regions` = passRegions(extent, overlay.strips, view), with `view` resolved
 // against P's size (view.viewport() == regions.picture.size()): each band takes the zoom, offset,
@@ -75,14 +81,17 @@ static_assert(
 // `regions`. [0] the top band regions.bands[0] on the x axis around regions.rulers.top and the
 // corner, [1] the left band regions.bands[1] on the y axis around regions.rulers.left; an empty
 // band is not dispatched. RULER_IMAGE when view.zoom() > 0 (without an image the rulers show only
-// their background and separator). Then RULER_TICKS on an axis when
-// rulerTicksShown({levelStepLog2(levels[0]), zoom, levels[0].minimumSpacing, numbers ?
-// labelWidth(imageSize, digitAdvance) : nullopt}), and per level LEVEL_DRAWN when it is visible
-// by spacing (the level checkboxes affect the grid only); RULER_CURSOR when `cursor` (the image
-// pixel under the cursor) is set, and with RULER_TICKS also RULER_LIT when nearestTick(the
-// cursor on the axis, imageSize, the levels with LEVEL_DRAWN) has a value, litTick that value.
+// their background and separator). Then RULER_TICKS on an axis when the major level is visible,
+// dvv::media::levelVisible(levelStepLog2(levels[0]), zoom, levels[0].minimumSpacing) (the
+// numbers never turn a ruler off), and per level LEVEL_DRAWN when it is visible by spacing (the
+// level checkboxes affect the grid only); RULER_CURSOR when `cursor` (the image pixel under the
+// cursor) is set, and with RULER_TICKS also RULER_LIT when nearestTick(the cursor on the axis,
+// imageSize, the levels with LEVEL_DRAWN) has a value, litTick that value.
 // litDepth is min(strip, overlay.litDepth) on every band.
-// cursorColour is overlay.cursorColour on both bands.
+// cursorColour is overlay.cursorColour and labelSpacing overlay.labelSpacing packed on both bands;
+// RULER_EDGE when overlay.lastValue is Edge, RULER_TAG_TEXT_BLACK with overlay.cursorTagTextBlack,
+// and with RULER_IMAGE also RULER_NUMBERS when overlay.numbers and overlay.glyphs is set (the
+// renderer clears it when the strip fails to upload).
 [[nodiscard]] std::array<RulerConstants, 2> rulerConstants(
     const OverlayParams& overlay, const dvv::media::ViewTransform& view, const PassRegions& regions,
     std::optional<dvv::media::ImagePixel> cursor, bool skip_encode);
