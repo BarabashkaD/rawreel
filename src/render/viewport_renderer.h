@@ -8,7 +8,10 @@
 
 #include "dvv/base/error.h"
 #include "dvv/gpu/context_vulkan.h"
+#include "dvv/gpu/glyph_strip.h"
+#include "dvv/gpu/image.h"
 #include "dvv/gpu/presenter_vulkan.h"
+#include "dvv/gpu/submission.h"
 #include "dvv/media/view.h"
 #include "dvv/media/view_lines.h"
 #include "dvv/platform/pixel_size.h"
@@ -40,18 +43,22 @@ struct RecordedInfo {
     // What the last record's ruler pass dispatched: the two bands, after a cursor-only change
     // only their rulers (PassRegions::bandRulers), all empty when it dispatched no ruler pass.
     std::array<dvv::media::PixelRect, 2> rulerDispatched{};
+    bool rulerNumbers = false;         // whether a band it dispatched draws numbers (RULER_NUMBERS)
     std::uint64_t pictureRecords = 0;  // picture passes recorded (frame() and render())
     std::uint64_t rulerRecords = 0;    // ruler passes recorded
     std::uint64_t linePasses = 0;      // grid prepasses recorded (the line table built)
+    std::uint64_t glyphUploads = 0;    // glyph strip uploads recorded
+    std::uint64_t glyphFailures = 0;   // glyph strip uploads tried that failed
     bool operator==(const RecordedInfo&) const = default;
 };
 
 // Presenter-thread object, one per presenter (design §4.4, §5.3 GUI side): the composite
 // pipeline and its grid prepass, the ruler pipeline, its RGBA8 output image (STORAGE |
 // TRANSFER_SRC), the prepass's R32_UINT line image (max(width, height) x 2 of the output) and one
-// 1x1 RGBA16F dummy bound when there is no frame. Created on the GUI thread, used on the presenter
-// thread (frame()), destroyed on the GUI thread after the presenter. frame() and render() are never
-// called concurrently; lastRecorded() may be called from any thread.
+// 1x1 RGBA16F dummy bound when there is no frame, the glyph strip it uploads (an RGBA8
+// image) and a 1x1 RGBA8 glyph dummy bound without numbers. Created on the GUI thread, used on the
+// presenter thread (frame()), destroyed on the GUI thread after the presenter. frame() and render()
+// are never called concurrently; lastRecorded() may be called from any thread.
 class ViewportRenderer {
     struct Private {
         explicit Private() = default;
@@ -66,7 +73,8 @@ public:
                      std::uint64_t epoch, std::shared_ptr<dvv::gpu::ComputePipeline> pipeline,
                      std::shared_ptr<dvv::gpu::ComputePipeline> lines_pipeline,
                      std::shared_ptr<dvv::gpu::ComputePipeline> ruler_pipeline,
-                     std::shared_ptr<dvv::gpu::GpuImage> dummy) noexcept;
+                     std::shared_ptr<dvv::gpu::GpuImage> dummy,
+                     std::shared_ptr<dvv::gpu::GpuImage> glyph_dummy) noexcept;
 
     // The PresentFrame for the presenter. The picture pass draws snapshot.frames.views[0] over
     // P = dvv::media::pictureRegion(params.extent, snapshot.params.overlay.strips) with
@@ -87,10 +95,20 @@ public:
     // FrameSet in the same view reads the table in place. FrameSets of another epoch
     // (or without a usable display view) draw the background only. A record function with the
     // picture pass holds a share of the FrameSet's leases until the submission has completed.
+    // The ruler pass binds the glyph strip (overlay.glyphs) where a band has RULER_NUMBERS, else
+    // the glyph dummy. A due ruler pass with RULER_NUMBERS uploads the strip first when it is
+    // another object than the one uploaded last; a new output keeps the uploaded strip. A dropped
+    // frame (!params.previousFrameCompleted) releases the uploaded strip, whose upload may not
+    // have run, so it is never bound unfilled. The upload counts (and replaces the uploaded strip,
+    // releasing the old one) only when the record carries it: a frame that records nothing leaves
+    // the next due frame to upload. A strip that fails to upload logs one warning and the bands
+    // draw without numbers; it is not tried again until overlay.glyphs is another object. A due
+    // ruler pass releases the uploaded strip when overlay.glyphs is null or the numbers are off.
     [[nodiscard]] dvv::Result<dvv::gpu::PresentFrame> frame(
         const dvv::gpu::PresentFrameParams& params, const DisplaySnapshot& snapshot);
     // Tests: always records both passes, into a new image of `extent`, and returns it (no sRGB
-    // rule), as frame() draws them.
+    // rule), as frame() draws them; uploads the glyph strip on every call unless it is the strip
+    // that failed last (frame()'s uploaded strip stays).
     [[nodiscard]] dvv::Result<dvv::gpu::PresentFrame> render(dvv::platform::PixelSize extent,
                                                              const FrameSet& frames,
                                                              const DisplayParams& params);
@@ -100,6 +118,11 @@ public:
     [[nodiscard]] std::uint64_t epoch() const noexcept { return epoch_; }
     [[nodiscard]] const std::shared_ptr<dvv::gpu::ExecutionContext>& context() const noexcept {
         return context_;
+    }
+    // The glyph strip image frame() uploaded last and binds, null when none: STORAGE |
+    // TRANSFER_DST | TRANSFER_SRC (tests read it back). Presenter thread only, between frames.
+    [[nodiscard]] const std::shared_ptr<dvv::gpu::GpuImage>& glyphImage() const noexcept {
+        return glyph_image_;
     }
 
 private:
@@ -146,6 +169,8 @@ private:
         std::array<RulerConstants, 2> constants{};
         dvv::platform::PixelSize extent{};
         bool skipEncode = false;
+        // Owned, so a new strip at a freed strip's address never compares equal.
+        std::shared_ptr<const dvv::gpu::GlyphStrip> glyphs;
         bool operator==(const RulerInputs&) const = default;
         // These inputs equal `other` once the cursor fields (RULER_CURSOR, cursor) and the lit
         // tick's (RULER_LIT, litTick) are cleared: every pixel they change lies on a ruler.
@@ -159,15 +184,29 @@ private:
         Bands,   // the whole bands
         Rulers,  // only a cursor field changed: the ruler pixels of each band (bandRulers)
     };
+    // The glyph strip a ruler pass binds.
+    struct GlyphBinding {
+        std::shared_ptr<dvv::gpu::GpuImage> image;  // null: the glyph dummy
+        dvv::gpu::RecordFunction upload;  // fills `image`; empty when it holds the strip already
+    };
+    // uploadGlyphStrip of `strip`; on an error the empty binding, with one warning per strip.
+    // The strip that failed last is not tried again: the empty binding at once.
+    [[nodiscard]] GlyphBinding uploadGlyphs(
+        const std::shared_ptr<const dvv::gpu::GlyphStrip>& strip);
+    // What record() recorded.
+    struct Recording {
+        dvv::gpu::RecordFunction commands;  // empty: nothing dispatched
+        bool uploads = false;               // the commands carry the binding's upload
+    };
     // The picture pass over the drawn part of P when `picture` and that part is not empty, then
-    // the ruler pass over the non-empty parts of the bands `rulers` names; an empty function (no
-    // commands) when nothing is dispatched. The grid prepass rebuilds the line table over P before
-    // the picture pass when `build_lines`, which the caller sets only when a grid level is drawn;
-    // else the picture pass reads the table in place.
-    [[nodiscard]] dvv::gpu::RecordFunction record(const Targets& targets,
-                                                  dvv::platform::PixelSize extent,
-                                                  const FrameSet& frames, const Drawn& drawn,
-                                                  bool picture, bool build_lines, RulerPass rulers);
+    // the ruler pass over the non-empty parts of the bands `rulers` names, binding `glyphs.image`
+    // (or the glyph dummy) and recording `glyphs.upload` before it (only when a band part is
+    // dispatched: Recording::uploads); empty commands when nothing is dispatched. The grid prepass
+    // rebuilds the line table over P before the picture pass when `build_lines`, which the caller
+    // sets only when a grid level is drawn; else the picture pass reads the table in place.
+    [[nodiscard]] Recording record(const Targets& targets, dvv::platform::PixelSize extent,
+                                   const FrameSet& frames, const Drawn& drawn, bool picture,
+                                   bool build_lines, RulerPass rulers, GlyphBinding glyphs);
     // The display image of a lease, or null when the lease is not a display view (one
     // DISPLAY_IMAGE_FORMAT plane in GENERAL). A display view bound otherwise logs one Error per
     // `epoch` (FrameSet::epoch). Presenter thread only. The image is valid while the lease (or a
@@ -181,6 +220,14 @@ private:
     std::shared_ptr<dvv::gpu::ComputePipeline> lines_pipeline_;
     std::shared_ptr<dvv::gpu::ComputePipeline> ruler_pipeline_;
     std::shared_ptr<dvv::gpu::GpuImage> dummy_;
+    std::shared_ptr<dvv::gpu::GpuImage> glyph_dummy_;  // 1x1 RGBA8, bound without numbers
+    // frame() only: the strip glyph_image_ holds, as uploaded by a recorded frame (a dropped
+    // frame releases both).
+    std::shared_ptr<const dvv::gpu::GlyphStrip> glyph_source_;
+    std::shared_ptr<dvv::gpu::GpuImage> glyph_image_;
+    // The last strip whose upload failed (warned once, not tried again); held, so its address is
+    // not reused.
+    std::shared_ptr<const dvv::gpu::GlyphStrip> glyph_failed_;
     Targets targets_;  // frame() only
     dvv::platform::PixelSize extent_{};
     std::optional<PictureInputs> picture_inputs_;  // of the last frame() record of each pass

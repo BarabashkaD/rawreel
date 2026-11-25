@@ -2,16 +2,21 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 
 #include "composite_reference.h"
+#include "core/overlay.h"
 #include "dvv/base/json.h"
+#include "dvv/gpu/glyph_strip.h"
 #include "dvv/media/view.h"
 #include "dvv/media/view_lines.h"
 #include "dvv/platform/pixel_size.h"
@@ -27,9 +32,12 @@ using dvv::media::resolveView;
 using dvv::media::ViewMode;
 using dvv::media::ViewTransform;
 using dvv::platform::PixelSize;
+using rawreel::labelCoverage;
+using rawreel::labelStrip;
 using rawreel::RULER_CURSOR;
 using rawreel::RULER_IMAGE;
 using rawreel::RULER_LIT;
+using rawreel::RULER_NUMBERS;
 using rawreel::RULER_TICKS;
 using rawreel::RulerConstants;
 using rawreel::rulerPixel;
@@ -63,7 +71,7 @@ rawreel::OverlayParams retina() {
 // The output pixel of the top band at axis pixel `along` (from P's edge) and `depth` (0 next
 // to P).
 Rgba8 topAt(const RulerConstants& band, std::int32_t along, std::uint32_t depth) {
-    return rulerPixel(band, band.pictureStart + static_cast<std::uint32_t>(along),
+    return rulerPixel(band, nullptr, band.pictureStart + static_cast<std::uint32_t>(along),
                       band.strip - 1 - depth);
 }
 
@@ -104,6 +112,7 @@ TEST_CASE("ruler constants: layout") {
     CHECK(offsetof(RulerConstants, cursorColour) == 112);
     CHECK(offsetof(RulerConstants, litTick) == 116);
     CHECK(offsetof(RulerConstants, litDepth) == 120);
+    CHECK(offsetof(RulerConstants, labelSpacing) == 124);
     CHECK(sizeof(RulerConstants) == 128);
 }
 
@@ -131,8 +140,23 @@ TEST_CASE("rulers shader: the push block matches RulerConstants") {
         {"tickBand", 48},     {"tickWidth", 52},     {"markerDepth", 56},   {"cursor", 60},
         {"labelBand", 64},    {"rulerEdge", 68},     {"rulerBegin", 72},    {"rulerEnd", 76},
         {"levelShape", 80},   {"tickLength", 96},    {"cursorColour", 112}, {"litTick", 116},
-        {"litDepth", 120},    {"reserved1", 124}};
+        {"litDepth", 120},    {"labelSpacing", 124}};
     CHECK(offsets == expected);
+}
+
+TEST_CASE("rulers shader: binds the output and the glyph strip") {
+    const auto reflection = dvv::json::parse(rawreel_shaders::rulers().reflectionJson);
+    REQUIRE(reflection.has_value());
+    std::map<std::string, std::uint32_t> bindings;
+    for (const auto& parameter : reflection->at("parameters")) {
+        const auto& binding = parameter.at("binding");
+        if (dvv::json::get<std::string>(binding, "kind") == "descriptorTableSlot") {
+            bindings[dvv::json::get<std::string>(parameter, "name").value_or("?")] =
+                dvv::json::get<std::uint32_t>(binding, "index").value_or(~0U);
+        }
+    }
+    const std::map<std::string, std::uint32_t> expected{{"output", 0}, {"glyphs", 1}};
+    CHECK(bindings == expected);
 }
 
 TEST_CASE("ruler constants: the bands") {
@@ -179,6 +203,46 @@ TEST_CASE("ruler constants: the bands") {
     hidden.strips = {};
     for (const RulerConstants& band : bandsOf(hidden, view, extent, std::nullopt, false)) {
         CHECK(band.regionW * band.regionH == 0);
+    }
+}
+
+TEST_CASE("ruler constants: the label flags and spacing") {
+    rawreel::OverlayParams overlay = retina();
+    const ViewTransform view = ViewTransform::fit({181, 67}, {37, 23});
+    const PixelSize extent{211, 97};
+    overlay.labelSpacing = {.numberGap = 4, .tagPad = 6, .tagInset = 2, .tagMargin = 255};
+    constexpr std::uint32_t LABEL_FLAGS =
+        rawreel::RULER_NUMBERS | rawreel::RULER_EDGE | rawreel::RULER_TAG_TEXT_BLACK;
+    for (const RulerConstants& band : bandsOf(overlay, view, extent, std::nullopt, false)) {
+        CHECK(band.labelSpacing == (4U | 6U << 8U | 2U << 16U | 255U << 24U));
+        CHECK((band.flags & LABEL_FLAGS) == 0);
+    }
+    // A field above 255 is capped: it does not spill into the next byte.
+    overlay.labelSpacing = {.numberGap = 4, .tagPad = 300, .tagInset = 2, .tagMargin = 1000};
+    for (const RulerConstants& band : bandsOf(overlay, view, extent, std::nullopt, false)) {
+        CHECK(band.labelSpacing == (4U | 255U << 8U | 2U << 16U | 255U << 24U));
+    }
+    // Numbers on but no strip, or a strip but numbers off: no numbers.
+    overlay.numbers = true;
+    for (const RulerConstants& band : bandsOf(overlay, view, extent, std::nullopt, false)) {
+        CHECK((band.flags & rawreel::RULER_NUMBERS) == 0);
+    }
+    overlay.glyphs = std::make_shared<const dvv::gpu::GlyphStrip>();
+    overlay.numbers = false;
+    for (const RulerConstants& band : bandsOf(overlay, view, extent, std::nullopt, false)) {
+        CHECK((band.flags & rawreel::RULER_NUMBERS) == 0);
+    }
+    overlay.numbers = true;
+    overlay.lastValue = rawreel::LastValue::Edge;
+    overlay.cursorTagTextBlack = true;
+    for (const RulerConstants& band : bandsOf(overlay, view, extent, std::nullopt, false)) {
+        CHECK((band.flags & LABEL_FLAGS) == LABEL_FLAGS);
+    }
+    // Without an image the rulers show only their background: no numbers.
+    for (const RulerConstants& band :
+         bandsOf(overlay, ViewTransform{}, extent, std::nullopt, false)) {
+        CHECK((band.flags & rawreel::RULER_NUMBERS) == 0);
+        CHECK((band.flags & rawreel::RULER_EDGE) != 0);
     }
 }
 
@@ -231,8 +295,8 @@ TEST_CASE("ruler reference: ticks, levels and the disabled ruler") {
     CHECK(topAt(top, 3, 0) == hex(rawreel::RULER_SEPARATOR_LIGHT));
     // The outer edge k = 0 inside the image; the corner left of P.
     CHECK(topAt(top, 0, 1) == hex(rawreel::RULER_MAJOR_LIGHT));
-    CHECK(rulerPixel(top, 0, 0) == hex(rawreel::RULER_CORNER_LIGHT));
-    CHECK(rulerPixel(top, 29, 29) == hex(rawreel::RULER_CORNER_LIGHT));
+    CHECK(rulerPixel(top, nullptr, 0, 0) == hex(rawreel::RULER_CORNER_LIGHT));
+    CHECK(rulerPixel(top, nullptr, 29, 29) == hex(rawreel::RULER_CORNER_LIGHT));
     // The marker at image pixel 44, 6 deep, over the background.
     CHECK(topAt(top, 44, 5) == Rgba8{251, 75, 65, 255});
     CHECK(topAt(top, 44, 6) == background);
@@ -246,7 +310,7 @@ TEST_CASE("ruler reference: ticks, levels and the disabled ruler") {
     CHECK((far[1].flags & RULER_TICKS) == 0);
     std::size_t ticks = 0;
     for (std::uint32_t x = 30; x < extent.width; ++x) {
-        ticks += rulerPixel(far[0], x, 10) == background ? 0 : 1;
+        ticks += rulerPixel(far[0], nullptr, x, 10) == background ? 0 : 1;
     }
     CHECK(ticks == 0);
     const dvv::media::PixelSpan marker = dvv::media::cursorSpan(dvv::media::axisX(quarter), 44);
@@ -255,33 +319,29 @@ TEST_CASE("ruler reference: ticks, levels and the disabled ruler") {
     CHECK(topAt(far[0], marker.begin, 3) == Rgba8{251, 75, 65, 255});
 }
 
-TEST_CASE("ruler reference: the label-fit rule") {
+TEST_CASE("ruler reference: the numbers never turn a ruler off") {
+    // A 4K image at 80 % on a 2x display: four-digit numbers wider than two major spacings
+    // (32 x 0.8 = 25.6 px) still leave both rulers their ticks.
     rawreel::OverlayParams overlay = retina();
-    overlay.numbers = true;
-    overlay.digitAdvance = 13.2F;
     const ViewTransform view =
         resolveView({ViewMode::Zoom, 0.8, {1920, 240}, {3840, 480}}, {800, 400}, {3840, 480});
     REQUIRE(static_cast<float>(view.zoom()) == 0.8F);
-    const auto bands = bandsOf(overlay, view, {830, 430}, ImagePixel{1900, 100}, false);
-    // 4 digits: 52.8 > 2 x 32 x 0.8 = 51.2; 3 digits: 39.6 fits.
-    CHECK((bands[0].flags & RULER_TICKS) == 0);
-    CHECK((bands[1].flags & RULER_TICKS) != 0);
-    CHECK((bands[0].flags & RULER_CURSOR) != 0);
-    CHECK((bands[1].flags & RULER_CURSOR) != 0);
-    for (const RulerConstants& band : bands) {
-        const dvv::media::AxisView axis =
-            band.axis == 0 ? dvv::media::axisX(view) : dvv::media::axisY(view);
-        const dvv::media::PixelSpan span = dvv::media::cursorSpan(axis, band.cursor);
-        REQUIRE_FALSE(span.empty());
-        const std::uint32_t along = band.pictureStart + static_cast<std::uint32_t>(span.begin);
-        const std::uint32_t across = band.rulerEdge - 2;  // depth 1: over the background
-        CHECK(rulerPixel(band, band.axis == 0 ? along : across, band.axis == 0 ? across : along) ==
-              Rgba8{251, 75, 65, 255});
-    }
-    // Numbers off: both rulers show ticks.
-    overlay.numbers = false;
-    for (const RulerConstants& band : bandsOf(overlay, view, {830, 430}, std::nullopt, false)) {
-        CHECK((band.flags & RULER_TICKS) != 0);
+    for (const bool numbers : {true, false}) {
+        CAPTURE(numbers);
+        overlay.numbers = numbers;
+        const auto bands = bandsOf(overlay, view, {830, 430}, ImagePixel{1900, 100}, false);
+        for (const RulerConstants& band : bands) {
+            CHECK((band.flags & RULER_TICKS) != 0);
+            CHECK((band.flags & RULER_CURSOR) != 0);
+            const dvv::media::AxisView axis =
+                band.axis == 0 ? dvv::media::axisX(view) : dvv::media::axisY(view);
+            const dvv::media::PixelSpan span = dvv::media::cursorSpan(axis, band.cursor);
+            REQUIRE_FALSE(span.empty());
+            const std::uint32_t along = band.pictureStart + static_cast<std::uint32_t>(span.begin);
+            const std::uint32_t across = band.rulerEdge - 2;  // depth 1: over the background
+            CHECK(rulerPixel(band, nullptr, band.axis == 0 ? along : across,
+                             band.axis == 0 ? across : along) == Rgba8{251, 75, 65, 255});
+        }
     }
 }
 
@@ -303,7 +363,7 @@ TEST_CASE("ruler reference: plain strips without an image") {
                                        : across + 1 == band.strip
                                            ? hex(rawreel::RULER_SEPARATOR_DARK)
                                            : hex(rawreel::RULER_BACKGROUND_DARK);
-                wrong += rulerPixel(band, x, y) == expected ? 0 : 1;
+                wrong += rulerPixel(band, nullptr, x, y) == expected ? 0 : 1;
             }
         }
     }
@@ -330,17 +390,17 @@ TEST_CASE("ruler reference: the rulers hug a smaller picture") {
     CHECK(bands[1].rulerEnd == 80);
     const auto grey = static_cast<std::uint8_t>(std::lround(255.0F * rawreel::BACKGROUND_DARK));
     const Rgba8 background{grey, grey, grey, 255};
-    CHECK(rulerPixel(bands[0], 103, 25) == hex(rawreel::RULER_BACKGROUND_DARK));
-    CHECK(rulerPixel(bands[0], 103, 29) == hex(rawreel::RULER_SEPARATOR_DARK));
-    CHECK(rulerPixel(bands[0], 103, 19) == background);  // above the ruler
-    CHECK(rulerPixel(bands[0], 100, 5) == background);   // the reserved strip
-    CHECK(rulerPixel(bands[0], 165, 25) == background);  // past the ruler's end
-    CHECK(rulerPixel(bands[0], 45, 25) == hex(rawreel::RULER_CORNER_DARK));
-    CHECK(rulerPixel(bands[0], 39, 25) == background);  // left of the corner
-    CHECK(rulerPixel(bands[1], 50, 43) == hex(rawreel::RULER_BACKGROUND_DARK));
-    CHECK(rulerPixel(bands[1], 59, 43) == hex(rawreel::RULER_SEPARATOR_DARK));
-    CHECK(rulerPixel(bands[1], 10, 40) == background);
-    CHECK(rulerPixel(bands[1], 50, 85) == background);  // below the ruler
+    CHECK(rulerPixel(bands[0], nullptr, 103, 25) == hex(rawreel::RULER_BACKGROUND_DARK));
+    CHECK(rulerPixel(bands[0], nullptr, 103, 29) == hex(rawreel::RULER_SEPARATOR_DARK));
+    CHECK(rulerPixel(bands[0], nullptr, 103, 19) == background);  // above the ruler
+    CHECK(rulerPixel(bands[0], nullptr, 100, 5) == background);   // the reserved strip
+    CHECK(rulerPixel(bands[0], nullptr, 165, 25) == background);  // past the ruler's end
+    CHECK(rulerPixel(bands[0], nullptr, 45, 25) == hex(rawreel::RULER_CORNER_DARK));
+    CHECK(rulerPixel(bands[0], nullptr, 39, 25) == background);  // left of the corner
+    CHECK(rulerPixel(bands[1], nullptr, 50, 43) == hex(rawreel::RULER_BACKGROUND_DARK));
+    CHECK(rulerPixel(bands[1], nullptr, 59, 43) == hex(rawreel::RULER_SEPARATOR_DARK));
+    CHECK(rulerPixel(bands[1], nullptr, 10, 40) == background);
+    CHECK(rulerPixel(bands[1], nullptr, 50, 85) == background);  // below the ruler
     // Every band pixel: a ruler colour exactly on the ruler rect the hit test uses, the corner
     // colour exactly on the corner, the background elsewhere, so the drawn rulers and the
     // clickable rects agree to the pixel.
@@ -356,7 +416,7 @@ TEST_CASE("ruler reference: the rulers hug a smaller picture") {
         for (std::uint32_t y = band.y; y < band.y + band.height; ++y) {
             for (std::uint32_t x = band.x; x < band.x + band.width; ++x) {
                 const dvv::media::PointD centre{x + 0.5, y + 0.5};
-                const Rgba8 colour = rulerPixel(bands[b], x, y);
+                const Rgba8 colour = rulerPixel(bands[b], nullptr, x, y);
                 const bool corner = b == 0 && regions.rulers.corner.contains(centre);
                 const bool ruler = rulers[b].contains(centre);
                 const bool right = corner  ? colour == hex(rawreel::RULER_CORNER_DARK)
@@ -487,4 +547,190 @@ TEST_CASE("ruler reference: the marker and the lit tick take the cursor colour")
         CHECK(std::abs(marker[c] - want) <= 1.0);
     }
     CHECK(marker[3] == 255);
+}
+
+namespace {
+
+// `text` blended over `under` (both 0xRRGGBB) by `coverage` / 255 in encoded space, one float
+// operation per statement as the reference rounds.
+Rgba8 blended(std::uint32_t under, std::uint32_t text, std::uint32_t coverage) {
+    Rgba8 out{0, 0, 0, 255};
+    const float alpha = static_cast<float>(coverage) / 255.0F;
+    for (std::size_t c = 0; c < 3; ++c) {
+        const std::uint32_t shift = 16 - (8 * static_cast<std::uint32_t>(c));
+        const float u = static_cast<float>((under >> shift) & 0xFFU) / 255.0F;
+        const float t = static_cast<float>((text >> shift) & 0xFFU) / 255.0F;
+        const float difference = t - u;
+        const float step = alpha * difference;
+        const float mixed = u + step;
+        const float scaled = 255.0F * std::clamp(mixed, 0.0F, 1.0F);
+        out[c] = static_cast<std::uint8_t>(std::lround(scaled));
+    }
+    return out;
+}
+
+// The 256 x 128 image at zoom 1 in P = {30, 30, 256, 128} with the retina rulers: a label band of
+// 10 rows above (or columns left of) the tick band, numbers every 32 px, spacing {4, 6, 2, 4}.
+// The text rows are 1 to 7 of the band (the 7-row strip centred in 10), the tag fill rows 2 to 7.
+struct LabelScene {
+    rawreel::OverlayParams overlay = retina();
+    ViewTransform view =
+        resolveView({ViewMode::Zoom, 1, {128, 64}, {256, 128}}, {256, 128}, {256, 128});
+    PixelSize extent{286, 158};
+
+    explicit LabelScene(std::uint32_t strip_height = 7) {
+        overlay.numbers = true;
+        overlay.glyphs = labelStrip(5, strip_height);
+        overlay.labelSpacing = {.numberGap = 4, .tagPad = 6, .tagInset = 2, .tagMargin = 4};
+    }
+    [[nodiscard]] std::array<RulerConstants, 2> bands(std::optional<ImagePixel> cursor) const {
+        return bandsOf(overlay, view, extent, cursor, false);
+    }
+};
+
+}  // namespace
+
+TEST_CASE("ruler reference: a number's pixels sample its digits' cells on both rulers") {
+    const LabelScene scene;
+    const auto bands = scene.bands(std::nullopt);
+    const RulerConstants& top = bands[0];
+    const RulerConstants& left = bands[1];
+    REQUIRE((top.flags & RULER_NUMBERS) != 0);
+    REQUIRE(top.pictureStart == 30);
+    REQUIRE(top.rulerEdge == 30);
+    REQUIRE(left.rulerEdge == 30);
+    const dvv::gpu::GlyphStrip* strip = scene.overlay.glyphs.get();
+    // Top: 64's text begins at 30 + 64 + 4 = 98, "6" in [98, 103), "4" in [103, 108).
+    for (std::uint32_t x = 96; x < 110; ++x) {
+        for (std::uint32_t y = 0; y < 10; ++y) {
+            CAPTURE(x);
+            CAPTURE(y);
+            Rgba8 expected = hex(rawreel::RULER_BACKGROUND_LIGHT);
+            if (x >= 98 && x < 108 && y >= 1 && y < 8) {
+                expected = blended(rawreel::RULER_BACKGROUND_LIGHT, rawreel::RULER_TEXT_LIGHT,
+                                   labelCoverage(x < 103 ? 6 : 4, (x - 98) % 5, y - 1));
+            }
+            CHECK(rulerPixel(top, strip, x, y) == expected);
+        }
+    }
+    // Left, read bottom to top: 32's text is [66, 76) along y, its first column at y = 75; "3"
+    // in [71, 76), "2" in [66, 71); the glyph rows run along x from the band's outer edge.
+    for (std::uint32_t y = 64; y < 78; ++y) {
+        for (std::uint32_t x = 0; x < 10; ++x) {
+            CAPTURE(x);
+            CAPTURE(y);
+            Rgba8 expected = hex(rawreel::RULER_BACKGROUND_LIGHT);
+            if (y >= 66 && y < 76 && x >= 1 && x < 8) {
+                const std::uint32_t offset = 75 - y;
+                expected = blended(rawreel::RULER_BACKGROUND_LIGHT, rawreel::RULER_TEXT_LIGHT,
+                                   labelCoverage(offset < 5 ? 3 : 2, offset % 5, x - 1));
+            }
+            CHECK(rulerPixel(left, strip, x, y) == expected);
+        }
+    }
+}
+
+TEST_CASE("ruler reference: the end tags, Last pixel and Edge") {
+    LabelScene scene;
+    scene.overlay.dark = true;
+    for (const bool edge : {false, true}) {
+        CAPTURE(edge);
+        scene.overlay.lastValue = edge ? rawreel::LastValue::Edge : rawreel::LastValue::Pixel;
+        const RulerConstants top = scene.bands(std::nullopt)[0];
+        const dvv::gpu::GlyphStrip* strip = scene.overlay.glyphs.get();
+        const Rgba8 fill = hex(rawreel::RULER_TAG_FILL_DARK);
+        const Rgba8 background = hex(rawreel::RULER_BACKGROUND_DARK);
+        // The first tag "0": [34, 51), text from 40; 0's number is dropped under it.
+        CHECK(rulerPixel(top, strip, 33, 2) == background);
+        CHECK(rulerPixel(top, strip, 34, 2) == fill);
+        CHECK(rulerPixel(top, strip, 50, 7) == fill);
+        CHECK(rulerPixel(top, strip, 34, 1) == background);  // the inset row
+        CHECK(rulerPixel(top, strip, 34, 8) == background);
+        CHECK(rulerPixel(top, strip, 42, 4) == blended(rawreel::RULER_TAG_FILL_DARK,
+                                                       rawreel::RULER_TAG_TEXT_DARK,
+                                                       labelCoverage(0, 2, 3)));
+        // The last tag "255" or "256": [255, 282), text from 261, its last digit from 271.
+        CHECK(rulerPixel(top, strip, 254, 2) == background);
+        CHECK(rulerPixel(top, strip, 255, 2) == fill);
+        CHECK(rulerPixel(top, strip, 281, 7) == fill);
+        CHECK(rulerPixel(top, strip, 282, 2) == background);
+        CHECK(rulerPixel(top, strip, 273, 4) == blended(rawreel::RULER_TAG_FILL_DARK,
+                                                        rawreel::RULER_TAG_TEXT_DARK,
+                                                        labelCoverage(edge ? 6 : 5, 2, 3)));
+        // Glyph rows outside the fill draw over the ruler: row 1 is the strip's row 0.
+        CHECK(rulerPixel(top, strip, 273, 1) == blended(rawreel::RULER_BACKGROUND_DARK,
+                                                        rawreel::RULER_TAG_TEXT_DARK,
+                                                        labelCoverage(edge ? 6 : 5, 2, 0)));
+    }
+}
+
+TEST_CASE("ruler reference: the cursor tag at the start and the end of the ruler") {
+    const LabelScene scene;
+    const dvv::gpu::GlyphStrip* strip = scene.overlay.glyphs.get();
+    const Rgba8 cursor = hex(scene.overlay.cursorColour);
+    const Rgba8 background = hex(rawreel::RULER_BACKGROUND_LIGHT);
+    // Cursor 0: centred on 30, clamped to the margin, [34, 51); the first tag is dropped.
+    const RulerConstants start = scene.bands(ImagePixel{0, 3})[0];
+    CHECK(rulerPixel(start, strip, 33, 1) == background);  // above the lit tick
+    CHECK(rulerPixel(start, strip, 34, 2) == cursor);
+    CHECK(rulerPixel(start, strip, 50, 7) == cursor);
+    CHECK(rulerPixel(start, strip, 51, 7) == background);
+    CHECK(rulerPixel(start, strip, 42, 4) == blended(scene.overlay.cursorColour,
+                                                     rawreel::RULER_CURSOR_TAG_WHITE,
+                                                     labelCoverage(0, 2, 3)));
+    // Cursor 255: centred on 285, clamped to [255, 282), black text; the last tag is dropped.
+    RulerConstants end = scene.bands(ImagePixel{255, 3})[0];
+    end.flags |= rawreel::RULER_TAG_TEXT_BLACK;
+    CHECK(rulerPixel(end, strip, 254, 2) == background);
+    CHECK(rulerPixel(end, strip, 255, 2) == cursor);
+    CHECK(rulerPixel(end, strip, 281, 7) == cursor);
+    CHECK(rulerPixel(end, strip, 282, 1) == background);
+    CHECK(rulerPixel(end, strip, 273, 4) == blended(scene.overlay.cursorColour,
+                                                    rawreel::RULER_CURSOR_TAG_BLACK,
+                                                    labelCoverage(5, 2, 3)));
+}
+
+TEST_CASE("ruler reference: a strip taller than the label band stays in the band") {
+    const LabelScene scene(40);
+    for (const RulerConstants& band : scene.bands(ImagePixel{100, 50})) {
+        const bool top = band.axis == 0;
+        std::size_t changed = 0;
+        for (std::uint32_t y = band.regionY; y < band.regionY + band.regionH; ++y) {
+            for (std::uint32_t x = band.regionX; x < band.regionX + band.regionW; ++x) {
+                const std::uint32_t across = top ? y : x;
+                const std::uint32_t along = top ? x : y;
+                const bool label_band = across >= band.rulerEdge - band.strip &&
+                                        across < band.rulerEdge - band.tickBand &&
+                                        along >= band.rulerBegin && along < band.rulerEnd;
+                const Rgba8 drawn = rulerPixel(band, scene.overlay.glyphs.get(), x, y);
+                const Rgba8 plain = rulerPixel(band, nullptr, x, y);
+                if (label_band) {
+                    changed += drawn == plain ? 0 : 1;
+                } else {
+                    CAPTURE(x);
+                    CAPTURE(y);
+                    CHECK(drawn == plain);
+                }
+            }
+        }
+        CHECK(changed > 0);
+    }
+}
+
+TEST_CASE("ruler reference: numbers off leave the label band as without a strip") {
+    LabelScene scene;
+    scene.overlay.numbers = false;
+    for (const RulerConstants& band : scene.bands(ImagePixel{100, 50})) {
+        REQUIRE((band.flags & RULER_NUMBERS) == 0);
+        std::size_t wrong = 0;
+        for (std::uint32_t y = band.regionY; y < band.regionY + band.regionH; ++y) {
+            for (std::uint32_t x = band.regionX; x < band.regionX + band.regionW; ++x) {
+                wrong += rulerPixel(band, scene.overlay.glyphs.get(), x, y) ==
+                                 rulerPixel(band, nullptr, x, y)
+                             ? 0
+                             : 1;
+            }
+        }
+        CHECK(wrong == 0);
+    }
 }

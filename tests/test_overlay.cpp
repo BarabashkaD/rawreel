@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
-#include <optional>
 #include <utility>
 #include <vector>
 
@@ -18,17 +17,18 @@ using rawreel::GridConfig;
 using rawreel::GridLevel;
 using rawreel::GridLevelConfig;
 using rawreel::gridLevelNote;
-using rawreel::labelFits;
-using rawreel::labelWidth;
+using rawreel::GridRange;
+using rawreel::LastValue;
 using rawreel::levelHiddenNote;
 using rawreel::minimumSpacingBacking;
 using rawreel::OverlayStyle;
 using rawreel::overlayStyleName;
 using rawreel::overlayStyleOf;
 using rawreel::Rgb8;
+using rawreel::RULER_FONT_SIZE_RANGE;
 using rawreel::RulerConfig;
+using rawreel::RulerFont;
 using rawreel::rulerOffNote;
-using rawreel::rulerTicksShown;
 using rawreel::stepsValid;
 using rawreel::validSteps;
 
@@ -39,6 +39,9 @@ TEST_SUITE("core") {
         CHECK(g.levels[1] == GridLevelConfig{true, 8, 50, {}, 1, false, false, 4});
         CHECK(g.levels[2] == GridLevelConfig{false, 2, 25, {}, 1, false, false, 3});
         CHECK(RulerConfig{} == RulerConfig{.show = false, .numbers = true});
+        CHECK(RulerConfig{}.font == RulerFont{.family = "", .size = 0});
+        CHECK(RulerConfig{}.lastValue == LastValue::Pixel);
+        CHECK(RULER_FONT_SIZE_RANGE == GridRange{.minimum = 6, .maximum = 24});
         CHECK(overlayStyleOf(g, RulerConfig{}) == OverlayStyle::Plain);
     }
 
@@ -68,7 +71,10 @@ TEST_SUITE("core") {
     }
 
     TEST_CASE("overlay: styles set colours, opacities, adaptive and halo only") {
-        RulerConfig r{.show = true, .numbers = false};
+        RulerConfig r{.show = true,
+                      .numbers = false,
+                      .font = {.family = "Menlo", .size = 11},
+                      .lastValue = LastValue::Edge};
         GridConfig g;
         g.levels[0].thickness = 3;
         g.levels[1].thickness = 2;
@@ -104,6 +110,8 @@ TEST_SUITE("core") {
         CHECK(g.levels[1].opacity == 74);
         CHECK(r.show);
         CHECK_FALSE(r.numbers);
+        CHECK(r.font == RulerFont{.family = "Menlo", .size = 11});
+        CHECK(r.lastValue == LastValue::Edge);
     }
 
     TEST_CASE("overlay: styles set the cursor colour") {
@@ -180,42 +188,18 @@ TEST_SUITE("core") {
               levelHiddenNote(2, 1.0, 2.0, 3));
         CHECK(minimumSpacingBacking(12, 2.0) == 24.0F);
         CHECK(minimumSpacingBacking(3, 1.25) == 3.75F);
-        CHECK(labelWidth(3840, 13.2F) == doctest::Approx(52.8));
-        CHECK(labelWidth(0, 10.0F) == 10.0F);
-        CHECK(labelFits(26.4F, 13.2F));
-        CHECK_FALSE(labelFits(26.5F, 13.2F));
-        // 52.8 > 2 x 25.6
-        CHECK_FALSE(rulerTicksShown(
-            {.majorStepLog2 = 5, .zoom = 0.8F, .minimumSpacing = 24.0F, .labelWidth = 52.8F}));
-        CHECK(rulerTicksShown(
-            {.majorStepLog2 = 5, .zoom = 0.8F, .minimumSpacing = 24.0F, .labelWidth = 39.6F}));
-        // Numbers off: no label width plays a part.
-        CHECK(rulerTicksShown({.majorStepLog2 = 5,
-                               .zoom = 0.8F,
-                               .minimumSpacing = 24.0F,
-                               .labelWidth = std::nullopt}));
-        // 8 < 24
-        CHECK_FALSE(rulerTicksShown({.majorStepLog2 = 5,
-                                     .zoom = 0.25F,
-                                     .minimumSpacing = 24.0F,
-                                     .labelWidth = std::nullopt}));
         const GridConfig g;
         const RulerConfig plain{.show = true, .numbers = false};
         const RulerConfig numbered{.show = true, .numbers = true};
         // 32 px at 6.25 % = 2 px, closer than 2 pt x 2 = 4 px; at 12.5 % the 4 px reach it.
-        CHECK(rulerOffNote(g, plain, 0.0625, 2.0, {0, 0}) ==
+        CHECK(rulerOffNote(g, plain, 0.0625, 2.0) ==
               "Rulers off at this zoom: major ticks closer than 2 pt");
-        CHECK(rulerOffNote(g, numbered, 0.0625, 2.0, {80, 80}) ==
+        CHECK(rulerOffNote(g, numbered, 0.0625, 2.0) ==
               "Rulers off at this zoom: major ticks closer than 2 pt");
-        CHECK(rulerOffNote(g, plain, 0.125, 2.0, {0, 0}) == "");
-        CHECK(rulerOffNote(g, numbered, 1.0, 2.0, {60, 60}) == "");  // 60 <= 2 x 32
-        CHECK(rulerOffNote(g, numbered, 1.0, 2.0, {80, 60}) ==
-              "Top ruler off at this zoom: the numbers do not fit");
-        CHECK(rulerOffNote(g, numbered, 1.0, 2.0, {60, 80}) ==
-              "Left ruler off at this zoom: the numbers do not fit");
-        CHECK(rulerOffNote(g, numbered, 1.0, 2.0, {80, 80}) ==
-              "Rulers off at this zoom: the numbers do not fit");
-        CHECK(rulerOffNote(g, plain, 1.0, 2.0, {80, 80}) == "");
-        CHECK(rulerOffNote(g, {.show = false}, 0.25, 2.0, {0, 0}) == "");
+        CHECK(rulerOffNote(g, plain, 0.125, 2.0) == "");
+        // The numbers never turn a ruler off: only the major spacing does.
+        CHECK(rulerOffNote(g, numbered, 0.125, 2.0) == "");
+        CHECK(rulerOffNote(g, numbered, 1.0, 2.0) == "");
+        CHECK(rulerOffNote(g, {.show = false}, 0.0625, 2.0) == "");
     }
 }

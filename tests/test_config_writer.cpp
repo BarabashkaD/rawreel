@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <string>
 #include <string_view>
@@ -15,6 +16,7 @@
 
 #include "core/config.h"
 #include "core/config_writer.h"
+#include "core/overlay.h"
 #include "dvv/base/error.h"
 #include "dvv/base/utf8.h"
 #include "temporary_directory.h"
@@ -260,6 +262,34 @@ TEST_SUITE("core") {
         CHECK(parsed(file).gui.showLogPane);
     }
 #endif
+
+    TEST_CASE("config writer: the ruler font and last value round-trip") {
+        const TemporaryDirectory temporary("rawreel-config-writer");
+        const fs::path file = temporary.path() / rawreel::CONFIG_FILE_NAME;
+        const rawreel::RulerConfig custom{
+            .show = true,
+            .numbers = false,
+            .font = {.family = "Menlo", .size = 11},
+            .lastValue = rawreel::LastValue::Edge,
+        };
+        for (const rawreel::RulerConfig& rulers : {custom, rawreel::RulerConfig{}}) {
+            CAPTURE(rulers.font.family);
+            const dvv::Result<void> saved = rawreel::saveConfigValues(
+                file, rawreel::overlayConfigValues({}, rulers, false, true));
+            REQUIRE_MESSAGE(saved.has_value(), (saved ? "" : saved.error().describe()));
+            const std::string text = readText(file);
+            const rawreel::OverlayConfig read = rawreel::parseOverlayConfig(text);
+            CHECK(read.warnings.empty());
+            CHECK(read.rulers == rulers);
+            const nlohmann::json json = nlohmann::json::parse(text);
+            const nlohmann::json& written = json.at("gui").at("rulers");
+            CHECK(written.at("lastValue") ==
+                  (rulers.lastValue == rawreel::LastValue::Edge ? "edge" : "pixel"));
+            CHECK(written.at("font").at("size").is_number_integer());
+            CHECK(written.at("font").at("size") == rulers.font.size);
+            CHECK(written.at("font").at("family") == rulers.font.family);
+        }
+    }
 
     TEST_CASE("config writer: a string value") {
         const TemporaryDirectory temporary("rawreel-config-writer");

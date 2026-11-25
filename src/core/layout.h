@@ -129,8 +129,8 @@ struct RulerStrip {
 };
 
 // The ruler strip for `rulers` with a ruler font of `font_dip` pt: {} when hidden. Else a tick
-// band of RULER_TICK_BAND_DIP pt plus, with numbers, two label lines of RULER_LABEL_LINE x
-// font_dip pt each, rounded up to whole window units so a viewport of whole window units keeps a
+// band of RULER_TICK_BAND_DIP pt plus, with numbers, one label line of RULER_LABEL_LINE x
+// font_dip pt, rounded up to whole window units so a viewport of whole window units keeps a
 // picture region of whole window units. The tick band is round(RULER_TICK_BAND_DIP x
 // backingPerDip), half up, at most the strip. A scale <= 0 (or NaN) counts as 1, a font size < 0
 // (or NaN) as 0.

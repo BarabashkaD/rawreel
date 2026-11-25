@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <memory>
 #include <mutex>  // frame.h no longer brings it
 #include <optional>
 #include <span>
@@ -11,7 +12,11 @@
 
 #include "dvv/base/log.h"
 #include "dvv/gpu/context_vulkan.h"
+#include "dvv/gpu/glyph_strip.h"
+#include "dvv/gpu/glyph_strip_vulkan.h"
+#include "dvv/gpu/image.h"
 #include "dvv/gpu/presenter_vulkan.h"
+#include "dvv/gpu/submission.h"
 #include "dvv/media/display.h"
 #include "dvv/media/display_vulkan.h"
 #include "dvv/media/frame_store.h"
@@ -39,6 +44,17 @@ namespace {
 bool gridDrawn(const CompositeConstants& constants) noexcept {
     return ((constants.levelShape[0] | constants.levelShape[1] | constants.levelShape[2]) &
             LEVEL_DRAWN) != 0;
+}
+
+// Whether a ruler band draws numbers: only then does the ruler pass read the glyph strip.
+bool numbered(const std::array<RulerConstants, 2>& bands) noexcept {
+    return ((bands[0].flags | bands[1].flags) & RULER_NUMBERS) != 0;
+}
+
+void clearNumbers(std::array<RulerConstants, 2>& bands) noexcept {
+    for (RulerConstants& band : bands) {
+        band.flags &= ~RULER_NUMBERS;
+    }
 }
 
 }  // namespace
@@ -78,16 +94,23 @@ dvv::Result<std::unique_ptr<ViewportRenderer>> ViewportRenderer::create(
     DVV_TRY(std::shared_ptr<dvv::gpu::ComputePipeline> ruler_pipeline,
             dvv::gpu::createComputePipeline(*context, rawreel_shaders::rulers(),
                                             static_cast<std::uint32_t>(sizeof(RulerConstants)),
-                                            dvv::gpu::ComputeBindings{.storageImages = 1}));
+                                            dvv::gpu::ComputeBindings{.storageImages = 2}));
     DVV_TRY(std::shared_ptr<dvv::gpu::GpuImage> dummy,
             dvv::gpu::createImage(*context, {.width = 1,
                                              .height = 1,
                                              .format = dvv::media::DISPLAY_IMAGE_FORMAT,
                                              .usage = VK_IMAGE_USAGE_STORAGE_BIT,
                                              .name = "composite dummy"}));
-    return std::make_unique<ViewportRenderer>(Private{}, std::move(context), epoch,
-                                              std::move(pipeline), std::move(lines_pipeline),
-                                              std::move(ruler_pipeline), std::move(dummy));
+    // The ruler pass's glyph binding is rgba8: the RGBA16F dummy must not be bound there.
+    DVV_TRY(std::shared_ptr<dvv::gpu::GpuImage> glyph_dummy,
+            dvv::gpu::createImage(*context, {.width = 1,
+                                             .height = 1,
+                                             .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                             .usage = VK_IMAGE_USAGE_STORAGE_BIT,
+                                             .name = "glyph dummy"}));
+    return std::make_unique<ViewportRenderer>(
+        Private{}, std::move(context), epoch, std::move(pipeline), std::move(lines_pipeline),
+        std::move(ruler_pipeline), std::move(dummy), std::move(glyph_dummy));
 }
 
 ViewportRenderer::ViewportRenderer(Private /*key*/,
@@ -96,13 +119,34 @@ ViewportRenderer::ViewportRenderer(Private /*key*/,
                                    std::shared_ptr<dvv::gpu::ComputePipeline> pipeline,
                                    std::shared_ptr<dvv::gpu::ComputePipeline> lines_pipeline,
                                    std::shared_ptr<dvv::gpu::ComputePipeline> ruler_pipeline,
-                                   std::shared_ptr<dvv::gpu::GpuImage> dummy) noexcept
+                                   std::shared_ptr<dvv::gpu::GpuImage> dummy,
+                                   std::shared_ptr<dvv::gpu::GpuImage> glyph_dummy) noexcept
     : context_(std::move(context)),
       epoch_(epoch),
       pipeline_(std::move(pipeline)),
       lines_pipeline_(std::move(lines_pipeline)),
       ruler_pipeline_(std::move(ruler_pipeline)),
-      dummy_(std::move(dummy)) {}
+      dummy_(std::move(dummy)),
+      glyph_dummy_(std::move(glyph_dummy)) {}
+
+ViewportRenderer::GlyphBinding ViewportRenderer::uploadGlyphs(
+    const std::shared_ptr<const dvv::gpu::GlyphStrip>& strip) {
+    if (strip == glyph_failed_) {
+        return {};  // failed before: only another strip is tried
+    }
+    dvv::Result<dvv::gpu::GlyphStripUpload> upload = dvv::gpu::uploadGlyphStrip(*context_, *strip);
+    if (!upload) {
+        glyph_failed_ = strip;
+        {
+            std::lock_guard lock(recorded_mutex_);
+            ++recorded_.glyphFailures;
+        }
+        DVV_LOG_WARN("viewport: the ruler glyph strip did not upload, no ruler numbers: {}",
+                     upload.error().describe());
+        return {};
+    }
+    return {.image = std::move(upload->image), .upload = std::move(upload->record)};
+}
 
 dvv::Result<ViewportRenderer::Targets> ViewportRenderer::makeTargets(
     dvv::platform::PixelSize extent) const {
@@ -149,11 +193,11 @@ ViewportRenderer::Drawn ViewportRenderer::prepare(dvv::platform::PixelSize exten
     return drawn;
 }
 
-dvv::gpu::RecordFunction ViewportRenderer::record(const Targets& targets,
-                                                  dvv::platform::PixelSize extent,
-                                                  const FrameSet& frames, const Drawn& drawn,
-                                                  bool picture, bool build_lines,
-                                                  RulerPass rulers) {
+ViewportRenderer::Recording ViewportRenderer::record(const Targets& targets,
+                                                     dvv::platform::PixelSize extent,
+                                                     const FrameSet& frames, const Drawn& drawn,
+                                                     bool picture, bool build_lines,
+                                                     RulerPass rulers, GlyphBinding glyphs) {
     const dvv::media::PixelRect region = drawn.regions.picture;
     const dvv::media::PixelRect dispatched = drawn.regions.pictureDrawn;
     const bool picture_dispatched = picture && !dispatched.empty();
@@ -183,6 +227,10 @@ dvv::gpu::RecordFunction ViewportRenderer::record(const Targets& targets,
     if (!picture_dispatched && !rulers_dispatched) {
         return {};
     }
+    if (!rulers_dispatched) {
+        glyphs = {};  // nothing reads the strip
+    }
+    const bool uploads = static_cast<bool>(glyphs.upload);
     {
         std::lock_guard lock(recorded_mutex_);
         // Any record: the layout it drew into and what its ruler pass dispatched. A due picture
@@ -194,6 +242,9 @@ dvv::gpu::RecordFunction ViewportRenderer::record(const Targets& targets,
         recorded_.picture = region;
         recorded_.rulers = drawn.regions.rulers;
         recorded_.rulerDispatched = band_parts;
+        recorded_.rulerNumbers = std::ranges::any_of(bands, [](const RulerConstants& band) {
+            return band.regionW != 0 && band.regionH != 0 && (band.flags & RULER_NUMBERS) != 0;
+        });
         if (picture) {
             recorded_.index = picture_dispatched ? drawn.index : -1;
             recorded_.zoom = drawn.view.zoom();
@@ -210,6 +261,9 @@ dvv::gpu::RecordFunction ViewportRenderer::record(const Targets& targets,
         if (prepass) {
             ++recorded_.linePasses;
         }
+        if (uploads) {
+            ++recorded_.glyphUploads;
+        }
     }
     const CompositeConstants constants = drawn.composite;
     // The picture pass dispatches the drawn part of P; the prepass covers all of P, so the line
@@ -219,38 +273,47 @@ dvv::gpu::RecordFunction ViewportRenderer::record(const Targets& targets,
     const std::uint32_t line_groups =
         prepass ? (std::max(region.width, region.height) + 63) / 64 : 0;
     // Everything the GPU touches stays alive until the submission has completed (M1a resource
-    // rule): the pipelines, the targets, the dummy, and with the picture pass a share of the
-    // FrameSet's leases, which keeps the display image (`image`) in the store. A ruler-only
-    // record holds neither: the ruler pass never reads the image. The presenter releases the
-    // function on its own thread. CommandRecorder puts a barrier before every dispatch.
-    return [pipeline = pipeline_, lines_pipeline = lines_pipeline_,
-            ruler_pipeline = ruler_pipeline_, targets, dummy = dummy_,
-            image = picture_dispatched ? drawn.image : nullptr,
-            leases = picture_dispatched ? frames.share() : FrameSet{}, constants, groups_x,
-            groups_y, line_groups, bands](dvv::gpu::CommandRecorder& recorder) {
-        static_cast<void>(leases);  // held only for their lifetime
-        if (groups_x != 0) {
-            const std::span<const std::byte> pushed = std::as_bytes(std::span(&constants, 1));
-            if (line_groups != 0) {
-                const std::array<dvv::gpu::GpuImage*, 1> line_table{targets.lines.get()};
-                recorder.dispatch(*lines_pipeline, pushed, line_table,
-                                  dvv::gpu::GroupCount{.x = line_groups, .y = 2});
+    // rule): the pipelines, the targets, the dummies, the bound glyph strip, the upload (it holds
+    // its staging buffer), and with the picture pass a share of the FrameSet's leases, which keeps
+    // the display image (`image`) in the store. A ruler-only record holds neither: the ruler pass
+    // never reads the image. The presenter releases the function on its own thread.
+    // CommandRecorder puts a barrier before every dispatch.
+    dvv::gpu::RecordFunction commands =
+        [pipeline = pipeline_, lines_pipeline = lines_pipeline_, ruler_pipeline = ruler_pipeline_,
+         targets, dummy = dummy_,
+         glyph_image = glyphs.image != nullptr ? std::move(glyphs.image) : glyph_dummy_,
+         upload = std::move(glyphs.upload), image = picture_dispatched ? drawn.image : nullptr,
+         leases = picture_dispatched ? frames.share() : FrameSet{}, constants, groups_x, groups_y,
+         line_groups, bands](dvv::gpu::CommandRecorder& recorder) mutable {
+            static_cast<void>(leases);  // held only for their lifetime
+            if (groups_x != 0) {
+                const std::span<const std::byte> pushed = std::as_bytes(std::span(&constants, 1));
+                if (line_groups != 0) {
+                    const std::array<dvv::gpu::GpuImage*, 1> line_table{targets.lines.get()};
+                    recorder.dispatch(*lines_pipeline, pushed, line_table,
+                                      dvv::gpu::GroupCount{.x = line_groups, .y = 2});
+                }
+                const std::array<dvv::gpu::GpuImage*, MAX_STREAMS + 2> bound{
+                    image != nullptr ? image : dummy.get(), targets.output.get(),
+                    targets.lines.get()};
+                recorder.dispatch(*pipeline, pushed, bound,
+                                  dvv::gpu::GroupCount{.x = groups_x, .y = groups_y});
             }
-            const std::array<dvv::gpu::GpuImage*, MAX_STREAMS + 2> bound{
-                image != nullptr ? image : dummy.get(), targets.output.get(), targets.lines.get()};
-            recorder.dispatch(*pipeline, pushed, bound,
-                              dvv::gpu::GroupCount{.x = groups_x, .y = groups_y});
-        }
-        const std::array<dvv::gpu::GpuImage*, 1> output{targets.output.get()};
-        for (const RulerConstants& band : bands) {
-            if (band.regionW == 0 || band.regionH == 0) {
-                continue;
+            if (upload) {
+                upload(recorder);  // the strip in glyph_image, before the ruler pass reads it
             }
-            recorder.dispatch(
-                *ruler_pipeline, std::as_bytes(std::span(&band, 1)), output,
-                dvv::gpu::GroupCount{.x = (band.regionW + 7) / 8, .y = (band.regionH + 7) / 8});
-        }
-    };
+            const std::array<dvv::gpu::GpuImage*, 2> ruler_bound{targets.output.get(),
+                                                                 glyph_image.get()};
+            for (const RulerConstants& band : bands) {
+                if (band.regionW == 0 || band.regionH == 0) {
+                    continue;
+                }
+                recorder.dispatch(
+                    *ruler_pipeline, std::as_bytes(std::span(&band, 1)), ruler_bound,
+                    dvv::gpu::GroupCount{.x = (band.regionW + 7) / 8, .y = (band.regionH + 7) / 8});
+            }
+        };
+    return Recording{.commands = std::move(commands), .uploads = uploads};
 }
 
 ViewportRenderer::LineInputs ViewportRenderer::LineInputs::of(
@@ -293,12 +356,19 @@ dvv::Result<dvv::gpu::PresentFrame> ViewportRenderer::frame(
     }
     // A dropped frame's commands never ran, and a new output holds nothing: both passes run.
     bool all = !params.previousFrameCompleted;
+    if (!params.previousFrameCompleted) {
+        // Its glyph upload may not have run either: the strip is uploaded again before it is bound
+        // (a dropped record held its own share of the image).
+        glyph_source_.reset();
+        glyph_image_.reset();
+    }
     if (!targets_.output || params.extent != extent_) {
         DVV_TRY(targets_, makeTargets(params.extent));
         extent_ = params.extent;
         all = true;
     }
-    const Drawn drawn = prepare(params.extent, snapshot.frames, snapshot.params, skip_encode);
+    Drawn drawn = prepare(params.extent, snapshot.frames, snapshot.params, skip_encode);
+    const std::shared_ptr<const dvv::gpu::GlyphStrip>& strip = snapshot.params.overlay.glyphs;
     const PictureInputs picture{.version = snapshot.version,
                                 .view = drawn.view,
                                 .picture = drawn.regions.picture,
@@ -306,8 +376,11 @@ dvv::Result<dvv::gpu::PresentFrame> ViewportRenderer::frame(
                                 .constants = drawn.composite,
                                 .extent = params.extent,
                                 .skipEncode = skip_encode};
-    const RulerInputs rulers{
-        .constants = drawn.rulers, .extent = params.extent, .skipEncode = skip_encode};
+    // A strip no band draws is no ruler input.
+    const RulerInputs rulers{.constants = drawn.rulers,
+                             .extent = params.extent,
+                             .skipEncode = skip_encode,
+                             .glyphs = numbered(drawn.rulers) ? strip : nullptr};
     const bool strips =
         snapshot.params.overlay.strips.top != 0 || snapshot.params.overlay.strips.left != 0;
     const bool record_picture = all || picture_inputs_ != picture;
@@ -320,6 +393,26 @@ dvv::Result<dvv::gpu::PresentFrame> ViewportRenderer::frame(
                          ? RulerPass::Rulers
                          : RulerPass::Bands;
     }
+    // The glyph strip, decided before the bands are recorded: uploaded again when it is another
+    // strip than the uploaded one (none after a dropped frame); a new output keeps it. A failed
+    // upload draws the bands without numbers.
+    GlyphBinding glyphs;
+    if (record_rulers && numbered(drawn.rulers)) {
+        if (strip != glyph_source_) {
+            glyphs = uploadGlyphs(strip);
+            if (glyphs.image == nullptr) {
+                clearNumbers(drawn.rulers);
+            } else {
+                ruler_pass = RulerPass::Bands;  // every label redrawn with the new strip
+            }
+        } else {
+            glyphs.image = glyph_image_;
+        }
+    } else if (record_rulers && (strip == nullptr || !snapshot.params.overlay.numbers)) {
+        glyph_source_.reset();  // a recording frame still holds its own share of the image
+        glyph_image_.reset();
+    }
+    const std::shared_ptr<dvv::gpu::GpuImage> uploaded = glyphs.upload ? glyphs.image : nullptr;
     // The line table outlives the picture pass that built it: a picture pass rebuilds it only when
     // its inputs changed or the last build may not have run (a dropped frame, new targets).
     // The picture pass reads the table when it dispatches and a grid level is drawn.
@@ -335,19 +428,31 @@ dvv::Result<dvv::gpu::PresentFrame> ViewportRenderer::frame(
     if (!record_picture && !record_rulers) {
         return dvv::gpu::PresentFrame{.record = {}, .image = targets_.output};
     }
-    dvv::gpu::RecordFunction commands = record(targets_, params.extent, snapshot.frames, drawn,
-                                               record_picture, build_lines, ruler_pass);
-    return dvv::gpu::PresentFrame{.record = std::move(commands), .image = targets_.output};
+    Recording recording = record(targets_, params.extent, snapshot.frames, drawn, record_picture,
+                                 build_lines, ruler_pass, std::move(glyphs));
+    if (recording.uploads) {  // the upload counts only when the record carries it
+        glyph_source_ = strip;
+        glyph_image_ = uploaded;
+    }
+    return dvv::gpu::PresentFrame{.record = std::move(recording.commands),
+                                  .image = targets_.output};
 }
 
 dvv::Result<dvv::gpu::PresentFrame> ViewportRenderer::render(dvv::platform::PixelSize extent,
                                                              const FrameSet& frames,
                                                              const DisplayParams& params) {
     DVV_TRY(Targets targets, makeTargets(extent));
-    const Drawn drawn = prepare(extent, frames, params, false);
-    dvv::gpu::RecordFunction commands =
-        record(targets, extent, frames, drawn, true, gridDrawn(drawn.composite), RulerPass::Bands);
-    return dvv::gpu::PresentFrame{.record = std::move(commands),
+    Drawn drawn = prepare(extent, frames, params, false);
+    GlyphBinding glyphs;
+    if (numbered(drawn.rulers)) {
+        glyphs = uploadGlyphs(params.overlay.glyphs);
+        if (glyphs.image == nullptr) {
+            clearNumbers(drawn.rulers);
+        }
+    }
+    Recording recording = record(targets, extent, frames, drawn, true, gridDrawn(drawn.composite),
+                                 RulerPass::Bands, std::move(glyphs));
+    return dvv::gpu::PresentFrame{.record = std::move(recording.commands),
                                   .image = std::move(targets.output)};
 }
 

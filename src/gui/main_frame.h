@@ -290,8 +290,7 @@ private:
     // (TransportBar::showZoom, from isAvailable).
     void showZoom();
     // The Grid and Rulers window's notes for the shown view (GridWindow::showNotes), when it
-    // exists: the viewport's zoom, backingPerDip and the label widths of the image with its
-    // digitAdvance.
+    // exists: the viewport's zoom and backingPerDip.
     void showGridNotes();
     // FitToWindow, ActualSize, ZoomIn and ZoomOut, around the centre of P (the viewport's picture
     // region).

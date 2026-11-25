@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.2)
-project(rawreel VERSION 0.13.0 DESCRIPTION "rawreel raw video player" LANGUAGES CXX)
+project(rawreel VERSION 0.14.0 DESCRIPTION "rawreel raw video player" LANGUAGES CXX)
 # Version string; a pre-release build adds its release-stage label.
 set(rawreel_VERSION_STRING "${PROJECT_VERSION}")
 
@@ -38,8 +38,13 @@ add_library(rawreel_render STATIC
     src/render/ruler_constants.cpp
     src/render/viewport_renderer.cpp)
 target_include_directories(rawreel_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(rawreel_render PUBLIC rawreel_core dvv::base dvv::gpu dvv::media
-                                            dvv::platform)
+# dvv-gpu defines its text target only where the OS text API is found (Linux: pangocairo).
+if(NOT TARGET dvv::gpu_text)
+    message(FATAL_ERROR "rawreel: dvv::gpu_text is missing; on Linux it needs pangocairo >= 1.44 "
+                        "(pkg-config)")
+endif()
+target_link_libraries(rawreel_render PUBLIC rawreel_core dvv::base dvv::gpu dvv::gpu_text
+                                            dvv::media dvv::platform)
 dvv_add_shaders(rawreel_render NAMESPACE rawreel_shaders
     SHADERS shaders/composite.slang shaders/grid_lines.slang shaders/rulers.slang
     IMPORTS dvv::media)
@@ -58,6 +63,7 @@ add_library(rawreel_core STATIC
     src/core/open_text.cpp
     src/core/stream_name.cpp
     src/core/recent.cpp
+    src/core/ruler_labels.cpp
     src/core/gui_arguments.cpp
     src/core/info_text.cpp
     src/core/layout.cpp

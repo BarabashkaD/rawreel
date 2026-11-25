@@ -18,7 +18,8 @@
 //   does, from LoadedConfig::text, and a bad value there is a warning for the history only.
 //   Also under "gui", the rulers and the grid (the defaults shown; a level's object holds the
 //   same eight keys as "major"):
-//     "rulers": { "show": false, "numbers": true, "cursorColour": "#ff3b30" },
+//     "rulers": { "show": false, "numbers": true, "cursorColour": "#ff3b30",
+//                 "font": { "family": "", "size": 0 }, "lastValue": "pixel" },
 //     "grid": { "major": { "show": false, "step": 32, "opacity": 85, "colour": "#ffffff",
 //                          "thickness": 2, "adaptive": false, "halo": false,
 //                          "minimumSpacing": 2 },
@@ -28,6 +29,8 @@
 //                                "minimumSpacing": 3, ... } }
 //   "major.show" is the grid's on/off; steps are image pixels, one of GRID_STEP_VALUES; opacity
 //   (%), thickness and minimumSpacing (pt) lie in the GRID_*_RANGE constants of core/overlay.h.
+//   The ruler font's "family" "" is the OS's UI font; its "size" is whole OS font points, 0 (the
+//   OS's small system font size) or in RULER_FONT_SIZE_RANGE; "lastValue" is "pixel" or "edge".
 //   parseConfig does not read them either; parseOverlayConfig does, and a bad value there is a
 //   warning for that value only.
 //
@@ -105,6 +108,9 @@ inline constexpr std::string_view LOG_SYSTEM_ENABLED = "log.system.enabled";
 inline constexpr std::string_view GUI_RULERS_SHOW = "gui.rulers.show";
 inline constexpr std::string_view GUI_RULERS_NUMBERS = "gui.rulers.numbers";
 inline constexpr std::string_view GUI_RULERS_CURSOR_COLOUR = "gui.rulers.cursorColour";
+inline constexpr std::string_view GUI_RULERS_FONT_FAMILY = "gui.rulers.font.family";
+inline constexpr std::string_view GUI_RULERS_FONT_SIZE = "gui.rulers.font.size";
+inline constexpr std::string_view GUI_RULERS_LAST_VALUE = "gui.rulers.lastValue";
 // The keys of one grid level, in the order they are read and written.
 struct GridLevelKeys {
     std::string_view show, step, opacity, colour, thickness, adaptive, halo, minimumSpacing;
@@ -129,24 +135,27 @@ struct OverlayConfig {
     GridConfig grid;
     RulerConfig rulers;
     bool gridSavable = true;    // gui.grid and each of its levels are objects, null or missing
-    bool rulersSavable = true;  // gui.rulers is an object, null or missing
+    bool rulersSavable = true;  // gui.rulers and gui.rulers.font are objects, null or missing
     std::vector<std::string> warnings;  // without the "config '<path>': " prefix
 };
 
 // gui.grid and gui.rulers of a config text (like parseRecent: never an error). Leaves are read
 // level by level in GridLevelKeys order, then the rulers. A bad leaf (a wrong type, a number out
-// of range or not whole, a colour that is not "#rrggbb" in either letter case) falls back to its
-// default alone with "<key>: expected <what>, not <json>; using <default>". A step set that breaks
-// stepsValid gives "gui.grid: the steps <a> / <b> / <c> break <GRID_STEP_RULE>; using 32 / 8 / 2"
-// and the default steps of all three levels. A parent (gui.grid, a level, gui.rulers) that is not
-// an object gives "<key>: expected an object, not <json>; the defaults are used and not saved",
-// its part's defaults, and clears the matching *Savable flag; a null parent warns "...; the
-// defaults are used" and stays savable (the writer replaces null by an object). Text that is not
-// a JSON object, or a "gui" that is not one: the defaults, no warning (parseConfig rejects it).
+// of range or not whole, a colour that is not "#rrggbb" in either letter case, a font size that is
+// neither 0 nor in RULER_FONT_SIZE_RANGE, a last value other than "pixel" or "edge") falls back to
+// its default alone with "<key>: expected <what>, not <json>; using <default>". A step set that
+// breaks stepsValid gives "gui.grid: the steps <a> / <b> / <c> break <GRID_STEP_RULE>; using
+// 32 / 8 / 2" and the default steps of all three levels. A parent (gui.grid, a level, gui.rulers,
+// gui.rulers.font) that is not an object gives "<key>: expected an object, not <json>; the
+// defaults are used and not saved", its part's defaults, and clears the matching *Savable flag; a
+// null parent warns "...; the defaults are used" and stays savable (the writer replaces null by an
+// object). Text that is not a JSON object, or a "gui" that is not one: the defaults, no warning
+// (parseConfig rejects it).
 [[nodiscard]] OverlayConfig parseOverlayConfig(std::string_view text);
 // Every key of the grid (when `grid_keys`; the levels in order, each in GridLevelKeys order) and
-// then of the rulers (when `ruler_keys`) with its value; colours as "#rrggbb" in lower case;
-// numbers as std::int64_t.
+// then of the rulers (when `ruler_keys`: show, numbers, cursorColour, font.family, font.size,
+// lastValue) with its value; colours as "#rrggbb" in lower case; the last value as "pixel" or
+// "edge"; numbers as std::int64_t.
 [[nodiscard]] std::vector<ConfigValue> overlayConfigValues(const GridConfig& grid,
                                                            const RulerConfig& rulers,
                                                            bool grid_keys, bool ruler_keys);

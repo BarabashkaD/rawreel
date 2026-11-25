@@ -8,7 +8,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -62,11 +61,26 @@ struct GridConfig {
     bool operator==(const GridConfig&) const = default;
 };
 
+// The number at a ruler's far end: the last pixel's index (Pixel; a 3840-wide picture reads
+// 0 ... 3839) or the edge after it, counted like the ticks (Edge; 0 ... 3840).
+enum class LastValue : std::uint8_t { Pixel, Edge };
+// The ruler font sizes a user may choose, in OS font points (as the OS's own font dialogs count
+// them); 0 stands for the OS's small system font size.
+inline constexpr GridRange RULER_FONT_SIZE_RANGE{.minimum = 6, .maximum = 24};
+
+struct RulerFont {
+    std::string family;      // "" is the OS's UI font
+    std::uint32_t size = 0;  // OS font points: 0, or in RULER_FONT_SIZE_RANGE
+    bool operator==(const RulerFont&) const = default;
+};
+
 struct RulerConfig {
     bool show = false;
     bool numbers = true;
     // The lit tick's and the cursor marker's colour.
     Rgb8 cursorColour{.r = 0xff, .g = 0x3b, .b = 0x30};
+    RulerFont font{};
+    LastValue lastValue = LastValue::Pixel;
     bool operator==(const RulerConfig&) const = default;
 };
 
@@ -101,23 +115,6 @@ void applyOverlayStyle(GridConfig& grid, RulerConfig& rulers, OverlayStyle style
 // float(minimum_pt x backing_per_dip): the one conversion of a minimum spacing.
 [[nodiscard]] float minimumSpacingBacking(std::uint32_t minimum_pt,
                                           double backing_per_dip) noexcept;
-// A ruler label's width: the decimal digits of `size` x digit_advance.
-[[nodiscard]] float labelWidth(std::uint32_t size, float digit_advance) noexcept;
-// A label fits when it is at most two major spacings wide (labels alternate between two lines).
-[[nodiscard]] bool labelFits(float label_width, float major_spacing) noexcept;
-// What decides whether one ruler shows its ticks, in backing pixels.
-struct RulerFit {
-    std::uint32_t majorStepLog2 = 0;  // log2 of the major level's step
-    float zoom = 0;
-    float minimumSpacing = 0;  // the major level's minimumSpacingBacking
-    // With numbers on, the widest label on the ruler's axis (labelWidth); nullopt with numbers off.
-    std::optional<float> labelWidth;
-    bool operator==(const RulerFit&) const = default;
-};
-// One ruler's ticks are shown when the major level is visible,
-// dvv::media::levelVisible(majorStepLog2, zoom, minimumSpacing), and, with numbers, its label
-// fits: labelFits(*labelWidth, float(1 << majorStepLog2) x zoom).
-[[nodiscard]] bool rulerTicksShown(const RulerFit& fit) noexcept;
 
 // "hidden at this zoom (2 px at 100 % = 1 pt, needs 3 pt)" when the level of `step` (a power of
 // two) is not visible at `zoom` with minimumSpacingBacking(minimum_pt, backing_per_dip), else "".
@@ -130,15 +127,11 @@ struct RulerFit {
 // line is drawn), "hidden at this zoom (the major lines are hidden)".
 [[nodiscard]] std::string gridLevelNote(const GridConfig& grid, GridLevel level, double zoom,
                                         double backing_per_dip);
-// Why the rulers are off at `zoom`, by rulerTicksShown with the major level's step and minimum
-// spacing: "" with the rulers hidden or both rulers' ticks shown; "Rulers off at this zoom: major
-// ticks closer than N pt", N the major level's minimum spacing, when the major spacing is too
-// small (the same on both axes); else, with numbers, "Rulers off at this zoom: the numbers do not
-// fit" or "Top ruler off at this zoom: the numbers do not fit" or "Left ruler off at this zoom:
-// the numbers do not fit". label_widths: {top ruler, left ruler}, labelWidth of the image width
-// and height.
+// Why the rulers are off at `zoom`: "" with the rulers hidden or the major level visible,
+// dvv::media::levelVisible with its step and minimumSpacingBacking; else "Rulers off at this
+// zoom: major ticks closer than N pt", N the major level's minimum spacing (the same on both
+// axes). The numbers never turn a ruler off.
 [[nodiscard]] std::string rulerOffNote(const GridConfig& grid, const RulerConfig& rulers,
-                                       double zoom, double backing_per_dip,
-                                       std::array<float, 2> label_widths);
+                                       double zoom, double backing_per_dip);
 
 }  // namespace rawreel

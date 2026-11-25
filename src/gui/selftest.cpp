@@ -8,6 +8,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -42,6 +43,7 @@
 // clang-format on
 #include <wx/bookctrl.h>
 #include <wx/checkbox.h>
+#include <wx/choice.h>
 #include <wx/clipbrd.h>
 #include <wx/collpane.h>
 #include <wx/dirdlg.h>
@@ -50,10 +52,12 @@
 #include <wx/hyperlink.h>
 #include <wx/menu.h>
 #include <wx/preferences.h>
+#include <wx/radiobut.h>
 #include <wx/scrolwin.h>
 #include <wx/settings.h>
 #include <wx/simplebook.h>
 #include <wx/slider.h>
+#include <wx/spinctrl.h>
 #include <wx/stdpaths.h>
 #include <wx/textdlg.h>
 #include <wx/tglbtn.h>
@@ -7793,6 +7797,346 @@ void addGridCloseSaveStep(std::vector<SelfTestStep>& steps, SelfTest& test) {
         }));
 }
 
+// A spin control's value change as the native control sends it.
+void sendSpinEvent(wxSpinCtrl& control, int value) {
+    control.SetValue(value);
+    wxSpinEvent event(wxEVT_SPINCTRL, control.GetId());
+    event.SetEventObject(&control);
+    event.SetPosition(value);
+    (void)injectInput(*control.GetEventHandler(), event);
+}
+
+// The ruler numbers' controls in the Grid and Rulers window on the clip of "view: open a clip":
+// what each change of the Ruler font and Last value rows redraws and saves, cursor moves with the
+// numbers on, the rows disabled with the numbers off, and the Quick tab's note while the rulers
+// are off at the zoom. The window is hidden and the settings restored (saved) at the end.
+void addRulerNumberSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
+    MainFrame& frame = test.frame();
+    App& app = test.app();
+    struct State {
+        GridConfig grid{};  // the settings before the steps, restored after them
+        RulerConfig rulers{};
+        dvv::media::ViewRequest view{};
+        RecordedInfo recorded{};             // lastRecorded() at the step's start
+        std::optional<RecordedInfo> polled;  // lastRecorded() at the previous poll
+        int quiet = 0;                       // polls in a row that recorded nothing
+        int strips = 0;                      // stripWindowUnits() at the step's start
+        int systemStrips = 0;                // stripWindowUnits() at System size, before any change
+        wxString zoom;                       // the zoom readout at the step's start
+        std::string family;
+        std::uint32_t size = 0;
+        std::uint32_t unchecked = 0;  // the size stored by unchecking System size
+        std::uint64_t pushes = 0;     // cursorPushesForTest() at the step's start
+    };
+    static constexpr std::uint64_t MOVES = 5;
+    auto st = std::make_shared<State>();
+    const auto window = [&frame]() -> GridWindow& { return *gridWindowOf(frame); };
+    const auto now = [&frame] { return frame.viewport().lastRecorded().value_or(RecordedInfo{}); };
+    // The renderer recorded nothing for 3 polls in a row (frames come from the presenter thread,
+    // after the change), so a baseline taken next stays exact. A step that checks it calls it on
+    // every poll and runs unsettle() (or begin()) first.
+    const auto unsettle = [st] {
+        st->polled.reset();
+        st->quiet = 0;
+    };
+    const auto settled = [&frame, st](std::string& seen) {
+        const std::optional<RecordedInfo> recorded = frame.viewport().lastRecorded();
+        const bool same = recorded.has_value() && st->polled == recorded;
+        st->quiet = same ? st->quiet + 1 : 0;
+        st->polled = recorded;
+        seen += std::format(", unchanged polls {}", st->quiet);
+        return st->quiet >= 3;
+    };
+    const auto begin = [&frame, st, now, unsettle] {
+        unsettle();
+        st->recorded = now();
+        st->strips = frame.viewport().stripWindowUnits();
+        st->zoom = zoomButtonText(frame);
+        st->pushes = frame.viewport().cursorPushesForTest();
+    };
+    // The records since begin(): `+picture +ruler +glyph`.
+    const auto added = [st](const RecordedInfo& recorded) {
+        return std::format("picture records +{}, ruler records +{}, glyph uploads +{}",
+                           recorded.pictureRecords - st->recorded.pictureRecords,
+                           recorded.rulerRecords - st->recorded.rulerRecords,
+                           recorded.glyphUploads - st->recorded.glyphUploads);
+    };
+    const auto saved = [&app]() -> std::optional<RulerConfig> {
+        const dvv::Result<std::string> read = readConfigText(app.configPath());
+        return read ? std::optional(parseOverlayConfig(*read).rulers) : std::nullopt;
+    };
+    // The size the spin control shows for System size, as GridWindow rounds it.
+    const auto system_size = [] {
+        return std::clamp(static_cast<int>(std::lround(rulerFontPoints({}))),
+                          static_cast<int>(RULER_FONT_SIZE_RANGE.minimum),
+                          static_cast<int>(RULER_FONT_SIZE_RANGE.maximum));
+    };
+    steps.push_back(step(
+        "ruler numbers: the font rows are enabled with the rulers and numbers on",
+        [&frame, st, unsettle] {
+            st->grid = frame.grid();
+            st->rulers = frame.rulers();
+            st->view = frame.viewport().view();
+            // The default steps and major spacing, whatever an earlier step left: the Quick tab's
+            // note step below depends on them.
+            GridConfig grid = st->grid;
+            for (std::size_t l = 0; l < GRID_LEVELS; ++l) {
+                grid.levels[l].step = GridConfig{}.levels[l].step;
+            }
+            grid.levels[0].minimumSpacing = GridConfig{}.levels[0].minimumSpacing;
+            RulerConfig rulers = st->rulers;
+            rulers.show = true;
+            rulers.numbers = true;
+            rulers.font = {};
+            rulers.lastValue = LastValue::Pixel;
+            frame.setOverlay(grid, rulers, OverlaySave::Later);
+            frame.viewport().setView({});
+            frame.setWindowShown(FloatingKind::GridAndRulers, true);
+            unsettle();
+        },
+        [&frame, st, window, now, settled](std::string& seen) {
+            if (gridWindowOf(frame) == nullptr) {
+                seen = "no Grid and Rulers window";
+                return false;
+            }
+            const GridWindow& grid = window();
+            const bool enabled = grid.fontFamilyChoiceForTest().IsEnabled() &&
+                                 grid.systemSizeCheckForTest().IsEnabled() &&
+                                 grid.systemSizeCheckForTest().GetValue() &&
+                                 !grid.fontSizeSpinForTest().IsEnabled() &&
+                                 grid.lastPixelRadioForTest().IsEnabled() &&
+                                 grid.edgeRadioForTest().IsEnabled() &&
+                                 grid.lastPixelRadioForTest().GetValue();
+            const RecordedInfo recorded = now();
+            seen = std::format(
+                "rows enabled, System size, Last pixel {}; numbers drawn {}, glyph "
+                "uploads {}, failures {}, mode Fit {}",
+                enabled, recorded.rulerNumbers, recorded.glyphUploads, recorded.glyphFailures,
+                frame.viewport().view().mode == ViewMode::Fit);
+            st->systemStrips = frame.viewport().stripWindowUnits();
+            const bool quiet = settled(seen);
+            return enabled && recorded.rulerNumbers && recorded.glyphUploads > 0 &&
+                   frame.viewport().view().mode == ViewMode::Fit && quiet;
+        }));
+    steps.push_back(step(
+        "ruler numbers: a family change redraws only the rulers with a new strip",
+        [st, window, begin] {
+            begin();
+            wxChoice& family = window().fontFamilyChoiceForTest();
+            int chosen = wxNOT_FOUND;
+            for (const char* const name :
+                 {"Helvetica", "Arial", "DejaVu Sans", "Noto Sans", "Liberation Sans"}) {
+                if (chosen = family.FindString(name, true); chosen != wxNOT_FOUND) {
+                    break;
+                }
+            }
+            if (chosen == wxNOT_FOUND && family.GetCount() > 1) {
+                chosen = 1;  // the first of the OS's families, after System
+            }
+            st->family = chosen == wxNOT_FOUND ? "" : family.GetString(chosen).utf8_string();
+            family.SetSelection(chosen);
+            sendControlEvent(family, wxEVT_CHOICE, chosen);
+        },
+        [&frame, st, now, added, saved](std::string& seen) {
+            const RecordedInfo recorded = now();
+            const std::optional<RulerConfig> file = saved();
+            const int strips = frame.viewport().stripWindowUnits();
+            seen = std::format("family '{}' (chosen '{}', saved '{}'), strips {} (before {}), {}",
+                               frame.rulers().font.family, st->family,
+                               file ? file->font.family : "-", strips, st->strips, added(recorded));
+            return !st->family.empty() && frame.rulers().font.family == st->family && file &&
+                   file->font.family == st->family && strips == st->strips &&
+                   recorded.rulerRecords == st->recorded.rulerRecords + 1 &&
+                   recorded.pictureRecords == st->recorded.pictureRecords &&
+                   recorded.glyphUploads == st->recorded.glyphUploads + 1 &&
+                   recorded.glyphFailures == st->recorded.glyphFailures;
+        }));
+    steps.push_back(step(
+        "ruler numbers: a size change changes the strips and refits P",
+        [st, window, begin, system_size] {
+            begin();
+            // The size farthest from the system size, so the strips change.
+            const int target = system_size() <= 15
+                                   ? static_cast<int>(RULER_FONT_SIZE_RANGE.maximum)
+                                   : static_cast<int>(RULER_FONT_SIZE_RANGE.minimum);
+            st->size = static_cast<std::uint32_t>(target);
+            wxCheckBox& system = window().systemSizeCheckForTest();
+            system.SetValue(false);
+            sendControlEvent(system, wxEVT_CHECKBOX, 0);
+            sendSpinEvent(window().fontSizeSpinForTest(), target);
+        },
+        [&frame, st, window, saved, settled](std::string& seen) {
+            const std::optional<RulerConfig> file = saved();
+            const int strips = frame.viewport().stripWindowUnits();
+            const wxString zoom = zoomButtonText(frame);
+            const bool spin = window().fontSizeSpinForTest().IsEnabled();
+            seen = std::format(
+                "size {} (wanted {}, saved {}), spin enabled {}, strips {} (before "
+                "{}), zoom '{}' (before '{}'), mode Fit {}",
+                frame.rulers().font.size, st->size, file ? std::to_string(file->font.size) : "-",
+                spin, strips, st->strips, zoom.utf8_string(), st->zoom.utf8_string(),
+                frame.viewport().view().mode == ViewMode::Fit);
+            const bool quiet = settled(seen);
+            return frame.rulers().font.size == st->size && file && file->font.size == st->size &&
+                   spin && strips != st->strips && !zoom.empty() && zoom != st->zoom &&
+                   frame.viewport().view().mode == ViewMode::Fit && quiet;
+        }));
+    steps.push_back(step(
+        "ruler numbers: checking System size changes the strips back and stores 0",
+        [st, window, begin, system_size] {
+            // Another size than the rounded system size first, so the check changes the strips.
+            st->size = static_cast<std::uint32_t>(
+                std::clamp(system_size() + 3, static_cast<int>(RULER_FONT_SIZE_RANGE.minimum),
+                           static_cast<int>(RULER_FONT_SIZE_RANGE.maximum)));
+            sendSpinEvent(window().fontSizeSpinForTest(), static_cast<int>(st->size));
+            begin();
+            wxCheckBox& system = window().systemSizeCheckForTest();
+            system.SetValue(true);
+            sendControlEvent(system, wxEVT_CHECKBOX, 1);
+        },
+        [&frame, st, window, saved, system_size](std::string& seen) {
+            const std::optional<RulerConfig> file = saved();
+            const int strips = frame.viewport().stripWindowUnits();
+            const wxSpinCtrl& spin = window().fontSizeSpinForTest();
+            seen = std::format(
+                "size {} (saved {}), spin {} enabled {} (system {}), strips {} "
+                "(System size {}, at {} pt {})",
+                frame.rulers().font.size, file ? std::to_string(file->font.size) : "-",
+                spin.GetValue(), spin.IsEnabled(), system_size(), strips, st->systemStrips,
+                st->size, st->strips);
+            return frame.rulers().font.size == 0 && file && file->font.size == 0 &&
+                   !spin.IsEnabled() && spin.GetValue() == system_size() &&
+                   strips == st->systemStrips && strips != st->strips;
+        }));
+    steps.push_back(step(
+        "ruler numbers: unchecking System size stores the spin control's size",
+        [&frame, st, window, unsettle] {
+            unsettle();
+            wxCheckBox& system = window().systemSizeCheckForTest();
+            system.SetValue(false);
+            sendControlEvent(system, wxEVT_CHECKBOX, 0);
+            // The spin control showed the rounded system size, which may draw as System size
+            // does; the size of the step before then changes the strips again.
+            st->unchecked = frame.rulers().font.size;
+            sendSpinEvent(window().fontSizeSpinForTest(), static_cast<int>(st->size));
+        },
+        [&frame, st, window, saved, settled, system_size](std::string& seen) {
+            const std::optional<RulerConfig> file = saved();
+            const int strips = frame.viewport().stripWindowUnits();
+            const wxSpinCtrl& spin = window().fontSizeSpinForTest();
+            seen = std::format(
+                "stored at the uncheck {} (system {}); size {} (saved {}), spin {} "
+                "enabled {}, strips {} (System size {}, at {} pt {})",
+                st->unchecked, system_size(), frame.rulers().font.size,
+                file ? std::to_string(file->font.size) : "-", spin.GetValue(), spin.IsEnabled(),
+                strips, st->systemStrips, st->size, st->strips);
+            const bool quiet = settled(seen);
+            return std::cmp_equal(st->unchecked, system_size()) &&
+                   frame.rulers().font.size == st->size && file && file->font.size == st->size &&
+                   spin.IsEnabled() && strips == st->strips && strips != st->systemStrips && quiet;
+        }));
+    steps.push_back(step(
+        "ruler numbers: Edge redraws only the rulers and saves \"edge\"",
+        [st, window, begin] {
+            begin();
+            wxRadioButton& edge = window().edgeRadioForTest();
+            edge.SetValue(true);
+            sendControlEvent(edge, wxEVT_RADIOBUTTON, 1);
+        },
+        [&frame, st, now, added, saved](std::string& seen) {
+            const RecordedInfo recorded = now();
+            const std::optional<RulerConfig> file = saved();
+            seen = std::format("last value edge {} (saved {}), {}",
+                               frame.rulers().lastValue == LastValue::Edge,
+                               file ? file->lastValue == LastValue::Edge : false, added(recorded));
+            return frame.rulers().lastValue == LastValue::Edge && file &&
+                   file->lastValue == LastValue::Edge &&
+                   recorded.rulerRecords == st->recorded.rulerRecords + 1 &&
+                   recorded.pictureRecords == st->recorded.pictureRecords &&
+                   recorded.glyphUploads == st->recorded.glyphUploads;
+        }));
+    steps.push_back(step(
+        std::format("ruler numbers: {} cursor moves redraw only the rulers, {} times at most",
+                    MOVES, MOVES),
+        [&frame, begin] {
+            begin();
+            Viewport& viewport = frame.viewport();
+            // From the middle of P, on the image in Fit, a few pixels apart.
+            const dvv::media::PointD offset = viewport.pictureOffset();
+            const dvv::platform::PixelSize picture = viewport.pictureSize();
+            const double scale = viewport.contentScale();
+            const wxPoint start(static_cast<int>((offset.x + (picture.width / 2.0)) / scale),
+                                static_cast<int>((offset.y + (picture.height / 2.0)) / scale));
+            for (std::uint64_t n = 0; n < MOVES; ++n) {
+                const int step_units = viewport.FromDIP(7) * static_cast<int>(n);
+                sendViewportMouse(viewport, wxEVT_MOTION, start + wxPoint(step_units, step_units),
+                                  false, false);
+            }
+        },
+        [&frame, st, now, added, settled](std::string& seen) {
+            const RecordedInfo recorded = now();
+            const std::uint64_t pushes = frame.viewport().cursorPushesForTest() - st->pushes;
+            seen = std::format("cursor pushes +{}, numbers drawn {}, {}", pushes,
+                               recorded.rulerNumbers, added(recorded));
+            const bool done = settled(seen);
+            return pushes > 0 && recorded.rulerNumbers &&
+                   recorded.rulerRecords > st->recorded.rulerRecords &&
+                   recorded.rulerRecords <= st->recorded.rulerRecords + MOVES &&
+                   recorded.pictureRecords == st->recorded.pictureRecords &&
+                   recorded.glyphUploads == st->recorded.glyphUploads && done;
+        }));
+    steps.push_back(step(
+        "ruler numbers: numbers off disables the font and Last value rows",
+        [&frame, window] {
+            sendViewportMouse(frame.viewport(), wxEVT_LEAVE_WINDOW, wxPoint(-1, -1), false, false);
+            wxCheckBox& numbers = window().numbersBoxForTest();
+            numbers.SetValue(false);
+            sendControlEvent(numbers, wxEVT_CHECKBOX, 0);
+        },
+        [&frame, window, now](std::string& seen) {
+            const GridWindow& grid = window();
+            const bool family = grid.fontFamilyChoiceForTest().IsEnabled();
+            const bool size = grid.fontSizeSpinForTest().IsEnabled();
+            const bool system = grid.systemSizeCheckForTest().IsEnabled();
+            const bool pixel = grid.lastPixelRadioForTest().IsEnabled();
+            const bool edge = grid.edgeRadioForTest().IsEnabled();
+            const RecordedInfo recorded = now();
+            seen = std::format(
+                "numbers {}, enabled: family {} size {} System size {} Last pixel "
+                "{} Edge {}; numbers drawn {}",
+                frame.rulers().numbers, family, size, system, pixel, edge, recorded.rulerNumbers);
+            return !frame.rulers().numbers && !family && !size && !system && !pixel && !edge &&
+                   !recorded.rulerNumbers;
+        }));
+    // A tiny zoom puts the major ticks closer than their minimum spacing; at 100 % they are not.
+    steps.push_back(step(
+        "ruler numbers: the Quick tab notes the rulers off at this zoom",
+        [&frame] { frame.viewport().setView(centredView(frame.viewport(), 1.0 / 32)); },
+        [&frame, window](std::string& seen) {
+            const double zoom = frame.viewport().shownView().zoom();
+            const double backing = frame.viewport().backingPerDip();
+            const std::string expected = rulerOffNote(frame.grid(), frame.rulers(), zoom, backing);
+            const std::string note = window().rulerNoteForTest().utf8_string();
+            seen = std::format("zoom {}, backing per pt {}: note '{}' (wanted '{}')", zoom, backing,
+                               note, expected);
+            return zoom < 1 && note.starts_with("Rulers off at this zoom") && note == expected;
+        }));
+    steps.push_back(step(
+        "ruler numbers: the note clears at 100 %", [&frame] { frame.execute(Command::ActualSize); },
+        [&frame, st, window](std::string& seen) {
+            const double zoom = frame.viewport().shownView().zoom();
+            const std::string note = window().rulerNoteForTest().utf8_string();
+            seen = std::format("zoom {}: note '{}'", zoom, note);
+            const bool ok = zoom == 1.0 && note.empty();
+            if (ok) {
+                frame.setWindowShown(FloatingKind::GridAndRulers, false);
+                frame.setOverlay(st->grid, st->rulers, OverlaySave::Now);
+                frame.viewport().setView(st->view);
+            }
+            return ok;
+        }));
+}
+
 void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
     MainFrame& frame = test.frame();
     struct State {
@@ -8061,6 +8405,7 @@ void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
     addCursorSteps(steps, frame);
     addGridCommandSteps(steps, test);
     addGridWindowSteps(steps, test);
+    addRulerNumberSteps(steps, test);
     addGridSaveSteps(steps, test);
     // Later view steps go before this one.
     steps.push_back(step(

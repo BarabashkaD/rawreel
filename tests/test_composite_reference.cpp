@@ -87,8 +87,8 @@ HostDisplayImage hostImage(std::uint32_t w, std::uint32_t h,
     return HostDisplayImage{.width = w, .height = h, .rgba16f = texels};
 }
 
-constexpr rawreel::DisplayParams DARK{.overlay = {.dark = true}};
-constexpr rawreel::DisplayParams LIGHT{.overlay = {.dark = false}};
+const rawreel::DisplayParams DARK{.overlay = {.dark = true}};
+const rawreel::DisplayParams LIGHT{.overlay = {.dark = false}};
 
 }  // namespace
 

@@ -7,6 +7,7 @@
 #include <optional>
 
 #include "core/overlay.h"
+#include "core/ruler_labels.h"
 #include "dvv/media/view.h"
 #include "dvv/media/view_lines.h"
 #include "render/composite_constants.h"
@@ -14,6 +15,17 @@
 #include "render/pass_regions.h"
 
 namespace rawreel {
+
+namespace {
+
+// numberGap | tagPad << 8 | tagInset << 16 | tagMargin << 24, each at most 255.
+std::uint32_t packedSpacing(const LabelSpacing& spacing) noexcept {
+    const auto byte = [](std::uint32_t value) { return std::min(value, 255U); };
+    return byte(spacing.numberGap) | byte(spacing.tagPad) << 8U | byte(spacing.tagInset) << 16U |
+           byte(spacing.tagMargin) << 24U;
+}
+
+}  // namespace
 
 std::array<RulerConstants, 2> rulerConstants(const OverlayParams& overlay,
                                              const dvv::media::ViewTransform& view,
@@ -51,7 +63,10 @@ std::array<RulerConstants, 2> rulerConstants(const OverlayParams& overlay,
         band.litDepth = std::min(band.strip, overlay.litDepth);
         band.labelBand = band.strip > band.tickBand ? band.strip - band.tickBand : 0;
         band.cursorColour = overlay.cursorColour;
-        band.flags = (overlay.dark ? RULER_DARK : 0) | (skip_encode ? RULER_SKIP_ENCODE : 0);
+        band.labelSpacing = packedSpacing(overlay.labelSpacing);
+        band.flags = (overlay.dark ? RULER_DARK : 0) | (skip_encode ? RULER_SKIP_ENCODE : 0) |
+                     (overlay.lastValue == LastValue::Edge ? RULER_EDGE : 0) |
+                     (overlay.cursorTagTextBlack ? RULER_TAG_TEXT_BLACK : 0);
         for (std::size_t l = 0; l < GRID_LEVELS; ++l) {
             band.levelShape[l] = levelStepLog2(overlay.levels[l]);
             band.tickLength[l] = overlay.tickLength[l];
@@ -60,15 +75,11 @@ std::array<RulerConstants, 2> rulerConstants(const OverlayParams& overlay,
             continue;
         }
         band.flags |= RULER_IMAGE;
+        if (overlay.numbers && overlay.glyphs) {
+            band.flags |= RULER_NUMBERS;
+        }
         const GridLevelParams& major = overlay.levels[0];
-        const RulerFit fit{
-            .majorStepLog2 = levelStepLog2(major),
-            .zoom = view_axis.zoom,
-            .minimumSpacing = major.minimumSpacing,
-            .labelWidth = overlay.numbers
-                              ? std::optional(labelWidth(band.imageSize, overlay.digitAdvance))
-                              : std::nullopt};
-        if (rulerTicksShown(fit)) {
+        if (dvv::media::levelVisible(levelStepLog2(major), view_axis.zoom, major.minimumSpacing)) {
             band.flags |= RULER_TICKS;
             for (std::size_t l = 0; l < GRID_LEVELS; ++l) {
                 if (dvv::media::levelVisible(levelStepLog2(overlay.levels[l]), view_axis.zoom,

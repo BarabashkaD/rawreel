@@ -9,14 +9,18 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <optional>
 #include <utility>
 
 #include <wx/settings.h>
 
 #include "core/overlay.h"
+#include "core/ruler_labels.h"
 #include "core/view.h"
+#include "dvv/base/error.h"
 #include "dvv/base/log.h"
+#include "dvv/gpu/glyph_strip.h"
 #include "dvv/media/view.h"
 #include "dvv/media/view_lines.h"
 #include "gui/native_policy.h"
@@ -41,6 +45,10 @@ wxColour backgroundColour(bool dark) {
 }
 
 }  // namespace
+
+double rulerFontPoints(const RulerFont& font) {
+    return font.size != 0 ? static_cast<double>(font.size) : wxSMALL_FONT->GetFractionalPointSize();
+}
 
 Viewport::Viewport(wxWindow* parent, std::shared_ptr<DisplayState> display)
     : display_(std::move(display)), dark_(wxSystemSettings::GetAppearance().IsDark()) {
@@ -599,12 +607,36 @@ void Viewport::setOverlayConfig(const GridConfig& grid, const RulerConfig& ruler
 }
 
 void Viewport::sendOverlay() {
-    // The label font: wx's small font, its points in DIP.
-    const OverlayScale scale{
-        .display = {.backingPerDip = backingPerDip(), .contentScale = contentScale()},
-        .fontDip = wxSMALL_FONT->GetFractionalPointSize() * native_policy::dipPerFontPoint()};
+    const double points = rulerFontPoints(rulers_.font);
+    const double per_dip = backingPerDip();
+    const OverlayScale scale{.display = {.backingPerDip = per_dip, .contentScale = contentScale()},
+                             .fontDip = points * native_policy::dipPerFontPoint()};
     overlay_ = convertOverlay(grid_, rulers_, scale, dark_);
+    if (rulers_.show && rulers_.numbers) {
+        overlay_.params.glyphs = glyphStrip({.family = rulers_.font.family, .sizePoints = points},
+                                            native_policy::dipPerFontPoint() * per_dip);
+    }
     display_->setOverlay(overlay_.params);  // notifies only when the params changed
+}
+
+std::shared_ptr<const dvv::gpu::GlyphStrip> Viewport::glyphStrip(const dvv::gpu::FontSpec& font,
+                                                                 double scale) {
+    if (font == glyph_font_ && scale == glyph_scale_) {
+        return glyphs_;
+    }
+    glyph_font_ = font;
+    glyph_scale_ = scale;
+    glyphs_.reset();
+    dvv::Result<dvv::gpu::GlyphStrip> strip = dvv::gpu::rasterGlyphStrip(font, scale, RULER_DIGITS);
+    if (strip) {
+        glyphs_ = std::make_shared<const dvv::gpu::GlyphStrip>(std::move(*strip));
+    } else if (std::ranges::find(glyph_warned_, font) == glyph_warned_.end()) {
+        glyph_warned_.push_back(font);
+        DVV_LOG_WARN("ruler numbers off: the font '{}' at {} pt failed: {}",
+                     font.family.empty() ? "System" : font.family, font.sizePoints,
+                     strip.error().message);
+    }
+    return glyphs_;
 }
 
 dvv::platform::PixelSize Viewport::pictureSize() const {

@@ -7,11 +7,13 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "core/overlay.h"
 #include "dvv/base/error.h"
 #include "dvv/base/move_only_function.h"
 #include "dvv/gpu/execution_context.h"
+#include "dvv/gpu/glyph_strip.h"
 #include "dvv/gpu/presenter.h"
 #include "dvv/media/view.h"
 #include "dvv/platform/pixel_size.h"
@@ -29,6 +31,10 @@ inline constexpr double WHEEL_LINE_DIP = 10;
 #else
 inline constexpr double WHEEL_LINE_DIP = 16;
 #endif
+
+// The ruler font's size in OS font points: font.size, or for 0 wx's small font's size (the OS's
+// small system font). GUI thread, once wx has started.
+[[nodiscard]] double rulerFontPoints(const RulerFont& font);
 
 // The viewport (M1b §5.6 plus design M3 v2 §5.3 GUI side): a native child window that shows the
 // DisplayState through one ViewportRenderer and one Presenter of the current stack. Every member
@@ -174,9 +180,15 @@ private:
     void onDpiChanged(wxDPIChangedEvent& event);
     // The light or dark theme changed: dark_ follows, the overlay is sent again, Refresh().
     void onSysColourChanged(wxSysColourChangedEvent& event);
-    // overlay_ = convertOverlay() of grid_ and rulers_ at the current scale, theme and font, its
-    // params sent to the display.
+    // overlay_ = convertOverlay() of grid_ and rulers_ at the current scale, theme and font
+    // (rulerFontPoints() in DIP), with the glyph strip while the rulers and their numbers are on
+    // (glyphStrip()), its params sent to the display.
     void sendOverlay();
+    // The strip of RULER_DIGITS in `font` at `scale` backing pixels per font point, rasterised
+    // only when the font or the scale differs from the last one asked for; null when the OS
+    // raster fails, with one warning per failing font.
+    [[nodiscard]] std::shared_ptr<const dvv::gpu::GlyphStrip> glyphStrip(
+        const dvv::gpu::FontSpec& font, double scale);
     // The backing point of a window position: (position + 0.5) x contentScale().
     [[nodiscard]] dvv::media::PointD backingPoint(wxPoint position) const;
     // picturePoint() moved into P (its edges included): the anchor of a wheel or pinch zoom.
@@ -216,6 +228,11 @@ private:
     GridConfig grid_{};     // setOverlayConfig()
     RulerConfig rulers_{};  // setOverlayConfig()
     OverlayConversion overlay_{};  // overlayParams() and the strip it holds
+    // glyphStrip()'s cache: the font and scale last asked for and their strip (null: it failed).
+    dvv::gpu::FontSpec glyph_font_{};
+    double glyph_scale_ = 0;
+    std::shared_ptr<const dvv::gpu::GlyphStrip> glyphs_;
+    std::vector<dvv::gpu::FontSpec> glyph_warned_;  // the fonts whose raster failure was logged
     bool ready_ = false;
     bool iconized_ = false;  // the top-level frame is minimised: a new presenter starts hidden
     bool presenter_visible_ = false;     // the last value sent to the presenter (or its creation)

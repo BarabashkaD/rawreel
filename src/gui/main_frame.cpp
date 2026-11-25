@@ -86,6 +86,12 @@ namespace rawreel {
 
 namespace {
 
+// The open clip's width for the Last value examples; none without a clip.
+std::optional<std::uint32_t> clipWidth(const Viewport& viewport) {
+    const std::uint32_t width = viewport.imageSize().width;
+    return width != 0 ? std::optional<std::uint32_t>(width) : std::nullopt;
+}
+
 const CommandInfo& commandInfo(Command command) {
     return commandTable()[static_cast<std::size_t>(command)];
 }
@@ -659,11 +665,7 @@ void MainFrame::showGridNotes() {
     if (closing_ || viewport_ == nullptr || window == nullptr) {
         return;
     }
-    const dvv::platform::PixelSize image = viewport_->imageSize();
-    const float digit_advance = viewport_->overlayParams().digitAdvance;
-    window->showNotes(
-        viewport_->shownView().zoom(), viewport_->backingPerDip(),
-        {labelWidth(image.width, digit_advance), labelWidth(image.height, digit_advance)});
+    window->showNotes(viewport_->shownView().zoom(), viewport_->backingPerDip());
 }
 
 void MainFrame::setOverlay(const GridConfig& grid, const RulerConfig& rulers, OverlaySave save) {
@@ -1596,6 +1598,10 @@ void MainFrame::onStreamsChanged(const std::vector<StreamInfo>& streams) {
         const dvv::media::FrameDesc& desc = streams_.front().info.desc;
         viewport_->setImageSize({.width = desc.width, .height = desc.height});
     }
+    if (auto* const window = dynamic_cast<GridWindow*>(floatingWindow(FloatingKind::GridAndRulers));
+        window != nullptr) {
+        window->showImageWidth(clipWidth(*viewport_));
+    }
     for (const StreamInfo& stream : streams_) {
         file_colours_.remember(stream);  // the file's colour for View > Format
         DVV_LOG_INFO("stream {}: {}", stream.slot, stream.resolvedUri);
@@ -2033,7 +2039,12 @@ void MainFrame::setWindowShown(FloatingKind kind, bool shown) {
                 wxWindow* const focus = wxWindow::FindFocus();
                 switch (kind) {
                     case FloatingKind::Info: window = new InfoWindow(*this); break;
-                    case FloatingKind::GridAndRulers: window = new GridWindow(*this); break;
+                    case FloatingKind::GridAndRulers: {
+                        auto* const grid_window = new GridWindow(*this);
+                        grid_window->showImageWidth(clipWidth(*viewport_));
+                        window = grid_window;
+                        break;
+                    }
                 }
                 wxWindow* const now = wxWindow::FindFocus();
                 wxWindow* const back = focus != nullptr ? focus : viewport_;

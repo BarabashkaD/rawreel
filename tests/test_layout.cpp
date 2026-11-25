@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <vector>
@@ -234,14 +235,14 @@ TEST_CASE("layout: rulerStrip") {
     CHECK(rulerStrip({.show = false}, 11, {2, 2}) == RulerStrip{});
     CHECK(rulerStrip({.show = true, .numbers = false}, 11, {2, 2}) == RulerStrip{10, 20, 20});
     CHECK(rulerStrip({.show = true, .numbers = true}, 11, {2, 2}) ==
-          RulerStrip{37, 74, 20});  // 36.4 pt
+          RulerStrip{24, 48, 20});  // 23.2 pt
     CHECK(rulerStrip({.show = true, .numbers = true}, 12, {1.25, 1}) ==
-          RulerStrip{49, 49, 13});  // 38.8 pt x 1.25
+          RulerStrip{31, 31, 13});  // 24.4 pt x 1.25
     CHECK(rulerStrip({.show = true, .numbers = false}, 12, {1.5, 1}) == RulerStrip{15, 15, 15});
     CHECK(rulerStrip({.show = true, .numbers = false}, 12, {1, 1}) == RulerStrip{10, 10, 10});
-    // Windows 125 % and 150 % with a 9 pt font: 31.6 pt.
-    CHECK(rulerStrip({.show = true, .numbers = true}, 9, {1.25, 1}) == RulerStrip{40, 40, 13});
-    CHECK(rulerStrip({.show = true, .numbers = true}, 9, {1.5, 1}) == RulerStrip{48, 48, 15});
+    // Windows 125 % and 150 % with a 9 pt font: 20.8 pt.
+    CHECK(rulerStrip({.show = true, .numbers = true}, 9, {1.25, 1}) == RulerStrip{26, 26, 13});
+    CHECK(rulerStrip({.show = true, .numbers = true}, 9, {1.5, 1}) == RulerStrip{32, 32, 15});
     // A scale that is not positive counts as 1, a font size that is not positive as 0.
     for (const rawreel::DisplayScale scale :
          {rawreel::DisplayScale{0, 0}, rawreel::DisplayScale{-1, std::nan("")},
@@ -258,8 +259,8 @@ TEST_CASE("layout: rulerStrip keeps a rounding error on the whole unit and caps 
     using rawreel::rulerStrip;
     // 100 pt at 110 %: the product lands a rounding error above 110 (and above 55 at a content
     // scale of 2), which stays on the whole unit.
-    CHECK(rulerStrip({.show = true, .numbers = true}, 37.5, {1.1, 1}) == RulerStrip{110, 110, 11});
-    CHECK(rulerStrip({.show = true, .numbers = true}, 37.5, {1.1, 2}) == RulerStrip{55, 110, 11});
+    CHECK(rulerStrip({.show = true, .numbers = true}, 75, {1.1, 1}) == RulerStrip{110, 110, 11});
+    CHECK(rulerStrip({.show = true, .numbers = true}, 75, {1.1, 2}) == RulerStrip{55, 110, 11});
     // No strip is wider than 65536 window units, at any font size.
     CHECK(rulerStrip({.show = true, .numbers = true}, 1e6, {1, 1}) == RulerStrip{65536, 65536, 10});
     CHECK(rulerStrip({.show = true, .numbers = true}, 1e6, {2, 2}) ==
@@ -284,10 +285,9 @@ TEST_CASE("layout: the ruler strip is whole window units at every scale") {
                 CAPTURE(font);
                 const rawreel::RulerStrip strip =
                     rawreel::rulerStrip({.show = true, .numbers = numbers}, font, scale);
-                const double wanted_backing =
-                    (rawreel::RULER_TICK_BAND_DIP +
-                     (numbers ? 2 * rawreel::RULER_LABEL_LINE * font : 0)) *
-                    scale.backingPerDip;
+                const double wanted_backing = (rawreel::RULER_TICK_BAND_DIP +
+                                               (numbers ? rawreel::RULER_LABEL_LINE * font : 0)) *
+                                              scale.backingPerDip;
                 // The fewest whole window units that hold the strip.
                 CHECK(strip.windowUnits * scale.contentScale >= wanted_backing - 1e-6);
                 CHECK((strip.windowUnits - 1) * scale.contentScale < wanted_backing);
