@@ -71,6 +71,7 @@ void PlayerLogic::reset(PlayerConfig config, std::int64_t position) {
     show_.reset();
     shows_.clear();
     stalled_ = false;
+    stale_ = false;
     deadline_.reset();
     playing_ = false;
     position_ = -1;
@@ -81,9 +82,36 @@ void PlayerLogic::reset(PlayerConfig config, std::int64_t position) {
     }
 }
 
+void PlayerLogic::invalidate() {
+    ready_.clear();
+    outstanding_.clear();
+    stale_ = position_ >= 0;
+    if (stale_) {
+        failed_.erase(position_);  // asked for again with the new view
+    }
+    if (!playing_) {
+        refreshStale();
+    }
+}
+
+void PlayerLogic::refreshStale() {
+    if (stale_ && !wanted_ && active()) {
+        wanted_ = position_;
+        if (ready_.contains(position_)) {
+            // It arrived with the new view in playback (play() right after invalidate()).
+            show(position_, false, Clock::time_point{});
+        }
+    }
+}
+
 void PlayerLogic::play(Clock::time_point now) {
     if (!active() || (position_ < 0 && !wanted_)) {
         return;
+    }
+    if (stale_ && wanted_ == position_) {
+        // The re-request of a stale shown frame is only read-ahead in playback: the next show
+        // replaces the picture, and a pause before it shows the position, or asks for it again.
+        wanted_.reset();
     }
     if (config_.length && !loop_ && !wanted_ && position_ == *config_.length - 1) {
         wanted_ = 0;  // at the end without loop: restart from the beginning
@@ -102,6 +130,7 @@ void PlayerLogic::pause() {
         stalled_ = false;
         wanted_.reset();  // it came from playback
     }
+    refreshStale();
     prune();
 }
 
@@ -186,6 +215,10 @@ void PlayerLogic::frameFailed(std::int64_t index) {
         // the last shown frame.
         pause();
         wanted_.reset();
+        if (index == position_) {
+            stale_ = false;  // the shown frame failed with the new view: not requested again
+        }
+        refreshStale();
         prune();
     }
 }
@@ -216,6 +249,7 @@ void PlayerLogic::tick(Clock::time_point now) {
 void PlayerLogic::show(std::int64_t index, bool playback, Clock::time_point now) {
     position_ = index;
     wanted_.reset();
+    stale_ = false;
     show_ = index;
     ++shown_;
     if (playback) {
@@ -245,7 +279,7 @@ std::vector<std::int64_t> PlayerLogic::takeRequests() {
     const bool wrap = length && loop_;
     const auto consider = [&](std::int64_t index) {
         if (ready_.contains(index) || outstanding_.contains(index) || failed_.contains(index) ||
-            index == position_) {
+            (index == position_ && wanted_ != index)) {
             return;
         }
         outstanding_.insert(index);

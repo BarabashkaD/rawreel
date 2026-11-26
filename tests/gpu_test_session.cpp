@@ -1,16 +1,21 @@
 // The Session on a real GPU (design M3 v2 §8.1 rawreel gpu row): one stream plays as display
-// images, an injected device loss releases the context and reopen() continues, and a small-budget
-// store evicts while GPU work is in flight.
+// images, an injected device loss releases the context and reopen() continues, a small-budget
+// store evicts while GPU work is in flight, and a hidden component set reaches the shown view and
+// its image.
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <format>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,16 +26,20 @@
 #include "core/session.h"
 #include "core/session_types.h"
 #include "core/timer.h"
+#include "dvv/base/error.h"
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
 #include "dvv/gpu/context_vulkan.h"
+#include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/gpu_instance.h"
+#include "dvv/gpu/image.h"
 #include "dvv/gpu/testing/fault_injection.h"
 #include "dvv/media/display.h"
 #include "dvv/media/display_vulkan.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
 #include "dvv/media/frame_vulkan.h"
+#include "dvv/media/types.h"
 #include "gpu_support.h"
 #include "session_fixture.h"
 
@@ -84,6 +93,59 @@ bool hasShow(const std::vector<ShownFrame>& history, std::int64_t index,
 using StackMaker =
     std::function<rawreel::StackFactory(const rawreel::testing::GpuTestEnvironment&)>;
 
+// The store of the latest stack, written on the stack factory's thread and read by the test.
+class ObservedStore {
+public:
+    void set(const std::shared_ptr<dvv::media::FrameStore>& store) {
+        const std::lock_guard lock(mutex_);
+        store_ = store;
+    }
+    [[nodiscard]] std::shared_ptr<dvv::media::FrameStore> lock() const {
+        const std::lock_guard lock(mutex_);
+        return store_.lock();
+    }
+    // The latest store's stats; the store is not kept (the Session must be able to release it).
+    [[nodiscard]] dvv::media::StoreStats stats() const {
+        const std::shared_ptr<dvv::media::FrameStore> store = lock();
+        REQUIRE(store);
+        return store->stats();
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::weak_ptr<dvv::media::FrameStore> store_;
+};
+
+// gpuStackFactory (the Session's default stack), with every made store kept in `observed`.
+StackMaker observingStack(const std::shared_ptr<ObservedStore>& observed) {
+    return [observed](const rawreel::testing::GpuTestEnvironment& env) {
+        return rawreel::StackFactory(
+            [inner = rawreel::gpuStackFactory(env.gpuInstance, env.cpu, env.io, false),
+             observed](std::optional<dvv::gpu::DeviceId> device) mutable
+                -> dvv::Result<rawreel::MediaStack> {
+                DVV_TRY(rawreel::MediaStack stack, inner(device));
+                observed->set(stack.store);
+                return stack;
+            });
+    };
+}
+
+// The runs of the converter `name` ("Produce", "GpuUnpack", "ToDisplay", ...); 0 when absent.
+std::uint64_t runsOf(const dvv::media::StoreStats& stats, std::string_view name) {
+    for (const dvv::media::ConverterStats& converter : stats.converters) {
+        if (converter.name == name) {
+            return converter.runs;
+        }
+    }
+    return 0;
+}
+
+// A share of the latest shown first view, kept by GpuSession::keepShown's inspector.
+struct KeptLease {
+    mutable std::mutex mutex;
+    dvv::media::ReadLease lease;
+};
+
 // A Session on the real clock and timer with a recording sink (inspecting every show) and event
 // receiver. Without `stack_maker` the Session's makeStack stays empty, which selects
 // gpuStackFactory.
@@ -134,12 +196,66 @@ public:
                                   std::chrono::milliseconds timeout) {
         return waitUntil([&] { return predicate(session->status()); }, timeout);
     }
+    // From now on every show keeps a share of its first view (the latest one replaces the one
+    // before), until releaseShown() or finish(). The display image check stays.
+    void keepShown() {
+        sink->setInspector([kept = kept_](const FrameSet& frames) {
+            if (frames.count >= 1 && frames.views[0]) {
+                dvv::media::ReadLease share = frames.views[0].share();
+                const std::lock_guard lock(kept->mutex);
+                kept->lease = std::move(share);
+            }
+            return isDisplayImage(frames);
+        });
+    }
+    // Drops the kept share (its store and context may then go).
+    void releaseShown() {
+        dvv::media::ReadLease released;
+        const std::lock_guard lock(kept_->mutex);
+        released = std::move(kept_->lease);
+    }
+    // A share of the kept view; empty before the first show after keepShown().
+    [[nodiscard]] dvv::media::ReadLease shownLease() const {
+        const std::lock_guard lock(kept_->mutex);
+        return kept_->lease ? kept_->lease.share() : dvv::media::ReadLease{};
+    }
+    // Waits until the kept view hides `hidden`.
+    [[nodiscard]] bool waitShownHidden(dvv::media::HiddenComponents hidden,
+                                       std::chrono::milliseconds timeout) const {
+        return waitUntil(
+            [&] {
+                const dvv::media::ReadLease lease = shownLease();
+                return lease && lease.view().hidden == hidden;
+            },
+            timeout);
+    }
+    // The kept view's display image (RGBA16F) as floats, four per texel.
+    [[nodiscard]] std::vector<float> readShown() const {
+        const dvv::media::ReadLease lease = shownLease();
+        REQUIRE(lease);
+        dvv::gpu::GpuImage* const image = dvv::media::vulkan::image(lease, 0);
+        REQUIRE(image != nullptr);
+        const std::shared_ptr<dvv::gpu::ExecutionContext> context = events->lastContext().lock();
+        REQUIRE(context);
+        // Not owning: the lease keeps the image while the copy runs.
+        const std::shared_ptr<dvv::gpu::GpuImage> alias(std::shared_ptr<void>(), image);
+        auto bytes = rawreel::testing::readImage(*context, *environment.cpu, alias, 8);
+        REQUIRE_MESSAGE(bytes, (bytes ? std::string() : bytes.error().describe()));
+        std::vector<float> texels(bytes->size() / sizeof(std::uint16_t));
+        for (std::size_t i = 0; i < texels.size(); ++i) {
+            std::uint16_t half = 0;
+            std::memcpy(&half, bytes->data() + (i * sizeof(half)), sizeof(half));
+            texels[i] = dvv::media::halfToFloat(half);
+        }
+        return texels;
+    }
     // Shuts the Session down and releases it; afterwards no context may live and no validation
     // message may have been counted.
     void finish() {
         if (!session) {
             return;
         }
+        releaseShown();
         dvv::syncWait(session->shutdown());
         events->setStatusProbe({});
         session.reset();
@@ -173,7 +289,42 @@ public:
     std::shared_ptr<RecordingSink> sink = std::make_shared<RecordingSink>(sequence);
     std::shared_ptr<RecordingEvents> events = std::make_shared<RecordingEvents>(sequence);
     std::unique_ptr<rawreel::Session> session;
+
+private:
+    std::shared_ptr<KeptLease> kept_ = std::make_shared<KeptLease>();
 };
+
+constexpr dvv::media::HiddenComponents SHOW_ALL{};
+constexpr dvv::media::HiddenComponents FIRST_OFF{.components = {true, false, false},
+                                                 .chroma = dvv::media::ChromaFill::Mid};
+constexpr dvv::media::HiddenComponents SECOND_OFF{.components = {false, true, false},
+                                                  .chroma = dvv::media::ChromaFill::Mid};
+constexpr dvv::media::HiddenComponents CHROMA_MID{.components = {false, true, true},
+                                                  .chroma = dvv::media::ChromaFill::Mid};
+constexpr dvv::media::HiddenComponents CHROMA_ZERO{.components = {false, true, true},
+                                                   .chroma = dvv::media::ChromaFill::Zero};
+
+// Opens `uri` in a session that keeps its shown view, and waits until frame 0 is shown and
+// nothing is in flight any more.
+void openSettled(GpuSession& g, std::string_view uri) {
+    g.keepShown();
+    g.open(uri);
+    REQUIRE_MESSAGE(
+        g.sink->waitFor([](const std::vector<ShownFrame>& history) { return hasShow(history, 0); },
+                        30s),
+        g.summary());
+    REQUIRE_MESSAGE(g.waitShownHidden(SHOW_ALL, 30s), g.summary());
+    REQUIRE_MESSAGE(g.waitStatus([](const SessionStatus& s) { return s.inflight == 0; }, 30s),
+                    g.summary());
+}
+
+// Sets `hidden` and waits until the shown view hides it and nothing is in flight any more.
+void setSettled(GpuSession& g, dvv::media::HiddenComponents hidden) {
+    g.session->setHiddenComponents(hidden);
+    REQUIRE_MESSAGE(g.waitShownHidden(hidden, 30s), g.summary());
+    REQUIRE_MESSAGE(g.waitStatus([](const SessionStatus& s) { return s.inflight == 0; }, 30s),
+                    g.summary());
+}
 
 }  // namespace
 
@@ -359,5 +510,160 @@ TEST_CASE("gpu session: a small-budget store evicts under in-flight GPU work") {
         CAPTURE(evictions);
         CHECK(evictions > 0);
     }
+    g.finish();
+}
+
+TEST_CASE("gpu session: hidden set toggle in pause converts the frame and the window again") {
+    auto observed = std::make_shared<ObservedStore>();
+    GpuSession g(observingStack(observed));
+    openSettled(g, S);
+    const dvv::media::StoreStats before = observed->stats();
+    const std::size_t shows = g.sink->history().size();
+    const std::uint32_t window = g.session->status().readyAhead;
+    CHECK(window == 8);  // the largest window: a small frame
+
+    setSettled(g, FIRST_OFF);
+    const dvv::media::StoreStats after = observed->stats();
+    CHECK(g.shownLease().view().hidden == FIRST_OFF);
+    const std::uint64_t to_display = runsOf(after, "ToDisplay") - runsOf(before, "ToDisplay");
+    CAPTURE(to_display);
+    // One pass for the shown frame, then one per window frame (the read-ahead for play).
+    CHECK(to_display == 1 + window);
+    CHECK(to_display == after.misses - before.misses);  // one ToDisplay per new display view
+    CHECK(g.session->status().readyAhead == window);
+    CHECK(runsOf(after, "GpuUnpack") == runsOf(before, "GpuUnpack"));
+    CHECK(runsOf(after, "Produce") == runsOf(before, "Produce"));
+    const std::vector<ShownFrame> history = g.sink->history();
+    REQUIRE(history.size() == shows + 1);
+    CHECK(history.back().index == 0);
+    CHECK(history.back().inspected);
+    CHECK(g.session->status().player.position == 0);
+    CHECK(g.events->of(Kind::Error).empty());
+    g.finish();
+}
+
+TEST_CASE("gpu session: hidden set A, B, A ends in a hit") {
+    auto observed = std::make_shared<ObservedStore>();
+    GpuSession g(observingStack(observed));
+    openSettled(g, S);
+    setSettled(g, FIRST_OFF);
+    setSettled(g, SECOND_OFF);
+    const dvv::media::StoreStats before = observed->stats();
+
+    setSettled(g, FIRST_OFF);
+    const dvv::media::StoreStats after = observed->stats();
+    CHECK(runsOf(after, "ToDisplay") == runsOf(before, "ToDisplay"));
+    CHECK(after.hits > before.hits);
+    CHECK(after.misses == before.misses);
+    CHECK(g.sink->history().back().index == 0);
+    CHECK(g.events->of(Kind::Error).empty());
+    g.finish();
+}
+
+TEST_CASE("gpu session: hidden set burst ends on the last set") {
+    auto observed = std::make_shared<ObservedStore>();
+    GpuSession g(observingStack(observed));
+    openSettled(g, "synthetic:gradient?w=64&h=48&fmt=yuv420p&frames=120");
+    const std::uint64_t leases = observed->stats().leases;
+
+    for (int k = 0; k < 10; ++k) {
+        g.session->setHiddenComponents(k % 2 == 0 ? FIRST_OFF : CHROMA_ZERO);
+    }
+    // A later command: the burst has run before the wait below can see a CHROMA_ZERO show.
+    g.session->setLoop(true);
+    REQUIRE_MESSAGE(g.waitStatus([](const SessionStatus& s) { return s.player.loop; }, 30s),
+                    g.summary());
+    REQUIRE_MESSAGE(g.waitShownHidden(CHROMA_ZERO, 30s), g.summary());
+    REQUIRE_MESSAGE(g.waitStatus([](const SessionStatus& s) { return s.inflight == 0; }, 30s),
+                    g.summary());
+    CHECK(g.shownLease().view().hidden == CHROMA_ZERO);
+    CHECK(observed->stats().leases == leases);
+    for (const ShownFrame& shown : g.sink->history()) {
+        CHECK(shown.index == 0);
+        CHECK(shown.inspected);
+    }
+    CHECK(g.session->status().player.position == 0);
+    CHECK(g.events->of(Kind::Error).empty());
+    g.finish();
+}
+
+TEST_CASE("gpu session: hidden set survives a device loss") {
+    GpuSession g;
+    openSettled(g, S);
+    setSettled(g, FIRST_OFF);
+    {
+        const std::shared_ptr<dvv::gpu::ExecutionContext> context = g.events->lastContext().lock();
+        REQUIRE(context);
+        dvv::gpu::testing::injectDeviceLost(*context);
+    }
+    // In pause nothing runs on the GPU: the next set makes the work that finds the loss.
+    g.session->setHiddenComponents(SECOND_OFF);
+    REQUIRE(g.events->waitFor(
+        [](const std::vector<SessionEvent>& events) {
+            return std::ranges::any_of(events, [](const SessionEvent& e) {
+                return e.kind == Kind::StackChanged && e.expired && e.epoch == 0;
+            });
+        },
+        5s));
+    g.releaseShown();  // the lost context may go
+
+    g.session->reopen();
+    REQUIRE_MESSAGE(
+        g.sink->waitFor(
+            [](const std::vector<ShownFrame>& history) { return hasShow(history, 0, 2); }, 30s),
+        g.summary());
+    REQUIRE_MESSAGE(g.waitShownHidden(SECOND_OFF, 30s), g.summary());
+    CHECK(g.sink->history().back().epoch == 2);
+    const std::vector<SessionEvent> errors = g.events->of(Kind::Error);
+    REQUIRE(errors.size() == 1);
+    const auto& error = errors[0].error;
+    const dvv::Errc code = error ? error->code : dvv::Errc::Internal;
+    CHECK(code == dvv::Errc::DeviceLost);
+    g.finish();
+}
+
+TEST_CASE("gpu session: hidden set reaches the shown image") {
+    constexpr std::size_t CHANNELS = 4;  // RGBA
+    GpuSession g;
+    SUBCASE("yuv420p without chroma is grey") {
+        openSettled(g, "synthetic:gradient?w=64&h=48&fmt=yuv420p&frames=4");
+        // The gradient's Cb and Cr are a quarter of the range apart, so it has colour everywhere.
+        const std::vector<float> shown = g.readShown();
+        float spread = 0.0F;
+        for (std::size_t i = 0; i + CHANNELS <= shown.size(); i += CHANNELS) {
+            spread = std::max(
+                {spread, std::abs(shown[i] - shown[i + 1]), std::abs(shown[i + 1] - shown[i + 2])});
+        }
+        CHECK(spread > 0.05F);
+
+        setSettled(g, CHROMA_MID);
+        const std::vector<float> grey = g.readShown();
+        REQUIRE(grey.size() == shown.size());
+        float grey_spread = 0.0F;
+        for (std::size_t i = 0; i + CHANNELS <= grey.size(); i += CHANNELS) {
+            grey_spread = std::max({grey_spread, std::abs(grey[i] - grey[i + 1]),
+                                    std::abs(grey[i + 1] - grey[i + 2])});
+        }
+        CHECK(grey_spread < 2e-3F);
+    }
+    SUBCASE("rgb24 without red has no red") {
+        openSettled(g, "synthetic:gradient?w=64&h=48&fmt=rgb24&frames=4");
+        const std::vector<float> shown = g.readShown();
+        float red = 0.0F;
+        for (std::size_t i = 0; i < shown.size(); i += CHANNELS) {
+            red = std::max(red, shown[i]);
+        }
+        CHECK(red > 0.05F);
+
+        setSettled(g, FIRST_OFF);
+        const std::vector<float> hidden = g.readShown();
+        REQUIRE(hidden.size() == shown.size());
+        float hidden_red = 0.0F;
+        for (std::size_t i = 0; i < hidden.size(); i += CHANNELS) {
+            hidden_red = std::max(hidden_red, std::abs(hidden[i]));
+        }
+        CHECK(hidden_red < 1e-3F);
+    }
+    CHECK(g.events->of(Kind::Error).empty());
     g.finish();
 }

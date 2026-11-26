@@ -43,6 +43,16 @@ public:
     explicit PlayerLogic(PlayerConfig config);  // no stream set: nothing to show
     // New stream set; pauses; drops readiness.
     void reset(PlayerConfig config, std::int64_t position);
+    // The frames of the stream set are stale (the Session's view changed): drops readiness and
+    // the outstanding marks. Keeps the position, the direction, the loop, playback, the deadline,
+    // the stall and a pending target. In pause the position becomes the target, so it is
+    // requested and shown again (play() before it arrives drops that target, so playback goes on
+    // from the position); with no position and no target nothing is requested. In playback
+    // the shown frame stays stale until the next show: a pause before it (pause(), the end of the
+    // clip, a failed due frame) makes the position the target, so it is requested again, or shown
+    // at once when it already arrived with the new view. A former failure of the position is
+    // forgotten; a failure of the new request is not retried.
+    void invalidate();
     void play(Clock::time_point now);
     void pause();
     void stop();                    // pause + seek(0)
@@ -76,6 +86,9 @@ private:
     [[nodiscard]] std::optional<std::int64_t> next() const noexcept;
     // Moves to `target` (seek's and step's common part); `target` is clamped.
     void moveTo(std::int64_t target);
+    // With no target, a stale position becomes the target, shown at once when it is ready (see
+    // invalidate()); pause only.
+    void refreshStale();
     // Shows `index`; a playback show records `now` for actualFps.
     void show(std::int64_t index, bool playback, Clock::time_point now);
     // Drops readiness outside keeps(). Called after every change of the keep range, because the
@@ -89,6 +102,7 @@ private:
     bool playing_ = false;
     bool loop_ = false;
     bool stalled_ = false;
+    bool stale_ = false;  // the shown frame has the old view: from invalidate() to the next show
     std::int64_t direction_ = 1;
     std::optional<Clock::time_point> deadline_;
     std::set<std::int64_t> ready_;

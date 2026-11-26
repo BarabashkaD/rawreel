@@ -28,10 +28,12 @@ PlayerConfig config(std::int64_t length) {
 // Stands in for the Session: records what the player requested and answers it.
 struct Feeder {
     std::set<std::int64_t> pending;
+    std::size_t requested = 0;  // every index take() returned
 
     // takeRequests(); an index must never be requested while it is still pending.
     Indices take(PlayerLogic& p) {
         Indices requests = p.takeRequests();
+        requested += requests.size();
         for (const std::int64_t index : requests) {
             CHECK_MESSAGE(pending.insert(index).second, "requested twice: ", index);
         }
@@ -68,6 +70,11 @@ struct Feeder {
     void reset(PlayerLogic& p, const PlayerConfig& c, std::int64_t position) {
         pending.clear();
         p.reset(c, position);
+    }
+    // The Session drops the results of the old generation: nothing is pending any more.
+    void invalidate(PlayerLogic& p) {
+        pending.clear();
+        p.invalidate();
     }
 };
 
@@ -504,5 +511,320 @@ TEST_SUITE("core") {
         CHECK(p.takeShow() == 50);
         CHECK(p.status(T0).position == 50);
         CHECK(p.status(T0).target == 50);
+    }
+
+    TEST_CASE("player: invalidate in pause re-requests the shown frame") {
+        PlayerLogic p(config(100));
+        Feeder feeder;
+        feeder.reset(p, config(100), 10);
+        feeder.fill(p, T0);
+        CHECK(p.takeShow() == 10);
+        CHECK(p.status(T0).position == 10);
+        feeder.invalidate(p);
+        CHECK(p.status(T0).position == 10);
+        const std::size_t before = feeder.requested;
+        // The shown frame first, then the window (window 8) up to the cap (inflight 4).
+        CHECK(feeder.take(p) == Indices{10, 11, 12, 13});
+        CHECK(p.status(T0).position == 10);
+        CHECK(feeder.ready(p, 10, T0));
+        CHECK(p.takeShow() == 10);
+        const auto status = p.status(T0);
+        CHECK(status.position == 10);
+        CHECK(status.target == 10);
+        CHECK_FALSE(status.playing);
+        CHECK(status.shown == 2);
+        // In all, the shown frame and the window once each: 1 + 8 requests, no second show.
+        feeder.fill(p, T0);
+        CHECK(feeder.requested - before == 9);
+        CHECK_FALSE(p.takeShow());
+    }
+
+    TEST_CASE("player: invalidate in playback then pause re-requests the shown frame") {
+        PlayerLogic p(config(100));
+        Feeder feeder;
+        playFrames(p, feeder, 3);
+        feeder.invalidate(p);
+        CHECK_FALSE(contains(feeder.take(p), 3));
+        p.pause();
+        CHECK(p.status(T0 + 3 * P).target == 3);
+        // The window holds every slot: the position goes out when the first slot is free.
+        feeder.fill(p, T0 + 3 * P);
+        CHECK(p.takeShow() == 3);
+        CHECK(p.status(T0 + 3 * P).position == 3);
+        // Shown with the new view: a second pause asks for nothing.
+        p.pause();
+        CHECK(feeder.take(p).empty());
+        CHECK_FALSE(p.takeShow());
+    }
+
+    TEST_CASE("player: invalidate in playback then a stall and a pause re-request the position") {
+        PlayerLogic p(config(100));
+        Feeder feeder;
+        playFrames(p, feeder, 3);
+        feeder.invalidate(p);
+        CHECK(contains(feeder.take(p), 4));
+        p.tick(T0 + 4 * P);
+        REQUIRE(p.status(T0 + 4 * P).stalled);
+        CHECK(p.target() == 4);
+        p.pause();
+        CHECK(p.target() == 3);
+        feeder.fill(p, T0 + 4 * P);
+        CHECK(p.takeShow() == 3);
+        CHECK(p.status(T0 + 4 * P).position == 3);
+    }
+
+    TEST_CASE("player: invalidate in playback then a failed due frame re-requests the position") {
+        PlayerLogic p(config(100));
+        Feeder feeder;
+        playFrames(p, feeder, 3);
+        feeder.invalidate(p);
+        CHECK(contains(feeder.take(p), 4));
+        p.tick(T0 + 4 * P);
+        REQUIRE(p.status(T0 + 4 * P).stalled);
+        feeder.failed(p, 4);
+        CHECK_FALSE(p.status(T0 + 4 * P).playing);
+        CHECK(p.target() == 3);
+        CHECK(contains(feeder.take(p), 3));
+        CHECK(feeder.ready(p, 3, T0 + 4 * P));
+        CHECK(p.takeShow() == 3);
+    }
+
+    TEST_CASE("player: invalidate in playback then the end re-requests the last frame") {
+        PlayerLogic p(config(5));
+        Feeder feeder;
+        feeder.reset(p, config(5), 0);
+        feeder.fill(p, T0);
+        CHECK(p.takeShow() == 0);
+        p.play(T0);
+        for (int k = 1; k <= 4; ++k) {
+            feeder.fill(p, T0 + k * P - 1ms);
+            p.tick(T0 + k * P);
+            CHECK(p.takeShow() == k);
+        }
+        feeder.invalidate(p);
+        CHECK(feeder.take(p).empty());
+        p.tick(T0 + 5 * P);  // the end without loop pauses
+        CHECK_FALSE(p.status(T0 + 5 * P).playing);
+        CHECK(feeder.take(p) == Indices{4});
+        CHECK(feeder.ready(p, 4, T0 + 5 * P));
+        CHECK(p.takeShow() == 4);
+    }
+
+    TEST_CASE("player: play right after invalidate in pause plays on without a stall") {
+        PlayerLogic p(config(100));
+        Feeder feeder;
+        feeder.reset(p, config(100), 10);
+        feeder.fill(p, T0);
+        CHECK(p.takeShow() == 10);
+        feeder.invalidate(p);
+        CHECK(feeder.take(p) == Indices{10, 11, 12, 13});
+        p.play(T0);
+        // The re-request of the shown frame is only read-ahead now: the first tick shows 11.
+        CHECK(p.target() == 10);
+        feeder.fill(p, T0 + P - 1ms, {10});
+        CHECK_FALSE(p.takeShow());
+        p.tick(T0 + P);
+        CHECK(p.takeShow() == 11);
+        const auto status = p.status(T0 + P);
+        CHECK(status.playing);
+        CHECK_FALSE(status.stalled);
+        CHECK(status.stalls == 0);
+    }
+
+    TEST_CASE("player: a pause after play right after invalidate shows the arrived position") {
+        PlayerLogic p(config(100));
+        Feeder feeder;
+        feeder.reset(p, config(100), 10);
+        feeder.fill(p, T0);
+        CHECK(p.takeShow() == 10);
+        feeder.invalidate(p);
+        CHECK(feeder.take(p) == Indices{10, 11, 12, 13});
+        p.play(T0);
+        CHECK(feeder.ready(p, 10, T0 + P - 1ms));
+        CHECK_FALSE(p.takeShow());
+        p.tick(T0 + P);  // 11 is not there: a stall
+        REQUIRE(p.status(T0 + P).stalled);
+        p.pause();
+        // 10 arrived with the new view and stays ready: the pause shows it.
+        CHECK(p.takeShow() == 10);
+        CHECK(p.status(T0 + P).position == 10);
+        CHECK_FALSE(contains(feeder.take(p), 10));
+        feeder.fill(p, T0 + P);
+        CHECK_FALSE(p.takeShow());
+    }
+
+    TEST_CASE("player: a failed due frame after play right after invalidate shows the position") {
+        PlayerLogic p(config(100));
+        Feeder feeder;
+        feeder.reset(p, config(100), 10);
+        feeder.fill(p, T0);
+        CHECK(p.takeShow() == 10);
+        feeder.invalidate(p);
+        CHECK(feeder.take(p) == Indices{10, 11, 12, 13});
+        p.play(T0);
+        CHECK(feeder.ready(p, 10, T0 + P - 1ms));
+        p.tick(T0 + P);
+        REQUIRE(p.status(T0 + P).stalled);
+        feeder.failed(p, 11);
+        CHECK_FALSE(p.status(T0 + P).playing);
+        CHECK(p.takeShow() == 10);
+        CHECK(p.status(T0 + P).position == 10);
+    }
+
+    TEST_CASE("player: play right after invalidate at the end restarts from the beginning") {
+        PlayerLogic p(config(5));
+        Feeder feeder;
+        feeder.reset(p, config(5), 0);
+        feeder.fill(p, T0);
+        CHECK(p.takeShow() == 0);
+        p.play(T0);
+        for (int k = 1; k <= 4; ++k) {
+            feeder.fill(p, T0 + k * P - 1ms);
+            p.tick(T0 + k * P);
+            CHECK(p.takeShow() == k);
+        }
+        feeder.invalidate(p);
+        p.tick(T0 + 5 * P);  // the end without loop pauses and re-requests the last frame
+        CHECK_FALSE(p.status(T0 + 5 * P).playing);
+        CHECK(feeder.take(p) == Indices{4});
+        p.play(T0 + 5 * P);
+        CHECK(p.target() == 0);
+        feeder.fill(p, T0 + 5 * P);
+        CHECK(p.takeShow() == 0);
+        CHECK(p.status(T0 + 5 * P).playing);
+    }
+
+    TEST_CASE("player: invalidate in playback then a seek to the position re-requests it") {
+        PlayerLogic p(config(100));
+        Feeder feeder;
+        playFrames(p, feeder, 3);
+        feeder.invalidate(p);
+        static_cast<void>(feeder.take(p));
+        p.seek(3);
+        CHECK(p.target() == 3);
+        feeder.fill(p, T0 + 3 * P);
+        CHECK(p.takeShow() == 3);
+    }
+
+    TEST_CASE("player: a failed re-request of the shown frame is not retried until the next set") {
+        PlayerLogic p(config(100));
+        Feeder feeder;
+        feeder.reset(p, config(100), 10);
+        feeder.fill(p, T0);
+        CHECK(p.takeShow() == 10);
+        feeder.invalidate(p);
+        CHECK(contains(feeder.take(p), 10));
+        feeder.failed(p, 10);
+        CHECK(p.status(T0).position == 10);
+        p.pause();
+        CHECK_FALSE(contains(feeder.take(p), 10));  // no request loop
+        // The next set asks for the shown frame again.
+        feeder.invalidate(p);
+        CHECK(contains(feeder.take(p), 10));
+        CHECK(feeder.ready(p, 10, T0));
+        CHECK(p.takeShow() == 10);
+    }
+
+    TEST_CASE("player: invalidate keeps a pending seek target") {
+        PlayerLogic p(config(100));
+        Feeder feeder;
+        feeder.reset(p, config(100), 0);
+        feeder.fill(p, T0);
+        CHECK(p.takeShow() == 0);
+        p.seek(50);
+        CHECK(contains(feeder.take(p), 50));
+        feeder.invalidate(p);
+        CHECK(p.target() == 50);
+        CHECK(contains(feeder.take(p), 50));
+        CHECK(p.status(T0).position == 0);
+        CHECK(feeder.ready(p, 50, T0));
+        CHECK(p.takeShow() == 50);
+        CHECK(p.status(T0).position == 50);
+    }
+
+    TEST_CASE("player: invalidate in playback keeps playing") {
+        PlayerLogic p(config(100));
+        Feeder feeder;
+        playFrames(p, feeder, 3);
+        p.setLoop(true);
+        feeder.invalidate(p);
+        const auto status = p.status(T0 + 3 * P);
+        CHECK(status.playing);
+        CHECK(status.loop);
+        CHECK(status.position == 3);
+        CHECK(p.nextDeadline() == T0 + 4 * P);
+        const Indices requests = feeder.take(p);
+        CHECK(contains(requests, 4));
+        CHECK(contains(requests, 5));
+        CHECK_FALSE(contains(requests, 3));  // the position is not requested again in playback
+        CHECK_FALSE(contains(requests, 2));  // the direction stays forward
+        CHECK(feeder.ready(p, 4, T0 + 4 * P - 1ms));
+        p.tick(T0 + 4 * P);
+        CHECK(p.takeShow() == 4);
+        CHECK(p.status(T0 + 4 * P).stalls == 0);
+
+        // Not ready at the next deadline: the player stalls and re-anchors on arrival.
+        feeder.invalidate(p);
+        static_cast<void>(feeder.take(p));
+        p.tick(T0 + 5 * P);
+        CHECK_FALSE(p.takeShow());
+        CHECK(p.status(T0 + 5 * P).stalled);
+        CHECK(p.status(T0 + 5 * P).stalls == 1);
+        const auto late = T0 + 5 * P + 10ms;
+        CHECK(feeder.ready(p, 5, late));
+        CHECK(p.takeShow() == 5);
+        CHECK_FALSE(p.status(late).stalled);
+        CHECK(p.nextDeadline() == late + P);
+        CHECK(p.status(late).playing);
+    }
+
+    TEST_CASE("player: invalidate while stalled keeps the stall and the due index") {
+        PlayerLogic p(config(100));
+        Feeder feeder;
+        feeder.reset(p, config(100), 0);
+        feeder.fill(p, T0, {5});
+        CHECK(p.takeShow() == 0);
+        p.play(T0);
+        for (int k = 1; k <= 4; ++k) {
+            feeder.fill(p, T0 + k * P - 1ms, {5});
+            p.tick(T0 + k * P);
+            CHECK(p.takeShow() == k);
+        }
+        p.tick(T0 + 5 * P);
+        CHECK_FALSE(p.takeShow());
+        REQUIRE(p.status(T0 + 5 * P).stalled);
+        feeder.invalidate(p);
+        CHECK(p.status(T0 + 5 * P).stalled);
+        CHECK(p.status(T0 + 5 * P).playing);
+        CHECK(p.target() == 5);
+        CHECK(contains(feeder.take(p), 5));
+        const auto late = T0 + 6 * P;
+        CHECK(feeder.ready(p, 5, late));
+        CHECK(p.takeShow() == 5);
+        CHECK_FALSE(p.status(late).stalled);
+        CHECK(p.nextDeadline() == late + P);
+    }
+
+    TEST_CASE("player: invalidate with no position and no target requests nothing") {
+        PlayerLogic p(config(100));
+        Feeder feeder;
+        feeder.reset(p, config(100), 0);
+        CHECK(contains(feeder.take(p), 0));
+        feeder.failed(p, 0);
+        REQUIRE(p.status(T0).position == -1);
+        const std::int64_t target = p.target();
+        feeder.invalidate(p);
+        CHECK(feeder.take(p).empty());
+        CHECK(p.target() == target);
+        CHECK(p.status(T0).position == -1);
+        // Nothing to play: a target of -1 would start playback and stall on it for good.
+        p.play(T0);
+        CHECK_FALSE(p.status(T0).playing);
+        CHECK_FALSE(p.nextDeadline());
+        // The next seek works.
+        p.seek(7);
+        CHECK(contains(feeder.take(p), 7));
+        CHECK(feeder.ready(p, 7, T0));
+        CHECK(p.takeShow() == 7);
     }
 }

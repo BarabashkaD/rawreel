@@ -18,7 +18,7 @@ are built on the dvv libraries, which this repository pins as git submodules in 
 
 ## Packages
 
-A release has these files (`<v>` is the version, e.g. `0.15.0`):
+A release has these files (`<v>` is the version, e.g. `0.16.0`):
 
 - `rawreel-<v>-windows-x64.zip`: the application. Unzip it anywhere and start `rawreel-gui.exe`;
   nothing is installed. The zip is not code-signed, so Windows SmartScreen may warn at the first
@@ -216,12 +216,14 @@ in light and dark appearance.
 
 The control panel has two rows. The upper row is a timeline strip over the slider: ticks, the first
 and last frame numbers, and above the thumb the number of the frame on screen. The lower row has
-Open and Format on the left; centred, First, Step back, Play/Pause, Stop, Step forward, Last and
-Loop; on the right Alpha (enabled only for a clip with alpha), Zoom out, a button that shows the
-zoom, e.g. "Fit (47 %)" or "200 %", and opens a menu with Fit to window, Actual size, 25–1600 % and
-Resize window to actual size (on macOS: Zoom to Fit, Actual Size, 25–1600 % and Resize Window to
-Actual Size), then Zoom in, Grid and "i". The icon buttons have tooltips. While you drag the slider,
-a marker shows the frame where the drag started.
+Open and Format on the left; First, Step back, Play/Pause, Stop, Step forward, Last and Loop,
+centred while they fit between the sides (else moved toward the narrower side); on the right the
+three plane buttons Y, U and V (R, G and B for an RGB clip, see [Planes](#planes)), Alpha (enabled
+only for a clip with alpha), Zoom out, a button that shows the zoom, e.g. "Fit (47 %)" or
+"200 %", and opens a menu with Fit to window, Actual size, 25–1600 % and Resize window to actual
+size (on macOS: Zoom to Fit, Actual Size, 25–1600 % and Resize Window to Actual Size), then Zoom
+in, Grid and "i". The icon buttons have tooltips. While you drag the slider, a marker shows the
+frame where the drag started.
 
 While the video is paused, holding ⌥ Option (macOS) or Ctrl (Windows, Linux) and moving over the
 slider skims: the thumb, the frame number and the picture follow the pointer, and the marker shows
@@ -340,6 +342,7 @@ then stalls; it never skips a frame.
 | Ctrl+Q | File → Quit | Home / End | First / last frame |
 | A | View → Alpha (on or off) | L | Loop on or off |
 | G | View → Grid (on or off) | R | View → Rulers (on or off) |
+| 1, 2, 3 | View → the first, second, third plane (on or off) | | |
 
 View keys:
 
@@ -351,8 +354,8 @@ View keys:
 Mouse and trackpad: drag or scroll to pan a picture larger than the window; pinch to zoom;
 Ctrl+scroll zooms on Windows and Linux. On macOS scrolling always pans.
 
-Playback → Stop, View → Format…, View → Grid and Rulers…, View → Restart GPU and reopen, Help →
-GPU info and Help → Diagnostics have no key.
+Playback → Stop, View → Format…, View → Grid and Rulers…, View → Hidden U and V at 0, View →
+Restart GPU and reopen, Help → GPU info and Help → Diagnostics have no key.
 
 **GPU failures.** When the GPU device is lost (or a presenter fails), playback pauses, the viewport
 shows the background and the infobar says "GPU device lost: … Restart the GPU to continue." with a
@@ -388,15 +391,41 @@ the picture's context menu) turns it on; off, the alpha is ignored and the pictu
 is off at every start and is not saved; opening another clip keeps it. For a clip without alpha the
 item and the button are disabled and A does nothing.
 
+### Planes
+
+Each of the clip's three colour components (planes) can be hidden: Y, U and V for a YUV or gray
+clip, R, G and B for an RGB clip. 1, 2 and 3, the bar's three plane buttons (left of Alpha) or the
+View menu's plane items show and hide them, in any combination, during playback and in pause. The
+View menu has, after Grid and Rulers…, Y Plane, U Plane, V Plane (on Windows and Linux: Y plane,
+U plane, V plane), Hidden U and V at 0, then Alpha; they are check items on every OS. The picture's
+context menu has the three plane items too. The titles and the buttons' letters follow the open
+clip.
+
+A hidden component's code value is replaced before the colour matrix: Y, R, G and B by 0; U and V
+by the mid code 2^(bits−1) (128 at 8 bits), or by 0 while View → Hidden U and V at 0 is checked.
+The picture shows what the matrix makes of the rest:
+
+- U only or V only (Y hidden) is mostly black: Y at 0 lies below black, so only pixels whose
+  chroma pushes a channel above 0 light up.
+- Y only with U and V at 0 is green; with U and V at the mid code it is the grey luma picture.
+- An RGB clip's hidden component is 0. A YUV clip that carries RGB (its colour matrix is RGB)
+  shows the letters G, B and R, the order of its planes, and hides each of them to 0.
+- All planes hidden is black (with Alpha on, black over the checkerboard where the clip is opaque).
+
+Without a clip the plane items and buttons are disabled; for a gray clip U and V are disabled.
+Hidden U and V at 0 is enabled only for a YUV clip with chroma (not gray, not RGB in YUV). All
+planes are shown and Hidden U and V at 0 is off at every start; neither is saved. Opening another
+clip keeps them, by position (the first, second and third plane).
+
 ### Grid and rulers
 
 The grid draws lines over the picture at three levels, Major, Minor and Second minor, every 32, 8
 and 2 image pixels by default (the steps are 2 to 256, a power of two; major at least twice minor,
 minor at least twice second minor). G, View → Grid or the Grid button (right of Zoom in) shows and
 hides it; R or View → Rulers the rulers (on macOS: Show Grid / Hide Grid, Show Rulers / Hide
-Rulers). The picture's context menu has Grid, Rulers, Alpha and Grid and Rulers…. View → Grid and
-Rulers… or a right-click on the Grid button (Ctrl-click on macOS) opens the Grid and Rulers
-window:
+Rulers). The picture's context menu has Grid, Rulers, the three plane items, Alpha and Grid and
+Rulers…. View → Grid and Rulers… or a right-click on the Grid button (Ctrl-click on macOS) opens
+the Grid and Rulers window:
 
 - Quick: Show rulers, Ruler numbers, and per level its checkbox, step and opacity (0–100 %). A
   level whose lines would be closer than its minimum spacing at the shown zoom is hidden, and its
@@ -909,7 +938,7 @@ the report with the symbols of the same release, `rawreel-<v>-macos-arm64-symbol
 `SHA256SUMS` lists the SHA256 of every release file. In PowerShell, in the download folder:
 
 ```powershell
-$f = 'rawreel-0.15.0-windows-x64.zip'
+$f = 'rawreel-0.16.0-windows-x64.zip'
 $want = (Select-String -Path SHA256SUMS -SimpleMatch $f).Line.Split(' ')[0]
 (Get-FileHash $f -Algorithm SHA256).Hash -eq $want    # True
 ```
@@ -919,12 +948,12 @@ On Linux (or wherever coreutils exist), and on macOS: `sha256sum -c --ignore-mis
 attestation from the release workflow; with the GitHub CLI:
 
 ```powershell
-gh attestation verify rawreel-0.15.0-windows-x64.zip --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.16.0-windows-x64.zip --repo BarabashkaD/rawreel
 ```
 
 ```sh
-gh attestation verify rawreel-0.15.0-linux-x64.tar.xz --repo BarabashkaD/rawreel
-gh attestation verify rawreel-0.15.0-macos-arm64.dmg --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.16.0-linux-x64.tar.xz --repo BarabashkaD/rawreel
+gh attestation verify rawreel-0.16.0-macos-arm64.dmg --repo BarabashkaD/rawreel
 ```
 
 ## Getting the source

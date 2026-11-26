@@ -59,7 +59,7 @@ struct Stream {
     dvv::media::ResolvedColour colour;
     std::string requestedUri;         // dvv::formatUri of the open request
     dvv::media::OriginId origin = 0;  // in the current stack's store
-    dvv::media::ViewSpec view{};      // stack.viewFor(info.desc)
+    dvv::media::ViewSpec view{};      // SessionCore::streamView(info.desc)
 };
 
 // One job of the open FIFO (design v2 §5.3 step 3). Exactly one runs at a time; a job that finds
@@ -290,6 +290,30 @@ public:
         if (player_) {
             player_->setLoop(loop);
         }
+    }
+    void setHiddenComponents(dvv::media::HiddenComponents hidden) {
+        if (hidden == hidden_) {
+            return;
+        }
+        const bool same_picture =
+            std::ranges::all_of(streams_, [this, hidden](const Stream& stream) {
+                return pictureHidden(stream, hidden) == pictureHidden(stream, hidden_);
+            });
+        hidden_ = hidden;
+        for (Stream& stream : streams_) {
+            stream.view = streamView(stream.info.desc);
+        }
+        if (streams_.empty() || !player_ || same_picture) {
+            return;
+        }
+        // The frames of the old view become stale: results in flight carry the old generation
+        // and are dropped, the ready leases are released and the player requests the shown frame
+        // (in pause) or the due one (in playback) again. The sink keeps the old picture until the
+        // new one arrives; the out-of-memory window stays, and every index gets its retry again.
+        ++generation_;
+        ready_.clear();
+        oom_retried_.clear();
+        player_->invalidate();
     }
     void step(std::int64_t delta) {
         if (player_) {
@@ -675,6 +699,33 @@ private:
         emitError(error.wrap(error.code, where));
     }
 
+    // The part of `hidden` that changes `stream`'s picture, by dvv-media's store rule: a format
+    // with fewer than three colour components has only component 0, and the chroma fill counts
+    // only for a hidden U or V of a format with chroma (under the colour ToDisplay resolves).
+    [[nodiscard]] static dvv::media::HiddenComponents pictureHidden(
+        const Stream& stream, dvv::media::HiddenComponents hidden) {
+        const dvv::media::FormatId format = stream.info.desc.format;
+        if (dvv::media::formatDesc(format).componentCount < 3) {
+            hidden.components[1] = false;
+            hidden.components[2] = false;
+        }
+        if ((!hidden.components[1] && !hidden.components[2]) ||
+            !dvv::media::hasChroma(format, stream.colour.params)) {
+            hidden.chroma = dvv::media::ChromaFill::Mid;
+        }
+        return hidden;
+    }
+
+    // The stack's view for `desc`, with the hidden components when it is the display view (only
+    // the display view may hide; the host planes view keeps the default set).
+    [[nodiscard]] dvv::media::ViewSpec streamView(const dvv::media::FrameDesc& desc) {
+        dvv::media::ViewSpec view = stack_.viewFor(desc);
+        if (dvv::media::isDisplay(view.format)) {
+            view.hidden = hidden_;
+        }
+        return view;
+    }
+
     // D21 (one stream at a time): any size, format or colour replaces the stream in slot 0.
     void attachSource(std::uint32_t slot, std::shared_ptr<dvv::media::ISource> source,
                       std::optional<std::int64_t> start, std::string requested_uri) {
@@ -699,7 +750,7 @@ private:
             dvv::media::resolveColour(stream.info.desc, labelHint(stream.info)).standard;
         stream.requestedUri = std::move(requested_uri);
         stream.origin = *attached;
-        stream.view = stack_.viewFor(stream.info.desc);
+        stream.view = streamView(stream.info.desc);
         stream.source = std::move(source);
         detachStreams();
         streams_.push_back(std::move(stream));
@@ -923,6 +974,7 @@ private:
     std::optional<PlayerLogic> player_;
     PlayerConfig config_{};
     bool loop_ = false;
+    dvv::media::HiddenComponents hidden_{};  // setHiddenComponents; kept across clips
     std::map<std::int64_t, Leases> ready_;
     std::set<std::int64_t> oom_retried_;
     std::optional<std::uint32_t> oom_window_;
@@ -1283,6 +1335,9 @@ void Session::stop() {
 }
 void Session::setLoop(bool loop) {
     command([loop](detail::SessionCore& core) { core.setLoop(loop); });
+}
+void Session::setHiddenComponents(dvv::media::HiddenComponents hidden) {
+    command([hidden](detail::SessionCore& core) { core.setHiddenComponents(hidden); });
 }
 void Session::step(std::int64_t delta) {
     command([delta](detail::SessionCore& core) { core.step(delta); });

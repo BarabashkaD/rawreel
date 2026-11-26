@@ -24,6 +24,7 @@
 #include "dvv/base/task.h"
 #include "dvv/media/frame_store.h"
 #include "dvv/media/pixel_format.h"
+#include "dvv/media/types.h"
 #include "session_fixture.h"
 #include "test_source_provider.h"
 
@@ -1565,5 +1566,194 @@ TEST_SUITE("session") {
         f.session->setLoop(true);
         REQUIRE(f.waitStatus([](const SessionStatus& s) { return s.player.loop; }));
         CHECK(f.session->status().revision == r + 1);
+    }
+
+    TEST_CASE("session: hidden set in pause shows the same index again") {
+        SessionFixture f;
+        f.open(0, A);
+        REQUIRE(f.sink->waitShown(0));
+        REQUIRE(f.settle(ahead(0)));
+        const std::size_t shows = f.sink->history().size();
+        const std::uint64_t clears = f.sink->clears();
+        f.session->setHiddenComponents({.components = {true, false, false}});
+        REQUIRE(f.sink->waitFor(
+            [shows](const std::vector<ShownFrame>& history) { return history.size() > shows; }));
+        REQUIRE(f.settle(ahead(0)));
+        const std::vector<ShownFrame> history = f.sink->history();
+        CHECK(history.size() == shows + 1);
+        CHECK(history.back().index == 0);
+        CHECK(f.session->status().player.position == 0);
+        CHECK(f.sink->clears() == clears);  // the old picture stayed until the new one came
+        CHECK(errorCount(f) == 0);
+    }
+
+    TEST_CASE("session: hidden set equal to the current one does nothing") {
+        SessionFixture f;
+        f.open(0, A);
+        REQUIRE(f.sink->waitShown(0));
+        REQUIRE(f.settle(ahead(0)));
+        const std::size_t shows = f.sink->history().size();
+        const dvv::media::HiddenComponents hidden{.components = {false, true, false}};
+        f.session->setHiddenComponents(hidden);
+        REQUIRE(f.sink->waitFor(
+            [shows](const std::vector<ShownFrame>& history) { return history.size() > shows; }));
+        REQUIRE(f.settle(ahead(0)));
+        f.session->setHiddenComponents(hidden);
+        f.session->setLoop(true);  // a later command: the second set has run when it shows
+        REQUIRE(f.waitStatus([](const SessionStatus& s) { return s.player.loop; }));
+        REQUIRE(f.settle(1));
+        CHECK(f.sink->history().size() == shows + 1);
+        CHECK(errorCount(f) == 0);
+    }
+
+    // The chroma fill counts only for a hidden U or V: a set that differs in it alone shows the
+    // same picture, so nothing is requested again.
+    TEST_CASE("session: hidden set with the same picture does nothing") {
+        SessionFixture f;
+        f.open(0, A);
+        REQUIRE(f.sink->waitShown(0));
+        REQUIRE(f.settle(ahead(0)));
+        const std::size_t shows = f.sink->history().size();
+        f.session->setHiddenComponents({.chroma = dvv::media::ChromaFill::Zero});
+        f.session->setLoop(true);  // a later command: the set has run when it shows
+        REQUIRE(f.waitStatus([](const SessionStatus& s) { return s.player.loop; }));
+        REQUIRE(f.settle(1));
+        CHECK(f.sink->history().size() == shows);
+        f.session->setHiddenComponents({.components = {true, false, false}});
+        REQUIRE(f.sink->waitFor(
+            [shows](const std::vector<ShownFrame>& history) { return history.size() > shows; }));
+        REQUIRE(f.settle(ahead(0)));
+        f.session->setHiddenComponents(
+            {.components = {true, false, false}, .chroma = dvv::media::ChromaFill::Zero});
+        f.session->setLoop(false);
+        REQUIRE(f.waitStatus([](const SessionStatus& s) { return !s.player.loop; }));
+        REQUIRE(f.settle(1));
+        CHECK(f.sink->history().size() == shows + 1);
+        CHECK(errorCount(f) == 0);
+    }
+
+    TEST_CASE("session: hidden set in playback keeps playing") {
+        SessionFixture f;
+        f.open(0, A);
+        REQUIRE(f.sink->waitShown(0));
+        f.session->play();
+        REQUIRE(f.waitStatus(playing));
+        for (std::int64_t k = 1; k <= 3; ++k) {
+            REQUIRE(f.settle(ahead(k - 1)));
+            f.tick();
+            REQUIRE(f.waitPosition(k));
+        }
+        f.session->setHiddenComponents({.components = {true, false, false}});
+        for (std::int64_t k = 4; k <= 10; ++k) {
+            REQUIRE(f.settle(ahead(k - 1)));
+            REQUIRE(f.waitStatus(playing));
+            f.tick();
+            REQUIRE(f.waitPosition(k));
+        }
+        CHECK(f.session->status().player.playing);
+        CHECK(errorCount(f) == 0);
+    }
+
+    TEST_CASE("session: hidden set in playback then pause shows the position again") {
+        SessionFixture f;
+        f.open(0, A);
+        REQUIRE(f.sink->waitShown(0));
+        f.session->play();
+        REQUIRE(f.waitStatus(playing));
+        for (std::int64_t k = 1; k <= 3; ++k) {
+            REQUIRE(f.settle(ahead(k - 1)));
+            f.tick();
+            REQUIRE(f.waitPosition(k));
+        }
+        const std::uint64_t seq = f.sink->history().back().seq;
+        // No tick between the set and the pause: frame 3 still has the old view.
+        f.session->setHiddenComponents({.components = {true, false, false}});
+        f.session->pause();
+        REQUIRE(f.waitStatus([](const SessionStatus& s) { return !s.player.playing; }));
+        REQUIRE(f.sink->waitFor([seq](const std::vector<ShownFrame>& history) {
+            return !showsAfter(history, seq).empty();
+        }));
+        REQUIRE(f.settle(1));
+        const std::vector<ShownFrame> after = showsAfter(f.sink->history(), seq);
+        REQUIRE(after.size() == 1);
+        CHECK(after.front().index == 3);
+        CHECK(f.session->status().player.position == 3);
+        CHECK(errorCount(f) == 0);
+    }
+
+    TEST_CASE("session: hidden set across a pending seek shows the target") {
+        closeGate("hidden1");
+        SessionFixture f;
+        f.open(0, "slow:gradient?index=20&gate=hidden1");
+        REQUIRE(f.sink->waitShown(0));
+        f.session->seek(20);
+        REQUIRE(waitGateWaiters("hidden1", 1));
+        const std::uint64_t seq = f.sink->history().back().seq;
+        f.session->setHiddenComponents({.components = {true, false, false}});
+        f.session->setLoop(true);  // a later command: the set has run when it shows
+        REQUIRE(f.waitStatus([](const SessionStatus& s) { return s.player.loop; }));
+        CHECK(f.session->status().player.target == 20);
+        releaseGate("hidden1");
+        REQUIRE(f.sink->waitShown(20));
+        REQUIRE(f.settle(1));
+        const std::vector<ShownFrame> after = showsAfter(f.sink->history(), seq);
+        REQUIRE_FALSE(after.empty());
+        CHECK(after.front().index == 20);
+        CHECK(std::ranges::count_if(after, [](const ShownFrame& s) { return s.index == 20; }) == 1);
+        CHECK(errorCount(f) == 0);
+    }
+
+    TEST_CASE("session: hidden set burst keeps the shown index") {
+        // No count of the shows: a generation of the burst is current until the next set runs, so
+        // its result may show before the test thread has posted that set.
+        SessionFixture f;
+        f.open(0, A);
+        REQUIRE(f.sink->waitShown(0));
+        REQUIRE(f.settle(ahead(0)));
+        const std::uint64_t seq = f.sink->history().back().seq;
+        for (int k = 0; k < 10; ++k) {
+            f.session->setHiddenComponents({.components = {k % 2 == 0, false, false}});
+        }
+        f.session->setLoop(true);  // a later command: the burst has run when it shows
+        REQUIRE(f.waitStatus([](const SessionStatus& s) { return s.player.loop; }));
+        REQUIRE(f.settle(1));
+        const std::vector<ShownFrame> after = showsAfter(f.sink->history(), seq);
+        REQUIRE_FALSE(after.empty());
+        CHECK(std::ranges::all_of(after, [](const ShownFrame& s) { return s.index == 0; }));
+        CHECK(f.session->status().player.position == 0);
+        CHECK(f.session->status().inflight == 0);
+        CHECK(errorCount(f) == 0);
+    }
+
+    TEST_CASE("session: hidden set after out of memory keeps the retry") {
+        // Call 1 of index 5 runs out of memory and is retried; the retry (call 2) waits at the
+        // gate across the toggle and runs out of memory once more; call 3 succeeds. The second out
+        // of memory reaches the new generation only because the store lets the new request join
+        // the produce in flight (the old generation's result is dropped): no second produce waits.
+        closeGate("hidden2");
+        SessionFixture f;
+        f.open(0, "fail:gradient?index=5&errc=oom&times=2&gate=hidden2", 5);
+        REQUIRE(waitGateWaiters("hidden2", 1));
+        f.session->setHiddenComponents({.components = {true, false, false}});
+        f.session->setLoop(true);  // a later command: the set has run when it shows
+        REQUIRE(f.waitStatus([](const SessionStatus& s) { return s.player.loop; }));
+        CHECK(gateWaiters("hidden2") == 1);
+        releaseGate("hidden2");
+        REQUIRE(f.sink->waitShown(5));
+        REQUIRE(f.settle(1));
+        CHECK(f.session->status().player.position == 5);
+        CHECK(errorCount(f) == 0);
+    }
+
+    TEST_CASE("session: hidden set survives a reopen") {
+        SessionFixture f;
+        f.open(0, A);
+        REQUIRE(f.sink->waitShown(0));
+        const SessionEvent opened = waitStreamsChanged(f, 1);
+        f.session->setHiddenComponents({.components = {false, false, true}});
+        f.session->reopen();
+        const SessionEvent reopened = waitEvent(f, holds("gradient"), opened.seq);
+        CHECK(firstShowAfter(f, reopened.seq).index == 0);
+        CHECK(errorCount(f) == 0);
     }
 }

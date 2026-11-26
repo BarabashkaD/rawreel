@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <set>
@@ -9,6 +10,7 @@
 
 #include "core/commands.h"
 #include "core/native_os.h"
+#include "dvv/media/pixel_format.h"
 
 using rawreel::chord;
 using rawreel::Command;
@@ -39,7 +41,7 @@ constexpr std::string_view SETTINGS_LABEL =
 
 TEST_SUITE("core") {
     TEST_CASE("commands: the table lists every command once, in order") {
-        static_assert(COMMAND_COUNT == 32);
+        static_assert(COMMAND_COUNT == 36);
         const auto table = commandTable();
         REQUIRE(table.size() == COMMAND_COUNT);
         std::set<std::string_view> ids;
@@ -166,16 +168,20 @@ TEST_SUITE("core") {
         CHECK(rawreel::menuLabel(settings) == std::string(SETTINGS_LABEL) + "\tCtrl+,");
     }
 
-    TEST_CASE("commands: Log, Info, Grid and Rulers are shown parts, Alpha a mode") {
+    TEST_CASE("commands: Log, Info, Grid and Rulers are shown parts; planes, fill, Alpha modes") {
         for (const rawreel::CommandInfo& entry : commandTable()) {
             CAPTURE(entry.id);
             const bool shown = entry.command == Command::LogPane ||
                                entry.command == Command::InfoWindow ||
                                entry.command == Command::Grid || entry.command == Command::Rulers;
+            const bool mode =
+                entry.command == Command::Plane1 || entry.command == Command::Plane2 ||
+                entry.command == Command::Plane3 || entry.command == Command::HiddenChromaZero ||
+                entry.command == Command::Alpha;
             MenuCheck expected = MenuCheck::None;
             if (shown) {
                 expected = MenuCheck::Shown;
-            } else if (entry.command == Command::Alpha) {
+            } else if (mode) {
                 expected = MenuCheck::Mode;
             }
             CHECK(entry.check == expected);
@@ -184,7 +190,7 @@ TEST_SUITE("core") {
 
     TEST_CASE("commands: View -> Alpha") {
         static_assert(static_cast<std::size_t>(Command::Alpha) ==
-                      static_cast<std::size_t>(Command::GridWindow) + 1);
+                      static_cast<std::size_t>(Command::HiddenChromaZero) + 1);
         const rawreel::CommandInfo& alpha = info(Command::Alpha);
         CHECK(alpha.id == "alpha");
         CHECK(alpha.menu == "View");
@@ -204,6 +210,75 @@ TEST_SUITE("core") {
         }
     }
 
+    TEST_CASE("commands: View -> the plane items and the hidden U and V fill") {
+        static_assert(static_cast<std::size_t>(Command::Plane1) ==
+                      static_cast<std::size_t>(Command::GridWindow) + 1);
+        static_assert(static_cast<std::size_t>(Command::Plane2) ==
+                      static_cast<std::size_t>(Command::Plane1) + 1);
+        static_assert(static_cast<std::size_t>(Command::Plane3) ==
+                      static_cast<std::size_t>(Command::Plane2) + 1);
+        static_assert(static_cast<std::size_t>(Command::HiddenChromaZero) ==
+                      static_cast<std::size_t>(Command::Plane3) + 1);
+        struct Row {
+            Command command;
+            std::string_view id, label, help;
+            char key;
+        };
+        for (const Row& row : {
+                 Row{Command::Plane1, "plane_1", "Plane 1", "Show or hide plane 1", '1'},
+                 Row{Command::Plane2, "plane_2", "Plane 2", "Show or hide plane 2", '2'},
+                 Row{Command::Plane3, "plane_3", "Plane 3", "Show or hide plane 3", '3'},
+             }) {
+            const rawreel::CommandInfo& entry = info(row.command);
+            CAPTURE(entry.id);
+            CHECK(entry.id == row.id);
+            CHECK(entry.menu == "View");
+            CHECK(entry.label == row.label);
+            CHECK(entry.help == row.help);
+            CHECK(entry.key == letter(row.key));
+            CHECK(entry.route == KeyRoute::CharHook);
+            CHECK(entry.check == MenuCheck::Mode);
+            CHECK(commandForKey(letter(row.key), false) == row.command);
+            CHECK_FALSE(commandForKey(letter(row.key), true));
+            CHECK(rawreel::commandOfChord(letter(row.key)) == row.command);
+        }
+        const rawreel::CommandInfo& fill = info(Command::HiddenChromaZero);
+        CHECK(fill.id == "hidden_chroma_zero");
+        CHECK(fill.menu == "View");
+        CHECK(fill.label == "Hidden U and V at 0");
+        CHECK(fill.help == "Set hidden U and V to 0 instead of the mid value");
+        CHECK_FALSE(fill.key);
+        CHECK(fill.route == KeyRoute::Accelerator);
+        CHECK(fill.check == MenuCheck::Mode);
+        CHECK(rawreel::menuLabel(fill) == "Hidden U and V at 0");
+        // The keypad's 1 to 3 (WXK_NUMPAD0 + 1..3) give the plain chords.
+        CHECK(rawreel::normaliseKey(325, false, false, false) == letter('1'));
+        CHECK(rawreel::normaliseKey(326, false, false, false) == letter('2'));
+        CHECK(rawreel::normaliseKey(327, false, false, false) == letter('3'));
+    }
+
+    TEST_CASE("commands: plane letters, names and titles") {
+        using dvv::media::ColourModel;
+        using Letters = std::array<char, 3>;
+        CHECK(rawreel::planeLetters(ColourModel::Rgb, false) == Letters{'R', 'G', 'B'});
+        CHECK(rawreel::planeLetters(ColourModel::Yuv, true) == Letters{'Y', 'U', 'V'});
+        CHECK(rawreel::planeLetters(ColourModel::Yuv, false) == Letters{'G', 'B', 'R'});
+        CHECK(rawreel::planeLetters(ColourModel::Gray, false) == Letters{'Y', 'U', 'V'});
+        const bool mac = rawreel::NATIVE_OS == rawreel::Os::MacOs;
+        CHECK(rawreel::planeTitle('Y') == (mac ? "Y Plane" : "Y plane"));
+        CHECK(rawreel::planeName('U') == "U plane");
+        CHECK(rawreel::planeName('R') == "R plane");
+        CHECK(rawreel::menuLabel(info(Command::Plane1), rawreel::planeTitle('Y')) ==
+              (mac ? "Y Plane (1)" : "Y plane (1)"));
+        CHECK(rawreel::menuLabel(info(Command::Plane3), rawreel::planeTitle('B')) ==
+              (mac ? "B Plane (3)" : "B plane (3)"));
+        CHECK(rawreel::menuLabel(info(Command::Plane1)) == "Plane 1 (1)");
+        CHECK(rawreel::planeHelp('G') == "Show or hide the G plane");
+        CHECK(rawreel::tooltipText(info(Command::Plane1), rawreel::planeHelp('Y'), mac) ==
+              "Show or hide the Y plane (1)");
+        CHECK(rawreel::tooltipText(info(Command::Plane1), mac) == "Show or hide plane 1 (1)");
+    }
+
     TEST_CASE("commands: commandForKey") {
         CHECK(commandForKey(chord(Key::Space), false) == Command::PlayPause);
         CHECK(commandForKey(chord(Key::Left), false) == Command::StepBack);
@@ -215,7 +290,8 @@ TEST_SUITE("core") {
         CHECK(commandForKey(letter('L'), false) == Command::Loop);
         CHECK_FALSE(commandForKey(chord(Key::Plus), false));
         CHECK_FALSE(commandForKey(letter('J'), false));
-        CHECK_FALSE(commandForKey(letter('1'), false));
+        CHECK(commandForKey(letter('1'), false) == Command::Plane1);
+        CHECK_FALSE(commandForKey(letter('4'), false));
         CHECK_FALSE(commandForKey(chord(Key::Escape), false));
         CHECK_FALSE(commandForKey(chord(Key::Space), true));
         CHECK_FALSE(commandForKey(letter('O', true), false));

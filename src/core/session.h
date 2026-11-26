@@ -24,6 +24,7 @@
 #include "dvv/gpu/gpu_fwd.h"
 #include "dvv/media/frame_store.h"
 #include "dvv/media/source_factory.h"
+#include "dvv/media/types.h"
 #include "dvv/platform/file_reader.h"
 #include "dvv/registry/component_registry.h"
 
@@ -141,6 +142,14 @@ public:
     void togglePlay();
     void stop();
     void setLoop(bool loop);
+    // The colour components to hide in every later shown frame (plane selection). Only a stream
+    // whose view is the display view hides; the host planes view never does. A set that gives the
+    // stream the same picture as the current one (equal, or differing only in components the
+    // format lacks or in the chroma fill while no U or V is hidden) requests nothing; it is still
+    // kept for a later clip. Otherwise the shown frame and the window are requested again, the
+    // position, playback and a pending target are kept, and the sink keeps the old picture until
+    // the new one arrives. Kept across clips and reopens; nothing hidden at construction.
+    void setHiddenComponents(dvv::media::HiddenComponents hidden);
     void step(std::int64_t delta);
     // Read-your-writes (spec §6.3): when the stored snapshot has a stream with a bounded length
     // above zero, `index` clamped into [0, length − 1] is the snapshot's player.target from the
