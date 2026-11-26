@@ -54,6 +54,7 @@
 #include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/gpu_info_json.h"
+#include "dvv/media/display.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
 #include "dvv/media/view.h"
@@ -114,6 +115,9 @@ BarStatus barStatus(const SessionStatus& status) {
 // The Log pane's smallest height (M4 GUI D8), DIP, without its caption (about three lines of the
 // log).
 constexpr int LOG_MIN_HEIGHT_DIP = 60;
+// Its smallest width, DIP, docked at a side: without one wxAUI counts the side dock as almost
+// nothing in the minimum client size, but lays out the log wider and so cuts into the centre.
+constexpr int LOG_MIN_WIDTH_DIP = 120;
 // Added to the computed minimum client size: wxAUI's rows can come out 1 px short of it (two
 // bottom rows at 150 %), which must not put the viewport below 320x240 DIP.
 constexpr int LAYOUT_MARGIN_DIP = 2;
@@ -255,6 +259,16 @@ ViewRequest actualSizeView(dvv::platform::PixelSize image) {
             .image = image};
 }
 
+// The colour component (0, 1, 2) a plane command shows or hides; nullopt for other commands.
+std::optional<std::size_t> planeIndex(Command command) {
+    const auto first = static_cast<std::size_t>(Command::Plane1);
+    const auto value = static_cast<std::size_t>(command);
+    if (value < first || value > static_cast<std::size_t>(Command::Plane3)) {
+        return std::nullopt;
+    }
+    return value - first;
+}
+
 }  // namespace
 
 int menuId(Command command) noexcept {
@@ -341,7 +355,7 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
                            .Caption("Log")
                            .Bottom()
                            .BestSize(FromDIP(wxSize(800, 160)))
-                           .MinSize(FromDIP(wxSize(-1, LOG_MIN_HEIGHT_DIP)))
+                           .MinSize(FromDIP(wxSize(LOG_MIN_WIDTH_DIP, LOG_MIN_HEIGHT_DIP)))
                            .CloseButton(true)
                            .Show(log_shown_at_start_));
     // Spec §2: the pane keeps its height across hide and show within a run. wxAUI sizes the dock
@@ -382,6 +396,7 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     setOverlay(wxGetApp().overlay().grid, wxGetApp().overlay().rulers, OverlaySave::Later);
     // A context menu on the picture: Grid and Rulers.
     viewport_->setContextMenuHandler([this](wxPoint point) { popUpViewportMenu(point); });
+    updatePlaneControls();  // the bar's plane toggles: their letters with no clip, disabled
     // Zoom buttons design §2.2: the zoom button's menu for the shown view. Its Fit, Actual size
     // and Resize items reach onMenu; its percentages onZoomMenu.
     transportBar().setZoomMenu([this] {
@@ -492,13 +507,18 @@ void MainFrame::buildMenus() {
         }
         // An Accelerator command's "\t<key>" makes wx register the accelerator; CharHook commands
         // show their key without "\t" (Task 10 dispatches them).
-        const wxString label = wxString::FromUTF8(menuLabel(info));
-        const wxString help = wxString::FromUTF8(info.help);
+        // The plane items start with planeLetters() (no clip yet); onUpdateUi follows the clip's
+        // in the title, updatePlaneControls in the help.
+        const std::optional<std::size_t> plane = planeIndex(info.command);
+        const wxString label = wxString::FromUTF8(
+            plane ? menuLabel(info, planeTitle(planeLetters().at(*plane))) : menuLabel(info));
+        const wxString help = wxString::FromUTF8(plane ? planeHelp(planeLetters().at(*plane))
+                                                       : std::string(info.help));
         if (native_policy::settingsAtEndOfEdit() && info.command == Command::Settings) {
             continue;  // Edit -> Preferences..., below
         }
-        if (info.command == Command::Alpha) {
-            menu->AppendSeparator();  // after Grid and Rulers...
+        if (info.command == Command::Plane1) {
+            menu->AppendSeparator();  // after Grid and Rulers...: the planes, the fill and Alpha
         }
         if (info.check == MenuCheck::Shown && native_policy::shownItemHasChangingTitle()) {
             // macOS shows and hides a part of a window with a title that changes, not a check
@@ -924,6 +944,15 @@ bool MainFrame::isAvailable(Command command) const {
         // Spec §4.3: disabled when no row is selected (a hidden pane shows none).
         case Command::SaveSelectedLines: return logShown() && log_->hasSelection();
         case Command::Format: return hasStream() && !streams_.empty();
+        case Command::Plane1: return hasStream();
+        case Command::Plane2:
+        case Command::Plane3:
+            return hasStream() && !streams_.empty() &&
+                   dvv::media::formatDesc(streams_.front().info.desc.format).componentCount >= 3;
+        case Command::HiddenChromaZero:
+            return hasStream() && !streams_.empty() &&
+                   dvv::media::hasChroma(streams_.front().info.desc.format,
+                                         streams_.front().colour.params);
         case Command::Alpha: return hasStream() && clipHasAlpha();
     }
     return false;
@@ -950,6 +979,8 @@ void MainFrame::execute(Command command, CommandSource source) {
         DVV_LOG_DEBUG("command {} is not available", commandId(command));
         if (command == Command::Alpha) {
             updateAlphaControls();  // a refused click on the bar toggle has flipped its value
+        } else if (planeIndex(command)) {
+            updatePlaneControls();  // as for Alpha
         }
         return;
     }
@@ -1017,6 +1048,31 @@ void MainFrame::execute(Command command, CommandSource source) {
         resizeWindowToActualSize();
         return;
     }
+    if (command == Command::Plane1 || command == Command::Plane2 || command == Command::Plane3 ||
+        command == Command::HiddenChromaZero) {
+        if (const std::optional<std::size_t> plane = planeIndex(command)) {
+            planes_.at(*plane) = !planes_.at(*plane);
+        } else {
+            chroma_zero_ = !chroma_zero_;
+        }
+        const std::array<char, 3> letters = planeLetters();
+        const auto state = [&](std::size_t k) { return planes_.at(k) ? "on" : "off"; };
+        // One line per change with its source, as for loop and alpha; the fill only where the clip
+        // has U and V.
+        const std::string fill =
+            isAvailable(Command::HiddenChromaZero)
+                ? std::format(", hidden U and V at {}", chroma_zero_ ? "0" : "mid")
+                : std::string();
+        DVV_LOG_INFO("planes {} {}, {} {}, {} {}{} ({})", letters[0], state(0), letters[1],
+                     state(1), letters[2], state(2), fill, sourceName(source));
+        if (Session* const session = wxGetApp().session(); session != nullptr) {
+            session->setHiddenComponents({.components = {!planes_[0], !planes_[1], !planes_[2]},
+                                          .chroma = chroma_zero_ ? dvv::media::ChromaFill::Zero
+                                                                 : dvv::media::ChromaFill::Mid});
+        }
+        updatePlaneControls();
+        return;
+    }
     if (command == Command::Alpha) {
         alpha_ = !alpha_;
         DVV_LOG_INFO("alpha {} ({})", alpha_ ? "on" : "off", sourceName(source));
@@ -1082,6 +1138,10 @@ void MainFrame::execute(Command command, CommandSource source) {
         case Command::Grid:
         case Command::Rulers:
         case Command::GridWindow:
+        case Command::Plane1:
+        case Command::Plane2:
+        case Command::Plane3:
+        case Command::HiddenChromaZero:
         case Command::Alpha:
         case Command::Settings:
         case Command::About: return;
@@ -1608,6 +1668,7 @@ void MainFrame::onStreamsChanged(const std::vector<StreamInfo>& streams) {
     }
     streams_ = streams;
     updateAlphaControls();  // another clip keeps the state; the button follows its format
+    updatePlaneControls();  // the planes too, by position, with the new clip's letters
     // The view's frame size; the renderer resolves the view against the frame it shows.
     if (streams_.empty()) {
         viewport_->setImageSize({});
@@ -1809,8 +1870,18 @@ void MainFrame::onUpdateUi(wxUpdateUIEvent& event) {
             }
             break;
         }
-        // A mode item is a check item everywhere; disabled, it keeps showing the kept state.
-        case MenuCheck::Mode: event.Check(menuState(*command)); break;
+        // A mode item is a check item everywhere; disabled, it keeps showing the kept state. A
+        // plane item's title follows the clip's letters (Y U V, R G B or G B R). It is set on every
+        // update, as the Shown titles are: the event does not carry the item's current title, and
+        // wxMenuBase::UpdateUI sets any text given without comparing. The title has no "\t", so
+        // wxOSX registers no key equivalent again.
+        case MenuCheck::Mode:
+            if (const std::optional<std::size_t> plane = planeIndex(*command)) {
+                event.SetText(wxString::FromUTF8(
+                    menuLabel(commandInfo(*command), planeTitle(planeLetters().at(*plane)))));
+            }
+            event.Check(menuState(*command));
+            break;
     }
 }
 
@@ -1822,6 +1893,10 @@ bool MainFrame::menuState(Command command) const {
         case Command::InfoWindow: return windowShown(FloatingKind::Info);
         case Command::Grid: return grid_.levels[0].show;
         case Command::Rulers: return rulers_.show;
+        case Command::Plane1: return planes_[0];
+        case Command::Plane2: return planes_[1];
+        case Command::Plane3: return planes_[2];
+        case Command::HiddenChromaZero: return chroma_zero_;
         case Command::Alpha: return alpha_;
         case Command::Open:
         case Command::OpenUri:
@@ -1866,8 +1941,38 @@ bool MainFrame::clipHasAlpha() const {
     });
 }
 
+std::array<char, 3> MainFrame::planeLetters() const {
+    if (streams_.empty()) {
+        return {'Y', 'U', 'V'};
+    }
+    const StreamInfo& stream = streams_.front();
+    const dvv::media::FormatId format = stream.info.desc.format;
+    return rawreel::planeLetters(dvv::media::formatDesc(format).model,
+                                 dvv::media::hasChroma(format, stream.colour.params));
+}
+
 void MainFrame::updateAlphaControls() {
     transportBar().setAlpha(alpha_, isAvailable(Command::Alpha));
+}
+
+void MainFrame::updatePlaneControls() {
+    const std::array<char, 3> letters = planeLetters();
+    transportBar().setPlanes(
+        planes_,
+        {isAvailable(Command::Plane1), isAvailable(Command::Plane2), isAvailable(Command::Plane3)},
+        letters);
+    // The menu bar's plane items' help follows the letters (the title follows in onUpdateUi;
+    // wxUpdateUIEvent carries no help).
+    if (wxMenuBar* const bar = GetMenuBar()) {
+        for (std::size_t k = 0; k < letters.size(); ++k) {
+            const int id =
+                menuId(static_cast<Command>(static_cast<std::size_t>(Command::Plane1) + k));
+            const wxString help = wxString::FromUTF8(planeHelp(letters.at(k)));
+            if (bar->FindItem(id) != nullptr && bar->GetHelpString(id) != help) {
+                bar->SetHelpString(id, help);
+            }
+        }
+    }
 }
 
 void MainFrame::popUpViewportMenu(wxPoint point) {
@@ -1875,11 +1980,18 @@ void MainFrame::popUpViewportMenu(wxPoint point) {
         return;
     }
     wxMenu menu;
-    // Check items on every OS: a popup's show-or-hide items keep a check mark on macOS too.
-    for (const Command command : {Command::Grid, Command::Rulers, Command::Alpha}) {
+    // Check items on every OS: a popup's show-or-hide items keep a check mark on macOS too. The
+    // plane items are titled as in the menu bar; the fill item is not here.
+    const std::array<char, 3> letters = planeLetters();
+    for (const Command command : {Command::Grid, Command::Rulers, Command::Plane1, Command::Plane2,
+                                  Command::Plane3, Command::Alpha}) {
         const CommandInfo& info = commandInfo(command);
-        wxMenuItem* const item = menu.AppendCheckItem(
-            menuId(command), wxString::FromUTF8(menuLabel(info)), wxString::FromUTF8(info.help));
+        const std::optional<std::size_t> plane = planeIndex(command);
+        const std::string label =
+            plane ? menuLabel(info, planeTitle(letters.at(*plane))) : menuLabel(info);
+        const std::string help = plane ? planeHelp(letters.at(*plane)) : std::string(info.help);
+        wxMenuItem* const item = menu.AppendCheckItem(menuId(command), wxString::FromUTF8(label),
+                                                      wxString::FromUTF8(help));
         item->Check(menuState(command));
         item->Enable(isAvailable(command));
     }
@@ -1996,10 +2108,12 @@ void MainFrame::onStatusChanged() {
                      status.player.playing ? 1 : 0);
     }
     player_->transportBar().update(barStatus(status));
-    // isAvailable depends on the session's stream state: the zoom controls and the Alpha button
-    // follow every status notification too (four isAvailable calls per notification).
+    // isAvailable depends on the session's stream state: the zoom controls, the Alpha button and
+    // the plane toggles follow every status notification too (seven isAvailable calls per
+    // notification).
     showZoom();
     updateAlphaControls();
+    updatePlaneControls();
     const StatusFields fields = statusFields(status);
     const std::array<wxString, 3> texts{wxString::FromUTF8(fields.position),
                                         wxString::FromUTF8(fields.fps),

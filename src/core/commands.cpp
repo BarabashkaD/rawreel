@@ -1,7 +1,12 @@
 #include "core/commands.h"
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <format>
+#include <optional>
+#include <span>
+#include <string>
 #include <string_view>
 
 #include "core/native_os.h"
@@ -119,6 +124,15 @@ constexpr std::array<CommandInfo, COMMAND_COUNT> TABLE{{
      MenuCheck::Shown},
     {Command::GridWindow, "grid_window", "View", "Grid and Rulers...",
      "Show the Grid and Rulers window", std::nullopt, ACC, MenuCheck::None},
+    // The plane items show planeTitle and planeHelp (the clip's letters), not the label and help.
+    {Command::Plane1, "plane_1", "View", "Plane 1", "Show or hide plane 1", plainKey('1'), HOOK,
+     MenuCheck::Mode},
+    {Command::Plane2, "plane_2", "View", "Plane 2", "Show or hide plane 2", plainKey('2'), HOOK,
+     MenuCheck::Mode},
+    {Command::Plane3, "plane_3", "View", "Plane 3", "Show or hide plane 3", plainKey('3'), HOOK,
+     MenuCheck::Mode},
+    {Command::HiddenChromaZero, "hidden_chroma_zero", "View", "Hidden U and V at 0",
+     "Set hidden U and V to 0 instead of the mid value", std::nullopt, ACC, MenuCheck::Mode},
     {Command::Alpha, "alpha", "View", "Alpha", "Apply or ignore the clip's alpha", plainKey('A'),
      HOOK, MenuCheck::Mode},
     {Command::GpuInfo, "gpu_info", "Help", "GPU info", "Show the GPU and its driver", std::nullopt,
@@ -249,14 +263,18 @@ std::string keyText(const KeyChord& chord) {
 }
 
 std::string menuLabel(const CommandInfo& info) {
-    std::string label(info.label);
+    return menuLabel(info, info.label);
+}
+
+std::string menuLabel(const CommandInfo& info, std::string_view label) {
+    std::string text(label);
     if (!info.key) {
-        return label;
+        return text;
     }
     if (info.route != KeyRoute::CharHook) {
-        return label + "\t" + keyText(*info.key);
+        return text + "\t" + keyText(*info.key);
     }
-    return label + " (" + keyText(*info.key) + ")";
+    return text + " (" + keyText(*info.key) + ")";
 }
 
 std::string shownItemTitle(const CommandInfo& info, bool shown) {
@@ -264,7 +282,11 @@ std::string shownItemTitle(const CommandInfo& info, bool shown) {
 }
 
 std::string tooltipText(const CommandInfo& info, bool cmd_for_ctrl) {
-    std::string text(info.help);
+    return tooltipText(info, info.help, cmd_for_ctrl);
+}
+
+std::string tooltipText(const CommandInfo& info, std::string_view help, bool cmd_for_ctrl) {
+    std::string text(help);
     if (!info.key) {
         return text;
     }
@@ -273,6 +295,31 @@ std::string tooltipText(const CommandInfo& info, bool cmd_for_ctrl) {
         key.replace(0, std::string_view("Ctrl").size(), "Cmd");
     }
     return text + " (" + key + ")";
+}
+
+std::array<char, 3> planeLetters(dvv::media::ColourModel model, bool has_chroma) {
+    switch (model) {
+        case dvv::media::ColourModel::Rgb: return {'R', 'G', 'B'};
+        case dvv::media::ColourModel::Yuv:
+            if (!has_chroma) {
+                return {'G', 'B', 'R'};  // matrix Rgb: the planes hold G, B and R
+            }
+            return {'Y', 'U', 'V'};
+        case dvv::media::ColourModel::Gray: break;
+    }
+    return {'Y', 'U', 'V'};
+}
+
+std::string planeName(char letter) {
+    return std::string(1, letter) + " plane";
+}
+
+std::string planeTitle(char letter) {
+    return NATIVE_OS == Os::MacOs ? std::string(1, letter) + " Plane" : planeName(letter);
+}
+
+std::string planeHelp(char letter) {
+    return "Show or hide the " + planeName(letter);
 }
 
 }  // namespace rawreel

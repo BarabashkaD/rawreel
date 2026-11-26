@@ -15,9 +15,9 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include <wx/dcclient.h>
+#include <wx/tglbtn.h>
 
 #include "core/timeline.h"
 #include "dvv/base/log.h"
@@ -82,11 +82,54 @@ std::string_view zoomTextShown(const ZoomControls& zoom) noexcept {
     return zoom.available ? std::string_view(zoom.text) : NO_ZOOM_TEXT;
 }
 
+// The transport row: three children, the left side, the playback group and the right side. The
+// sides sit at the ends; the group is centred on the row while it fits between them and moves
+// toward the narrower side just enough not to overlap it when it does not. So the row's minimum
+// width is left + group + right, not 2 * max(left, right) + group as with two mirrored spacers.
+// A wxBoxSizer cannot express "centred unless that overlaps" (its proportions split the free room
+// in a fixed ratio), so this small sizer places the three children itself: a custom layout, the
+// same on every OS.
+class CentringRowSizer final : public wxSizer {
+public:
+    wxSize CalcMin() override {
+        wxSize min;
+        for (wxSizerItem* const item : m_children) {
+            const wxSize size = item->CalcMin();
+            min.x += size.x;
+            min.y = std::max(min.y, size.y);
+        }
+        return min;
+    }
+
+    void RepositionChildren(const wxSize& /*minSize*/) override {
+        if (m_children.GetCount() != 3) {
+            return;
+        }
+        wxSizerItem* const left = m_children[0];
+        wxSizerItem* const group = m_children[1];
+        wxSizerItem* const right = m_children[2];
+        const int left_width = left->GetMinSizeWithBorder().x;
+        const int group_width = group->GetMinSizeWithBorder().x;
+        const int right_width = right->GetMinSizeWithBorder().x;
+        const int width = m_size.x;
+        // Centred, but never over the right side, then never over the left one; below the minimum
+        // the group stays next to the left side and the right side is cut, as in a wxBoxSizer.
+        const int group_x = std::max(
+            std::min((width - group_width) / 2, width - right_width - group_width), left_width);
+        const int right_x = std::max(width - right_width, group_x + group_width);
+        left->SetDimension(m_position, wxSize(left_width, m_size.y));
+        group->SetDimension(wxPoint(m_position.x + group_x, m_position.y),
+                            wxSize(group_width, m_size.y));
+        right->SetDimension(wxPoint(m_position.x + right_x, m_position.y),
+                            wxSize(right_width, m_size.y));
+    }
+};
+
 }  // namespace
 
 // Spec §5.1, window title and Info design §12, zoom buttons design §2, §3: the slider row, then
-// [Open][Format][pad] stretch [group] stretch [pad][Zoom out][zoom][Zoom in][Grid]["i"]. The pads
-// make the two sides equally wide (syncSpacer), so the group is centred on the whole bar.
+// [Open][Format] [group] [planes][Alpha][Zoom out][zoom][Zoom in][Grid]["i"], the group centred
+// on the whole bar while it fits (CentringRowSizer).
 TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)> execute,
                            dvv::MoveOnlyFunction<void(std::int64_t)> seek,
                            dvv::MoveOnlyFunction<BarStatus()> read_status)
@@ -111,12 +154,11 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
     strip_ = new TimelineStrip(this, *slider_,
                                [this](wxSystemColour index) { return systemColour(index); });
 
-    auto* row = new wxBoxSizer(wxHORIZONTAL);
-    open_ = addButton(*row, Command::Open, Icon::FolderOpen);
-    format_ = addButton(*row, Command::Format, Icon::SlidersHorizontal);
-    left_items_ = {row->GetItem(open_), row->GetItem(format_)};
-    left_pad_ = row->Add(0, 0);
-    row->AddStretchSpacer();
+    auto* row = new CentringRowSizer();
+    auto* left = new wxBoxSizer(wxHORIZONTAL);
+    open_ = addButton(*left, Command::Open, Icon::FolderOpen);
+    format_ = addButton(*left, Command::Format, Icon::SlidersHorizontal);
+    row->Add(left);
     auto* group = new wxBoxSizer(wxHORIZONTAL);
     addButton(*group, Command::First, Icon::SkipBack);
     addButton(*group, Command::StepBack, Icon::StepBack);
@@ -132,8 +174,21 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
     setUp(*loop_, Command::Loop, Icon::Repeat);
     group->Add(loop_, wxSizerFlags().Border(wxALL, border));
     row->Add(group);
-    row->AddStretchSpacer();
-    right_pad_ = row->Add(0, 0);
+    auto* right = new wxBoxSizer(wxHORIZONTAL);
+    // The plane toggles before Alpha: text buttons whose letters, names and tooltips setPlanes
+    // gives; disabled until then. Not in `buttons_`: showStatus and the icon rebuild leave them.
+    for (std::size_t k = 0; k < planes_.size(); ++k) {
+        const auto command = static_cast<Command>(static_cast<std::size_t>(Command::Plane1) + k);
+        auto* const plane = new wxToggleButton(this, wxID_ANY, wxString(), wxDefaultPosition,
+                                               wxDefaultSize, wxBU_EXACTFIT);
+        plane->SetCanFocus(false);
+        plane->Disable();
+        plane->Bind(wxEVT_TOGGLEBUTTON,
+                    [this, command](wxCommandEvent& /*event*/) { execute_(command); });
+        right->Add(plane, wxSizerFlags().Border(wxALL, border));
+        planes_.at(k) = plane;
+    }
+    (void)applyPlaneMinSize();
     // Alpha in its own group before the zoom group; its enabled state follows setAlpha alone.
     alpha_ =
         new wxBitmapToggleButton(this, wxID_ANY, bundles_[static_cast<std::size_t>(Icon::Blend)],
@@ -141,8 +196,8 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
     alpha_->Bind(wxEVT_TOGGLEBUTTON,
                  [this](wxCommandEvent& /*event*/) { execute_(Command::Alpha); });
     setUp(*alpha_, Command::Alpha, Icon::Blend);
-    row->Add(alpha_, wxSizerFlags().Border(wxALL, border));
-    zoom_out_ = addButton(*row, Command::ZoomOut, Icon::ZoomOut);
+    right->Add(alpha_, wxSizerFlags().Border(wxALL, border));
+    zoom_out_ = addButton(*right, Command::ZoomOut, Icon::ZoomOut);
     // Zoom buttons design §3: a text button without a command; it takes no focus either.
     zoom_ = new wxButton(this, wxID_ANY, wxString());
     zoom_->SetCanFocus(false);
@@ -150,8 +205,8 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
     setAccessibleName(*zoom_, "Zoom");
     zoom_->Disable();
     zoom_->Bind(wxEVT_BUTTON, [this](wxCommandEvent& /*event*/) { popUpZoomMenu(); });
-    row->Add(zoom_, wxSizerFlags().Border(wxALL, border));
-    zoom_in_ = addButton(*row, Command::ZoomIn, Icon::ZoomIn);
+    right->Add(zoom_, wxSizerFlags().Border(wxALL, border));
+    zoom_in_ = addButton(*right, Command::ZoomIn, Icon::ZoomIn);
     grid_ = new wxBitmapToggleButton(this, wxID_ANY, bundles_[static_cast<std::size_t>(Icon::Grid)],
                                      wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
     grid_->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent& /*event*/) { execute_(Command::Grid); });
@@ -159,17 +214,15 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
     // A right-click (Ctrl-click on macOS, the Menu key) opens the Grid and Rulers window.
     grid_->Bind(wxEVT_CONTEXT_MENU,
                 [this](wxContextMenuEvent& /*event*/) { execute_(Command::GridWindow); });
-    row->Add(grid_, wxSizerFlags().Border(wxALL, border));
+    right->Add(grid_, wxSizerFlags().Border(wxALL, border));
     info_ = new wxBitmapToggleButton(this, wxID_ANY, bundles_[static_cast<std::size_t>(Icon::Info)],
                                      wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
     info_->Bind(wxEVT_TOGGLEBUTTON,
                 [this](wxCommandEvent& /*event*/) { execute_(Command::InfoWindow); });
     setUp(*info_, Command::InfoWindow, Icon::Info);
-    row->Add(info_, wxSizerFlags().Border(wxALL, border));
-    right_items_ = {row->GetItem(alpha_),   row->GetItem(zoom_out_), row->GetItem(zoom_),
-                    row->GetItem(zoom_in_), row->GetItem(grid_),     row->GetItem(info_)};
+    right->Add(info_, wxSizerFlags().Border(wxALL, border));
     applyZoomMinSize();
-    syncSpacer();
+    row->Add(right);
 
     auto* sizer = new wxBoxSizer(wxVERTICAL);
     sizer->Add(strip_, wxSizerFlags().Expand());
@@ -240,6 +293,21 @@ void TransportBar::applyZoomMinSize() {
     applyZoomLabel();
 }
 
+bool TransportBar::applyPlaneMinSize() {
+    const wxSize least = FromDIP(wxSize(BUTTON_WIDTH_DIP, BUTTON_HEIGHT_DIP));
+    bool changed = false;
+    for (wxToggleButton* const plane : planes_) {
+        const wxSize before = plane->GetMinSize();
+        plane->SetMinSize(wxDefaultSize);
+        plane->InvalidateBestSize();
+        const wxSize native = plane->GetBestSize();
+        const wxSize size(std::max(native.x, least.x), std::max(native.y, least.y));
+        plane->SetMinSize(size);
+        changed = changed || size != before;
+    }
+    return changed;
+}
+
 // The shown text, cut by hand when wider than zoom_room_: trailing characters go until the rest
 // and "…" fit (wxControl::Ellipsize would insert "..."); the mark stays.
 void TransportBar::applyZoomLabel() {
@@ -274,7 +342,7 @@ void TransportBar::showZoom(const ZoomControls& zoom) {
                           zoom.available ? fromUtf8("Zoom " + zoom.text) : fromUtf8("Zoom"));
     }
     const auto enable = [](wxWindow& window, bool on) {
-        if (window.IsEnabled() != on) {
+        if (window.IsThisEnabled() != on) {
             window.Enable(on);
         }
     };
@@ -298,22 +366,6 @@ void TransportBar::popUpZoomMenu() {
     PopupMenu(menu.get(), rect.GetLeft(), rect.GetBottom() + 1);
 }
 
-// The two sides of the group as wide as each other, with their borders: the narrower one gets the
-// padding.
-void TransportBar::syncSpacer() {
-    const auto side = [](const std::vector<wxSizerItem*>& items) {
-        int width = 0;
-        for (const wxSizerItem* item : items) {
-            width += item->GetWindow()->GetEffectiveMinSize().x + (2 * item->GetBorder());
-        }
-        return width;
-    };
-    const int left = side(left_items_);
-    const int right = side(right_items_);
-    left_pad_->AssignSpacer(std::max(right - left, 0), 0);
-    right_pad_->AssignSpacer(std::max(left - right, 0), 0);
-}
-
 void TransportBar::setGridShown(bool shown) {
     if (grid_->GetValue() != shown) {
         grid_->SetValue(shown);
@@ -324,8 +376,39 @@ void TransportBar::setAlpha(bool on, bool available) {
     if (alpha_->GetValue() != on) {
         alpha_->SetValue(on);
     }
-    if (alpha_->IsEnabled() != available) {
+    if (alpha_->IsThisEnabled() != available) {
         alpha_->Enable(available);
+    }
+}
+
+void TransportBar::setPlanes(std::array<bool, 3> on, std::array<bool, 3> available,
+                             std::array<char, 3> letters) {
+    bool relabelled = false;
+    for (std::size_t k = 0; k < planes_.size(); ++k) {
+        wxToggleButton& plane = *planes_.at(k);
+        const char letter = letters.at(k);
+        if (plane_letters_.at(k) != letter) {
+            plane_letters_.at(k) = letter;
+            const wxString name = fromUtf8(planeName(letter));
+            plane.SetLabel(wxString(wxUniChar(static_cast<unsigned char>(letter))));
+            plane.SetName(name);
+            setAccessibleName(plane, name);
+            const auto command =
+                static_cast<Command>(static_cast<std::size_t>(Command::Plane1) + k);
+            plane.SetToolTip(
+                fromUtf8(tooltipText(commandInfo(command), planeHelp(letter), CMD_FOR_CTRL)));
+            relabelled = true;
+        }
+        if (plane.GetValue() != on.at(k)) {
+            plane.SetValue(on.at(k));
+        }
+        if (plane.IsThisEnabled() != available.at(k)) {
+            plane.Enable(available.at(k));
+        }
+    }
+    // A wider letter widens its button: the row is laid out again.
+    if (relabelled && applyPlaneMinSize()) {
+        Layout();
     }
 }
 
@@ -357,8 +440,8 @@ void TransportBar::rebuildIcons() {
         entry.button->SetBitmapLabel(bundles_[static_cast<std::size_t>(icon)]);
         applyMinSize(*entry.button);
     }
+    (void)applyPlaneMinSize();  // the plane toggles keep their letters, no bitmap
     ++icon_rebuilds_;
-    syncSpacer();
     Layout();
 }
 
@@ -367,7 +450,7 @@ void TransportBar::onDpiChanged(wxDPIChangedEvent& event) {
         applyMinSize(*entry.button);
     }
     applyZoomMinSize();
-    syncSpacer();
+    (void)applyPlaneMinSize();
     Layout();
     event.Skip();
 }
@@ -706,7 +789,7 @@ void TransportBar::showStatus() {
         } else if (entry.command != Command::Open && entry.command != Command::InfoWindow) {
             enabled = last_status_.hasStream;
         }
-        if (entry.button->IsEnabled() != enabled) {
+        if (entry.button->IsThisEnabled() != enabled) {
             entry.button->Enable(enabled);
         }
     }

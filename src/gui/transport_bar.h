@@ -3,9 +3,11 @@
 // The transport bar under the viewport (design M3 v2 §4.3, D17; video control panel spec §5, §7):
 // the timeline strip with the frame numbers, the seek slider, then a row of Lucide icon buttons:
 // Open and Format on the left, First, StepBack, Play/Pause, Stop, StepForward, Last and the Loop
-// toggle centred on the bar, then Zoom out, the zoom button and Zoom in, and the "i" toggle (the
-// Info window) at the right end (window title and Info design §12, zoom buttons design §2). Buttons
-// never take the focus, so Space and the arrows always reach the frame's char hook.
+// toggle centred on the bar while it fits between the two sides (else moved toward the narrower
+// side just enough not to overlap it), then the three plane toggles (text buttons Y U V or
+// R G B), Alpha, Zoom out, the zoom button and Zoom in, and the "i" toggle (the Info window) at the
+// right end (window title and Info design §12, zoom buttons design §2). Buttons never take the
+// focus, so Space and the arrows always reach the frame's char hook.
 
 // clang-format off
 #include <wx/wx.h>  // first (R11)
@@ -96,6 +98,12 @@ public:
     // The Alpha toggle: its value (MainFrame::alpha()) and whether it is enabled
     // (MainFrame::isAvailable(Command::Alpha)); no event. showStatus leaves it.
     void setAlpha(bool on, bool available);
+    // The plane toggles (Plane1..3): their values (MainFrame::planes()), whether each is enabled
+    // (MainFrame::isAvailable) and their letters (MainFrame::planeLetters()); the label, the name
+    // and accessible name ("Y plane") and the tooltip follow the letter. Each changes only when it
+    // differs; no event. showStatus leaves them.
+    void setPlanes(std::array<bool, 3> on, std::array<bool, 3> available,
+                   std::array<char, 3> letters);
     // The "i" toggle's value: whether the Info window is shown
     // (MainFrame::windowShown(FloatingKind::Info)).
     void setInfoShown(bool shown);
@@ -144,6 +152,8 @@ public:
     // The button that runs `command` (one of the bar's: Open, Format, First ... Loop, ZoomOut,
     // ZoomIn, InfoWindow).
     [[nodiscard]] wxAnyButton& buttonForTest(Command command) const;
+    // The plane toggle of colour component `k` (0, 1, 2).
+    [[nodiscard]] wxToggleButton& planeButtonForTest(std::size_t k) const { return *planes_.at(k); }
     [[nodiscard]] wxButton& zoomButtonForTest() const noexcept { return *zoom_; }
     [[nodiscard]] TimelineStrip& timelineStripForTest() noexcept { return *strip_; }
     // The ghost thumb's wx client x while Skimming (spec §6.4); nullopt: none shown.
@@ -163,8 +173,11 @@ private:
     // change), then applyZoomLabel().
     void applyZoomMinSize();
     void applyZoomLabel();  // the zoom button's label for zoom_shown_
-    void popUpZoomMenu();   // the zoom button's wxEVT_BUTTON
-    void syncSpacer();
+    // The plane toggles' minimum sizes: the larger of the native minimum for the letter and
+    // BUTTON_*_DIP (creation, a letter change, the icon rebuild and a DPI change). Whether one
+    // changed.
+    bool applyPlaneMinSize();
+    void popUpZoomMenu();  // the zoom button's wxEVT_BUTTON
     void rebuildIcons();
     [[nodiscard]] wxColour systemColour(wxSystemColour index);
     void onDpiChanged(wxDPIChangedEvent& event);
@@ -202,10 +215,12 @@ private:
     dvv::MoveOnlyFunction<void(std::int64_t)> seek_observer_;
     dvv::MoveOnlyFunction<wxColour(wxSystemColour)> system_colour_;
     // Child windows: wx owns them. `buttons_` in row order: Open, Format, the group, Alpha, Zoom
-    // out, Zoom in, Grid, "i".
+    // out, Zoom in, Grid, "i"; the plane toggles (text buttons before Alpha) are not in it.
     std::vector<IconButton> buttons_;
     wxBitmapButton* open_ = nullptr;
     wxBitmapButton* format_ = nullptr;
+    std::array<wxToggleButton*, 3> planes_{};  // Plane1..3, labelled with plane_letters_
+    std::array<char, 3> plane_letters_{};      // the letters shown; '\0' before the first setPlanes
     wxBitmapToggleButton* alpha_ = nullptr;
     wxBitmapToggleButton* grid_ = nullptr;
     wxBitmapToggleButton* info_ = nullptr;
@@ -214,14 +229,8 @@ private:
     wxBitmapButton* zoom_out_ = nullptr;
     wxButton* zoom_ = nullptr;  // the zoom button: no command, not in `buttons_`
     wxBitmapButton* zoom_in_ = nullptr;
-    // The transport row's items left of the group (Open, Format) and right of it (Alpha, Zoom out,
-    // the zoom button, Zoom in, Grid, "i"); the pads make the two sides equally wide (syncSpacer).
-    std::vector<wxSizerItem*> left_items_;
-    std::vector<wxSizerItem*> right_items_;
-    wxSizerItem* left_pad_ = nullptr;   // after Format
-    wxSizerItem* right_pad_ = nullptr;  // before Alpha
-    ZoomControls zoom_shown_;           // the last showZoom()
-    int zoom_room_ = 0;  // the zoom text's room: "Fit (8888.8 %)" in the zoom button's font
+    ZoomControls zoom_shown_;  // the last showZoom()
+    int zoom_room_ = 0;        // the zoom text's room: "Fit (8888.8 %)" in the zoom button's font
     std::array<wxBitmapBundle, ICON_COUNT> bundles_;  // in Icon order, tinted with `tint_`
     wxColour tint_;
     int icon_rebuilds_ = 0;

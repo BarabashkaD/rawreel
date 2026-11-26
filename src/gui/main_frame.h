@@ -195,6 +195,15 @@ public:
     // View -> Alpha (key A): the clip's alpha applied. Off at every launch, never saved; another
     // clip keeps it.
     [[nodiscard]] bool alpha() const noexcept { return alpha_; }
+    // View -> the plane items (keys 1 to 3): whether colour component c0, c1, c2 is shown. All on
+    // at every launch, never saved; kept across clips by position.
+    [[nodiscard]] const std::array<bool, 3>& planes() const noexcept { return planes_; }
+    // View -> Hidden U and V at 0: hidden U and V take 0, not the mid code. Off at every launch,
+    // never saved; kept across clips.
+    [[nodiscard]] bool chromaZero() const noexcept { return chroma_zero_; }
+    // The letters of the open clip's c0, c1, c2 (planeLetters of its format); Y U V without a
+    // stream.
+    [[nodiscard]] std::array<char, 3> planeLetters() const;
     // The one apply path of the grid and ruler settings: stored, applied to the viewport
     // (setOverlayConfig) and the Grid button, then saved through App::saveOverlay when `save` is
     // Now. Nothing is done once the close began (closing_): the close saved the settings, and the
@@ -376,8 +385,12 @@ private:
     // The bar's Alpha button follows the state and whether the clip has alpha (execute(Alpha),
     // onStreamsChanged, onStatusChanged).
     void updateAlphaControls();
-    // The viewport's context menu at `point` (viewport client coordinates): Grid, Rulers and Alpha
-    // as check items with their menu ids; the chosen item runs as a menu command.
+    // The bar's plane toggles follow planes_, isAvailable(Plane1..3) and planeLetters() (the
+    // constructor, a plane toggle or a refused one, onStreamsChanged, onStatusChanged).
+    void updatePlaneControls();
+    // The viewport's context menu at `point` (viewport client coordinates): Grid, Rulers, the three
+    // planes and Alpha as check items with their menu ids, then Grid and Rulers...; the chosen item
+    // runs as a menu command.
     void popUpViewportMenu(wxPoint point);
     // The Edit items (spec §4.2): runEdit and canEdit on focusedWindow().
     void onEditMenu(wxCommandEvent& event);
@@ -454,7 +467,10 @@ private:
     bool reopen_offered_ = false;  // the current message carries the Reopen button
     bool loop_ = false;            // mirrors the Session's loop flag (Command::Loop)
     bool alpha_ = false;           // View -> Alpha (Command::Alpha); never saved
-    std::string last_open_uri_;    // of the last openUri (onError's scheme hint and Format...)
+    // View -> the plane items (Plane1..3) and Hidden U and V at 0 (HiddenChromaZero); never saved.
+    std::array<bool, 3> planes_{true, true, true};
+    bool chroma_zero_ = false;
+    std::string last_open_uri_;  // of the last openUri (onError's scheme hint and Format...)
     // The folder of the last opened file (drop, File -> Open, a file: URI): the file dialogs'
     // start folder (M4 GUI D6). Empty until a file is opened.
     std::filesystem::path last_dir_;

@@ -97,6 +97,7 @@
 #include "dvv/gpu/presenter.h"
 #include "dvv/gpu/testing/fault_injection.h"
 #include "dvv/media/format_json.h"
+#include "dvv/media/frame_store.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
 #include "dvv/media/view.h"
@@ -596,10 +597,17 @@ SelfTestStep movedPaneStep(SelfTest* test, const SharedState& state, bool back) 
         const bool minimal = std::cmp_greater_equal(now.width, least.x) &&
                              std::cmp_greater_equal(now.height, least.y) && panel.x >= centre.x &&
                              panel.y >= centre.y;
-        seen = std::format("{}; log dock {}, player panel {}x{}, its minimum {}x{}",
-                           describe(viewport, *state), direction, panel.x, panel.y, centre.x,
-                           centre.y);
-        return stats && docked && minimal && stats->presentedExtent == now;
+        // Docked at a side the log keeps its 120 DIP minimum width (main_frame.cpp): wxAUI counts
+        // a side pane's minimum, not the width it lays it out at. The status bar's minimum can
+        // leave slack that widens the log, so the pane's minimum is checked too.
+        const int log_width = log.window != nullptr ? log.window->GetSize().x : -1;
+        const bool log_wide =
+            log.min_size.x >= frame.FromDIP(120) && (back || log_width >= frame.FromDIP(120));
+        seen = std::format(
+            "{}; log dock {} width {} minimum {}, player panel {}x{}, its minimum {}x{}",
+            describe(viewport, *state), direction, log_width, log.min_size.x, panel.x, panel.y,
+            centre.x, centre.y);
+        return stats && docked && minimal && log_wide && stats->presentedExtent == now;
     };
     return {.name = back ? "pane moved back" : "moved pane keeps the minimum",
             .start = std::move(start),
@@ -6819,6 +6827,15 @@ std::string popupItemText(const wxMenuItem& item) {
                        item.IsCheckable() && item.IsChecked());
 }
 
+// The context menu of the grid steps (a yuv420p clip, all planes on, Alpha off), with the plane
+// titles in their OS form, as popupItemText reads its items joined with "|".
+std::string gridContextMenu(bool rulers) {
+    return std::format(
+        "Grid (G) false|Rulers (R) {}|{} (1) true|{} (2) true|{} (3) true|Alpha (A) false|Grid "
+        "and Rulers... false",
+        rulers, planeTitle('Y'), planeTitle('U'), planeTitle('V'));
+}
+
 void addGridCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
     MainFrame& frame = test.frame();
     struct State {
@@ -6936,9 +6953,7 @@ void addGridCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
                 items += (items.empty() ? "" : "|") + item;
             }
             seen = std::format("menu '{}'; {}", items, seen);
-            return ok &&
-                   items ==
-                       "Grid (G) false|Rulers (R) true|Alpha (A) false|Grid and Rulers... false";
+            return ok && items == gridContextMenu(true);
         }));
     // The Menu key and Shift+F10 send no point: the menu opens all the same.
     steps.push_back(step(
@@ -6963,9 +6978,7 @@ void addGridCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
                 items += (items.empty() ? "" : "|") + item;
             }
             seen = std::format("menu '{}'; {}", items, seen);
-            return ok &&
-                   items ==
-                       "Grid (G) false|Rulers (R) false|Alpha (A) false|Grid and Rulers... false";
+            return ok && items == gridContextMenu(false);
         }));
     // Unchanged values write nothing: the file keeps its time.
     steps.push_back(step(
@@ -7092,10 +7105,11 @@ bool hasAlphaKey(const dvv::json::Value& value, std::string& found) {
 
 // The bar's Alpha button: a toggle that does not have the focus (after a click too: the steps
 // after a click check it) in its own group between the playback group and Zoom out, with its
-// tooltip, its value `on` and enabled exactly when `enabled`; the playback group stays centred on
-// the bar (± 1 px). `text` gets a description. The focus is checked by where it is, on every OS:
-// wxGTK's CanAcceptFocusFromKeyboard() stays true for an enabled button after SetCanFocus(false),
-// although GTK gives the button no focus.
+// tooltip, its value `on` and enabled exactly when `enabled`; the playback group is centred on the
+// bar (± 1 px) or, where it does not fit centred, next to the right side (the first plane toggle
+// two 2 DIP sizer borders after it). `text` gets a description. The focus is checked by where it
+// is, on every OS: wxGTK's CanAcceptFocusFromKeyboard() stays true for an enabled button after
+// SetCanFocus(false), although GTK gives the button no focus.
 bool alphaButtonIs(MainFrame& frame, bool on, bool enabled, std::string& text) {
     TransportBar& bar = frame.transportBar();
     wxAnyButton& button = bar.buttonForTest(Command::Alpha);
@@ -7105,17 +7119,20 @@ bool alphaButtonIs(MainFrame& frame, bool on, bool enabled, std::string& text) {
     const wxRect group = bar.groupRectForTest();
     const int centre = group.GetLeft() + (group.GetWidth() / 2);
     const int bar_centre = bar.GetClientSize().GetWidth() / 2;
+    const int plane_left = bar.planeButtonForTest(0).GetPosition().x;
+    const bool placed = std::abs(centre - bar_centre) <= 1 ||
+                        plane_left == group.GetRight() + 1 + (2 * bar.FromDIP(2));
     const std::string tip = button.GetToolTipText().utf8_string();
     const bool focus = wxWindow::FindFocus() == &button;
     text += std::format(
         "; button toggle {} value {} enabled {} focus {}, x {}..{} (group right {}, zoom out left "
-        "{}), group centre {} bar centre {}, tip '{}'",
+        "{}), group centre {} bar centre {}, first plane left {}, tip '{}'",
         toggle != nullptr, toggle != nullptr && toggle->GetValue(), button.IsEnabled(), focus,
         rect.GetLeft(), rect.GetRight(), group.GetRight(), zoom_out.GetLeft(), centre, bar_centre,
-        tip);
+        plane_left, tip);
     return toggle != nullptr && toggle->GetValue() == on && button.IsEnabled() == enabled &&
            !focus && rect.GetLeft() > group.GetRight() && rect.GetRight() < zoom_out.GetLeft() &&
-           std::abs(centre - bar_centre) <= 1 && tip == "Apply or ignore the clip's alpha (A)";
+           placed && tip == "Apply or ignore the clip's alpha (A)";
 }
 
 void addAlphaCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
@@ -7167,9 +7184,10 @@ void addAlphaCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
                 }
                 seen = std::format("menu '{}', alpha enabled {}, alpha {}", items, st->enabled,
                                    frame.alpha());
-                // Grid and Rulers keep what the steps before left; Alpha is the third item.
-                return st->items.size() == 4 && st->items[2] == alpha_item &&
-                       st->items[3] == "Grid and Rulers... false" && st->enabled == enabled;
+                // Grid and Rulers keep what the steps before left; the three planes follow them,
+                // Alpha is the sixth item.
+                return st->items.size() == 7 && st->items[5] == alpha_item &&
+                       st->items[6] == "Grid and Rulers... false" && st->enabled == enabled;
             });
     };
     // A fresh launch: off before any toggle (the "off after a relaunch" check).
@@ -7396,6 +7414,403 @@ void addAlphaCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
         [&frame](std::string& seen) {
             seen = std::format("alpha {}", frame.alpha());
             return !frame.alpha() && alphaFlagIs(frame, false, seen);
+        }));
+}
+
+// --- Planes: the bar's plane toggles, View -> the plane items, keys 1 to 3, the context menu ---
+
+constexpr std::string_view PLANE_YUV = "synthetic:gradient?w=64&h=48&fmt=yuv420p&frames=60";
+constexpr std::string_view PLANE_RGB = "synthetic:gradient?w=64&h=48&fmt=rgb24&frames=60";
+constexpr std::string_view PLANE_RGBA = "synthetic:gradient?w=64&h=48&fmt=rgba&frames=60";
+constexpr std::string_view PLANE_GRAY = "synthetic:gradient?w=64&h=48&fmt=gray&frames=60";
+
+std::string hiddenText(const dvv::media::HiddenComponents& hidden) {
+    return std::format("{{{},{},{}}} {}", hidden.components[0], hidden.components[1],
+                       hidden.components[2],
+                       hidden.chroma == dvv::media::ChromaFill::Zero ? "Zero" : "Mid");
+}
+
+// The shown FrameSet's display lease hides `expected` (the canonical set the session requested).
+bool shownHiddenIs(MainFrame& frame, const dvv::media::HiddenComponents& expected,
+                   std::string& text) {
+    const DisplaySnapshot snapshot = frame.viewport().display()->snapshot();
+    const dvv::media::ReadLease& lease = snapshot.frames.views[0];
+    text += std::format(", shown hidden {} (want {})",
+                        lease ? hiddenText(lease.view().hidden) : "none", hiddenText(expected));
+    return lease && lease.view().hidden == expected;
+}
+
+// The bar's plane toggles read `letters`, are named "<letter> plane", carry their tooltip and no
+// bitmap, hold no focus, and show `on` and `enabled`; View -> the plane items are check items
+// titled with the letters in their OS form and helped with them, whatever their state, checked `on`
+// and enabled `enabled`; View -> Hidden U and V at 0 is checked `fill` and enabled `fill_enabled`.
+// The frame's planes() are `on`.
+bool planeControlsAre(MainFrame& frame, std::array<char, 3> letters, std::array<bool, 3> on,
+                      std::array<bool, 3> enabled, bool fill, bool fill_enabled,
+                      std::string& text) {
+    wxMenuBar* bar = frame.GetMenuBar();
+    if (bar == nullptr) {
+        text = "no menu bar";
+        return false;
+    }
+    bar->UpdateMenus();
+    bool ok = frame.planes() == on && frame.chromaZero() == fill;
+    text = std::format("planes {} {} {}, fill {}", frame.planes()[0], frame.planes()[1],
+                       frame.planes()[2], frame.chromaZero());
+    for (std::size_t k = 0; k < 3; ++k) {
+        const wxToggleButton& button = frame.transportBar().planeButtonForTest(k);
+        const std::string name = planeName(letters.at(k));
+        const std::string tip = std::format("Show or hide the {} ({})", name, k + 1);
+        const std::string help = std::format("Show or hide the {}", name);
+        const std::string label = button.GetLabel().utf8_string();
+        const bool focus = wxWindow::FindFocus() == &button;
+        const auto command = static_cast<Command>(static_cast<std::size_t>(Command::Plane1) + k);
+        const wxMenuItem* const item = bar->FindItem(menuId(command));
+        const std::string title = std::format("{} ({})", planeTitle(letters.at(k)), k + 1);
+        const std::string item_title =
+            item != nullptr ? item->GetItemLabelText().utf8_string() : "none";
+        const std::string item_help = item != nullptr ? item->GetHelp().utf8_string() : "none";
+        text += std::format(
+            "; button '{}' name '{}' value {} enabled {} bitmap {} focus {} tip '{}', item '{}' "
+            "help '{}' "
+            "checked {} enabled {}",
+            label, button.GetName().utf8_string(), button.GetValue(), button.IsEnabled(),
+            button.GetBitmap().IsOk(), focus, button.GetToolTipText().utf8_string(), item_title,
+            item_help, item != nullptr && item->IsCheckable() && item->IsChecked(),
+            item != nullptr && item->IsEnabled());
+        ok = ok && label == std::string(1, letters.at(k)) && button.GetName() == name &&
+             button.GetToolTipText().utf8_string() == tip && button.GetValue() == on.at(k) &&
+             button.IsEnabled() == enabled.at(k) && !button.GetBitmap().IsOk() && !focus &&
+             item != nullptr && item_title == title && item_help == help && item->IsCheckable() &&
+             item->IsChecked() == on.at(k) && item->IsEnabled() == enabled.at(k);
+    }
+    const wxMenuItem* const fill_item = bar->FindItem(menuId(Command::HiddenChromaZero));
+    text += std::format("; fill item '{}' checked {} enabled {}",
+                        fill_item != nullptr ? fill_item->GetItemLabelText().utf8_string() : "none",
+                        fill_item != nullptr && fill_item->IsChecked(),
+                        fill_item != nullptr && fill_item->IsEnabled());
+    return ok && fill_item != nullptr && fill_item->GetItemLabelText() == "Hidden U and V at 0" &&
+           fill_item->IsCheckable() && fill_item->IsChecked() == fill &&
+           fill_item->IsEnabled() == fill_enabled;
+}
+
+void addPlaneCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
+    MainFrame& frame = test.frame();
+    struct State {
+        std::uint64_t version = 0;       // the display's FrameSet version before the input
+        std::int64_t index = -1;         // the shown index before the input
+        bool taken = false;              // the char hook took the key (sendKey)
+        bool alpha = false;              // the alpha state before the rgba step
+        std::vector<std::string> items;  // the context menu's items: label and check
+        std::vector<std::string> helps;  // and their help
+    };
+    auto st = std::make_shared<State>();
+    using dvv::media::ChromaFill;
+    using dvv::media::HiddenComponents;
+    static constexpr std::array<char, 3> YUV{'Y', 'U', 'V'};
+    static constexpr std::array<char, 3> RGB{'R', 'G', 'B'};
+    static constexpr std::array<bool, 3> ALL{true, true, true};
+    static constexpr std::array<bool, 3> NONE{false, false, false};
+    const auto open = [&frame, st](std::string_view uri) {
+        return [&frame, st, uri] {
+            st->version = frame.viewport().display()->snapshot().version;
+            frame.openUri(0, std::string(uri), std::nullopt);
+        };
+    };
+    const auto before = [&frame, st] {
+        const DisplaySnapshot snapshot = frame.viewport().display()->snapshot();
+        st->version = snapshot.version;
+        st->index = snapshot.frames.index;
+    };
+    const auto key = [&frame, st, before](int code) {
+        return [&frame, st, before, code] {
+            before();
+            st->taken = sendKey(frame, code);
+        };
+    };
+    const auto menu = [&frame, before](Command command) {
+        return [&frame, before, command] {
+            before();
+            (void)sendMenu(frame, menuId(command));
+        };
+    };
+    // A toggle in pause: a new FrameSet of the same index, with the new set.
+    const auto redrawn = [&frame, st](const HiddenComponents& hidden, std::string& text) {
+        const DisplaySnapshot snapshot = frame.viewport().display()->snapshot();
+        text += std::format(", version {} (was {}), index {} (was {})", snapshot.version,
+                            st->version, snapshot.frames.index, st->index);
+        const bool shown = shownHiddenIs(frame, hidden, text);
+        return shown && snapshot.version != st->version && snapshot.frames.index == st->index;
+    };
+    const auto toggled = [&frame, redrawn](std::array<bool, 3> on, bool fill,
+                                           const HiddenComponents& hidden) {
+        return [&frame, redrawn, on, fill, hidden](std::string& seen) {
+            const bool ok = planeControlsAre(frame, YUV, on, ALL, fill, true, seen);
+            return redrawn(hidden, seen) && ok;
+        };
+    };
+    const auto pause = [&test] {
+        Session* session = test.app().session();
+        if (session != nullptr && session->status().player.playing) {
+            session->togglePlay();
+        }
+    };
+    // Before the first plane toggle of the run.
+    steps.push_back(step(
+        "planes: no clip, Y U V disabled, all on",
+        [&frame] { frame.execute(Command::CloseStreams); },
+        [&frame](std::string& seen) {
+            const bool ok = planeControlsAre(frame, YUV, ALL, NONE, false, false, seen);
+            return frame.streams().empty() && ok;
+        }));
+    steps.push_back(step(
+        "planes: key 1 does nothing without a clip", key('1'), [&frame, st](std::string& seen) {
+            const bool ok = planeControlsAre(frame, YUV, ALL, NONE, false, false, seen);
+            seen += std::format(", key taken {}", st->taken);
+            return st->taken && ok;
+        }));
+    steps.push_back(step("planes: yuv420p, Y U V and the fill enabled", open(PLANE_YUV),
+                         [&frame, st](std::string& seen) {
+                             std::string controls;
+                             const bool shown =
+                                 clipShown(frame, PLANE_YUV, false, st->version, seen);
+                             const bool ok =
+                                 planeControlsAre(frame, YUV, ALL, ALL, false, true, controls);
+                             seen += "; " + controls;
+                             return shown && ok && shownHiddenIs(frame, {}, seen);
+                         }));
+    steps.push_back(step("planes: paused", pause, [&test](std::string& seen) {
+        const Session* session = test.app().session();
+        const bool playing = session == nullptr || session->status().player.playing;
+        seen = std::format("playing {}", playing);
+        return !playing;
+    }));
+    steps.push_back(
+        step("planes: key 1 hides Y", key('1'),
+             toggled({false, true, true}, false, {.components = {true, false, false}})));
+    steps.push_back(step(
+        "planes: a bar click shows Y",
+        [&frame, before] {
+            before();
+            wxToggleButton& button = frame.transportBar().planeButtonForTest(0);
+            button.SetValue(true);  // as the native toggle does before it sends the event
+            clickBarButton(button, wxEVT_TOGGLEBUTTON);
+        },
+        toggled(ALL, false, {})));
+    steps.push_back(
+        step("planes: View -> Y plane hides Y", menu(Command::Plane1),
+             toggled({false, true, true}, false, {.components = {true, false, false}})));
+    steps.push_back(step(
+        "planes: the context menu's Y plane shows Y",
+        [&frame, st, before] {
+            before();
+            st->items.clear();
+            st->helps.clear();
+            dialogHooks().popupMenu = [st](const wxMenu& popup) {
+                for (const wxMenuItem* item : popup.GetMenuItems()) {
+                    st->items.push_back(popupItemText(*item));
+                    st->helps.push_back(item->GetHelp().utf8_string());
+                }
+                return menuId(Command::Plane1);
+            };
+            Viewport& viewport = frame.viewport();
+            wxContextMenuEvent event(wxEVT_CONTEXT_MENU, viewport.GetId(),
+                                     viewport.ClientToScreen(viewportCentre(viewport)));
+            event.SetEventObject(&viewport);
+            (void)injectInput(*viewport.GetEventHandler(), event);
+        },
+        [st, toggled](std::string& seen) {
+            const bool ok = toggled(ALL, false, {})(seen);
+            seen += std::format("; menu {} items", st->items.size());
+            const auto help = [st](std::size_t i) {
+                return i < st->helps.size() ? st->helps[i] : std::string();
+            };
+            const auto at = [st](std::size_t i) {
+                return i < st->items.size() ? st->items[i] : std::string();
+            };
+            for (std::size_t i = 0; i < st->items.size(); ++i) {
+                seen +=
+                    (i == 0 ? " '" : "|") + st->items[i] + (i + 1 == st->items.size() ? "'" : "");
+            }
+            // Picked while Y was off: the popup showed it unchecked.
+            return ok && st->items.size() == 7 &&
+                   at(2) == std::format("{} (1) false", planeTitle('Y')) &&
+                   at(3) == std::format("{} (2) true", planeTitle('U')) &&
+                   at(4) == std::format("{} (3) true", planeTitle('V')) &&
+                   help(2) == "Show or hide the Y plane" && help(3) == "Show or hide the U plane" &&
+                   help(4) == "Show or hide the V plane";
+        }));
+    steps.push_back(
+        step("planes: key 2 hides U", key('2'),
+             toggled({true, false, true}, false, {.components = {false, true, false}})));
+    steps.push_back(
+        step("planes: key 3 hides V", key('3'),
+             toggled({true, false, false}, false, {.components = {false, true, true}})));
+    steps.push_back(step("planes: View -> Hidden U and V at 0", menu(Command::HiddenChromaZero),
+                         toggled({true, false, false}, true,
+                                 {.components = {false, true, true}, .chroma = ChromaFill::Zero})));
+    steps.push_back(
+        step("planes: key 2 shows U", key('2'),
+             toggled({true, true, false}, true,
+                     {.components = {false, false, true}, .chroma = ChromaFill::Zero})));
+    // Kept by position: V off becomes B off; the fill is kept but disabled, and the view is Mid.
+    steps.push_back(step(
+        "planes: rgb24 keeps B off, R G B, the fill disabled", open(PLANE_RGB),
+        [&frame, st](std::string& seen) {
+            std::string controls;
+            const bool shown = clipShown(frame, PLANE_RGB, false, st->version, seen);
+            const bool ok =
+                planeControlsAre(frame, RGB, {true, true, false}, ALL, true, false, controls);
+            seen += "; " + controls;
+            return shown && ok && shownHiddenIs(frame, {.components = {false, false, true}}, seen);
+        }));
+    steps.push_back(step(
+        "planes: yuv420p again, Y U V, the fill applies", open(PLANE_YUV),
+        [&frame, st](std::string& seen) {
+            std::string controls;
+            const bool shown = clipShown(frame, PLANE_YUV, false, st->version, seen);
+            const bool ok =
+                planeControlsAre(frame, YUV, {true, true, false}, ALL, true, true, controls);
+            seen += "; " + controls;
+            return shown && ok &&
+                   shownHiddenIs(frame,
+                                 {.components = {false, false, true}, .chroma = ChromaFill::Zero},
+                                 seen);
+        }));
+    steps.push_back(step("planes: paused again", pause, [&test](std::string& seen) {
+        const Session* session = test.app().session();
+        const bool playing = session == nullptr || session->status().player.playing;
+        seen = std::format("playing {}", playing);
+        return !playing;
+    }));
+    steps.push_back(step(
+        "planes: key 3 shows V, the fill item off",
+        [&frame, before] {
+            before();
+            (void)sendKey(frame, '3');
+            (void)sendMenu(frame, menuId(Command::HiddenChromaZero));
+        },
+        toggled(ALL, false, {})));
+    // In playback a toggle keeps playing; the next frames carry the new set.
+    steps.push_back(step(
+        "planes: key 1 while playing keeps playing",
+        [&frame, &test] {
+            if (Session* session = test.app().session(); session != nullptr) {
+                session->togglePlay();
+            }
+            (void)sendKey(frame, '1');
+        },
+        [&frame, &test](std::string& seen) {
+            const Session* session = test.app().session();
+            const bool playing = session != nullptr && session->status().player.playing;
+            const bool ok =
+                planeControlsAre(frame, YUV, {false, true, true}, ALL, false, true, seen);
+            seen += std::format(", playing {}", playing);
+            return playing && ok &&
+                   shownHiddenIs(frame, {.components = {true, false, false}}, seen);
+        }));
+    steps.push_back(step(
+        "planes: key 1 again, then paused",
+        [&frame, pause] {
+            (void)sendKey(frame, '1');
+            pause();
+        },
+        [&frame, &test](std::string& seen) {
+            const Session* session = test.app().session();
+            const bool playing = session == nullptr || session->status().player.playing;
+            const bool ok = planeControlsAre(frame, YUV, ALL, ALL, false, true, seen);
+            seen += std::format(", playing {}", playing);
+            return !playing && ok && shownHiddenIs(frame, {}, seen);
+        }));
+    steps.push_back(
+        step("planes: key 2 hides U before gray", key('2'),
+             toggled({true, false, true}, false, {.components = {false, true, false}})));
+    // Gray: U and V are disabled and keep showing their kept state; the view hides nothing.
+    steps.push_back(step("planes: gray, U and V disabled, the fill disabled", open(PLANE_GRAY),
+                         [&frame, st](std::string& seen) {
+                             std::string controls;
+                             const bool shown =
+                                 clipShown(frame, PLANE_GRAY, false, st->version, seen);
+                             const bool ok =
+                                 planeControlsAre(frame, YUV, {true, false, true},
+                                                  {true, false, false}, false, false, controls);
+                             seen += "; " + controls;
+                             return shown && ok && shownHiddenIs(frame, {}, seen);
+                         }));
+    steps.push_back(
+        step("planes: key 2 does nothing for gray", key('2'), [&frame, st](std::string& seen) {
+            const bool ok = planeControlsAre(frame, YUV, {true, false, true}, {true, false, false},
+                                             false, false, seen);
+            seen += std::format(", key taken {}", st->taken);
+            return st->taken && ok && shownHiddenIs(frame, {}, seen);
+        }));
+    // A refused click puts the toggled button back to the kept state.
+    steps.push_back(step(
+        "planes: a bar click on U does nothing for gray",
+        [&frame, before] {
+            before();
+            wxToggleButton& button = frame.transportBar().planeButtonForTest(1);
+            button.SetValue(!button.GetValue());  // as the native toggle does before the event
+            clickBarButton(button, wxEVT_TOGGLEBUTTON);
+        },
+        [&frame, st](std::string& seen) {
+            const bool ok = planeControlsAre(frame, YUV, {true, false, true}, {true, false, false},
+                                             false, false, seen);
+            const DisplaySnapshot snapshot = frame.viewport().display()->snapshot();
+            seen += std::format(", version {} (was {})", snapshot.version, st->version);
+            return ok && snapshot.version == st->version && shownHiddenIs(frame, {}, seen);
+        }));
+    // All three off on rgba with alpha on: the view hides all three, the alpha stays applied.
+    steps.push_back(step("planes: rgba, R G B, U off kept as G off", open(PLANE_RGBA),
+                         [&frame, st](std::string& seen) {
+                             std::string controls;
+                             const bool shown =
+                                 clipShown(frame, PLANE_RGBA, true, st->version, seen);
+                             const bool ok = planeControlsAre(frame, RGB, {true, false, true}, ALL,
+                                                              false, false, controls);
+                             seen += "; " + controls;
+                             return shown && ok;
+                         }));
+    steps.push_back(step(
+        "planes: rgba, keys 1 and 3 hide R and B with alpha on",
+        [&frame, st] {
+            st->alpha = frame.alpha();
+            if (!frame.alpha()) {
+                frame.execute(Command::Alpha);
+            }
+            (void)sendKey(frame, '1');
+            (void)sendKey(frame, '3');
+        },
+        [&frame](std::string& seen) {
+            const bool ok = planeControlsAre(frame, RGB, NONE, ALL, false, false, seen);
+            const bool shown = shownHiddenIs(frame, {.components = {true, true, true}}, seen);
+            return ok && shown && frame.alpha() && alphaFlagIs(frame, true, seen);
+        }));
+    // A theme change rebuilds the icons; the plane toggles keep their letters and get no bitmap.
+    steps.push_back(step(
+        "planes: a theme change leaves the plane toggles without a bitmap", [] {},
+        [&frame](std::string& seen) {
+            TransportBar& bar = frame.transportBar();
+            const int rebuilds = bar.iconRebuildsForTest();
+            bar.SendSysColourChangedEvents();
+            const bool ok = planeControlsAre(frame, RGB, NONE, ALL, false, false, seen);
+            seen += std::format(", rebuilds {} -> {}", rebuilds, bar.iconRebuildsForTest());
+            return ok && bar.iconRebuildsForTest() > rebuilds;
+        }));
+    // Back to all on and the alpha as it was, for the steps after.
+    steps.push_back(step(
+        "planes: all on again",
+        [&frame, st] {
+            (void)sendKey(frame, '1');
+            (void)sendKey(frame, '2');
+            (void)sendKey(frame, '3');
+            if (frame.alpha() != st->alpha) {
+                frame.execute(Command::Alpha);
+            }
+        },
+        [&frame, st](std::string& seen) {
+            const bool ok = planeControlsAre(frame, RGB, ALL, ALL, false, false, seen);
+            return ok && frame.alpha() == st->alpha && shownHiddenIs(frame, {}, seen);
         }));
 }
 
@@ -8814,6 +9229,7 @@ void addViewSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
     addRulerNumberSteps(steps, test);
     addGridSaveSteps(steps, test);
     addAlphaCommandSteps(steps, test);
+    addPlaneCommandSteps(steps, test);
     // Later view steps go before this one.
     steps.push_back(step(
         "view: Close stream shows Fit",
@@ -11751,25 +12167,67 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
         [&frame](std::string& seen) {
             seen.clear();
             TransportBar& bar = frame.transportBar();
-            bool centred = true;
-            // 400 DIP, or the bar's minimum when Open, Format, the group, the zoom controls and "i"
-            // need more.
-            const int narrow = std::max(bar.FromDIP(400), bar.GetEffectiveMinSize().x);
-            for (const int set_width : {narrow, bar.FromDIP(1000)}) {
+            // At `set_width`: Open at the 2 DIP sizer border (transport_bar.cpp), all 18 buttons
+            // (Open, Format, the 7 of the group, the 3 planes, Alpha, Zoom out, the zoom text,
+            // Zoom in, Grid, "i") shown, inside the bar and clear of their neighbours; the group's
+            // rect and the bar's client width out.
+            static constexpr std::size_t BAR_BUTTONS = 18;
+            const auto lay_out = [&bar, &seen](int set_width, wxRect& group, int& width) {
                 bar.SetSize(set_width, bar.GetSize().y);
                 bar.Layout();
-                const wxRect group = bar.groupRectForTest();
-                const int width = bar.GetClientSize().x;
-                const int centre = group.x + (group.width / 2);
-                // The buttons' sizer border is 2 DIP (transport_bar.cpp).
+                group = bar.groupRectForTest();
+                width = bar.GetClientSize().x;
+                const wxRect client(bar.GetClientSize());
+                std::vector<wxRect> rects;
+                bool inside = true;
+                for (const wxWindow* const child : bar.GetChildren()) {
+                    if (dynamic_cast<const wxAnyButton*>(child) != nullptr) {
+                        rects.push_back(child->GetRect());
+                        inside = inside && child->IsShown() && client.Contains(child->GetRect());
+                    }
+                }
+                std::ranges::sort(rects, {}, &wxRect::x);
+                const bool clear =
+                    std::ranges::adjacent_find(rects, [](const wxRect& a, const wxRect& b) {
+                        return a.GetRight() >= b.GetLeft();
+                    }) == rects.end();
                 const int open_x = bar.buttonForTest(Command::Open).GetPosition().x;
-                const bool ok = std::abs((2 * centre) - width) <= 2 && open_x == bar.FromDIP(2);
-                seen += std::format("width {} ({} DIP), group {}+{}, Open x {}, centred {}; ",
-                                    width, bar.ToDIP(width), group.x, group.width, open_x, ok);
-                centred = centred && ok;
+                seen += std::format(
+                    "width {} ({} DIP), group {}+{}, Open x {}, {} buttons (expected {}) inside {} "
+                    "clear {}",
+                    width, bar.ToDIP(width), group.x, group.width, open_x, rects.size(),
+                    BAR_BUTTONS, inside, clear);
+                return open_x == bar.FromDIP(2) && rects.size() == BAR_BUTTONS && inside && clear;
+            };
+            // At the bar's minimum the group sits between the two sides; the sides' widths give
+            // the narrowest bar where the group fits centred (the wider side mirrored).
+            wxRect group;
+            int width = 0;
+            bool ok = lay_out(bar.GetEffectiveMinSize().x, group, width);
+            const int left = group.GetLeft();
+            const int right = width - (group.GetRight() + 1);
+            const int fits = group.width + (2 * std::max(left, right));
+            seen += std::format(" (minimum: sides {} and {}, fits from {}); ", left, right, fits);
+            ok = ok && left > 0 && right > 0;
+            // Between the minimum and `fits` the group shifts just enough: it keeps the minimum's
+            // gap to the wider side.
+            if (const int band = (bar.GetEffectiveMinSize().x + fits) / 2;
+                left != right && band > bar.GetEffectiveMinSize().x && band < fits) {
+                ok = lay_out(band, group, width) && ok;
+                const bool next_to_wider = left < right ? width - (group.GetRight() + 1) == right
+                                                        : group.GetLeft() == left;
+                seen += std::format(", next to the wider side {}; ", next_to_wider);
+                ok = ok && next_to_wider;
+            }
+            for (const int set_width : {fits, fits + bar.FromDIP(200)}) {
+                ok = lay_out(set_width, group, width) && ok;
+                const int centre = group.x + (group.width / 2);
+                const bool centred = std::abs((2 * centre) - width) <= 2;
+                seen += std::format(", centred {}; ", centred);
+                ok = ok && centred;
             }
             frame.playerPanel().Layout();
-            return centred;
+            return ok;
         }));
     // The icon buttons (Zoom out and Zoom in among them; the zoom text button is not one) are
     // equally wide, and so are the Loop and "i" toggles (on MSW a toggle without wxBU_EXACTFIT gets

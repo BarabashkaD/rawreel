@@ -10,9 +10,13 @@
 //                                       Errc::Internal "open was not stopped";
 //   fail:<pattern>?index=N&errc=io|devicelost|oom&times=K
 //                                       produce(N) fails for its first K calls (0: always);
+//   fail:<pattern>?index=N&errc=...&times=K&gate=<name>
+//                                       as above; every produce(N) call but the first waits
+//                                       until releaseGate(name) first;
 //   fail:<pattern>?index=N&errc=...&shots=K
 //                                       the first K produce(N) calls fail, counted per URI text
-//                                       across every source opened from it (times is ignored).
+//                                       across every source opened from it (times is ignored). A
+//                                       gate=<name> waits as with times=K.
 // It also matches a file: whose path ends in ".refused" (confidence 100) and refuses it in open()
 // with Unsupported "codec test is not supported (lossless codecs only)"; other files get
 // confidence 0.

@@ -124,7 +124,7 @@ enum class Kind : std::uint8_t { Slow, Fail };
 struct Behaviour {
     Kind kind = Kind::Slow;
     std::optional<std::int64_t> index;
-    std::string gate;      // slow: produce(index) waits
+    std::string gate;      // slow: every produce(index) waits; fail: every call but the first
     std::string openGate;  // slow: open() waits
     std::string openStop;  // slow: open() waits for its stop token
     Errc errc = Errc::Io;  // fail:
@@ -158,7 +158,9 @@ public:
         std::int64_t index, dvv::media::ProduceContext& ctx) override {
         co_await dvv::resumeOn(ctx.io());
         if (behaviour_.index == index) {
-            if (behaviour_.kind == Kind::Slow && !behaviour_.gate.empty()) {
+            const std::uint64_t call = calls_.fetch_add(1, std::memory_order_relaxed) + 1;
+            // slow: every call waits at the gate; fail: every call but the first.
+            if (!behaviour_.gate.empty() && (behaviour_.kind == Kind::Slow || call > 1)) {
                 const std::string timed_out = std::format("gate {} timed out", behaviour_.gate);
                 const WaitEnd end =
                     waitWatched(behaviour_.gate, true,
@@ -176,7 +178,6 @@ public:
                 if (behaviour_.shots) {
                     fails = takeShot(behaviour_.uri, *behaviour_.shots);
                 } else {
-                    const std::uint64_t call = calls_.fetch_add(1, std::memory_order_relaxed) + 1;
                     fails = behaviour_.times == 0 || call <= behaviour_.times;
                 }
                 if (fails) {
