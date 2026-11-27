@@ -11,6 +11,7 @@
 #include "dvv/media/sample_grid.h"
 #include "dvv/media/types.h"
 #include "dvv/media/view.h"
+#include "dvv/platform/pixel_size.h"
 #include "render/picture_constants.h"
 #include "render/view_state.h"
 
@@ -78,14 +79,33 @@ LayerBlock layerBlock(const ViewParams& params, const dvv::media::FrameDesc& des
     if (markersOn(params.markers)) {
         block.flags |= LAYER_MARKERS;
     }
-    if (const std::optional<dvv::media::ImagePixel> pin = params.markers.pin) {
-        block.pinRect = {pin->x, pin->y, pin->x + 1, pin->y + 1};
+    const MarkerCells cells = markerCells(params.markers, desc, panel, kind);
+    if (const std::optional<ImageRect> pin = cells.pin) {
+        block.pinRect = {pin->x, pin->y, pin->x + pin->width, pin->y + pin->height};
     }
-    if (const std::optional<ImageRect> outline = params.markers.outline) {
+    if (const std::optional<ImageRect> outline = cells.outline) {
         block.outlineRect = {outline->x, outline->y, outline->x + outline->width,
                              outline->y + outline->height};
     }
     return block;
+}
+
+MarkerCells markerCells(const MarkerParams& markers, const dvv::media::FrameDesc& desc,
+                        std::uint32_t panel, PanelKind kind) {
+    MarkerCells cells = pixelCells(markers);
+    const dvv::media::PixelFormatDesc& format = dvv::media::formatDesc(desc.format);
+    if (!markers.pin || kind != PanelKind::Planes || panel >= format.componentCount) {
+        return cells;
+    }
+    const dvv::media::ComponentDesc& component = format.components.at(panel);
+    const dvv::media::PixelBlock block =
+        dvv::media::blockOf(component, dvv::media::sampleOf(component, *markers.pin),
+                            {.width = desc.width, .height = desc.height});
+    if (block.width != 0 && block.height != 0) {
+        cells.pin =
+            ImageRect{.x = block.x, .y = block.y, .width = block.width, .height = block.height};
+    }
+    return cells;
 }
 
 std::array<std::uint32_t, 3> cellShapes(const ViewParams& params,

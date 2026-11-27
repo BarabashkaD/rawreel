@@ -138,15 +138,15 @@ void addRing(std::vector<dvv::media::PixelRect>& rects, const PassRegions& regio
 
 }  // namespace
 
-std::vector<dvv::media::PixelRect> markerRects(const MarkerParams& markers,
+std::vector<dvv::media::PixelRect> markerRects(const MarkerCells& markers,
                                                const dvv::media::ViewTransform& view,
                                                const PassRegions& regions) {
     std::vector<dvv::media::PixelRect> rects;
     const dvv::media::AxisView ax = dvv::media::axisX(view);
     const dvv::media::AxisView ay = dvv::media::axisY(view);
     if (markers.pin) {
-        const std::optional<MarkerSpan> x = markerSpan(ax, markers.pin->x, 1);
-        const std::optional<MarkerSpan> y = markerSpan(ay, markers.pin->y, 1);
+        const std::optional<MarkerSpan> x = markerSpan(ax, markers.pin->x, markers.pin->width);
+        const std::optional<MarkerSpan> y = markerSpan(ay, markers.pin->y, markers.pin->height);
         if (x && y) {
             if (std::min(x->end - x->begin, y->end - y->begin) >= PIN_DOT_SPAN) {
                 addRing(rects, regions, *x, *y, PIN_RING);

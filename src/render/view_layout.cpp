@@ -7,6 +7,7 @@
 #include <span>
 #include <vector>
 
+#include "dvv/media/pixel_format.h"
 #include "dvv/media/view.h"
 #include "dvv/media/view_lines.h"
 #include "dvv/platform/pixel_size.h"
@@ -27,6 +28,14 @@ void move(dvv::media::PixelRect& rect, dvv::media::PixelRect panel) noexcept {
 }
 
 }  // namespace
+
+std::uint32_t panelCount(PanelKind kind, std::optional<dvv::media::FormatId> planes) noexcept {
+    if (kind != PanelKind::Planes || !planes) {
+        return 1;
+    }
+    const std::uint32_t components = dvv::media::formatDesc(*planes).componentCount;
+    return std::clamp<std::uint32_t>(components, 1, MAX_PANELS);
+}
 
 PanelGrid panelGrid(dvv::platform::PixelSize extent, std::uint32_t count) noexcept {
     if (count <= 1) {

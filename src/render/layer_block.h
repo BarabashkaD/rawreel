@@ -85,10 +85,17 @@ static_assert(offsetof(LayerBlock, words) == 0 && offsetof(LayerBlock, flags) ==
 // valuesOn(params), LAYER_CELL_FLAGS with params.inspect.on, LAYER_PADDING_MARKS with the overlay's
 // mark metrics on a Picture panel with params.paddingMarks (tilesX and tilesY are the
 // renderer's), the metrics from params.inspect.metrics, and with markersOn(params.markers)
-// LAYER_MARKERS, the pin's pinRect {x, y, x + 1, y + 1} and the outline's outlineRect
+// LAYER_MARKERS, the pin cell's pinRect and the outline's outlineRect of markerCells, each
 // {x, y, x + width, y + height} (image pixels; all 0 where a marker is not set).
 [[nodiscard]] LayerBlock layerBlock(const ViewParams& params, const dvv::media::FrameDesc& desc,
                                     std::uint32_t panel, PanelKind kind);
+
+// The cells the markers of `markers` frame in panel `panel` of kind `kind` for a frame of
+// `desc`: in a Planes panel of a subsampled plane the pin's sample block of that plane (clipped
+// to the image), the cell the panel draws for that sample; else pixelCells(markers).
+[[nodiscard]] MarkerCells markerCells(const MarkerParams& markers,
+                                      const dvv::media::FrameDesc& desc, std::uint32_t panel,
+                                      PanelKind kind);
 
 // Whether the Raw view may back the padding reads of a layer block built from `desc` (the cell
 // flags and the padding check read rawBase through desc's stored-word layouts): the Raw lease's

@@ -820,6 +820,129 @@ TEST_CASE("inspect: an edge block draws no cut text") {
     CHECK(env.gpuInstance->validationMessageCount() == 0);
 }
 
+TEST_CASE("inspect: the pin's mark frames the panel's cell and never covers a value or label") {
+    GpuTestEnvironment env = rawreel::testing::makeGpuTestEnvironment();
+    {
+        const dvv::media::FormatId format = formatNamed("yuv420p");
+        const rawreel::testing::InspectFrame frame =
+            rawreel::testing::openInspectFrame(env, format, INSPECT_IMAGE);
+        auto pass = PicturePass::create(*frame.context);
+        REQUIRE_MESSAGE(pass, (pass ? std::string() : pass.error().describe()));
+        const auto strip = mixedStrip();
+        const dvv::media::FrameDesc& frame_desc = frame.frames.lease(ViewRole::Planes).desc();
+        // The bottom-right pixel of the chroma block [32, 34) x [20, 22), as the selftest's probe
+        // (33, 25) is of its block: in Structure the block's label runs across the pixel's left
+        // edge, where the mark's left band lies.
+        const dvv::media::ImagePixel pin{.x = 33, .y = 21};
+        // The 1x metrics: a pad of 2 backing pixels, less than the mark's 3 px band.
+        constexpr rawreel::ValueMetrics ONE_X{.advance = 5, .lineHeight = 9, .padX = 2, .padY = 2};
+        struct MarkCase {
+            const char* name;
+            rawreel::ValueMetrics metrics;
+            std::uint32_t panel;
+            PanelKind kind;
+            rawreel::InspectorLayout layout;
+            std::array<std::uint32_t, 4> cell;  // the cell it frames: x0, y0, x1, y1
+            bool crossesText;                   // its ring runs through text
+        };
+        const rawreel::InspectorLayout structure = rawreel::InspectorLayout::Structure;
+        const rawreel::InspectorLayout planes = rawreel::InspectorLayout::Planes;
+        for (const MarkCase& mark : {
+                 MarkCase{"Structure",
+                          MIXED_METRICS,
+                          0,
+                          PanelKind::Picture,
+                          structure,
+                          {33, 21, 34, 22},
+                          true},
+                 MarkCase{"Structure at 1x",
+                          ONE_X,
+                          0,
+                          PanelKind::Picture,
+                          structure,
+                          {33, 21, 34, 22},
+                          true},
+                 MarkCase{"Y plane",
+                          MIXED_METRICS,
+                          0,
+                          PanelKind::Planes,
+                          planes,
+                          {33, 21, 34, 22},
+                          false},
+                 MarkCase{"U plane",
+                          MIXED_METRICS,
+                          1,
+                          PanelKind::Planes,
+                          planes,
+                          {32, 20, 34, 22},
+                          false},
+                 MarkCase{
+                     "V plane at 1x", ONE_X, 2, PanelKind::Planes, planes, {32, 20, 34, 22}, false},
+             }) {
+            CAPTURE(mark.name);
+            const std::uint32_t zoom =
+                rawreel::numbersFitZoom(mark.metrics, mark.layout, dvv::media::formatDesc(format));
+            CAPTURE(zoom);
+            const dvv::platform::PixelSize extent{.width = zoom * INSPECT_IMAGE.width,
+                                                  .height = zoom * INSPECT_IMAGE.height};
+            ViewParams params = valuesParams(strip, mark.metrics);
+            const LayerBlock values =
+                rawreel::layerBlock(params, frame_desc, mark.panel, mark.kind);
+            LayerBlock plain = values;
+            plain.flags &= ~rawreel::LAYER_VALUES;
+            params.markers.pin = pin;
+            const LayerBlock marked =
+                rawreel::layerBlock(params, frame_desc, mark.panel, mark.kind);
+            CHECK(marked.pinRect == mark.cell);
+            const std::vector<std::byte> off =
+                dispatchInspect(env, frame, *pass, INSPECT_IMAGE, extent, plain, nullptr).bytes;
+            const std::vector<std::byte> on =
+                dispatchInspect(env, frame, *pass, INSPECT_IMAGE, extent, values, strip).bytes;
+            const std::vector<std::byte> shown =
+                dispatchInspect(env, frame, *pass, INSPECT_IMAGE, extent, marked, strip).bytes;
+            // The ring the mark may draw: 3 px (the 2 px box and the 1 px rim) outside the cell.
+            const auto at = [zoom](std::uint32_t pixel) { return std::int64_t{pixel} * zoom; };
+            const std::int64_t x0 = at(mark.cell[0]);
+            const std::int64_t y0 = at(mark.cell[1]);
+            const std::int64_t x1 = at(mark.cell[2]);
+            const std::int64_t y1 = at(mark.cell[3]);
+            std::size_t text = 0;       // the pixels the values and labels draw
+            std::size_t marks = 0;      // the pixels the mark changes
+            std::size_t on_text = 0;    // ... of them on text
+            std::size_t outside = 0;    // ... of them outside the ring
+            std::size_t crossed = 0;    // the ring's text pixels
+            std::size_t ring_free = 0;  // the ring's other pixels
+            for (std::uint32_t py = 0; py < extent.height; ++py) {
+                for (std::uint32_t px = 0; px < extent.width; ++px) {
+                    const bool in_box = px >= x0 - 3 && px < x1 + 3 && py >= y0 - 3 && py < y1 + 3;
+                    const bool in_cell = px >= x0 && px < x1 && py >= y0 && py < y1;
+                    const bool in_ring = in_box && !in_cell;
+                    const bool is_text =
+                        pixelOf(off, extent, px, py) != pixelOf(on, extent, px, py);
+                    const bool is_mark =
+                        pixelOf(on, extent, px, py) != pixelOf(shown, extent, px, py);
+                    text += is_text ? 1 : 0;
+                    marks += is_mark ? 1 : 0;
+                    on_text += is_mark && is_text ? 1 : 0;
+                    outside += is_mark && !in_ring ? 1 : 0;
+                    crossed += in_ring && is_text ? 1 : 0;
+                    ring_free += in_ring && !is_text ? 1 : 0;
+                }
+            }
+            CAPTURE(crossed);
+            CHECK(text > 0);
+            CHECK(on_text == 0);
+            CHECK(outside == 0);
+            // The mark draws the ring but where text is (a rim pixel may match the picture).
+            CHECK(marks * 2 >= ring_free);
+            if (mark.crossesText) {
+                CHECK(crossed > 0);
+            }
+        }
+    }
+    CHECK(env.gpuInstance->validationMessageCount() == 0);
+}
+
 TEST_CASE("inspect: the value strip uploads once per view") {
     GpuTestEnvironment env = rawreel::testing::makeGpuTestEnvironment();
     {

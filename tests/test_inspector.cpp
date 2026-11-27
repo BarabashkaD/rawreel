@@ -2,10 +2,12 @@
 
 #include <doctest/doctest.h>
 
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 #include "core/inspector.h"
 #include "core/overlay.h"
@@ -87,16 +89,85 @@ TEST_CASE("inspector: a new clip keeps or drops the pin") {
 }
 
 TEST_CASE("inspector: whole zoom rounding and steps") {
-    CHECK(wholeZoom(2.4) == 2);
-    CHECK(wholeZoom(2.6) == 3);
-    CHECK(wholeZoom(900) == 256);
-    CHECK(wholeZoom(0.2) == 1);
-    CHECK(wholeZoom(std::numeric_limits<double>::quiet_NaN()) == 1);
-    CHECK(nextWholeZoom(4, true) == 6);
-    CHECK_FALSE(nextWholeZoom(1, false).has_value());
-    CHECK(nextWholeZoom(5, true) == 6);
-    CHECK(nextWholeZoom(5, false) == 4);
-    CHECK_FALSE(nextWholeZoom(256, true).has_value());
+    CHECK(wholeZoom(2.4, 1) == 2);
+    CHECK(wholeZoom(2.6, 1) == 3);
+    CHECK(wholeZoom(900, 1) == 256);
+    CHECK(wholeZoom(0.2, 1) == 1);
+    CHECK(wholeZoom(std::numeric_limits<double>::quiet_NaN(), 1) == 1);
+    CHECK(wholeZoom(0.2, 0) == 1);  // a minimum of 0 counts as 1
+    CHECK(nextWholeZoom(4, true, 1) == 6);
+    CHECK_FALSE(nextWholeZoom(1, false, 1).has_value());
+    CHECK(nextWholeZoom(5, true, 1) == 6);
+    CHECK(nextWholeZoom(5, false, 1) == 4);
+    CHECK_FALSE(nextWholeZoom(256, true, 1).has_value());
+}
+
+TEST_CASE("inspector: the zoom-out floor shows at most 3 x 3 major cells") {
+    using dvv::platform::PixelSize;
+    const auto floor_of = [](PixelSize picture, std::uint32_t step, PixelSize image = {}) {
+        const std::array pictures{picture};
+        return minZoom(pictures, step, image);
+    };
+    CHECK(floor_of({.width = 900, .height = 600}, 32) == 10);  // ceil(900 / 96)
+    CHECK(floor_of({.width = 600, .height = 900}, 32) == 10);  // the larger side, either axis
+    CHECK(floor_of({.width = 960, .height = 960}, 32) == 10);  // exactly 3 cells: no round up
+    CHECK(floor_of({.width = 961, .height = 10}, 32) == 11);
+    CHECK(floor_of({.width = 386, .height = 1112}, 32) == 12);  // one tall Planes panel
+    CHECK(floor_of({.width = 300, .height = 200}, 256) == 1);   // a large step on a small P
+    CHECK(floor_of({.width = 100000, .height = 10}, 2) == WHOLE_ZOOM_MAX);  // clamped at 256
+    CHECK(floor_of({}, 32) == 1);                                           // no picture
+    CHECK(floor_of({.width = 300, .height = 200}, 0) == 100);  // a step of 0 counts as 1
+    CHECK(minZoom({}, 32, {.width = 90, .height = 90}) == 1);  // no panel
+    // The largest panel sets the cell floor.
+    const std::array panels{PixelSize{.width = 386, .height = 1112},
+                            PixelSize{.width = 385, .height = 1112},
+                            PixelSize{.width = 900, .height = 1250}};
+    CHECK(minZoom(panels, 32, {.width = 4000, .height = 3000}) == 14);  // ceil(1250 / 96)
+    // A clip larger than 3 x 3 major cells on either axis keeps the cell floor.
+    CHECK(floor_of({.width = 1250, .height = 900}, 32, {.width = 97, .height = 90}) == 14);
+    CHECK(floor_of({.width = 1250, .height = 900}, 32, {.width = 90, .height = 97}) == 14);
+    // A clip of at most 3 x 3 cells zooms out until it shows whole: floor(900 / 96) = 9 < 14.
+    CHECK(floor_of({.width = 1250, .height = 900}, 32, {.width = 96, .height = 96}) == 9);
+    CHECK(floor_of({.width = 1250, .height = 900}, 32, {.width = 90, .height = 90}) == 10);
+    // A tiny clip shows whole at the cell floor already: the cell floor stays.
+    CHECK(floor_of({.width = 1250, .height = 900}, 32, {.width = 20, .height = 20}) == 14);
+    // A small clip larger than P still has the floor 1.
+    CHECK(floor_of({.width = 80, .height = 50}, 32, {.width = 96, .height = 96}) == 1);
+    // In every panel: the panel where the clip fits least sets it.
+    CHECK(minZoom(panels, 32, {.width = 96, .height = 96}) == 4);  // floor(385 / 96)
+    // Zoom out from above lands exactly on the floor and stops there; zoom in from it goes on.
+    const std::uint32_t floor = floor_of({.width = 900, .height = 600}, 32);
+    std::vector<std::uint32_t> out;
+    for (std::optional<std::uint32_t> z = 64; z; z = nextWholeZoom(*z, false, floor)) {
+        out.push_back(*z);
+    }
+    CHECK(out == std::vector<std::uint32_t>{64, 48, 32, 24, 16, 12, 10});
+    CHECK_FALSE(nextWholeZoom(10, false, 10).has_value());
+    CHECK_FALSE(nextWholeZoom(7, false, 10).has_value());  // below the floor: no step out
+    CHECK(nextWholeZoom(10, true, 10) == 12);
+    CHECK(nextWholeZoom(4, true, 10) == 10);  // in from below the floor: to the floor at least
+    CHECK(nextWholeZoom(13, false, 12) == 12);
+    CHECK_FALSE(nextWholeZoom(256, true, WHOLE_ZOOM_MAX).has_value());
+    CHECK_FALSE(nextWholeZoom(256, false, WHOLE_ZOOM_MAX).has_value());
+    // A requested zoom within [floor, 256].
+    CHECK(wholeZoom(3.0, 10) == 10);
+    CHECK(wholeZoom(14.4, 10) == 14);
+    CHECK(wholeZoom(900, 10) == WHOLE_ZOOM_MAX);
+    CHECK(wholeZoom(std::numeric_limits<double>::quiet_NaN(), 10) == 10);
+}
+
+TEST_CASE("inspector: the whole fit zoom of a clip in the panels") {
+    using dvv::platform::PixelSize;
+    const std::array one{PixelSize{.width = 1250, .height = 900}};
+    CHECK(wholeFitZoom(one, {.width = 96, .height = 96}) == 9);             // floor(900 / 96)
+    CHECK(wholeFitZoom(one, {.width = 100, .height = 10}) == 12);           // floor(1250 / 100)
+    CHECK(wholeFitZoom(one, {.width = 2, .height = 1}) == WHOLE_ZOOM_MAX);  // clamped at 256
+    CHECK(wholeFitZoom(one, {.width = 4000, .height = 3000}) == 1);         // larger than P: 1
+    CHECK(wholeFitZoom(one, {}) == 1);                                      // no image
+    CHECK(wholeFitZoom({}, {.width = 96, .height = 96}) == 1);              // no panel
+    const std::array two{PixelSize{.width = 400, .height = 900},
+                         PixelSize{.width = 380, .height = 900}};
+    CHECK(wholeFitZoom(two, {.width = 96, .height = 96}) == 3);  // floor(380 / 96)
 }
 
 TEST_CASE("inspector: follow centre is the middle of the pixel") {

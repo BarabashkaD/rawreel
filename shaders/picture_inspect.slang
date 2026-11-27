@@ -14,7 +14,9 @@
 // warning-colour inner frame and a top-right corner flag, its number the warning colour and its
 // label component an underline. The padding marks (LAYER_PADDING_MARKS) draw over the layers,
 // from the tile map padding_check.slang filled: a disc, a dark rim and a 1 px ring per marked tile centre.
-// LAYER_MARKERS draws the pin and the outline over all of it (markers.slang).
+// LAYER_MARKERS draws the pin and the outline over all of it (markers.slang) but for the pixels of
+// a corner flag, a value's text and a chroma label's box: the markers never hide them, but they
+// draw over a flagged cell's inner frame.
 
 import picture_common;
 import layer_block;
@@ -273,20 +275,21 @@ uint cellFlags(uint2 pixel)
     return flagged;
 }
 
-// The flagged cell `cell` (x0, x1, y0, y1 in P pixels) at P pixel (px, py): a 2-pixel inner
-// frame and a corner flag, legs max(4, advance / 2), at its top-right corner.
-bool onCellFlag(int4 cell, int px, int py)
+// The flagged cell `cell` (x0, x1, y0, y1 in P pixels) at P pixel (px, py): 0 outside its flag, 2
+// on its corner flag (legs max(4, advance / 2), at its top-right corner), else 1 on its 2-pixel
+// inner frame. The markers give way to the corner flag, not to the frame.
+uint onCellFlag(int4 cell, int px, int py)
 {
     if (px < cell.x || px >= cell.y || py < cell.z || py >= cell.w)
     {
-        return false;
-    }
-    if (px < cell.x + 2 || px >= cell.y - 2 || py < cell.z + 2 || py >= cell.w - 2)
-    {
-        return true;
+        return 0u;
     }
     const int leg = max(4, int(ic.layers->metrics.x) / 2);
-    return (cell.y - 1 - px) + (py - cell.z) < leg;
+    if ((cell.y - 1 - px) + (py - cell.z) < leg)
+    {
+        return 2u;
+    }
+    return (px < cell.x + 2 || px >= cell.y - 2 || py < cell.z + 2 || py >= cell.w - 2) ? 1u : 0u;
 }
 
 // The cell of image pixel `pixel` in P pixels: a Planes panel's sample block, else the pixel.
@@ -604,15 +607,19 @@ void main(uint3 id: SV_DispatchThreadID)
             lined = true;
         }
     }
+    bool kept = false;  // a corner flag, a value or a label: the markers give way to it
     if (inside && (flags & LAYER_CELL_FLAGS) != 0 && pc.zoom >= 1.0)
     {
         // Level 2: the cell of a flagged sample gets an inner frame and a corner flag.
         const uint2 pixel =
             uint2(clamp(int(floor(imageCoordinateAt(ax, px))), 0, int(pc.imageW) - 1),
                   clamp(int(floor(imageCoordinateAt(ay, py))), 0, int(pc.imageH) - 1));
-        if (cellFlags(pixel) != 0u && onCellFlag(flagCell(pc, ax, ay, pixel), px, py))
+        const uint flag =
+            cellFlags(pixel) != 0u ? onCellFlag(flagCell(pc, ax, ay, pixel), px, py) : 0u;
+        if (flag != 0u)
         {
             drawn = layerColour(ic.layers->warning);
+            kept = flag == 2u;
             lined = true;
         }
     }
@@ -634,6 +641,7 @@ void main(uint3 id: SV_DispatchThreadID)
             drawValues(pc, ax, ay, pixel, px, py, drawn))
         {
             result = skip ? decode3(drawn) : drawn;
+            kept = true;
         }
     }
     if ((flags & LAYER_PADDING_MARKS) != 0)
@@ -648,7 +656,7 @@ void main(uint3 id: SV_DispatchThreadID)
         }
     }
     float3 marker;
-    if ((flags & LAYER_MARKERS) != 0 && markerAt(ic.layers, ax, ay, px, py, marker))
+    if (!kept && (flags & LAYER_MARKERS) != 0 && markerAt(ic.layers, ax, ay, px, py, marker))
     {
         result = skip ? decode3(marker) : marker;
     }

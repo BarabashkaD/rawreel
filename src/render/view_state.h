@@ -18,6 +18,7 @@
 #include "dvv/media/view.h"
 #include "dvv/media/view_lines.h"
 #include "render/frame_feed.h"
+#include "render/view_layout.h"
 
 namespace rawreel {
 
@@ -55,8 +56,6 @@ struct OverlayParams {  // backing pixels; OverlayParams{} draws no grid and no 
     std::uint32_t markRim = 0;
     bool operator==(const OverlayParams&) const = default;
 };
-// What the inspect layers draw from: the display picture, or one panel per plane.
-enum class PanelKind : std::uint8_t { Picture, Planes };
 struct InspectParams {  // the inspect layers; on = false draws today's picture
     bool on = false;
     PanelKind panels = PanelKind::Picture;
@@ -79,10 +78,29 @@ struct MarkerParams {
     std::optional<ImageRect> outline{};
     bool operator==(const MarkerParams&) const = default;
 };
+// The image rects one panel's markers frame: the pin's cell in that panel (markerCells of
+// render/layer_block.h: the pixel, or a subsampled plane's sample block) and the outline.
+struct MarkerCells {
+    std::optional<ImageRect> pin{};
+    std::optional<ImageRect> outline{};
+    bool operator==(const MarkerCells&) const = default;
+};
+// The cells of `markers` in a panel that draws each image pixel as its own cell: the pin's pixel
+// and the outline.
+[[nodiscard]] inline MarkerCells pixelCells(const MarkerParams& markers) noexcept {
+    MarkerCells cells{.pin = std::nullopt, .outline = markers.outline};
+    if (markers.pin) {
+        cells.pin = ImageRect{.x = markers.pin->x, .y = markers.pin->y, .width = 1, .height = 1};
+    }
+    return cells;
+}
 // Whether a marker is set: the picture then draws with picture.slang plus the marker pass (markers
 // alone), or with the inspect pipeline when a layer is on.
 [[nodiscard]] inline bool markersOn(const MarkerParams& markers) noexcept {
     return markers.pin.has_value() || markers.outline.has_value();
+}
+[[nodiscard]] inline bool markersOn(const MarkerCells& cells) noexcept {
+    return cells.pin.has_value() || cells.outline.has_value();
 }
 struct ViewParams {
     // Resolved by the renderer against its extent and the frame size.

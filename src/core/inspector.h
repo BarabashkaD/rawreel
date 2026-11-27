@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 
 #include "core/overlay.h"
 #include "dvv/media/pixel_format.h"
@@ -66,17 +67,37 @@ private:
     InspectorLayout layout_ = InspectorLayout::Structure;
 };
 
-// The Zoom window's zoom is a whole number in [1, WHOLE_ZOOM_MAX] on every input path.
+// The Zoom window's zoom is a whole number in [minZoom, WHOLE_ZOOM_MAX] on every input path: it
+// never zooms out past MIN_ZOOM_CELLS x MIN_ZOOM_CELLS major grid cells per panel, and never shows
+// a Fit view.
 inline constexpr std::uint32_t WHOLE_ZOOM_MAX = 256;
+inline constexpr std::uint32_t MIN_ZOOM_CELLS = 3;
 // Used only by the zoom in/out keys and Ctrl+wheel notches.
 inline constexpr std::array<std::uint32_t, 16> WHOLE_ZOOM_STEPS{1,  2,  3,  4,  6,  8,   12,  16,
                                                                 24, 32, 48, 64, 96, 128, 192, 256};
 
-// The nearest whole number in [1, 256]; NaN gives 1. For a pinch and for a requested zoom.
-[[nodiscard]] std::uint32_t wholeZoom(double zoom) noexcept;
-// The next stop of WHOLE_ZOOM_STEPS strictly past `zoom` (in: larger, out: smaller); nullopt at the
-// end.
-[[nodiscard]] std::optional<std::uint32_t> nextWholeZoom(std::uint32_t zoom, bool in) noexcept;
+// The largest whole zoom in [1, 256] at which `image` shows whole in each of `pictures` (backing
+// pixels): the smallest floor(min(picture.width / image.width, picture.height / image.height));
+// 1 with no picture or an empty image.
+[[nodiscard]] std::uint32_t wholeFitZoom(std::span<const dvv::platform::PixelSize> pictures,
+                                         dvv::platform::PixelSize image) noexcept;
+// The Zoom window's zoom-out floor over the panels' picture regions `pictures` (backing pixels),
+// in [1, 256]. The cell floor is the smallest whole zoom at which each picture shows at most
+// MIN_ZOOM_CELLS cells of the major grid level (`major_step` image pixels, GridConfig::levels[0]
+// .step, shown or not) on each axis: ceil(largest side / (MIN_ZOOM_CELLS * major_step)); a step of
+// 0 counts as 1. A non-empty `image` of at most MIN_ZOOM_CELLS x MIN_ZOOM_CELLS major cells may
+// zoom out until it shows whole: its floor is min(cell floor, wholeFitZoom(pictures, image)).
+[[nodiscard]] std::uint32_t minZoom(std::span<const dvv::platform::PixelSize> pictures,
+                                    std::uint32_t major_step,
+                                    dvv::platform::PixelSize image) noexcept;
+// The nearest whole number in [minimum, 256] (minimum clamped to [1, 256]); NaN gives the minimum.
+// For a pinch and a requested zoom; a minimum of 1 rounds a zoom that is ruled already.
+[[nodiscard]] std::uint32_t wholeZoom(double zoom, std::uint32_t minimum) noexcept;
+// The next stop of WHOLE_ZOOM_STEPS strictly past `zoom` (in: larger, out: smaller), held in
+// [minimum, 256]: out from above the minimum lands on it at the latest, and gives nullopt from
+// the minimum or below; in gives nullopt at 256.
+[[nodiscard]] std::optional<std::uint32_t> nextWholeZoom(std::uint32_t zoom, bool in,
+                                                         std::uint32_t minimum) noexcept;
 
 // The image point at the centre of the Zoom view that follows `pin`: the middle of its pixel.
 [[nodiscard]] dvv::media::PointD followCentre(dvv::media::ImagePixel pin) noexcept;
@@ -119,7 +140,8 @@ enum class InspectorEvent : std::uint8_t {
     Other
 };
 // True for every event but Other: a hand pan is never undone by an unrelated recompute such as a
-// new frame, a toggle or a resize.
+// new frame or a toggle. A new panel picture (the layout, a resize) re-frames the shown pixel all
+// the same (MainFrame::updateInspector, P9).
 [[nodiscard]] bool recentres(InspectorEvent event) noexcept;
 
 }  // namespace rawreel
