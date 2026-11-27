@@ -4,6 +4,7 @@
 #include <wx/wx.h>  // first (R11)
 // clang-format on
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -45,8 +46,13 @@ inline constexpr double WHEEL_LINE_DIP = 16;
 // pipette cursor over the picture and a click picks. Pick: a click picks, the cursor stays.
 enum class ViewportTool : std::uint8_t { None, Pipette, Pick };
 
-// How a requested zoom is ruled. Free: any zoom within zoomLimits. WholePixels: a whole number in
-// [1, 256] on every path (wholeZoom, nextWholeZoom of core/inspector.h); a Fit view stays Fit.
+// How a requested zoom is ruled. Free: any zoom within zoomLimits. WholePixels (the Zoom window):
+// a whole number in [minWholeZoom(), 256] on every path (wholeZoom, nextWholeZoom of
+// core/inspector.h), and never Fit: with an image, a Fit request or a Zoom request for another
+// image size becomes a Zoom request at the image's centre (for a Fit one at wholeFitZoom raised to
+// the floor). A Zoom view at the floor follows a new floor both ways, and one at the zoom a Fit
+// request was ruled to (not a zoom the user chose) follows a new one both ways, so a clip shown
+// whole stays whole; any other zoom is only raised to the floor.
 enum class ZoomRule : std::uint8_t { Free, WholePixels };
 
 // The viewport (M1b §5.6 plus design M3 v2 §5.3 GUI side): a native child window that shows the
@@ -210,18 +216,31 @@ public:
     // later and on the current one; readbacks of an older renderer are dropped.
     void setReadbackHandler(dvv::MoveOnlyFunction<void(ViewReadback)> handler);
     void setPickHandler(dvv::MoveOnlyFunction<void(dvv::media::ImagePixel)> handler);
-    // The zoom rule (default Free). WholePixels rounds the view now and every later request.
+    // The zoom rule (default Free). WholePixels rules the view now and every later request, and
+    // rules the view again whenever the floor or the image size changes (a resize, a display
+    // scale, setPanels, setOverlayConfig, setImageSize).
     void setZoomRule(ZoomRule rule);
     [[nodiscard]] ZoomRule zoomRule() const noexcept { return zoom_rule_; }
+    // The smallest zoom WholePixels allows: minZoom (core/inspector.h) of the panels' picture
+    // regions at the major grid step of setOverlayConfig() (levels[0].step, shown or not) for the
+    // image of setImageSize() (the cell floor alone without an image); 1 under Free.
+    [[nodiscard]] std::uint32_t minWholeZoom() const;
     // One zoom step in or out from the view `from`, anchored at `anchor` (backing pixels in the
-    // picture region): stepZoom for Free, else the next stop of WHOLE_ZOOM_STEPS (no Fit stop);
-    // nullopt at the limit. The notches of Ctrl+wheel and the zoom keys use it.
+    // picture region): stepZoom for Free, else the next stop of WHOLE_ZOOM_STEPS held in
+    // [minWholeZoom(), 256] (no Fit stop); nullopt at the limit. The notches of Ctrl+wheel and the
+    // zoom keys use it.
     [[nodiscard]] std::optional<dvv::media::ViewRequest> zoomStep(
         const dvv::media::ViewRequest& from, bool in, dvv::media::PointD anchor) const;
     // The number of panels the viewport shows side by side (panelGrid, default 1; 0 counts as 1).
     // pictureSize(), pictureOffset(), picturePoint(), inPicture(), onRuler(), shownView() and
     // cursorPixel() work within the panel under the pointer (the first panel without one).
     void setPanels(std::uint32_t count);
+    [[nodiscard]] std::uint32_t panels() const noexcept { return panels_; }
+    // The picture region of panel `index` (row-major, as the renderer tiles them), backing pixels
+    // in the client; the first panel's for an index past the last.
+    [[nodiscard]] dvv::media::PixelRect panelPicture(std::size_t index) const;
+    // The picture regions of the panels (panelPicture), in backing pixels.
+    [[nodiscard]] std::vector<dvv::platform::PixelSize> panelPictures() const;
     // The value glyph strip (VALUE_GLYPHS in the ruler font at the overlay's scale, with its own
     // cache whatever the ruler settings); on = false releases it. valueGlyphs() is null while off
     // or when the OS raster failed.
@@ -311,6 +330,14 @@ private:
     void updateCursor();
     void endDrag();            // the default cursor, drag_ reset
     void notifyViewChanged();  // the view handler (set: the callers check), counted
+    // `request` under the zoom rule (see ZoomRule); Free leaves it as it is.
+    [[nodiscard]] dvv::media::ViewRequest ruledView(const dvv::media::ViewRequest& request) const;
+    // setView(view_) under WholePixels: the view after a change of the floor or the image size.
+    // True when the view changed (and the view handler ran).
+    bool ruleView();
+    // Under WholePixels with an image: `request` is a Fit request, or a Zoom request for this
+    // image at the zoom the last Fit request was ruled to (ruled_fit_), which follows it.
+    [[nodiscard]] bool fitRequest(const dvv::media::ViewRequest& request) const;
     // View zoom design §5: with an image, Ctrl+wheel (Windows, Linux; vertical axis) steps the
     // zoom at the pointer (stepZoom), one step per whole notch; a wheel without Ctrl drops the
     // rotation not yet a whole notch. Any other wheel pans when canPan().
@@ -342,7 +369,10 @@ private:
     std::vector<dvv::gpu::FontSpec> glyph_warned_;  // the fonts whose raster failure was logged
     ViewportTool tool_ = ViewportTool::None;
     ZoomRule zoom_rule_ = ZoomRule::Free;
-    std::uint32_t panels_ = 1;  // setPanels()
+    std::uint32_t panels_ = 1;       // setPanels()
+    std::uint32_t ruled_floor_ = 0;  // the floor of the last ruling (setView), 0 before it
+    // The zoom of the last ruling when fitRequest() held for it, else 0 (any other zoom).
+    std::uint32_t ruled_fit_ = 0;
     // The panel rects of panels_ at panel_rects_extent_ (rebuilt when either changes).
     mutable std::vector<dvv::media::PixelRect> panel_rects_;
     mutable dvv::platform::PixelSize panel_rects_extent_;

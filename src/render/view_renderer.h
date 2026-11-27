@@ -28,12 +28,10 @@
 #include "render/picture_pass.h"
 #include "render/ruler_constants.h"
 #include "render/ruler_pass.h"
+#include "render/view_layout.h"
 #include "render/view_state.h"
 
 namespace rawreel {
-
-// The most panels one view draws side by side (view_layout.h).
-inline constexpr std::uint32_t MAX_PANELS = 4;
 
 // The most components a probe reads.
 inline constexpr std::size_t PROBE_COMPONENTS = 4;
@@ -78,6 +76,14 @@ inline constexpr std::uint32_t READBACK_SLOTS = 4;
 inline constexpr std::uint64_t READBACK_SLOT_BYTES = 64;
 inline constexpr std::uint64_t READBACK_WINDOW_BYTES = 8;
 
+// The markers one panel's last due picture pass drew: the cells they frame and the output
+// pixels they cover (markerRects, the rects in the order it gives them).
+struct PanelMarkers {
+    MarkerCells cells{};
+    std::vector<dvv::media::PixelRect> rects{};
+    bool operator==(const PanelMarkers&) const = default;
+};
+
 // What the last record shows (selftests `player` and `lost`), and how many passes were recorded. A
 // record is a frame() or render() that dispatches at least one pass; epoch, extent, picture, rulers
 // and rulerDispatched are the last record's, so a ruler-only record into a new output (P below the
@@ -115,8 +121,11 @@ struct RecordedInfo {
     bool inspectPipeline = false;
     // The rects the marker pass of panel 0's last due picture pass dispatched; empty: none.
     std::vector<dvv::media::PixelRect> markerParts{};
-    // The markers panel 0's last due picture pass drew.
-    MarkerParams markers{};
+    // The cells the markers of panel 0's last due picture pass framed.
+    MarkerCells markers{};
+    // Per panel of the last record (one entry each): the markers its last due picture pass drew;
+    // empty while no panel draws one.
+    std::vector<PanelMarkers> panelMarkers{};
     // The ViewSnapshot version of the last frame() record whose picture pass was due (render()
     // leaves it).
     std::uint64_t version = 0;
@@ -268,7 +277,7 @@ private:
         std::uint64_t layers = 0;  // the bound layer block's serial (LayerCache::serial), 0: none
         std::uint64_t valueStrip = 0;  // the bound value strip's serial, 0: none
         std::uint64_t layersBase = 0;  // LayerCache::baseSerial of the bound block, 0: none
-        MarkerParams markers{};        // the markers the bound block draws
+        MarkerCells markers{};         // the cells the bound block's markers frame
     };
     // The pass inputs of one panel (frame() only; render() has its own layer caches).
     struct PanelState {

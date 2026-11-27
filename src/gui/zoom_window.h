@@ -76,6 +76,8 @@ public:
     // feed roles, no value glyphs, no stack, so it holds no lease, glyph strip or GPU object.
     void attach(const std::weak_ptr<dvv::gpu::ExecutionContext>& context, std::uint64_t epoch);
     void detach();
+    // attach() ran and detach() did not since.
+    [[nodiscard]] bool attached() const { return attached_; }
 
 private:
     // Copy and Esc, then the Zoom keys (zoomKeyAction, MainFrame::inspectorKey).

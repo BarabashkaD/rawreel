@@ -465,8 +465,10 @@ std::vector<dvv::media::PixelRect> expectedParts(const ViewParams& params,
         dvv::media::resolveView(params.view, MARKER_EXTENT, MARKER_IMAGE);
     const rawreel::PassRegions regions =
         rawreel::passRegions(MARKER_EXTENT, params.overlay.strips, view);
-    std::vector<dvv::media::PixelRect> parts = rawreel::markerRects(before, view, regions);
-    const std::vector<dvv::media::PixelRect> more = rawreel::markerRects(after, view, regions);
+    std::vector<dvv::media::PixelRect> parts =
+        rawreel::markerRects(rawreel::pixelCells(before), view, regions);
+    const std::vector<dvv::media::PixelRect> more =
+        rawreel::markerRects(rawreel::pixelCells(after), view, regions);
     parts.insert(parts.end(), more.begin(), more.end());
     return parts;
 }
@@ -659,8 +661,9 @@ TEST_CASE("markers: a dot below 6 px") {
         CHECK(rgbAt(shown, cx, cy - 4) == RIM_RGB);
         CHECK(rgbAt(shown, cx - 5, cy) == rgbAt(plain, cx - 5, cy));
         CHECK(rgbAt(shown, cx + 4, cy) == rgbAt(plain, cx + 4, cy));
-        const std::vector<dvv::media::PixelRect> rects = rawreel::markerRects(
-            params.markers, view, rawreel::passRegions(MARKER_EXTENT, {}, view));
+        const std::vector<dvv::media::PixelRect> rects =
+            rawreel::markerRects(rawreel::pixelCells(params.markers), view,
+                                 rawreel::passRegions(MARKER_EXTENT, {}, view));
         REQUIRE(rects.size() == 1);
         CHECK(rects[0] == dvv::media::PixelRect{static_cast<std::uint32_t>(cx - 4),
                                                 static_cast<std::uint32_t>(cy - 4), 8, 8});
@@ -688,8 +691,8 @@ TEST_CASE("markers: the main view keeps picture.slang and the marker pass draws 
             CHECK(info.pictureParts == std::vector{info.pictureDrawn});
             const dvv::media::ViewTransform view =
                 dvv::media::resolveView(params.view, MARKER_EXTENT, MARKER_IMAGE);
-            const std::vector<dvv::media::PixelRect> rects =
-                rawreel::markerRects(markers, view, rawreel::passRegions(MARKER_EXTENT, {}, view));
+            const std::vector<dvv::media::PixelRect> rects = rawreel::markerRects(
+                rawreel::pixelCells(markers), view, rawreel::passRegions(MARKER_EXTENT, {}, view));
             CHECK_FALSE(rects.empty());
             CHECK(info.markerParts == rects);
             CHECK(shown == renderInspect(env, frame, *renderer, MARKER_EXTENT, params));
@@ -977,6 +980,88 @@ TEST_CASE("padding: planted garbage is counted and marked for every format with 
         std::size_t flagged = 0;
         CHECK(wrongCellFlags(frame, extent, panels, flagged) == 0);
         CHECK(flagged >= planted.size());
+    }
+    CHECK(env.gpuInstance->validationMessageCount() == 0);
+}
+
+TEST_CASE("padding: the pin's mark stays visible over flagged neighbours") {
+    GpuTestEnvironment env = rawreel::testing::makeGpuTestEnvironment();
+    {
+        // gray10le: every pixel its own sample with padding bits in its stored word. The 8
+        // neighbours of the pin are flagged, the pin is not.
+        const dvv::media::FormatId format = formatNamed("gray10le");
+        const dvv::media::ImagePixel pin{.x = 10, .y = 8};
+        std::vector<rawreel::testing::PlantedBits> planted;
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (dx != 0 || dy != 0) {
+                    const dvv::media::SamplePosition sample{.x = pin.x + dx, .y = pin.y + dy};
+                    planted.push_back({.component = 0,
+                                       .sample = sample,
+                                       .bits = paddingMaskOf(format, 0, sample)});
+                }
+            }
+        }
+        const rawreel::testing::InspectFrame frame =
+            rawreel::testing::openInspectFrame(env, format, PADDING_IMAGE, planted);
+        const auto renderer = inspectRenderer(frame);
+        constexpr rawreel::ValueMetrics METRICS{
+            .advance = 5, .lineHeight = 9, .padX = 4, .padY = 4};
+        constexpr std::uint32_t ZOOM = 28;
+        const dvv::platform::PixelSize extent{.width = ZOOM * PADDING_IMAGE.width,
+                                              .height = ZOOM * PADDING_IMAGE.height};
+        const auto strip =
+            valueStrip(5, 7, [](std::uint32_t cell, std::uint32_t x, std::uint32_t y) {
+                return static_cast<std::uint8_t>(((cell * 61U) + (x * 37U) + (y * 101U)) % 256U);
+            });
+        // Without coverage the values draw nothing: what `on` adds to it is the text.
+        ViewParams params = valuesParams(
+            valueStrip(5, 7,
+                       [](std::uint32_t, std::uint32_t, std::uint32_t) { return std::uint8_t{0}; }),
+            METRICS);
+        const std::vector<std::byte> off = renderInspect(env, frame, *renderer, extent, params);
+        params = valuesParams(strip, METRICS);
+        const std::vector<std::byte> on = renderInspect(env, frame, *renderer, extent, params);
+        params.markers.pin = pin;
+        const std::vector<std::byte> shown = renderInspect(env, frame, *renderer, extent, params);
+        const std::int64_t x0 = std::int64_t{pin.x} * ZOOM;
+        const std::int64_t y0 = std::int64_t{pin.y} * ZOOM;
+        const std::int64_t x1 = x0 + ZOOM;
+        const std::int64_t y1 = y0 + ZOOM;
+        constexpr std::int64_t LEG = 4;  // max(4, advance / 2)
+        // The corner flag of the cell holding (px, py): its top-right triangle.
+        const auto on_corner = [](std::int64_t px, std::int64_t py) {
+            return ((ZOOM - 1) - (px % ZOOM)) + (py % ZOOM) < LEG;
+        };
+        // The neighbours are flagged: the left one's frame, mid-height, is the warning colour.
+        const auto left = pixelOf(on, extent, static_cast<std::uint32_t>(x0 - ZOOM),
+                                  static_cast<std::uint32_t>(y0 + ZOOM / 2));
+        REQUIRE(left[0] == WARNING[0]);
+        REQUIRE(left[1] == WARNING[1]);
+        std::size_t marks = 0;
+        std::size_t on_text = 0;
+        std::size_t on_corners = 0;
+        std::size_t ring_free = 0;  // the ring's pixels that are neither text nor a corner flag
+        std::size_t corners = 0;    // the ring's corner flag pixels
+        for (std::uint32_t py = 0; py < extent.height; ++py) {
+            for (std::uint32_t px = 0; px < extent.width; ++px) {
+                const bool in_cell = px >= x0 && px < x1 && py >= y0 && py < y1;
+                const bool in_ring =
+                    !in_cell && px >= x0 - 3 && px < x1 + 3 && py >= y0 - 3 && py < y1 + 3;
+                const bool is_text = pixelOf(off, extent, px, py) != pixelOf(on, extent, px, py);
+                const bool is_mark = pixelOf(on, extent, px, py) != pixelOf(shown, extent, px, py);
+                const bool is_corner = on_corner(px, py) && !in_cell;
+                marks += is_mark ? 1 : 0;
+                on_text += is_mark && is_text ? 1 : 0;
+                on_corners += is_mark && is_corner ? 1 : 0;
+                corners += in_ring && is_corner ? 1 : 0;
+                ring_free += in_ring && !is_text && !is_corner ? 1 : 0;
+            }
+        }
+        CHECK(corners > 0);
+        CHECK(on_text == 0);
+        CHECK(on_corners == 0);
+        CHECK(marks * 2 >= ring_free);
     }
     CHECK(env.gpuInstance->validationMessageCount() == 0);
 }

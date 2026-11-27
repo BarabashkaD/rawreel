@@ -490,17 +490,22 @@ the frame, so the text is exactly what the cells show, every frame, also during 
 - **Zoom window.** View → Zoom Window shows and hides it (on macOS: Show Zoom Window / Hide Zoom
   Window); closing it keeps the pin. It opens at 640 × 640 pt; its place and size are saved. Its
   toolbar has Pinned | Live, Follow | Cell, Structure | Planes, Fit cell and Numbers fit. The picture
-  has rulers in image pixel coordinates and the main window's grid. A click re-pins; panning by hand
-  looks around without moving the pin.
+  has rulers in image pixel coordinates and the main window's grid. It marks the pixel it shows (the
+  pin, the probe in Live) with the same mark in every panel (a box, a dot when the cell is under 6
+  screen pixels), around that panel's cell of the pixel (a
+  chroma panel's whole sample cell); numbers, labels and corner flags stay visible over the mark. A click
+  re-pins; panning by hand looks around without moving the pin.
   - Structure (S): one grid of image pixels over the picture. A subsampled YUV clip shows each
     cell's Y and outlines each chroma block with its U and V once; without subsampling each cell
     stacks all its components. Planes (S): one panel per component, side by side, at the same
     region and scale, each cell grey by its code. Planes and Alpha apply in Structure only.
   - Follow (F): the view stays centred on the pin. Cell (F): the view shows the largest grid cell
     (major, minor or second minor) that holds the pin and fits the window, and jumps to the next.
-  - The zoom is a whole number of screen pixels per image pixel, from 1 to 256. Numbers fit (or
+  - The zoom is a whole number of screen pixels per image pixel, up to 256. It never zooms out
+    past 3 x 3 major grid cells per panel and never shows the whole picture; Zoom Out stops there.
+    A clip of at most 3 x 3 major cells zooms out until it shows whole. Numbers fit (or
     Actual Size) is the smallest zoom at which every number fits its cell; Fit cell (or Zoom to
-    Fit) fits the grid cell that holds the pin. Below the numbers' zoom the window is a plain
+    Fit) fits the grid cell that holds the pin, at least at the zoom floor. Below the numbers' zoom the window is a plain
     magnifier without numbers or cell lines.
   - Keys in the Zoom window: arrows move the pin by one image pixel, Shift+arrows by one chroma
     block; C centres the view on the pin; Space plays and pauses; the view keys act on the window

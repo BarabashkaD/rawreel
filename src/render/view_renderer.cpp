@@ -133,10 +133,9 @@ ViewRenderer::PanelPlan ViewRenderer::panelPlan(const FrameSet& frames,
                 frames.count > MAX_STREAMS || !planes) {
                 break;
             }
-            const std::uint32_t count = dvv::media::formatDesc(planes.desc().format).componentCount;
-            if (count >= 1) {
+            if (dvv::media::formatDesc(planes.desc().format).componentCount >= 1) {
                 plan = {.kind = PanelKind::Planes,
-                        .count = std::min<std::uint32_t>(count, MAX_PANELS),
+                        .count = panelCount(PanelKind::Planes, planes.desc().format),
                         .desc = planes.desc()};
             }
             break;
@@ -263,7 +262,7 @@ dvv::Result<ViewRenderer::Drawn> ViewRenderer::prepare(dvv::media::PixelRect pan
         drawn.inspect.markersOnly = block.flags == LAYER_MARKERS;
         drawn.layers = layers.serial;
         drawn.layersBase = layers.baseSerial;
-        drawn.markers = params.markers;
+        drawn.markers = markerCells(params.markers, desc, index, plan.kind);
         drawn.inspect.planes =
             planeImagesOf(planes, dvv::media::formatDesc(desc.format).componentCount, *context_);
         if (values_on && values.image != nullptr) {
@@ -362,6 +361,22 @@ ViewRenderer::Recording ViewRenderer::record(
                 if (version) {
                     recorded_.version = *version;
                 }
+            }
+        }
+        if (picture) {
+            std::vector<PanelMarkers>& drew = recorded_.panelMarkers;
+            if (markersOn(drawn.markers) || !drew.empty()) {
+                drew.resize(panels);
+                // Built only when the panel drew or its markers changed: a record that drew
+                // nothing leaves the entry as it was.
+                if (index < panels && (picture_dispatched || drew[index].cells != drawn.markers)) {
+                    drew[index] = {.cells = drawn.markers,
+                                   .rects = markerRects(drawn.markers, drawn.view, drawn.regions)};
+                }
+            }
+            if (std::ranges::none_of(drew,
+                                     [](const PanelMarkers& m) { return markersOn(m.cells); })) {
+                drew.clear();  // no panel draws a marker
             }
         }
         if (picture_dispatched && !parts.empty()) {

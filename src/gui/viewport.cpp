@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -522,7 +523,7 @@ void Viewport::onZoomGesture(wxZoomGestureEvent& event) {
         const double wanted = pinch_start_zoom_ * factor;
         double zoom = wanted;
         if (zoom_rule_ == ZoomRule::WholePixels) {
-            zoom = wholeZoom(wanted);
+            zoom = wholeZoom(wanted, minWholeZoom());
         } else {
             const ZoomLimits limits = zoomLimits(fitZoom());
             zoom = std::clamp(wanted, limits.minimum, limits.maximum);
@@ -530,7 +531,7 @@ void Viewport::onZoomGesture(wxZoomGestureEvent& event) {
         // The zoom shown already (a start at factor 1): no setView, so Fit stays Fit. Whole
         // pixels: only a pinch that reaches another whole zoom changes the view.
         const bool changed = zoom_rule_ == ZoomRule::WholePixels
-                                 ? zoom != wholeZoom(shown)
+                                 ? zoom != wholeZoom(shown, 1)
                                  : std::abs(zoom - shown) > 1e-6 * shown;
         if (changed) {
             setView(
@@ -554,16 +555,84 @@ void Viewport::resizePresenter() {
         presenter_->resize(physicalClientSize());
     }
     updateCursor();
-    if (view_changed_) {
-        notifyViewChanged();  // the shown zoom follows the extent (a Fit view, a clamped centre)
+    // A new P moves the zoom floor; else the shown zoom follows the extent (a Fit view, a clamped
+    // centre).
+    if (!ruleView() && view_changed_) {
+        notifyViewChanged();
     }
 }
 
-void Viewport::setView(const ViewRequest& wanted) {
-    ViewRequest request = wanted;
-    if (zoom_rule_ == ZoomRule::WholePixels && request.mode == dvv::media::ViewMode::Zoom) {
-        request.zoom = wholeZoom(request.zoom);
+ViewRequest Viewport::ruledView(const ViewRequest& wanted) const {
+    if (zoom_rule_ != ZoomRule::WholePixels) {
+        return wanted;
     }
+    ViewRequest request = wanted;
+    const std::vector<dvv::platform::PixelSize> pictures = panelPictures();
+    const std::uint32_t minimum = minZoom(pictures, grid_.levels[0].step, image_);
+    // A Zoom view at the floor it was ruled with follows the floor both ways, one at the zoom a
+    // Fit request was ruled to follows that zoom both ways; any other zoom is only raised to the
+    // floor.
+    const bool at_floor = wanted.mode == dvv::media::ViewMode::Zoom && ruled_floor_ != 0 &&
+                          wholeZoom(wanted.zoom, 1) == ruled_floor_;
+    const bool fit = fitRequest(wanted);
+    if (!image_.empty() && (request.mode == dvv::media::ViewMode::Fit || request.image != image_)) {
+        // Never Fit: a Zoom request at the image's centre (the zoom kept for another image size).
+        request = {.mode = dvv::media::ViewMode::Zoom,
+                   .zoom = request.zoom,
+                   .centre = {.x = image_.width / 2.0, .y = image_.height / 2.0},
+                   .image = image_};
+    }
+    if (request.mode == dvv::media::ViewMode::Zoom) {
+        // A Fit one: the largest whole zoom that shows the image whole, raised to the floor.
+        if (fit) {
+            request.zoom = std::max(wholeFitZoom(pictures, image_), minimum);
+        } else {
+            request.zoom = at_floor ? minimum : wholeZoom(request.zoom, minimum);
+        }
+    }
+    return request;
+}
+
+bool Viewport::fitRequest(const ViewRequest& request) const {
+    if (zoom_rule_ != ZoomRule::WholePixels || image_.empty()) {
+        return false;
+    }
+    return request.mode == dvv::media::ViewMode::Fit ||
+           (request.mode == dvv::media::ViewMode::Zoom && request.image == image_ &&
+            ruled_fit_ != 0 && wholeZoom(request.zoom, 1) == ruled_fit_);
+}
+
+bool Viewport::ruleView() {
+    if (zoom_rule_ != ZoomRule::WholePixels) {
+        return false;
+    }
+    const ViewRequest old = view_;
+    setView(view_);
+    return view_ != old;
+}
+
+std::vector<dvv::platform::PixelSize> Viewport::panelPictures() const {
+    std::vector<dvv::platform::PixelSize> pictures;
+    pictures.reserve(panels_);
+    for (std::size_t i = 0; i < panels_; ++i) {
+        const dvv::media::PixelRect picture = panelPicture(i);
+        pictures.push_back({.width = picture.width, .height = picture.height});
+    }
+    return pictures;
+}
+
+std::uint32_t Viewport::minWholeZoom() const {
+    if (zoom_rule_ != ZoomRule::WholePixels) {
+        return 1;
+    }
+    return minZoom(panelPictures(), grid_.levels[0].step, image_);
+}
+
+void Viewport::setView(const ViewRequest& wanted) {
+    const ViewRequest request = ruledView(wanted);
+    // Before the view handler: a nested request sees both.
+    ruled_floor_ = minWholeZoom();
+    ruled_fit_ = fitRequest(wanted) ? wholeZoom(request.zoom, 1) : 0;
     if (request == view_) {
         return;
     }
@@ -591,7 +660,7 @@ void Viewport::setImageSize(dvv::platform::PixelSize image) {
 #endif
     image_ = image;
     updateCursor();
-    if (view_changed_) {
+    if (!ruleView() && view_changed_) {  // WholePixels: the request ruled for the new size
         notifyViewChanged();
     }
 }
@@ -700,8 +769,10 @@ void Viewport::setOverlayConfig(const GridConfig& grid, const RulerConfig& ruler
     rulers_ = rulers;
     sendOverlay();
     updateCursor();
-    if (view_changed_) {
-        notifyViewChanged();  // a Fit view refits P: the shown zoom follows
+    // The strips or the major step move the zoom floor; else a Fit view refits P: the shown zoom
+    // follows.
+    if (!ruleView() && view_changed_) {
+        notifyViewChanged();
     }
 }
 
@@ -832,7 +903,7 @@ void Viewport::setPickHandler(dvv::MoveOnlyFunction<void(dvv::media::ImagePixel)
 
 void Viewport::setZoomRule(ZoomRule rule) {
     zoom_rule_ = rule;
-    setView(view_);  // rounds a Zoom request under WholePixels
+    setView(view_);  // rules the view under WholePixels
 }
 
 std::optional<ViewRequest> Viewport::zoomStep(const ViewRequest& from, bool in,
@@ -847,7 +918,7 @@ std::optional<ViewRequest> Viewport::zoomStep(const ViewRequest& from, bool in,
     const double nearest = std::round(shown);
     const double snapped = std::abs(shown - nearest) <= 1e-6 * nearest ? nearest : shown;
     const auto start = static_cast<std::uint32_t>(in ? std::floor(snapped) : std::ceil(snapped));
-    const std::optional<std::uint32_t> next = nextWholeZoom(start, in);
+    const std::optional<std::uint32_t> next = nextWholeZoom(start, in, minWholeZoom());
     if (!next) {
         return std::nullopt;
     }
@@ -862,8 +933,8 @@ void Viewport::setPanels(std::uint32_t count) {
     panels_ = count;
     panel_rects_.clear();  // the cached rects are of the old count
     updateCursor();
-    if (view_changed_) {
-        notifyViewChanged();  // P is the panel's
+    if (!ruleView() && view_changed_) {  // P is the panel's, and so is the zoom floor
+        notifyViewChanged();
     }
 }
 
@@ -885,6 +956,12 @@ dvv::media::PixelRect Viewport::panelRect(std::optional<PointD> at) const {
     }
     const std::optional<std::size_t> index = at ? panelAt(rects, *at) : std::nullopt;
     return rects[index.value_or(0)];
+}
+
+dvv::media::PixelRect Viewport::panelPicture(std::size_t index) const {
+    const dvv::media::PixelRect whole = panelRect(std::nullopt);  // fills panel_rects_ too
+    const bool cached = panels_ > 1 && index < panel_rects_.size();
+    return pictureRect(cached ? panel_rects_[index] : whole);
 }
 
 dvv::media::PixelRect Viewport::pointerPanel() const {

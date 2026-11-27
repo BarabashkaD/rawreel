@@ -101,19 +101,19 @@ struct PictureInputs {
     // The serial of the layer block with its pin and outline fields cleared (LayerCache), and
     // the markers those fields hold.
     std::uint64_t layersBase = 0;
-    MarkerParams markers{};
+    MarkerCells markers{};
     bool operator==(const PictureInputs&) const = default;
     // Whether the inputs equal `other` but for the markers: compared with `layers` and
     // `markers` cleared (layersBase stands for the rest of the layer block).
     [[nodiscard]] bool equalButMarkers(const PictureInputs& other) const noexcept;
 };
 
-// The output pixels the markers of `markers` draw in a view `view` over `regions`, each rect
+// The output pixels the markers framing `markers` draw in a view `view` over `regions`, each rect
 // clipped to regions.pictureDrawn (empty ones dropped): a pin span of at least 6 px on both axes
 // gives the four edge strips of its 3 px ring (the 2 px box and the 1 px rim outside it), a
 // smaller one the 8 x 8 rect of its dot and rim; the outline gives the four edge strips of its
 // 2 px line outside the region. Nothing for a view without an image.
-[[nodiscard]] std::vector<dvv::media::PixelRect> markerRects(const MarkerParams& markers,
+[[nodiscard]] std::vector<dvv::media::PixelRect> markerRects(const MarkerCells& markers,
                                                              const dvv::media::ViewTransform& view,
                                                              const PassRegions& regions);
 

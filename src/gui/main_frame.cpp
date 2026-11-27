@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "render/frame_feed.h"
+#include "render/view_layout.h"
 #include "render/view_renderer.h"
 #include "render/view_state.h"
 
@@ -69,6 +70,7 @@
 #include "dvv/media/view.h"
 #include "dvv/media/view_lines.h"
 #include "dvv/platform/file_writer.h"
+#include "dvv/platform/pixel_size.h"
 #include "dvv/registry/module.h"
 #include "gui/about.h"
 #include "gui/app.h"
@@ -1793,6 +1795,11 @@ void MainFrame::onStreamsChanged(const std::vector<StreamInfo>& streams) {
     updateAlphaControls();  // another clip keeps the state; the button follows its format
     updatePaddingControls();
     updatePlaneControls();  // the planes too, by position, with the new clip's letters
+    // The image size of the Zoom view's request: kept while there is no stream, so a Reopen of the
+    // same clip keeps a hand pan.
+    const dvv::platform::PixelSize zoom_image = zoomWindow() != nullptr
+                                                    ? zoomWindow()->viewport().view().image
+                                                    : dvv::platform::PixelSize{};
     // The view's frame size; the renderer resolves the view against the frame it shows.
     if (streams_.empty()) {
         viewport_->setImageSize({});
@@ -1824,7 +1831,10 @@ void MainFrame::onStreamsChanged(const std::vector<StreamInfo>& streams) {
         const ViewReadback held = *held_padding_;
         onPaddingReadback(held);
     }
-    updateInspector(InspectorEvent::Other);
+    // Another image size: the Zoom view (at the image's centre, Viewport::ruledView) centres on
+    // the kept pin or probe.
+    const bool other_size = !viewport_->imageSize().empty() && viewport_->imageSize() != zoom_image;
+    updateInspector(other_size ? InspectorEvent::Centre : InspectorEvent::Other);
     if (auto* const window = dynamic_cast<GridWindow*>(floatingWindow(FloatingKind::GridAndRulers));
         window != nullptr) {
         window->showImageWidth(clipWidth(*viewport_));
@@ -2177,6 +2187,24 @@ void MainFrame::updateInspector(InspectorEvent event) {
                               .metrics = {},
                               .letterCells = {},
                               .probe = shown};
+        // The panels the renderer draws, so that every position, outline and zoom extent of the
+        // view is one panel's picture. A change notifies the view handler, which runs this again
+        // with the same count: that run returns early in setPanels.
+        const std::optional<dvv::media::FormatId> planes =
+            streams_.empty()
+                ? std::nullopt
+                : std::optional(dvv::media::unpackedFormat(streams_.front().info.desc.format));
+        view.setPanels(panelCount(inspect.panels, planes));
+        // A new panel picture (the layout, a resize, the strips, a display scale) re-frames the
+        // shown pixel at the new panel (P9), recorded first: a view change below runs this again.
+        // Only while the window is attached: the strips that come and go with a hide and a show
+        // are no layout change, so they keep a hand pan.
+        bool reframe = false;
+        if (zoom->attached()) {
+            std::vector<dvv::platform::PixelSize> pictures = view.panelPictures();
+            reframe = inspector_pictures_ && *inspector_pictures_ != pictures;
+            inspector_pictures_ = std::move(pictures);
+        }
         const std::optional<ValueMetrics> metrics = valueMetricsOf(view);
         if (!streams_.empty()) {
             const StreamInfo& stream = streams_.front();
@@ -2193,23 +2221,34 @@ void MainFrame::updateInspector(InspectorEvent event) {
             const std::optional<std::uint32_t> fit =
                 metrics ? std::optional(numbersFitZoom(*metrics, inspector_.layout(), clip))
                         : std::nullopt;
-            // A view at the last fit follows a new one (a display scale, the layout, the clip)
-            // around its centre, so a hand pan stays; a zoom the user chose stays. The
-            // fit is recorded first: the view change below runs updateInspector again.
+            // A view at the last fit raised to the last zoom floor follows a new fit or floor (a
+            // display scale, a resize, the layout, the major step, the clip) around its centre,
+            // so a hand pan stays; a zoom the user chose stays. The floor ruling ran first
+            // (Viewport::ruledView): a view at the old floor is at the new one now, any other is
+            // raised to it. The fit and floor are recorded first: the view change below runs
+            // updateInspector again.
             const std::optional<std::uint32_t> old_fit = inspector_fit_;
+            const std::optional<std::uint32_t> old_floor = inspector_floor_;
+            const std::uint32_t zoom_floor = view.minWholeZoom();
             if (fit) {
                 inspector_fit_ = fit;
             }
-            if (fit && old_fit && *fit != *old_fit &&
+            inspector_floor_ = zoom_floor;
+            const auto followed = [&] {
+                const std::uint32_t was = std::max(*old_fit, *old_floor);
+                return was == *old_floor ? zoom_floor : std::max(was, zoom_floor);
+            };
+            if (fit && old_fit && old_floor && (*fit != *old_fit || zoom_floor != *old_floor) &&
                 view.view().mode == dvv::media::ViewMode::Zoom &&
-                wholeZoom(view.shownView().zoom()) == *old_fit) {
+                wholeZoom(view.shownView().zoom(), 1) == followed() &&
+                followed() != std::max(*fit, zoom_floor)) {
                 const dvv::platform::PixelSize extent = view.pictureSize();
                 const PointD anchor{.x = extent.width / 2.0, .y = extent.height / 2.0};
                 view.setView(zoomAround(view.view(), extent, view.imageSize(), *fit, anchor));
             }
-            if (shown && recentres(event)) {
+            if (shown && (recentres(event) || reframe)) {
                 const bool first = event == InspectorEvent::FirstPin && fit.has_value();
-                setInspectorZoom(first ? *fit : wholeZoom(view.shownView().zoom()));
+                setInspectorZoom(first ? *fit : wholeZoom(view.shownView().zoom(), 1));
             }
             // The numbers at the shown zoom where they fit their cells.
             if (fit) {  // the shown zoom, unrounded: a Fit view just under fit shows no numbers
@@ -2262,10 +2301,10 @@ void MainFrame::applyViewCommand(Command command, Viewport& view) {
         case Command::FitToWindow: next = fitCellZoom(grid_, view.pictureSize()); break;
         case Command::ZoomIn:
         case Command::ZoomOut:
-            // The next whole stop past the shown zoom; none at 1 (out) and 256 (in).
+            // The next whole stop past the shown zoom; none at the floor (out) and 256 (in).
             if (const std::optional<ViewRequest> step =
                     view.zoomStep(view.view(), command == Command::ZoomIn, {})) {
-                next = wholeZoom(step->zoom);
+                next = wholeZoom(step->zoom, 1);
             }
             break;
         default: return;
@@ -2281,22 +2320,24 @@ void MainFrame::setInspectorZoom(std::uint32_t zoom, std::optional<dvv::media::I
         return;
     }
     Viewport& view = window->viewport();
+    const std::uint32_t ruled = std::max(zoom, view.minWholeZoom());  // the zoom it will show
     if (!at) {  // no pixel to centre on: the picture's centre stays
         const dvv::platform::PixelSize extent = view.pictureSize();
         const PointD anchor{.x = extent.width / 2.0, .y = extent.height / 2.0};
-        view.setView(zoomAround(view.view(), extent, view.imageSize(), zoom, anchor));
+        view.setView(zoomAround(view.view(), extent, view.imageSize(), ruled, anchor));
         return;
     }
     PointD centre = followCentre(*at);
     if (inspector_.mode() == InspectorMode::Cell) {
-        // The grid cell that holds the pixel; Follow when no level's cell fits (§4.4).
+        // The grid cell that holds the pixel at the shown zoom; Follow when no level's cell fits
+        // (§4.4).
         if (const std::optional<CellView> cell =
-                cellView(*at, grid_, zoom, view.pictureSize(), view.imageSize())) {
+                cellView(*at, grid_, ruled, view.pictureSize(), view.imageSize())) {
             centre = cell->centre;
         }
     }
     view.setView({.mode = dvv::media::ViewMode::Zoom,
-                  .zoom = static_cast<double>(zoom),
+                  .zoom = static_cast<double>(ruled),
                   .centre = centre,
                   .image = view.imageSize()});
 }
@@ -2333,7 +2374,8 @@ void MainFrame::inspectorKey(const ZoomKeyAction& action) {
             return;
         case ZoomKey::CentreOnPin:  // on the pin also with Live on (§4.1: C acts on the pin)
             if (const ZoomWindow* const zoom = zoomWindow(); zoom != nullptr && inspector_.pin()) {
-                setInspectorZoom(wholeZoom(zoom->viewport().shownView().zoom()), inspector_.pin());
+                setInspectorZoom(wholeZoom(zoom->viewport().shownView().zoom(), 1),
+                                 inspector_.pin());
             }
             return;
         case ZoomKey::LiveProbe: run(Command::LiveProbe); return;
@@ -2399,11 +2441,16 @@ void MainFrame::saveInspectorState(bool closing) {
 }
 
 void MainFrame::updateMarkers() {
+    ZoomWindow* const zoom = zoomWindow();
+    // The Zoom view marks the pixel it shows (the pin, the probe in Live) in every panel.
+    if (zoom != nullptr) {
+        zoom->viewport().setMarkers(
+            MarkerParams{.pin = inspector_.shown(), .outline = std::nullopt});
+    }
     if (viewport_ == nullptr) {
         return;
     }
     MarkerParams markers{.pin = inspector_.pin(), .outline = std::nullopt};
-    ZoomWindow* const zoom = zoomWindow();
     if (zoom != nullptr && windowShown(FloatingKind::Zoom) &&
         (inspector_.pin().has_value() || inspector_.live())) {
         const dvv::media::ViewTransform shown = zoom->viewport().shownView();
@@ -2489,7 +2536,7 @@ void MainFrame::showValues(const std::optional<ProbeSample>& probe, std::int64_t
                 dvv::media::visiblePixels(dvv::media::axisY(shown_view));
             const dvv::media::PixelFormatDesc& format = dvv::media::formatDesc(desc.format);
             header = headerLines(*values_, format.name, format, x_shown.value_or(none),
-                                 y_shown.value_or(none), wholeZoom(shown_view.zoom()),
+                                 y_shown.value_or(none), wholeZoom(shown_view.zoom(), 1),
                                  inspector_.layout() == InspectorLayout::Planes);
             raw = rawWordLines(*values_);
         }
@@ -2865,7 +2912,9 @@ void MainFrame::setWindowShown(FloatingKind kind, bool shown) {
                     }
                     case FloatingKind::Zoom: {
                         const InspectorConfig& config = wxGetApp().inspectorConfig();
-                        inspector_fit_.reset();  // a new view: no fit yet
+                        inspector_fit_.reset();  // a new view: no fit or floor yet
+                        inspector_floor_.reset();
+                        inspector_pictures_.reset();
                         auto* const zoom = new ZoomWindow(*this, wxGetApp().feed(),
                                                           config.zoomSizeDip, config.zoomPlace);
                         zoom->setOverlayConfig(grid_, rulers_);

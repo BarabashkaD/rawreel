@@ -2,12 +2,15 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <vector>
 
+#include "dvv/media/pixel_format.h"
+#include "dvv/media/types.h"
 #include "dvv/media/view.h"
 #include "dvv/media/view_lines.h"
 #include "dvv/platform/pixel_size.h"
@@ -111,4 +114,26 @@ TEST_CASE("view layout: panelAt") {
     CHECK_FALSE(rawreel::panelAt(rects, PointD{.x = 800, .y = 10}));
     CHECK_FALSE(rawreel::panelAt(rects, PointD{.x = -0.5, .y = 10}));
     CHECK_FALSE(rawreel::panelAt({}, PointD{.x = 1, .y = 1}));
+}
+
+TEST_CASE("view layout: the panel count follows the kind and the planes view's format") {
+    using rawreel::MAX_PANELS;
+    using rawreel::panelCount;
+    using rawreel::PanelKind;
+    const auto planes = [](const char* name) {
+        const std::optional<dvv::media::FormatId> id = dvv::media::findFormat(name);
+        REQUIRE(id.has_value());
+        return dvv::media::unpackedFormat(*id);
+    };
+    // Picture: one panel whatever the format; Planes without a planes view: one.
+    CHECK(panelCount(PanelKind::Picture, std::nullopt) == 1);
+    CHECK(panelCount(PanelKind::Picture, planes("yuv420p")) == 1);
+    CHECK(panelCount(PanelKind::Planes, std::nullopt) == 1);
+    // Planes: one per component, at most MAX_PANELS.
+    CHECK(panelCount(PanelKind::Planes, planes("yuv420p")) == 3);
+    CHECK(panelCount(PanelKind::Planes, planes("yuv420p10le")) == 3);
+    CHECK(panelCount(PanelKind::Planes, planes("gray")) == 1);
+    CHECK(panelCount(PanelKind::Planes, planes("rgba")) == std::min<std::uint32_t>(4, MAX_PANELS));
+    // A format of no components (an unknown id): one.
+    CHECK(panelCount(PanelKind::Planes, dvv::media::FormatId{0xFFFFFFFFU}) == 1);
 }

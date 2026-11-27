@@ -174,7 +174,8 @@ public:
     [[nodiscard]] Viewport& activeViewport() const;
     // FitToWindow, ActualSize, ZoomIn or ZoomOut on `view`. The main view: around the centre of P
     // (the viewport's picture region). The Zoom view (§4.5): numbersFitZoom, fitCellZoom and the
-    // next whole zoom, centred per the mode (setInspectorZoom).
+    // next whole zoom, each held at or above the zoom floor (Viewport::minWholeZoom), centred per
+    // the mode (setInspectorZoom).
     void applyViewCommand(Command command, Viewport& view);
     // The last shown readback's values; none before one, or after the pin went.
     [[nodiscard]] const std::optional<PixelValues>& pixelValues() const noexcept { return values_; }
@@ -448,8 +449,11 @@ private:
     void showPaddingCount(std::optional<std::uint64_t> samples);  // the PADDING field
     // The inspector after `event`: the Zoom viewport's inspect params, its view recentred only
     // when recentres(event) (P9), then the values, the header and the status. A Zoom view at the
-    // last numbers-fit zoom follows a new fit (a display scale, the layout, the clip) around its
-    // centre; a zoom the user chose stays (inspector_fit_).
+    // last numbers-fit zoom raised to the zoom floor follows a new fit or floor (a display scale,
+    // a resize, the layout, the major step, the clip) around its centre; a zoom the user chose
+    // stays (inspector_fit_, inspector_floor_). A new panel picture (the layout, a resize, the
+    // strips, a display scale) re-frames the shown pixel as a recentring event does
+    // (inspector_pictures_).
     void updateInspector(InspectorEvent event);
     // The Zoom view at whole zoom `zoom`, centred per the mode on `at` (Follow: its centre; Cell:
     // its grid cell, cellView); on the current centre without one.
@@ -558,6 +562,10 @@ private:
     // The numbers-fit zoom updateInspector last computed for the Zoom view; none before one and
     // for a new Zoom window.
     std::optional<std::uint32_t> inspector_fit_;
+    // The Zoom view's zoom floor (Viewport::minWholeZoom) at the same time.
+    std::optional<std::uint32_t> inspector_floor_;
+    // The Zoom view's panel pictures (Viewport::panelPictures) at the same time.
+    std::optional<std::vector<dvv::platform::PixelSize>> inspector_pictures_;
     std::optional<PixelValues> values_;          // the last shown readback's values (§4.6)
     std::optional<ViewReadback> held_readback_;  // newer than the status: checked at its change
     std::optional<ViewReadback> held_padding_;   // as held_readback_, the main viewport's

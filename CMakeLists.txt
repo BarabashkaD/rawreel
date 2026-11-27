@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.2)
-project(rawreel VERSION 0.17.0 DESCRIPTION "rawreel raw video player" LANGUAGES CXX)
+project(rawreel VERSION 0.17.1 DESCRIPTION "rawreel raw video player" LANGUAGES CXX)
 # Version string; a pre-release build adds its release-stage label.
 set(rawreel_VERSION_STRING "${PROJECT_VERSION}")
 

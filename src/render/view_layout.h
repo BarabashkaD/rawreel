@@ -10,12 +10,26 @@
 #include <span>
 #include <vector>
 
+#include "dvv/media/types.h"
 #include "dvv/media/view.h"
 #include "dvv/media/view_lines.h"
 #include "dvv/platform/pixel_size.h"
 #include "render/pass_regions.h"
 
 namespace rawreel {
+
+// The most panels one view draws side by side.
+inline constexpr std::uint32_t MAX_PANELS = 4;
+
+// What the inspect layers draw from: the display picture, or one panel per plane.
+enum class PanelKind : std::uint8_t { Picture, Planes };
+
+// The panels a view of `kind` draws, the one rule of the renderer and of the views that map a
+// position to a panel: 1 for Picture; for Planes one per component of `planes`, the format of the
+// planes view (dvv::media::unpackedFormat of the stream's), at most MAX_PANELS; 1 for Planes
+// without a planes view or with a format of no components.
+[[nodiscard]] std::uint32_t panelCount(PanelKind kind,
+                                       std::optional<dvv::media::FormatId> planes) noexcept;
 
 struct PanelGrid {
     std::uint32_t columns = 1, rows = 1;

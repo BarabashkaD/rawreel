@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 
 #include "core/overlay.h"
 #include "dvv/media/pixel_format.h"
@@ -125,21 +126,55 @@ void Inspector::clipChanged(dvv::platform::PixelSize image) {
     }
 }
 
-std::uint32_t wholeZoom(double zoom) noexcept {
-    if (std::isnan(zoom)) {
+std::uint32_t wholeFitZoom(std::span<const dvv::platform::PixelSize> pictures,
+                           dvv::platform::PixelSize image) noexcept {
+    if (pictures.empty() || image.empty()) {
         return 1;
     }
-    return static_cast<std::uint32_t>(
-        std::clamp(std::round(zoom), 1.0, static_cast<double>(WHOLE_ZOOM_MAX)));
+    std::uint64_t fit = WHOLE_ZOOM_MAX;
+    for (const dvv::platform::PixelSize picture : pictures) {
+        fit = std::min({fit, std::uint64_t{picture.width} / image.width,
+                        std::uint64_t{picture.height} / image.height});
+    }
+    return clampZoom(fit);
 }
 
-std::optional<std::uint32_t> nextWholeZoom(std::uint32_t zoom, bool in) noexcept {
+std::uint32_t minZoom(std::span<const dvv::platform::PixelSize> pictures, std::uint32_t major_step,
+                      dvv::platform::PixelSize image) noexcept {
+    const std::uint64_t cells =
+        static_cast<std::uint64_t>(MIN_ZOOM_CELLS) * std::max<std::uint32_t>(major_step, 1);
+    std::uint32_t low = 1;
+    for (const dvv::platform::PixelSize picture : pictures) {
+        low = std::max(low, clampZoom(ceilDiv(std::max(picture.width, picture.height), cells)));
+    }
+    if (!image.empty() && image.width <= cells && image.height <= cells) {
+        low = std::min(low, wholeFitZoom(pictures, image));  // a small clip shows whole
+    }
+    return low;
+}
+
+std::uint32_t wholeZoom(double zoom, std::uint32_t minimum) noexcept {
+    const std::uint32_t low = clampZoom(minimum);
+    if (std::isnan(zoom)) {
+        return low;
+    }
+    return static_cast<std::uint32_t>(std::clamp(std::round(zoom), static_cast<double>(low),
+                                                 static_cast<double>(WHOLE_ZOOM_MAX)));
+}
+
+std::optional<std::uint32_t> nextWholeZoom(std::uint32_t zoom, bool in,
+                                           std::uint32_t minimum) noexcept {
+    const std::uint32_t low = clampZoom(minimum);
     if (in) {
         const auto it = std::ranges::upper_bound(WHOLE_ZOOM_STEPS, zoom);
-        return it == WHOLE_ZOOM_STEPS.end() ? std::nullopt : std::optional<std::uint32_t>{*it};
+        return it == WHOLE_ZOOM_STEPS.end() ? std::nullopt
+                                            : std::optional<std::uint32_t>{std::max(*it, low)};
+    }
+    if (zoom <= low) {
+        return std::nullopt;
     }
     const auto it = std::ranges::lower_bound(WHOLE_ZOOM_STEPS, zoom);
-    return it == WHOLE_ZOOM_STEPS.begin() ? std::nullopt : std::optional<std::uint32_t>{*(it - 1)};
+    return it == WHOLE_ZOOM_STEPS.begin() ? low : std::max(*(it - 1), low);
 }
 
 dvv::media::PointD followCentre(ImagePixel pin) noexcept {
