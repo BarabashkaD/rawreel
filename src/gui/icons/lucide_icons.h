@@ -310,6 +310,49 @@ inline constexpr std::string_view BLEND = R"svg(<!-- @license lucide-static v1.7
 </svg>
 )svg";
 
+// pipette.svg
+inline constexpr std::string_view PIPETTE = R"svg(<!-- @license lucide-static v1.70.0 - ISC -->
+<svg
+  class="lucide lucide-pipette"
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="m12 9-8.414 8.414A2 2 0 0 0 3 18.828v1.344a2 2 0 0 1-.586 1.414A2 2 0 0 1 3.828 21h1.344a2 2 0 0 0 1.414-.586L15 12" />
+  <path d="m18 9 .4.4a1 1 0 1 1-3 3l-3.8-3.8a1 1 0 1 1 3-3l.4.4 3.4-3.4a1 1 0 1 1 3 3z" />
+  <path d="m2 22 .414-.414" />
+</svg>
+)svg";
+
+// binary.svg
+inline constexpr std::string_view BINARY = R"svg(<!-- @license lucide-static v1.70.0 - ISC -->
+<svg
+  class="lucide lucide-binary"
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <rect x="14" y="14" width="4" height="6" rx="2" />
+  <rect x="6" y="4" width="4" height="6" rx="2" />
+  <path d="M6 20h4" />
+  <path d="M14 10h4" />
+  <path d="M6 14h2v6" />
+  <path d="M14 4h2v6" />
+</svg>
+)svg";
+
 // Every icon above, in the transport bar's Icon order (gui/icons.h).
 inline constexpr std::array ICONS{
     FOLDER_OPEN,  SKIP_BACK,
@@ -319,7 +362,8 @@ inline constexpr std::array ICONS{
     REPEAT,       SLIDERS_HORIZONTAL,
     GRID_3X3,     INFO,
     ZOOM_OUT,     ZOOM_IN,
-    BLEND,
+    BLEND,        PIPETTE,
+    BINARY,
 };
 
 }  // namespace rawreel::lucide

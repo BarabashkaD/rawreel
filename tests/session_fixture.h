@@ -16,6 +16,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/frame_set.h"
 #include "core/session.h"
 #include "core/session_types.h"
 #include "dvv/base/error.h"
@@ -69,8 +70,10 @@ struct ShownFrame {
     std::uint32_t count = 0;
     std::uint64_t epoch = 0;
     dvv::media::OriginId origin = 0;  // the first view's key().origin
-    bool indicesMatch = false;        // every views[s]->key().index == index
+    bool indicesMatch = false;        // every Display lease->key().index == index
     bool inspected = false;           // the inspector's answer (true without one)
+    std::uint64_t streamSet = 0;      // the FrameSet's streamSet
+    ViewRoles roles{};                // the roles with a non-empty stream-0 lease
 };
 
 class RecordingSink final : public IDisplaySink {

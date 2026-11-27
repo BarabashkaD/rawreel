@@ -125,8 +125,9 @@
 #include "gui/timeline_strip.h"
 #include "gui/transport_bar.h"
 #include "gui/viewport.h"
-#include "render/composite_constants.h"
-#include "render/display_state.h"
+#include "gui/zoom_window.h"
+#include "render/frame_feed.h"
+#include "render/picture_constants.h"
 
 using dvv::media::imagePointAt;
 using dvv::media::PointD;
@@ -380,6 +381,7 @@ std::optional<SelfTestScript> selfTestScript(Scenario scenario, SelfTest& test) 
         case Scenario::Player: return SelfTestScript{.steps = playerScenario(test)};
         case Scenario::Perf: return SelfTestScript{.steps = perfScenario(test)};
         case Scenario::About: return SelfTestScript{.steps = aboutScenario(test)};
+        case Scenario::Inspector: return SelfTestScript{.steps = inspectorScenario(test)};
         case Scenario::None: return std::nullopt;
     }
     return std::nullopt;
@@ -699,7 +701,7 @@ SelfTestStep openStreamStep(SelfTest* test, const SharedState& state) {
             return false;
         }
         const SessionStatus status = session->status();
-        const DisplaySnapshot snapshot = viewport.display()->snapshot();
+        const FeedSnapshot snapshot = viewport.subscription().snapshot();
         const std::optional<dvv::gpu::PresenterStats> stats = statsOf(viewport);
         seen = std::format(
             "{} streams, shown frames: count {}, index {}, epoch {} (viewport epoch {}), {} frames "
@@ -931,7 +933,7 @@ wxRect expectedInfoPlace(MainFrame& frame, const InfoWindow& info) {
         {.x = outer.x, .y = outer.y, .width = outer.width, .height = outer.height},
         {.x = client_origin.x, .y = client_origin.y, .width = client.x, .height = client.y},
         {.width = size.x, .height = size.y},
-        {.x = work.x, .y = work.y, .width = work.width, .height = work.height}, std::nullopt,
+        {.x = work.x, .y = work.y, .width = work.width, .height = work.height}, {},
         info.FromDIP(8));
     return {place.x, place.y, place.width, place.height};
 }
@@ -1062,7 +1064,7 @@ SelfTestStep infoWindowAfterCloseStep(SelfTest* test,
         }
         const std::size_t rows = info->rowsForTest().size();
         const wxSize size = info->GetSize();
-        const std::size_t frames = test->frame().viewport().display()->snapshot().frames.count;
+        const std::size_t frames = test->frame().viewport().subscription().snapshot().frames.count;
         seen = std::format("phase {}: {} streams, {} rows, size {}x{} (was {}x{}), {} frames shown",
                            state->phase, frame.streams().size(), rows, size.x, size.y,
                            state->size.x, state->size.y, frames);
@@ -1872,14 +1874,11 @@ void addLogListSteps(std::vector<SelfTestStep>& steps, SelfTest* test) {
     }
 }
 
+}  // namespace
+
 // --- the Edit menu, copy and save (Log pane and Settings design §4.1 to §4.4) ---
 
-// Through the frame's wxEVT_CHAR_HOOK handler, as a real key press reaches it first.
-// Returns whether a handler took it (one that called Skip() did not). `target` is the window the
-// key event starts at (the focused window), from where it propagates up to its top-level window.
-// `ctrl`: ControlDown(), i.e. Cmd on macOS. `alt`: AltDown().
-bool sendKey(wxWindow& target, int keycode, bool shift = false, bool ctrl = false,
-             bool alt = false) {
+bool sendKey(wxWindow& target, int keycode, bool shift, bool ctrl, bool alt) {
     wxKeyEvent event(wxEVT_CHAR_HOOK);
     event.SetEventObject(&target);
     event.m_keyCode = keycode;
@@ -1891,8 +1890,6 @@ bool sendKey(wxWindow& target, int keycode, bool shift = false, bool ctrl = fals
     event.SetAltDown(alt);
     return injectInput(*target.GetEventHandler(), event);
 }
-
-}  // namespace
 
 void showRulers(MainFrame& frame, bool show) {
     RulerConfig rulers = frame.rulers();
@@ -2126,10 +2123,7 @@ wxWindow* shownInfoFocus(MainFrame& frame) {
                : nullptr;
 }
 
-namespace {
-
-// A char-hook key event at `focus`, with the focus there: whether a handler took it.
-bool sendKeyWithFocus(MainFrame& frame, wxWindow* focus, int keycode, bool ctrl = false) {
+bool sendKeyWithFocus(MainFrame& frame, wxWindow* focus, int keycode, bool ctrl) {
     if (focus == nullptr) {
         return false;
     }
@@ -2138,6 +2132,8 @@ bool sendKeyWithFocus(MainFrame& frame, wxWindow* focus, int keycode, bool ctrl 
     frame.setFocusForTest(nullptr);
     return consumed;
 }
+
+namespace {
 
 // The shown Info window's current book page; null without the window or a book.
 wxWindow* shownInfoPage(MainFrame& frame) {
@@ -3364,7 +3360,7 @@ SelfTestStep lavfiUriStep(SelfTest* test, const std::shared_ptr<SmokeState>& sta
         const auto& streams = frame.streams();
         const bool lavfi =
             streams.size() == 1 && streams[0].resolvedUri.starts_with("lavfi:testsrc2=s=64x48");
-        const DisplaySnapshot snapshot = frame.viewport().display()->snapshot();
+        const FeedSnapshot snapshot = frame.viewport().subscription().snapshot();
         const std::uint64_t now = presented(frame.viewport());
         seen = std::format("{} streams, URI '{}', shown count {}, presented {} ({} at the start)",
                            streams.size(), streams.empty() ? "-" : streams[0].resolvedUri,
@@ -4299,6 +4295,52 @@ std::vector<SelfTestStep> lostScenario(SelfTest& test) {
             return s.epoch == 3 && s.gpuAvailable && viewport.epoch() == 3 && !presenter &&
                    failed && failed->code == dvv::Errc::Internal && frame.reopenShown();
         }));
+    // zoom_lost: a GPU device loss with the Zoom window shown. A
+    // Reopen first, then a pin shows the Zoom window with its own presenter and readbacks.
+    const auto both_present = [&frame, status](std::uint64_t epoch, std::string& seen) {
+        const SessionStatus s = status();
+        Viewport& main = frame.viewport();
+        ZoomWindow* const zoom = frame.zoomWindow();
+        const bool shown = frame.windowShown(FloatingKind::Zoom);
+        Viewport* const view = zoom != nullptr ? &zoom->viewport() : nullptr;
+        // A picture of this epoch on the main view: presents alone count background-only frames.
+        const RecordedInfo recorded = main.lastRecorded().value_or(RecordedInfo{});
+        const bool picture = recorded.epoch == epoch && recorded.index >= 0;
+        seen = std::format(
+            "epoch {}, gpu {}, main epoch {} presenter {} presented {} picture {}, Zoom shown {} "
+            "epoch {} presenter {} presented {}, Zoom readbacks {} (last of epoch {})",
+            s.epoch, s.gpuAvailable, main.epoch(), main.presenter() != nullptr, presented(main),
+            picture, shown, view != nullptr ? view->epoch() : 0,
+            view != nullptr && view->presenter() != nullptr, view != nullptr ? presented(*view) : 0,
+            frame.zoomReadbacksForTest(), frame.zoomReadbackEpochForTest());
+        return s.epoch == epoch && s.gpuAvailable && main.epoch() == epoch &&
+               main.presenter() != nullptr && presented(main) > 0 && picture && shown &&
+               view != nullptr && view->epoch() == epoch && view->presenter() != nullptr &&
+               presented(*view) > 0 && frame.zoomReadbackEpochForTest() == epoch;
+    };
+    steps.push_back(step("zoom_lost: Reopen", click_reopen, [&frame, status](std::string& seen) {
+        const SessionStatus s = status();
+        const Viewport& viewport = frame.viewport();
+        seen = std::format("epoch {}, gpu {}, viewport epoch {}, presenter {}", s.epoch,
+                           s.gpuAvailable, viewport.epoch(), viewport.presenter() != nullptr);
+        return s.epoch == 4 && s.gpuAvailable && viewport.epoch() == 4 &&
+               viewport.presenter() != nullptr;
+    }));
+    steps.push_back(step(
+        "zoom_lost: the Zoom window shown",
+        [&frame] { frame.pinForTest(dvv::media::ImagePixel{.x = 2, .y = 2}); },
+        [both_present](std::string& seen) { return both_present(4, seen); }));
+    steps.push_back(
+        step("zoom_lost: loss with the Zoom window", inject, [&frame, reported](std::string& seen) {
+            const ZoomWindow* const zoom = frame.zoomWindow();
+            const bool presenter = zoom != nullptr && zoom->viewport().presenter() != nullptr;
+            const bool lost = reported(seen);
+            seen += std::format(", Zoom presenter {}", presenter);
+            return lost && !presenter;
+        }));
+    // Both viewports present frames of the new epoch, and a Zoom readback of it arrives.
+    steps.push_back(step("zoom_lost", click_reopen,
+                         [both_present](std::string& seen) { return both_present(5, seen); }));
     return steps;  // the runner's close step: validation 0, leak check (§8.4 lost)
 }
 
@@ -5136,6 +5178,8 @@ void addOpenSizingSteps(std::vector<SelfTestStep>& steps, MainFrame& frame) {
         }));
 }
 
+}  // namespace
+
 // A mouse event of `type` on the viewport at the client point `at` (window units), with the
 // button states given.
 void sendViewportMouse(Viewport& viewport, wxEventType type, wxPoint at, bool left_down,
@@ -5148,6 +5192,8 @@ void sendViewportMouse(Viewport& viewport, wxEventType type, wxPoint at, bool le
     event.m_middleDown = middle_down;
     injectInput(*viewport.GetEventHandler(), event);
 }
+
+namespace {
 
 // The viewport's client centre (window units).
 wxPoint viewportCentre(const Viewport& viewport) {
@@ -7059,7 +7105,7 @@ bool streamHasAlpha(const MainFrame& frame) {
 bool clipShown(MainFrame& frame, std::string_view uri, bool has_alpha, std::uint64_t before,
                std::string& text) {
     const std::optional<RecordedInfo> recorded = frame.viewport().lastRecorded();
-    const DisplaySnapshot snapshot = frame.viewport().display()->snapshot();
+    const FeedSnapshot snapshot = frame.viewport().subscription().snapshot();
     const std::string open =
         frame.streams().size() == 1 ? frame.streams().front().requestedUri : "";
     text = std::format(
@@ -7072,12 +7118,12 @@ bool clipShown(MainFrame& frame, std::string_view uri, bool has_alpha, std::uint
            recorded->index == snapshot.frames.index;
 }
 
-// The last recorded picture pass applies the alpha (COMPOSITE_ALPHA) exactly when `on`.
+// The last recorded picture pass applies the alpha (PICTURE_ALPHA) exactly when `on`.
 bool alphaFlagIs(MainFrame& frame, bool on, std::string& text) {
     const std::optional<RecordedInfo> recorded = frame.viewport().lastRecorded();
     const std::uint32_t flags = recorded ? recorded->pictureFlags : 0;
     text += std::format(", picture flags {}", flags);
-    return recorded && ((flags & COMPOSITE_ALPHA) != 0) == on;
+    return recorded && ((flags & PICTURE_ALPHA) != 0) == on;
 }
 
 // Whether a key at any depth of `value` contains "alpha" (any case); the first one in `found`.
@@ -7150,7 +7196,7 @@ void addAlphaCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
     auto st = std::make_shared<State>();
     const auto open = [&frame, st](std::string_view uri) {
         return [&frame, st, uri] {
-            st->version = frame.viewport().display()->snapshot().version;
+            st->version = frame.viewport().subscription().snapshot().version;
             frame.openUri(0, std::string(uri), std::nullopt);
         };
     };
@@ -7254,7 +7300,7 @@ void addAlphaCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
         }));
     const auto toggled = [&frame, st](bool on, std::string& seen) {
         const RecordedInfo now = frame.viewport().lastRecorded().value_or(RecordedInfo{});
-        const std::uint64_t version = frame.viewport().display()->snapshot().version;
+        const std::uint64_t version = frame.viewport().subscription().snapshot().version;
         std::string item;
         const bool ok = alphaItemIs(frame, on, true, item);
         seen = std::format("{}; picture records +{}, index {} (was {}), version {} (was {})", item,
@@ -7266,7 +7312,7 @@ void addAlphaCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
     };
     const auto before = [&frame, st] {
         st->recorded = frame.viewport().lastRecorded().value_or(RecordedInfo{});
-        st->version = frame.viewport().display()->snapshot().version;
+        st->version = frame.viewport().subscription().snapshot().version;
     };
     steps.push_back(step(
         "alpha button: a click turns it on in pause",
@@ -7433,8 +7479,8 @@ std::string hiddenText(const dvv::media::HiddenComponents& hidden) {
 // The shown FrameSet's display lease hides `expected` (the canonical set the session requested).
 bool shownHiddenIs(MainFrame& frame, const dvv::media::HiddenComponents& expected,
                    std::string& text) {
-    const DisplaySnapshot snapshot = frame.viewport().display()->snapshot();
-    const dvv::media::ReadLease& lease = snapshot.frames.views[0];
+    const FeedSnapshot snapshot = frame.viewport().subscription().snapshot();
+    const dvv::media::ReadLease& lease = snapshot.frames.lease(rawreel::ViewRole::Display);
     text += std::format(", shown hidden {} (want {})",
                         lease ? hiddenText(lease.view().hidden) : "none", hiddenText(expected));
     return lease && lease.view().hidden == expected;
@@ -7513,12 +7559,12 @@ void addPlaneCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
     static constexpr std::array<bool, 3> NONE{false, false, false};
     const auto open = [&frame, st](std::string_view uri) {
         return [&frame, st, uri] {
-            st->version = frame.viewport().display()->snapshot().version;
+            st->version = frame.viewport().subscription().snapshot().version;
             frame.openUri(0, std::string(uri), std::nullopt);
         };
     };
     const auto before = [&frame, st] {
-        const DisplaySnapshot snapshot = frame.viewport().display()->snapshot();
+        const FeedSnapshot snapshot = frame.viewport().subscription().snapshot();
         st->version = snapshot.version;
         st->index = snapshot.frames.index;
     };
@@ -7536,7 +7582,7 @@ void addPlaneCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
     };
     // A toggle in pause: a new FrameSet of the same index, with the new set.
     const auto redrawn = [&frame, st](const HiddenComponents& hidden, std::string& text) {
-        const DisplaySnapshot snapshot = frame.viewport().display()->snapshot();
+        const FeedSnapshot snapshot = frame.viewport().subscription().snapshot();
         text += std::format(", version {} (was {}), index {} (was {})", snapshot.version,
                             st->version, snapshot.frames.index, st->index);
         const bool shown = shownHiddenIs(frame, hidden, text);
@@ -7756,7 +7802,7 @@ void addPlaneCommandSteps(std::vector<SelfTestStep>& steps, SelfTest& test) {
         [&frame, st](std::string& seen) {
             const bool ok = planeControlsAre(frame, YUV, {true, false, true}, {true, false, false},
                                              false, false, seen);
-            const DisplaySnapshot snapshot = frame.viewport().display()->snapshot();
+            const FeedSnapshot snapshot = frame.viewport().subscription().snapshot();
             seen += std::format(", version {} (was {})", snapshot.version, st->version);
             return ok && snapshot.version == st->version && shownHiddenIs(frame, {}, seen);
         }));
@@ -7823,14 +7869,14 @@ wxRect expectedGridPlace(MainFrame& frame, const GridWindow& window) {
     const wxRect work = workAreaOf(frame);
     const wxRect client(frame.ClientToScreen(wxPoint(0, 0)), frame.GetClientSize());
     const wxSize size = window.GetSize();
-    std::optional<ScreenRect> other;
+    std::vector<ScreenRect> others;
     if (const FloatingWindow* const info = frame.floatingWindow(FloatingKind::Info);
         info != nullptr && info->IsShown()) {
-        other = screenRect(info->GetScreenRect());
+        others.push_back(screenRect(info->GetScreenRect()));
     }
     return wxRectOf(floatingWindowPlace(screenRect(frame.GetScreenRect()), screenRect(client),
                                         {.width = size.x, .height = size.y}, screenRect(work),
-                                        other, window.FromDIP(8)));
+                                        others, window.FromDIP(8)));
 }
 
 // A control event as the native control sends it.
@@ -11828,7 +11874,7 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
                     streams.size() == 1 && streams[0].resolvedUri.contains("impl=ffmpeg");
                 // The Session clears the display before streamsChanged, so a shown frame of the
                 // current epoch is an MKV frame (presented alone grows with every tick).
-                const DisplaySnapshot snapshot = frame.viewport().display()->snapshot();
+                const FeedSnapshot snapshot = frame.viewport().subscription().snapshot();
                 const bool shown =
                     snapshot.frames.count == 1 && snapshot.frames.epoch == frame.viewport().epoch();
                 seen = std::format(
@@ -12167,11 +12213,11 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
         [&frame](std::string& seen) {
             seen.clear();
             TransportBar& bar = frame.transportBar();
-            // At `set_width`: Open at the 2 DIP sizer border (transport_bar.cpp), all 18 buttons
-            // (Open, Format, the 7 of the group, the 3 planes, Alpha, Zoom out, the zoom text,
-            // Zoom in, Grid, "i") shown, inside the bar and clear of their neighbours; the group's
-            // rect and the bar's client width out.
-            static constexpr std::size_t BAR_BUTTONS = 18;
+            // At `set_width`: Open at the 2 DIP sizer border (transport_bar.cpp), all 20 buttons
+            // (Open, Format, the 7 of the group, the 3 planes, Alpha, Pipette, Padding, Zoom out,
+            // the zoom text, Zoom in, Grid, "i") shown, inside the bar and clear of their
+            // neighbours; the group's rect and the bar's client width out.
+            static constexpr std::size_t BAR_BUTTONS = 20;
             const auto lay_out = [&bar, &seen](int set_width, wxRect& group, int& width) {
                 bar.SetSize(set_width, bar.GetSize().y);
                 bar.Layout();
@@ -12602,7 +12648,7 @@ std::vector<SelfTestStep> perfScenario(SelfTest& test) {
             }
             st->stalls0 = status().player.stalls;
             st->presented0 = presented(frame.viewport());
-            st->overwritten0 = frame.viewport().display()->stats().overwritten;
+            st->overwritten0 = frame.viewport().subscription().stats().overwritten;
             st->mark = history.size();
             frame.execute(Command::PlayPause);
         },
@@ -12619,7 +12665,8 @@ std::vector<SelfTestStep> perfScenario(SelfTest& test) {
             frame.execute(Command::PlayPause);  // pause at once: the counters below end here
             st->stalls = status().player.stalls - st->stalls0;
             st->presented = presented(frame.viewport()) - st->presented0;
-            st->overwritten = frame.viewport().display()->stats().overwritten - st->overwritten0;
+            st->overwritten =
+                frame.viewport().subscription().stats().overwritten - st->overwritten0;
             std::vector<ShowSample> samples;
             for (const ShownSet& set : history.since(st->mark)) {
                 if (samples.size() == 601) {

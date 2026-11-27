@@ -4,7 +4,6 @@
 // its own counted lease shares, so the presenter thread can keep using a FrameSet while a newer
 // one arrives; events never carry strong references to managed objects (D10).
 
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -12,13 +11,12 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <source_location>
 #include <stop_token>
 #include <string>
 #include <vector>
 
+#include "core/frame_set.h"
 #include "core/player.h"
-#include "core/view.h"  // MAX_STREAMS (= 1, the view section)
 #include "dvv/base/error.h"
 #include "dvv/base/move_only_function.h"
 #include "dvv/media/display.h"
@@ -38,18 +36,6 @@ struct StreamInfo {
     dvv::media::SourceInfo info;
     dvv::media::ResolvedColour colour;
     std::string requestedUri;  // dvv::formatUri of the open request
-};
-// One shown frame: the display views of every stream for one index (one stream at a time; the array
-// keeps the v1.x tile shape, D2).
-struct FrameSet {
-    std::int64_t index = -1;
-    std::uint32_t count = 0;
-    std::array<dvv::media::ReadLease, MAX_STREAMS> views{};  // each holder has its own lease
-    std::uint64_t epoch = 0;                                 // the Session's stackEpoch (D7)
-    // A second, counted set on the same views (index, count, epoch copied), listed in
-    // outstandingLeases() at `where`. FrameSet is move-only (ReadLease is).
-    [[nodiscard]] FrameSet share(
-        std::source_location where = std::source_location::current()) const;
 };
 struct SessionStatus {
     PlayerStatus player;
@@ -71,12 +57,6 @@ inline bool sameState(const SessionStatus& a, const SessionStatus& b) {
            a.inflight == b.inflight && a.readyAhead == b.readyAhead;
 }
 
-class IDisplaySink {  // thread-safe, non-blocking (the viewport's DisplayState)
-public:
-    virtual ~IDisplaySink() = default;
-    virtual void show(FrameSet frames) = 0;
-    virtual void clear() = 0;  // drops every lease it holds
-};
 class ISessionEvents {  // called on the Session executor; must not block (GUI: CallAfter)
 public:
     virtual ~ISessionEvents() = default;

@@ -5,7 +5,7 @@
 
 #include "core/layout.h"
 #include "core/overlay.h"
-#include "render/display_state.h"
+#include "render/view_state.h"
 
 namespace rawreel {
 
@@ -32,9 +32,10 @@ struct OverlayConversion {
 // RULER_NUMBER_GAP_DIP, RULER_TAG_PAD_DIP, RULER_TAG_INSET_DIP and RULER_TAG_MARGIN_DIP each as a
 // pt size above, at most 255; lastValue is the rulers'; cursorTagTextBlack is
 // cursorTagTextBlack(the cursor colour); checkerSize, the alpha checkerboard's square, is 8 DIP
-// as a pt size above. The glyph strip is the GUI's: params.glyphs stays null.
-// Precondition: stepsValid() of the grid's steps (each one of GRID_STEP_VALUES, a power of two), as
-// parseOverlayConfig() and the settings keep them; a level's stepLog2 is the log2 of its step.
+// as a pt size above, markSize 6 DIP and markRim 1 DIP the same. The glyph strip is the GUI's:
+// params.glyphs stays null. Precondition: stepsValid() of the grid's steps (each one of
+// GRID_STEP_VALUES, a power of two), as parseOverlayConfig() and the settings keep them; a level's
+// stepLog2 is the log2 of its step.
 [[nodiscard]] OverlayConversion convertOverlay(const GridConfig& grid, const RulerConfig& rulers,
                                                const OverlayScale& scale, bool dark);
 

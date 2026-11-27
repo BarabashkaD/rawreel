@@ -15,7 +15,9 @@ namespace rawreel {
 void MainFrame::bindApplicationMenu() {
     // The application menu's About and Quit (wxOSX hides the items in Help and File). Quit closes
     // the frame through onClose; unhandled, wxOSX would end the main loop without the frame's close
-    // sequence.
+    // sequence. The menu bar's other items, View -> Zoom In, Actual Size and the rest among them,
+    // need no binding here: they reach the frame's wxEVT_MENU handler and execute(), so with the
+    // Zoom window in front they act on its view (applyViewCommand on activeViewport()).
     for (const int id : {wxID_ABOUT, wxID_EXIT}) {
         Bind(wxEVT_MENU, &MainFrame::onMenu, this, id);
         Bind(wxEVT_UPDATE_UI, &MainFrame::onUpdateUi, this, id);

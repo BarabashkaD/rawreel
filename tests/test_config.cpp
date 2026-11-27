@@ -19,6 +19,8 @@
 
 #include "core/config.h"
 #include "core/config_writer.h"
+#include "core/inspector.h"
+#include "core/layout.h"
 #include "core/native_os.h"
 #include "core/overlay.h"
 #include "core/recent.h"
@@ -459,6 +461,74 @@ TEST_SUITE("core") {
     using rawreel::parseOverlayConfig;
     using rawreel::Rgb8;
     using rawreel::RulerConfig;
+
+    TEST_CASE("config: inspector keys round trip") {
+        const TemporaryDirectory dir("rawreel-config");
+        const fs::path file = dir.path() / "rawreel.json";
+        writeText(file, R"({"gui":{"showLogPane":true}})");
+        rawreel::InspectorConfig in;
+        in.paddingCheck = true;
+        in.zoomPlace = rawreel::ScreenRect{.x = -1200, .y = 40, .width = 0, .height = 0};
+        in.zoomSizeDip = {800, 512};
+        in.layout = rawreel::InspectorLayout::Planes;
+        in.mode = rawreel::InspectorMode::Cell;
+        REQUIRE(rawreel::saveConfigValues(file, rawreel::inspectorConfigValues(in)));
+        const dvv::Result<std::string> text = rawreel::readConfigText(file);
+        REQUIRE(text);
+        const rawreel::InspectorConfig out = rawreel::parseInspectorConfig(*text);
+        CHECK(out.paddingCheck);
+        CHECK(out.zoomPlace == in.zoomPlace);
+        CHECK(out.zoomSizeDip == in.zoomSizeDip);
+        CHECK(out.layout == in.layout);
+        CHECK(out.mode == in.mode);
+        CHECK(out.warnings.empty());
+        const rawreel::InspectorConfig none = rawreel::parseInspectorConfig("{}");
+        CHECK_FALSE(none.zoomPlace);
+        CHECK(none.zoomSizeDip == rawreel::LayoutSize{640, 640});
+    }
+
+    TEST_CASE("config: a bad inspector key falls back alone") {
+        const rawreel::InspectorConfig c = rawreel::parseInspectorConfig(
+            R"({"gui":{"paddingCheck":1,"zoomWindow":{"x":10,"y":20,"width":100,"height":900,)"
+            R"("layout":3,"mode":"cell"}}})");
+        CHECK_FALSE(c.paddingCheck);
+        CHECK(c.zoomPlace == rawreel::ScreenRect{.x = 10, .y = 20, .width = 0, .height = 0});
+        CHECK(c.zoomSizeDip == rawreel::LayoutSize{640, 900});
+        CHECK(c.layout == rawreel::InspectorLayout::Structure);
+        CHECK(c.mode == rawreel::InspectorMode::Cell);
+        REQUIRE(c.warnings.size() == 3);
+        CHECK(c.warnings[0] == "gui.paddingCheck: expected true or false, not 1; using false");
+        CHECK(c.warnings[1] ==
+              "gui.zoomWindow.width: expected a whole number from 200 to 8192, not 100; using 640");
+        CHECK(
+            c.warnings[2] ==
+            R"(gui.zoomWindow.layout: expected "structure" or "planes", not 3; using "structure")");
+    }
+
+    TEST_CASE("config: a bad gui.zoomWindow is not savable") {
+        const rawreel::InspectorConfig text =
+            rawreel::parseInspectorConfig(R"({"gui":{"zoomWindow":"x"}})");
+        CHECK_FALSE(text.zoomSavable);
+        REQUIRE(text.warnings.size() == 1);
+        CHECK(
+            text.warnings[0] ==
+            R"(gui.zoomWindow: expected an object, not "x"; the defaults are used and not saved)");
+        const rawreel::InspectorConfig null =
+            rawreel::parseInspectorConfig(R"({"gui":{"zoomWindow":null}})");
+        CHECK(null.zoomSavable);
+        REQUIRE(null.warnings.size() == 1);
+        CHECK(null.warnings[0] ==
+              "gui.zoomWindow: expected an object, not null; the defaults are used");
+        CHECK(rawreel::parseInspectorConfig("{}").zoomSavable);
+    }
+
+    TEST_CASE("config: an inspector place needs both x and y") {
+        const rawreel::InspectorConfig c =
+            rawreel::parseInspectorConfig(R"({"gui":{"zoomWindow":{"x":10}}})");
+        CHECK_FALSE(c.zoomPlace);
+        REQUIRE(c.warnings.size() == 1);
+        CHECK(c.warnings[0] == "gui.zoomWindow: needs both x and y; using no place");
+    }
 
     TEST_CASE("config: overlay keys round trip through the writer") {
         const TemporaryDirectory dir("rawreel-config");

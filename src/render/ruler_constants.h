@@ -9,11 +9,15 @@
 #include <cstdint>
 #include <optional>
 
+#include "core/ruler_labels.h"
 #include "dvv/media/view.h"
-#include "render/display_state.h"
 #include "render/pass_regions.h"
+#include "render/view_state.h"
 
 namespace rawreel {
+
+inline constexpr std::uint32_t RULER_GLYPH_CELLS = 10;  // the glyph strip's cells (RULER_DIGITS)
+static_assert(RULER_DIGITS.size() == RULER_GLYPH_CELLS);
 
 inline constexpr std::uint32_t RULER_DARK = 1;         // the dark theme's colours
 inline constexpr std::uint32_t RULER_SKIP_ENCODE = 2;  // the swapchain is _SRGB: write decoded
@@ -35,17 +39,19 @@ struct RulerConstants {
     std::int32_t offset = 0;  // the view's integer offset on the axis, from P's edge
     // P's first output pixel and its size on the axis; the image's size on the axis.
     std::uint32_t pictureStart = 0, pictureExtent = 0, imageSize = 0;
-    // The strip's thickness toward P as pictureRegion clamps it to the extent (P.y on the top
-    // band, P.x on the left band, so rulerEdge - strip never underflows), its inner tick band, the
-    // tick width and the marker's depth from the inner edge, all in backing pixels.
+    // The strip's thickness toward P as pictureRegion clamps it to the panel (P.y minus the
+    // panel's y on the top band, P.x minus its x on the left band, so rulerEdge - strip never
+    // underflows), its inner tick band, the tick width and the marker's depth from the inner edge,
+    // all in backing pixels.
     std::uint32_t strip = 0, tickBand = 0, tickWidth = 1, markerDepth = 0;
     std::uint32_t cursor = 0;  // the cursor's image coordinate on the axis (RULER_CURSOR)
-    // strip - tickBand: the numbers' band; the lit tick reaches litDepth - tickBand into it.
-    std::uint32_t labelBand = 0;
+    // The top band's corner begins here: rulerBegin minus the left strip's thickness. 0 on the
+    // left band, which has no corner.
+    std::uint32_t cornerBegin = 0;
     // The first row (top band) or column (left band) past the ruler: H.y or H.x of the hugged
     // rect H. The ruler lies in [rulerEdge - strip, rulerEdge) across the axis and in
     // [rulerBegin, rulerEnd) along it (H's span); the corner (top band only) in
-    // [rulerBegin - pictureStart, rulerBegin) along it. The shader's uint4 starts at 80.
+    // [cornerBegin, rulerBegin) along it. The shader's uint4 starts at 80.
     std::uint32_t rulerEdge = 0, rulerBegin = 0, rulerEnd = 0;
     // The shader declares the two as uint4; [3] is unused.
     std::array<std::uint32_t, 4> levelShape{};  // stepLog2 | LEVEL_DRAWN, as the picture pass
@@ -55,12 +61,17 @@ struct RulerConstants {
     // The lit tick's depth from the inner edge: overlay.litDepth, at most `strip`.
     std::uint32_t litDepth = 0;
     // The label spacing in backing pixels, one byte each: numberGap | tagPad << 8 | tagInset << 16
-    // | tagMargin << 24. The glyph cell's width (the strip's width / 10) and height come from the
-    // bound strip.
+    // | tagMargin << 24. The glyph cell size comes from the bound strip (glyphCells of dvv-gpu's
+    // text module, RULER_GLYPH_CELLS cells).
     std::uint32_t labelSpacing = 0;
     bool operator==(const RulerConstants&) const = default;
 };
 static_assert(sizeof(RulerConstants) == 128);
+
+// strip - tickBand: the numbers' band; the lit tick reaches litDepth - tickBand into it.
+[[nodiscard]] constexpr std::uint32_t labelBand(const RulerConstants& band) noexcept {
+    return band.strip > band.tickBand ? band.strip - band.tickBand : 0;
+}
 static_assert(
     offsetof(RulerConstants, regionW) == 8 && offsetof(RulerConstants, axis) == 16 &&
     offsetof(RulerConstants, flags) == 20 && offsetof(RulerConstants, zoom) == 24 &&
@@ -68,15 +79,15 @@ static_assert(
     offsetof(RulerConstants, imageSize) == 40 && offsetof(RulerConstants, strip) == 44 &&
     offsetof(RulerConstants, tickBand) == 48 && offsetof(RulerConstants, tickWidth) == 52 &&
     offsetof(RulerConstants, markerDepth) == 56 && offsetof(RulerConstants, cursor) == 60 &&
-    offsetof(RulerConstants, labelBand) == 64 && offsetof(RulerConstants, rulerEdge) == 68 &&
+    offsetof(RulerConstants, cornerBegin) == 64 && offsetof(RulerConstants, rulerEdge) == 68 &&
     offsetof(RulerConstants, rulerBegin) == 72 && offsetof(RulerConstants, rulerEnd) == 76 &&
     offsetof(RulerConstants, levelShape) == 80 && offsetof(RulerConstants, tickLength) == 96 &&
     offsetof(RulerConstants, cursorColour) == 112 && offsetof(RulerConstants, litTick) == 116 &&
     offsetof(RulerConstants, litDepth) == 120 && offsetof(RulerConstants, labelSpacing) == 124);
 
-// The two bands of `regions` = passRegions(extent, overlay.strips, view), with `view` resolved
+// The two bands of `regions` = panelRegions(panel, overlay.strips, view), with `view` resolved
 // against P's size (view.viewport() == regions.picture.size()): each band takes the zoom, offset,
-// image size and P's extent on its axis from axisX(view) or axisY(view), as compositeConstants
+// image size and P's extent on its axis from axisX(view) or axisY(view), as pictureConstants
 // does, so the ticks match the grid lines; P's origin, the strips and the ruler's place come from
 // `regions`. [0] the top band regions.bands[0] on the x axis around regions.rulers.top and the
 // corner, [1] the left band regions.bands[1] on the y axis around regions.rulers.left; an empty

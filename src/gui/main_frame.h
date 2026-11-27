@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -29,6 +30,8 @@
 #include "core/commands.h"
 #include "core/format_choice.h"
 #include "core/gui_arguments.h"
+#include "core/inspector.h"
+#include "core/inspector_text.h"
 #include "core/layout.h"
 #include "core/log_store.h"
 #include "core/overlay.h"
@@ -36,12 +39,14 @@
 #include "core/session.h"
 #include "core/session_types.h"
 #include "core/version_text.h"
+#include "core/zoom_keys.h"
 #include "dvv/base/error.h"
 #include "dvv/media/view.h"
 #include "gui/dock_manager.h"
 #include "gui/floating_window.h"
 #include "gui/skim_key.h"
-#include "render/display_state.h"
+#include "render/frame_feed.h"
+#include "render/view_renderer.h"
 
 namespace dvv::gpu {
 class ExecutionContext;
@@ -57,6 +62,7 @@ class Session;
 class SettingsWindow;
 class TransportBar;
 class Viewport;
+class ZoomWindow;
 
 struct InfoButton {
     int id;          // wx id of the infobar button (wxEVT_BUTTON on the infobar)
@@ -110,7 +116,7 @@ class MainFrame final : public wxFrame {
 public:
     // The frame keeps no strong reference to a context: only the viewport (while its epoch is
     // current) and the Session do.
-    explicit MainFrame(std::shared_ptr<DisplayState> display);
+    explicit MainFrame(std::shared_ptr<FrameFeed> feed);
     MainFrame(const MainFrame&) = delete;
     MainFrame& operator=(const MainFrame&) = delete;
     MainFrame(MainFrame&&) = delete;
@@ -127,10 +133,11 @@ public:
     void dismissMessage();
     [[nodiscard]] const wxString& lastMessage() const noexcept { return last_message_; }
     // The status bar's fields (spec §7): the stream's name, the status tick's three (position,
-    // rate, bottleneck), the cursor's image pixel, the display mapping and the Log notice (the zoom
-    // is on the control bar).
+    // rate, bottleneck), the cursor's image pixel, the inspector's pixel values, the display
+    // mapping, the padding check and the Log notice (the zoom is on the control bar).
     static constexpr std::size_t FILE_FIELD = 0, FIRST_TICK_FIELD = 1, CURSOR_FIELD = 4,
-                                 MAPPING_FIELD = 5, LOG_NOTICE_FIELD = 6, STATUS_FIELD_COUNT = 7;
+                                 PIXEL_FIELD = 5, MAPPING_FIELD = 6, PADDING_FIELD = 7,
+                                 LOG_NOTICE_FIELD = 8, STATUS_FIELD_COUNT = 9;
     // The fields' texts; the file field's is the shown one (cut in the middle to its width).
     [[nodiscard]] std::array<wxString, STATUS_FIELD_COUNT> statusTexts() const;
     // The narrowest client width the status bar allows: the fixed fields plus room for the variable
@@ -149,6 +156,46 @@ public:
     // when the pane is already so, or while closing.
     void setLogShown(bool shown);
     [[nodiscard]] bool logShown() const;
+    // The Zoom window; null until its first show.
+    [[nodiscard]] ZoomWindow* zoomWindow() const;
+    // The inspector model (pin, probe, live, mode, layout).
+    [[nodiscard]] const Inspector& inspector() const noexcept { return inspector_; }
+    // A Zoom key (design §4.2, zoomKeyAction): MovePin moves the pin (PinMoved), ToggleMode and
+    // ToggleLayout flip the toggles, CentreOnPin centres on the pin (also with Live on, §4.1),
+    // LiveProbe is execute(LiveProbe), PlayPause is execute(PlayPause).
+    void inspectorKey(const ZoomKeyAction& action);
+    // The Zoom window's toolbar: Live (on: the Zoom window shows), the mode (ModeChanged) and the
+    // layout. Nothing changes for a value equal to the current one.
+    void setInspectorLive(bool live);
+    void setInspectorMode(InspectorMode mode);
+    void setInspectorLayout(InspectorLayout layout);
+    // The viewport the View commands act on (§4.2): the Zoom window's while it is shown and in
+    // front (floatingInFront()), else the main one.
+    [[nodiscard]] Viewport& activeViewport() const;
+    // FitToWindow, ActualSize, ZoomIn or ZoomOut on `view`. The main view: around the centre of P
+    // (the viewport's picture region). The Zoom view (§4.5): numbersFitZoom, fitCellZoom and the
+    // next whole zoom, centred per the mode (setInspectorZoom).
+    void applyViewCommand(Command command, Viewport& view);
+    // The last shown readback's values; none before one, or after the pin went.
+    [[nodiscard]] const std::optional<PixelValues>& pixelValues() const noexcept { return values_; }
+    // Whether the pipette is on (P, Esc; off without a stream).
+    [[nodiscard]] bool pipetteOn() const noexcept { return pipette_; }
+    // The selftest's late readback: `readback` stamped with the last status's epoch and stream set,
+    // then handled as a readback of the Zoom viewport.
+    void readbackForTest(ViewReadback readback);
+    // Selftest: pins `pixel` as a pick on a viewport does (pinAt).
+    void pinForTest(dvv::media::ImagePixel pixel) { pinAt(pixel); }
+    // Selftest: the Zoom viewport's readbacks shown (onReadback, Show) and the last one's epoch.
+    [[nodiscard]] std::uint64_t zoomReadbacksForTest() const noexcept { return zoom_readbacks_; }
+    [[nodiscard]] std::uint64_t zoomReadbackEpochForTest() const noexcept {
+        return zoom_readback_epoch_;
+    }
+    // The selftest's look at a stream change: `hook` runs at the end of every onStreamsChanged with
+    // the new streams (the short blank of the values before a readback of them, §4.1); empty
+    // removes it.
+    void setStreamsChangedForTest(std::function<void(const std::vector<StreamInfo>&)> hook) {
+        streams_changed_for_test_ = std::move(hook);
+    }
     // View -> Info and every other floating window: each show and hide goes through setWindowShown
     // (the command, the window's close box, Esc). A window is created by its first show. Nothing
     // while closing or when it is already so. Hiding the Grid and Rulers window saves the settings
@@ -296,6 +343,9 @@ private:
     void buildMenus();  // from commandTable() (D17)
     // 6 fields (D20, D5R §2.2, Log pane and Settings design §2, spec §7)
     void buildStatusBar();
+    // The status fields' widths at the bar's width: PIXEL and PADDING get only the width beyond the
+    // minimum, and only while a pin or Live is on.
+    void layoutStatusFields();
     // The width of the two fixed fields (display mapping and Log notice) at the current font.
     [[nodiscard]] int statusFixedWidth() const;
     // The bar's zoom controls: zoomText of the viewport's shownView(); "" without an image
@@ -304,9 +354,10 @@ private:
     // The Grid and Rulers window's notes for the shown view (GridWindow::showNotes), when it
     // exists: the viewport's zoom and backingPerDip.
     void showGridNotes();
-    // FitToWindow, ActualSize, ZoomIn and ZoomOut, around the centre of P (the viewport's picture
-    // region).
+    // applyViewCommand on activeViewport() (also from the macOS menu bar, which reaches execute).
     void applyViewCommand(Command command);
+    // The main view's rules of applyViewCommand.
+    void applyMainViewCommand(Command command);
     // zoomAround the centre of P at `zoom` (Actual size, a zoom menu percentage).
     void zoomAtCentre(double zoom);
     // A percentage of the zoom button's menu (zoom buttons design §2.2): zoomAtCentre at its
@@ -385,6 +436,40 @@ private:
     // The bar's Alpha button follows the state and whether the clip has alpha (execute(Alpha),
     // onStreamsChanged, onStatusChanged).
     void updateAlphaControls();
+    // PIXEL and PADDING get status width while a pin, Live or the padding check is on.
+    void layoutInspectorFields();
+    // The bar's Padding check toggle follows padding_check_ and isAvailable(PaddingCheck).
+    void updatePaddingControls();
+    // The padding check after a toggle or the load at start: the main viewport's roles
+    // ({Display}, plus {Raw} while on) and marks, the PADDING field (blank while off), the toggle.
+    void applyPaddingCheck();
+    // A readback of the main viewport, against the last status (readbackUse): its padding count.
+    void onPaddingReadback(const ViewReadback& readback);
+    void showPaddingCount(std::optional<std::uint64_t> samples);  // the PADDING field
+    // The inspector after `event`: the Zoom viewport's inspect params, its view recentred only
+    // when recentres(event) (P9), then the values, the header and the status. A Zoom view at the
+    // last numbers-fit zoom follows a new fit (a display scale, the layout, the clip) around its
+    // centre; a zoom the user chose stays (inspector_fit_).
+    void updateInspector(InspectorEvent event);
+    // The Zoom view at whole zoom `zoom`, centred per the mode on `at` (Follow: its centre; Cell:
+    // its grid cell, cellView); on the current centre without one.
+    void setInspectorZoom(std::uint32_t zoom, std::optional<dvv::media::ImagePixel> at);
+    // setInspectorZoom on the shown pixel.
+    void setInspectorZoom(std::uint32_t zoom) { setInspectorZoom(zoom, inspector_.shown()); }
+    // The Zoom window's place, picture size, layout and mode into the config (at its hide and at
+    // the close): App::saveInspector.
+    void saveInspectorState(bool closing);
+    // The main view's markers: the pin, and while the Zoom window shows with a pin or Live the
+    // outline of the image pixels its view shows (visiblePixels).
+    void updateMarkers();
+    // The pick of `pixel` in either viewport: the pin (design §4.1).
+    void pinAt(dvv::media::ImagePixel pixel);
+    // The pipette on or off: the main viewport's tool and the bar's toggle follow; `why` is logged.
+    void setPipette(bool on, std::string_view why);
+    // A readback of the Zoom viewport, against the last status (readbackUse).
+    void onReadback(const ViewReadback& readback);
+    // values_ from `probe` and the PIXEL field and the header from values_.
+    void showValues(const std::optional<ProbeSample>& probe, std::int64_t frame);
     // The bar's plane toggles follow planes_, isAvailable(Plane1..3) and planeLetters() (the
     // constructor, a plane toggle or a refused one, onStreamsChanged, onStatusChanged).
     void updatePlaneControls();
@@ -446,6 +531,7 @@ private:
     wxSize applied_minimum_;        // the last minimum client size applyLayoutLimits() set
     bool limits_check_pending_ = false;
     std::array<wxString, STATUS_FIELD_COUNT> status_texts_;
+    bool status_inspecting_ = false;          // PIXEL and PADDING have width (layoutStatusFields)
     wxString stream_name_;                    // spec §4: the shown name; "" with no stream
     wxString stream_path_;                    // spec §4: the full path; "" with no stream
     std::optional<int> tip_field_;            // the field whose tooltip the status bar shows
@@ -467,6 +553,20 @@ private:
     bool reopen_offered_ = false;  // the current message carries the Reopen button
     bool loop_ = false;            // mirrors the Session's loop flag (Command::Loop)
     bool alpha_ = false;           // View -> Alpha (Command::Alpha); never saved
+    bool pipette_ = false;         // View -> Pipette (Command::Pipette): the main viewport's tool
+    Inspector inspector_;          // the pin, the probe and the Zoom window's toggles (design §3)
+    // The numbers-fit zoom updateInspector last computed for the Zoom view; none before one and
+    // for a new Zoom window.
+    std::optional<std::uint32_t> inspector_fit_;
+    std::optional<PixelValues> values_;          // the last shown readback's values (§4.6)
+    std::optional<ViewReadback> held_readback_;  // newer than the status: checked at its change
+    std::optional<ViewReadback> held_padding_;   // as held_readback_, the main viewport's
+    std::uint64_t zoom_readbacks_ = 0;           // zoomReadbacksForTest()
+    std::uint64_t zoom_readback_epoch_ = 0;      // zoomReadbackEpochForTest()
+    std::uint64_t stack_epoch_ = 0;              // of the last stackChanged, with context_
+    std::uint64_t status_epoch_ = 0;             // SessionStatus::epoch of the last status
+    std::uint64_t status_stream_set_ = 0;        // its streamGeneration (the stream set)
+    bool padding_check_ = false;                 // View -> Padding Check (Command::PaddingCheck)
     // View -> the plane items (Plane1..3) and Hidden U and V at 0 (HiddenChromaZero); never saved.
     std::array<bool, 3> planes_{true, true, true};
     bool chroma_zero_ = false;
@@ -498,7 +598,8 @@ private:
     std::unique_ptr<SelfTest> selftest_;
     bool closing_ = false;
     wxWeakRef<wxWindow> focus_for_test_;  // setFocusForTest(); cleared when that window goes
-    bool first_shown_ = false;            // the frame has been shown (onShow)
+    std::function<void(const std::vector<StreamInfo>&)> streams_changed_for_test_;
+    bool first_shown_ = false;  // the frame has been shown (onShow)
     // View zoom design §3.3: dvv::formatUri of the open whose stream sizes the window; empty: none.
     std::string sizing_uri_;
     std::optional<wxRect> work_area_for_test_;  // setWorkAreaForTest()

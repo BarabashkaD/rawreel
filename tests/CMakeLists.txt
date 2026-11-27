@@ -17,17 +17,18 @@ list(APPEND DVV_TEST_ENVIRONMENT
 find_package(dvv_ffmpeg_sdk CONFIG REQUIRED)
 
 # The CPU reference of the compositor, compiled once for the unit and the GPU tests.
-add_library(rawreel_composite_reference STATIC composite_reference.cpp ruler_reference.cpp)
+add_library(rawreel_composite_reference STATIC composite_reference.cpp inspect_reference.cpp
+                                               ruler_reference.cpp)
 target_link_libraries(rawreel_composite_reference PUBLIC rawreel_render PRIVATE dvv::media)
 dvv_set_compiler_options(rawreel_composite_reference)
 # The reference rounds after every float operation, as the shaders mark it precise (dvv-media's
 # view_lines.cpp rule): no multiply-add may be fused.
-set_source_files_properties(composite_reference.cpp ruler_reference.cpp PROPERTIES
+set_source_files_properties(composite_reference.cpp inspect_reference.cpp ruler_reference.cpp PROPERTIES
     COMPILE_OPTIONS "$<IF:$<CXX_COMPILER_ID:MSVC>,/fp:precise,-ffp-contract=off>")
 
 add_executable(rawreel_tests
-    main.cpp test_composite_reference.cpp test_display_state.cpp test_overlay_params.cpp
-    test_pass_regions.cpp test_ruler_reference.cpp
+    main.cpp test_composite_reference.cpp test_frame_feed.cpp test_overlay_params.cpp
+    test_pass_regions.cpp test_ruler_reference.cpp test_view_layout.cpp test_view_state.cpp
     # The GUI's one unit conversion: wx-free, so tested here without wx and in the sanitizer builds.
     ${PROJECT_SOURCE_DIR}/src/gui/overlay_params.cpp)
 target_link_libraries(rawreel_tests PRIVATE rawreel_composite_reference rawreel_render doctest::doctest)
@@ -71,9 +72,9 @@ endif()
 add_executable(rawreel_core_tests
     core_main.cpp session_fixture.cpp test_commands.cpp test_config.cpp test_config_writer.cpp test_drop.cpp
     test_format_choice.cpp test_format_presets.cpp
-    test_gui_arguments.cpp test_info_text.cpp test_layout.cpp test_log_file_switch.cpp test_log_level.cpp test_log_mirror.cpp test_log_store.cpp test_log_text.cpp test_perf_stats.cpp test_player.cpp test_session.cpp
+    test_gui_arguments.cpp test_info_text.cpp test_layout.cpp test_log_file_switch.cpp test_log_level.cpp test_log_mirror.cpp test_log_store.cpp test_log_text.cpp test_perf_stats.cpp test_player.cpp test_session.cpp test_inspector.cpp test_zoom_keys.cpp
     test_session_notify.cpp test_session_storm.cpp test_session_types.cpp test_settings_claim.cpp
-    test_open_text.cpp test_overlay.cpp test_recent.cpp test_ruler_labels.cpp test_source_provider.cpp test_startup.cpp test_vulkan_driver.cpp
+    test_open_text.cpp test_inspector_text.cpp test_overlay.cpp test_recent.cpp test_ruler_labels.cpp test_source_provider.cpp test_startup.cpp test_vulkan_driver.cpp
     test_status_text.cpp test_stream_name.cpp test_svg_colour.cpp test_timeline.cpp test_timer.cpp test_view.cpp)
 dvv_os_sources(rawreel_core_tests test_native_os)
 target_link_libraries(rawreel_core_tests PRIVATE rawreel_core doctest::doctest)
@@ -115,21 +116,32 @@ if(DVV_SANITIZE STREQUAL "thread")
          "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan.supp")
 endif()
 
+# The layer block probe (shaders/layer_block_probe.slang) imports the exported rawreel.layer_block.
+add_library(rawreel_test_shaders STATIC)
+dvv_add_shaders(rawreel_test_shaders NAMESPACE rawreel_test_shaders
+    SHADERS shaders/layer_block_probe.slang IMPORTS rawreel_render dvv::media)
+dvv_set_compiler_options(rawreel_test_shaders)
 # The Session cases (gpu_test_session.cpp) reuse the headless suite's fixture and test sources.
 add_executable(rawreel_gpu_tests
-    gpu_main.cpp gpu_support.cpp gpu_test_compositor.cpp gpu_test_session.cpp
-    session_fixture.cpp test_source_provider.cpp)
-target_link_libraries(rawreel_gpu_tests PRIVATE rawreel_composite_reference rawreel_render rawreel_core doctest::doctest)
+    gpu_main.cpp gpu_support.cpp gpu_test_compositor.cpp gpu_test_inspect.cpp gpu_test_padding.cpp
+    gpu_test_session.cpp inspect_support.cpp session_fixture.cpp test_source_provider.cpp)
+target_link_libraries(rawreel_gpu_tests PRIVATE rawreel_composite_reference rawreel_render rawreel_core
+                                                rawreel_test_shaders doctest::doctest)
 dvv_link_components(rawreel_gpu_tests dvv::media_sources)
 target_compile_definitions(rawreel_gpu_tests PRIVATE DOCTEST_CONFIG_USE_STD_HEADERS)
 dvv_set_compiler_options(rawreel_gpu_tests)
-add_test(NAME rawreel.gpu COMMAND rawreel_gpu_tests)
-set_tests_properties(rawreel.gpu PROPERTIES
-    LABELS gpu
-    SKIP_RETURN_CODE 77
-    TIMEOUT 300
-    ENVIRONMENT "${gpu_test_environment}"
-    ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
+# One ctest entry per source file (doctest --source-file), so each stays well inside its TIMEOUT
+# under the sanitizers. Every case lives in one of these files.
+foreach(gpu_suite compositor inspect padding session)
+    add_test(NAME rawreel.gpu.${gpu_suite}
+             COMMAND rawreel_gpu_tests --source-file=*gpu_test_${gpu_suite}.cpp)
+    set_tests_properties(rawreel.gpu.${gpu_suite} PROPERTIES
+        LABELS gpu
+        SKIP_RETURN_CODE 77
+        TIMEOUT 300
+        ENVIRONMENT "${gpu_test_environment}"
+        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT}")
+endforeach()
 
 # GUI selftests (spec §12; design M3 v2 §8.4): rawreel-gui --selftest <scenario>. They exit 77
 # without a usable device or display unless DVV_REQUIRE_GPU=1. Only where rawreel_gui exists (no
@@ -186,6 +198,16 @@ if(TARGET rawreel_gui)
         ENVIRONMENT "${gpu_test_environment};NO_AT_BRIDGE=1"
         ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT};DVV_FFMPEG_DIR=set:${DVV_FFMPEG_RUNTIME_DIR}")
     # GUI scenario player (design §8.4). The URI opens at start, like a user's command line.
+    add_test(NAME rawreel.gui_selftest.inspector
+             COMMAND rawreel_gui --selftest inspector "synthetic:gradient?fmt=yuv420p10le&size=64x48&frames=60")
+    set_tests_properties(rawreel.gui_selftest.inspector PROPERTIES
+        FAIL_REGULAR_EXPRESSION "${gui_x_error}"
+        LABELS "gpu;display;gui"
+        SKIP_RETURN_CODE 77
+        TIMEOUT 180
+        ENVIRONMENT "${gpu_test_environment};NO_AT_BRIDGE=1"
+        ENVIRONMENT_MODIFICATION "${DVV_TEST_ENVIRONMENT};DVV_FFMPEG_DIR=set:${DVV_FFMPEG_RUNTIME_DIR}")
+
     add_test(NAME rawreel.gui_selftest.player
              COMMAND rawreel_gui --selftest player "synthetic:gradient?fmt=yuv420p10le&size=64x48&frames=60")
     set_tests_properties(rawreel.gui_selftest.player PROPERTIES

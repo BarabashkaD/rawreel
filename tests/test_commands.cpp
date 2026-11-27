@@ -41,7 +41,7 @@ constexpr std::string_view SETTINGS_LABEL =
 
 TEST_SUITE("core") {
     TEST_CASE("commands: the table lists every command once, in order") {
-        static_assert(COMMAND_COUNT == 36);
+        static_assert(COMMAND_COUNT == 42);
         const auto table = commandTable();
         REQUIRE(table.size() == COMMAND_COUNT);
         std::set<std::string_view> ids;
@@ -173,11 +173,13 @@ TEST_SUITE("core") {
             CAPTURE(entry.id);
             const bool shown = entry.command == Command::LogPane ||
                                entry.command == Command::InfoWindow ||
-                               entry.command == Command::Grid || entry.command == Command::Rulers;
+                               entry.command == Command::Grid || entry.command == Command::Rulers ||
+                               entry.command == Command::ZoomWindow;
             const bool mode =
                 entry.command == Command::Plane1 || entry.command == Command::Plane2 ||
                 entry.command == Command::Plane3 || entry.command == Command::HiddenChromaZero ||
-                entry.command == Command::Alpha;
+                entry.command == Command::Alpha || entry.command == Command::Pipette ||
+                entry.command == Command::LiveProbe || entry.command == Command::PaddingCheck;
             MenuCheck expected = MenuCheck::None;
             if (shown) {
                 expected = MenuCheck::Shown;
@@ -498,5 +500,28 @@ TEST_SUITE("core") {
         CHECK(tooltipText(info(Command::Open), false) == "Open a raw video file (Ctrl+O)");
         CHECK(tooltipText(info(Command::Open), true) == "Open a raw video file (Cmd+O)");
         CHECK(tooltipText(info(Command::StepBack), true) == "Show the previous frame (Left)");
+    }
+
+    TEST_CASE("commands: the inspector commands and keys") {
+        static_assert(static_cast<std::size_t>(Command::PaddingCheck) + 1 ==
+                      static_cast<std::size_t>(Command::GpuInfo));
+        CHECK(commandForKey(letter('P'), false) == Command::Pipette);
+        CHECK(commandForKey(KeyChord{'P', false, true, false}, false) == Command::LiveProbe);
+        CHECK(commandForKey(letter('X'), false) == Command::PaddingCheck);
+        CHECK_FALSE(commandForKey(letter('P'), true));  // an editable field keeps its keys
+        const rawreel::CommandInfo& pipette = info(Command::Pipette);
+        CHECK(pipette.id == "pipette");
+        CHECK(pipette.menu == "View");
+        CHECK(pipette.check == MenuCheck::Mode);
+        CHECK(pipette.route == KeyRoute::CharHook);
+        CHECK(info(Command::LiveProbe).id == "live_probe");
+        CHECK(info(Command::ZoomWindow).id == "zoom_window");
+        CHECK(info(Command::ZoomWindow).check == MenuCheck::Shown);
+        CHECK(info(Command::ZoomWindow).route == KeyRoute::Accelerator);
+        CHECK_FALSE(info(Command::ZoomWindow).key);
+        CHECK(info(Command::ClearPin).id == "clear_pin");
+        CHECK(info(Command::CopyValues).label == "Copy Pixel Values");
+        CHECK(info(Command::PaddingCheck).id == "padding_check");
+        CHECK(info(Command::PaddingCheck).check == MenuCheck::Mode);
     }
 }

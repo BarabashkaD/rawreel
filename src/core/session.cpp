@@ -15,6 +15,7 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <utility>
@@ -22,6 +23,7 @@
 #include <vector>
 
 #include "core/delayed_source.h"
+#include "core/frame_set.h"
 #include "core/player.h"
 #include "dvv/base/executors.h"
 #include "dvv/base/log.h"
@@ -31,6 +33,7 @@
 #include "dvv/gpu/gpu_info.h"
 #include "dvv/gpu/gpu_instance.h"
 #include "dvv/media/display.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/uri_colour.h"
 
@@ -53,13 +56,15 @@ dvv::media::FileHint labelHint(const dvv::media::SourceInfo& info) {
 
 namespace detail {
 
+using Views = std::array<std::optional<dvv::media::ViewSpec>, VIEW_ROLE_COUNT>;  // per role
+
 struct Stream {
     std::shared_ptr<dvv::media::ISource> source;  // released on a device loss (design v2 D7)
     dvv::media::SourceInfo info;
     dvv::media::ResolvedColour colour;
     std::string requestedUri;         // dvv::formatUri of the open request
     dvv::media::OriginId origin = 0;  // in the current stack's store
-    dvv::media::ViewSpec view{};      // SessionCore::streamView(info.desc)
+    Views views{};                    // SessionCore::streamViews(info.desc)
 };
 
 // One job of the open FIFO (design v2 §5.3 step 3). Exactly one runs at a time; a job that finds
@@ -87,10 +92,17 @@ struct Tag {
 
 struct RequestSlot {
     dvv::media::OriginId origin = 0;
-    dvv::media::ViewSpec view{};
+    Views views{};  // the wanted roles' views; Display always set
 };
 
-using Leases = std::array<dvv::media::ReadLease, MAX_STREAMS>;
+// One acquire of requestFrames: the lease of `role` for stream `slot`.
+struct RoleResult {
+    ViewRole role = ViewRole::Display;
+    std::size_t slot = 0;
+    dvv::Result<dvv::media::ReadLease> lease;
+};
+
+using Leases = std::array<RoleLeases, VIEW_ROLE_COUNT>;  // per role, per stream
 using OpenResult =
     dvv::Result<std::variant<std::unique_ptr<dvv::media::ISource>, dvv::media::Ambiguous>>;
 
@@ -124,6 +136,8 @@ public:
 
     // --- any thread ---
     [[nodiscard]] dvv::IExecutor& executor() const noexcept { return *executor_; }
+    // Whether `tag` still names the current request generation (on the executor).
+    [[nodiscard]] bool current(const Tag& tag) const noexcept { return tag == currentTag(); }
     [[nodiscard]] bool stopped() const noexcept { return stopped_.load(std::memory_order_acquire); }
     // Log pane and Settings design §5.3: the Settings window changes it while workers read it at
     // every open, reopens included.
@@ -301,7 +315,7 @@ public:
             });
         hidden_ = hidden;
         for (Stream& stream : streams_) {
-            stream.view = streamView(stream.info.desc);
+            stream.views = streamViews(stream.info.desc);
         }
         if (streams_.empty() || !player_ || same_picture) {
             return;
@@ -314,6 +328,37 @@ public:
         ready_.clear();
         oom_retried_.clear();
         player_->invalidate();
+    }
+    void setViewRoles(ViewRoles roles) {
+        roles = roles | ViewRoles::of(ViewRole::Display);
+        if (roles == roles_) {
+            return;
+        }
+        const bool added = (roles | roles_) != roles_;
+        roles_ = roles;
+        if (streams_.empty() || !player_) {
+            return;
+        }
+        config_ = makeConfig();
+        if (added) {
+            // As a new hidden set: results in flight carry the old generation and are dropped,
+            // the ready frames are requested again with the added role's views.
+            ++generation_;
+            ready_.clear();
+            oom_retried_.clear();
+            player_->setWindow(config_.window);
+            player_->invalidate();
+            return;
+        }
+        // A removed role: its leases leave the ready frames; results in flight drop it on arrival.
+        for (auto& [index, leases] : ready_) {
+            for (std::size_t r = 0; r < VIEW_ROLE_COUNT; ++r) {
+                if (!roles_.has(static_cast<ViewRole>(r))) {
+                    leases[r] = RoleLeases{};
+                }
+            }
+        }
+        player_->setWindow(config_.window);
     }
     void step(std::int64_t delta) {
         if (player_) {
@@ -347,6 +392,33 @@ public:
         for (const std::string& line : diagnosticsLines(stack_.store->stats(), leases)) {
             DVV_LOG_TEXT(dvv::LogLevel::Info, line);
         }
+    }
+
+    // A lease's view is the store's planned view: a request's LayoutPolicy::Any comes back
+    // resolved, so the layout is compared only where the request names one.
+    static bool leasedAs(const dvv::media::ViewSpec& asked, const dvv::media::ViewSpec& leased) {
+        dvv::media::ViewSpec resolved = asked;
+        if (asked.layout == dvv::media::LayoutPolicy::Any) {
+            resolved.layout = leased.layout;
+        }
+        return resolved == leased;
+    }
+
+    void leasesForTest(dvv::MoveOnlyFunction<void(Session::LeaseCounts) noexcept>& done) const {
+        Session::LeaseCounts counts;
+        if (stack_.store) {
+            for (const dvv::media::LeaseInfo& lease : stack_.store->outstandingLeases()) {
+                bool counted = false;
+                for (std::size_t r = 0; r < VIEW_ROLE_COUNT && !counted; ++r) {
+                    counted = std::ranges::any_of(streams_, [&](const auto& stream) {
+                        return stream.views[r] && leasedAs(*stream.views[r], lease.view);
+                    });
+                    counts.roles[r] += counted ? 1U : 0U;
+                }
+                counts.other += counted ? 0U : 1U;
+            }
+        }
+        done(counts);
     }
 
     void onTick() {
@@ -426,22 +498,25 @@ public:
         startNextOpen();
     }
 
-    void requestDone(std::int64_t index, const Tag& tag,
-                     std::vector<dvv::Result<dvv::media::ReadLease>> results) {
+    void requestDone(std::int64_t index, const Tag& tag, std::vector<RoleResult> results) {
         if (stopping_ || !player_ || tag != currentTag()) {
             return;  // stale: the leases are released here, on the executor
         }
-        for (std::size_t slot = 0; slot < results.size(); ++slot) {
-            if (!results[slot]) {
-                requestFailed(index, slot, tag, std::move(results[slot]).error());
+        for (RoleResult& result : results) {
+            if (!result.lease) {
+                requestFailed(index, result.slot, tag, std::move(result.lease).error());
                 return;
             }
         }
         const bool kept = player_->frameReady(index, clock().now());  // P2
         if (kept && !ready_.contains(index)) {
             Leases leases{};
-            for (std::size_t slot = 0; slot < results.size() && slot < leases.size(); ++slot) {
-                leases[slot] = std::move(*results[slot]);
+            for (RoleResult& result : results) {
+                // A role removed while the request ran is dropped (an added one bumps the tag).
+                if (roles_.has(result.role) && result.slot < MAX_STREAMS) {
+                    leases[static_cast<std::size_t>(result.role)][result.slot] =
+                        std::move(*result.lease);
+                }
             }
             ready_.emplace(index, std::move(leases));
         }
@@ -624,7 +699,13 @@ private:
         std::vector<RequestSlot> slots;
         slots.reserve(streams_.size());
         for (const Stream& stream : streams_) {
-            slots.push_back({stream.origin, stream.view});
+            RequestSlot slot{.origin = stream.origin, .views = {}};
+            for (std::size_t r = 0; r < VIEW_ROLE_COUNT; ++r) {
+                if (roles_.has(static_cast<ViewRole>(r))) {
+                    slot.views[r] = stream.views[r];
+                }
+            }
+            slots.push_back(slot);
         }
         spawn(
             requestFrames(shared_from_this(), stack_.store, index, currentTag(), std::move(slots)),
@@ -640,10 +721,18 @@ private:
         FrameSet frames;
         frames.index = index;
         frames.count = static_cast<std::uint32_t>(streams_.size());
-        for (std::size_t s = 0; s < MAX_STREAMS; ++s) {
-            frames.views[s] = entry->second[s].share();
+        for (std::size_t r = 0; r < VIEW_ROLE_COUNT; ++r) {
+            if (!roles_.has(static_cast<ViewRole>(r))) {
+                continue;
+            }
+            for (std::size_t s = 0; s < MAX_STREAMS; ++s) {
+                if (entry->second[r][s]) {
+                    frames.leases[r][s] = entry->second[r][s].share();
+                }
+            }
         }
         frames.epoch = stack_epoch_;
+        frames.streamSet = stream_set_;
         ++shown_;
         options_.sink->show(std::move(frames));
     }
@@ -718,12 +807,17 @@ private:
 
     // The stack's view for `desc`, with the hidden components when it is the display view (only
     // the display view may hide; the host planes view keeps the default set).
-    [[nodiscard]] dvv::media::ViewSpec streamView(const dvv::media::FrameDesc& desc) {
-        dvv::media::ViewSpec view = stack_.viewFor(desc);
-        if (dvv::media::isDisplay(view.format)) {
-            view.hidden = hidden_;
+    [[nodiscard]] Views streamViews(const dvv::media::FrameDesc& desc) {
+        Views views{};
+        for (std::size_t r = 0; r < VIEW_ROLE_COUNT; ++r) {
+            views[r] = stack_.viewFor(desc, static_cast<ViewRole>(r));
         }
-        return view;
+        std::optional<dvv::media::ViewSpec>& display =
+            views[static_cast<std::size_t>(ViewRole::Display)];
+        if (display && dvv::media::isDisplay(display->format)) {
+            display->hidden = hidden_;
+        }
+        return views;
     }
 
     // D21 (one stream at a time): any size, format or colour replaces the stream in slot 0.
@@ -750,7 +844,13 @@ private:
             dvv::media::resolveColour(stream.info.desc, labelHint(stream.info)).standard;
         stream.requestedUri = std::move(requested_uri);
         stream.origin = *attached;
-        stream.view = streamView(stream.info.desc);
+        stream.views = streamViews(stream.info.desc);
+        if (!stream.views[static_cast<std::size_t>(ViewRole::Display)]) {
+            stack_.store->detach(stream.origin);
+            emitError(dvv::Errc::Internal, std::format("'{}': the media stack has no display view",
+                                                       stream.info.resolvedUri));
+            return;
+        }
         stream.source = std::move(source);
         detachStreams();
         streams_.push_back(std::move(stream));
@@ -788,7 +888,7 @@ private:
     }
 
     // D11: the window from the tier budget of the stream's display view, capped by the
-    // out-of-memory window.
+    // out-of-memory window: budget / (2 x the bytes of every wanted role), within [2, 8].
     [[nodiscard]] PlayerConfig makeConfig() const {
         PlayerConfig config;
         config.inflight = options_.inflight;
@@ -799,10 +899,12 @@ private:
         config.fps = stream.info.fps;
         config.length = stream.info.frameCount;
         std::uint64_t budget = 0;
-        if (stack_.store) {
+        const std::optional<dvv::media::ViewSpec>& display =
+            stream.views[static_cast<std::size_t>(ViewRole::Display)];
+        if (stack_.store && display) {
             const dvv::media::StoreStats stats = stack_.store->stats();
             const auto tier = std::ranges::find_if(stats.tiers, [&](const auto& candidate) {
-                return candidate.domain == stream.view.domain;
+                return candidate.domain == display->domain;
             });
             if (tier != stats.tiers.end()) {
                 budget = tier->budget;
@@ -811,14 +913,38 @@ private:
             }
         }
         constexpr std::uint64_t STREAMS = 1;
-        const std::uint64_t frame = std::max<std::uint64_t>(
-            2ULL * 8ULL * stream.info.desc.width * stream.info.desc.height * STREAMS, 1);
+        const std::uint64_t frame =
+            std::max<std::uint64_t>(2ULL * roleBytes(stream.info.desc, roles_) * STREAMS, 1);
         std::uint64_t window = std::clamp<std::uint64_t>(budget / frame, 2, 8);
         if (oom_window_) {
             window = std::min<std::uint64_t>(window, *oom_window_);
         }
         config.window = static_cast<std::uint32_t>(window);
         return config;
+    }
+
+    // The bytes one frame of `desc` holds for `roles`: 8 per pixel for Display (RGBA16F), one or
+    // two per sample of every unpacked component for Planes, the tight original for Raw. The
+    // Planes count must match planesView(IMAGE)'s sample width (one byte up to 8 bits, else two):
+    // change both together.
+    [[nodiscard]] static std::uint64_t roleBytes(const dvv::media::FrameDesc& desc,
+                                                 ViewRoles roles) {
+        std::uint64_t bytes = 8ULL * desc.width * desc.height;
+        if (roles.has(ViewRole::Planes)) {
+            const dvv::media::PixelFormatDesc& format = dvv::media::formatDesc(desc.format);
+            for (std::size_t c = 0; c < format.componentCount; ++c) {
+                const auto [width, height] =
+                    dvv::media::componentSize(desc.format, c, desc.width, desc.height);
+                const std::uint64_t sample = format.components[c].bits <= 8 ? 1 : 2;
+                bytes += sample * width * height;
+            }
+        }
+        if (roles.has(ViewRole::Raw)) {
+            const dvv::Result<dvv::media::FrameGeometry> geometry =
+                dvv::media::geometry(desc.format, desc.width, desc.height);
+            bytes += geometry ? geometry->bytes : 0;
+        }
+        return bytes;
     }
 
     // D20: once per second of the Session clock.
@@ -974,7 +1100,8 @@ private:
     std::optional<PlayerLogic> player_;
     PlayerConfig config_{};
     bool loop_ = false;
-    dvv::media::HiddenComponents hidden_{};  // setHiddenComponents; kept across clips
+    dvv::media::HiddenComponents hidden_{};               // setHiddenComponents; kept across clips
+    ViewRoles roles_ = ViewRoles::of(ViewRole::Display);  // setViewRoles; kept across clips
     std::map<std::int64_t, Leases> ready_;
     std::set<std::int64_t> oom_retried_;
     std::optional<std::uint32_t> oom_window_;
@@ -1090,33 +1217,92 @@ dvv::Task<void> buildStack(std::shared_ptr<SessionCore> core, OpenJob job,
 dvv::Task<void> requestFrames(std::shared_ptr<SessionCore> core,
                               std::shared_ptr<dvv::media::FrameStore> store, std::int64_t index,
                               Tag tag, std::vector<RequestSlot> slots) {
-    std::vector<dvv::Result<dvv::media::ReadLease>> results;
+    std::vector<RoleResult> results;
     try {
-        std::vector<dvv::Task<dvv::Result<dvv::media::ReadLease>>> acquires;
-        acquires.reserve(slots.size());
+        // Display first: its plan makes the other roles' entries on the way, so their acquires
+        // below are cache hits. Every acquire resumes on the executor (resume_on), so whenAll
+        // does too.
+        std::vector<dvv::Task<dvv::Result<dvv::media::ReadLease>>> displays;
+        displays.reserve(slots.size());
         for (const RequestSlot& slot : slots) {
-            acquires.push_back(store->acquire({slot.origin, index}, slot.view, core->executor()));
+            const std::optional<dvv::media::ViewSpec>& display =
+                slot.views[static_cast<std::size_t>(ViewRole::Display)];
+            if (!display) {  // attachSource detaches a stream without one; caught below
+                throw std::logic_error("a request slot without a Display view");
+            }
+            displays.push_back(store->acquire({slot.origin, index}, *display, core->executor()));
         }
-        // Every acquire resumes on the executor (resume_on), so whenAll does too.
-        results = co_await dvv::whenAll(std::move(acquires));
+        std::vector<dvv::Result<dvv::media::ReadLease>> shown =
+            co_await dvv::whenAll(std::move(displays));
+        const bool all_shown =
+            std::ranges::all_of(shown, [](const auto& lease) { return lease.has_value(); });
+        for (std::size_t s = 0; s < shown.size(); ++s) {
+            results.push_back({.role = ViewRole::Display, .slot = s, .lease = std::move(shown[s])});
+        }
+        std::vector<dvv::Task<dvv::Result<dvv::media::ReadLease>>> others;
+        std::vector<std::pair<ViewRole, std::size_t>> where;
+        // A stale tag (device loss, new roles or hidden set) drops the result in requestDone: the
+        // other roles' acquires would only keep the old stack alive.
+        const bool fresh = all_shown && core->current(tag);
+        for (std::size_t r = 1; fresh && r < VIEW_ROLE_COUNT; ++r) {
+            for (std::size_t s = 0; s < slots.size(); ++s) {
+                if (const std::optional<dvv::media::ViewSpec>& view = slots[s].views[r]; view) {
+                    others.push_back(
+                        store->acquire({slots[s].origin, index}, *view, core->executor()));
+                    where.emplace_back(static_cast<ViewRole>(r), s);
+                }
+            }
+        }
+        if (!others.empty()) {
+            std::vector<dvv::Result<dvv::media::ReadLease>> leases =
+                co_await dvv::whenAll(std::move(others));
+            for (std::size_t i = 0; i < leases.size(); ++i) {
+                results.push_back({.role = where[i].first,
+                                   .slot = where[i].second,
+                                   .lease = std::move(leases[i])});
+            }
+        }
     } catch (const std::exception& error) {
         // Thrown either before any suspension (on the executor, inside pump) or by whenAll after
         // every child resumed on the executor: either way this runs on the executor.
         results.clear();
         results.push_back(
-            dvv::makeError(dvv::Errc::Internal, std::format("frame {}: {}", index, error.what())));
+            {.role = ViewRole::Display,
+             .slot = 0,
+             .lease = dvv::makeError(dvv::Errc::Internal,
+                                     std::format("frame {}: {}", index, error.what()))});
     }
     core->requestDone(index, tag, std::move(results));
 }
 
 }  // namespace detail
 
-FrameSet FrameSet::share(std::source_location where) const {
-    FrameSet shared{.index = index, .count = count, .views = {}, .epoch = epoch};
-    for (std::size_t s = 0; s < MAX_STREAMS; ++s) {
-        shared.views[s] = views[s].share(where);
-    }
-    return shared;
+MediaStack::ViewFor gpuStackViews(dvv::media::Domain device_domain) {
+    return [device_domain](const dvv::media::FrameDesc& desc,
+                           ViewRole role) -> std::optional<dvv::media::ViewSpec> {
+        switch (role) {
+            case ViewRole::Display: return dvv::media::displayView(device_domain);
+            case ViewRole::Planes:
+                return dvv::media::planesView(desc, dvv::media::vulkan::IMAGE, device_domain);
+            case ViewRole::Raw:
+                return dvv::media::originalView(desc, dvv::media::vulkan::BUFFER, device_domain);
+        }
+        return std::nullopt;
+    };
+}
+
+MediaStack::ViewFor hostStackViews(dvv::media::Domain host_domain) {
+    return [host_domain](const dvv::media::FrameDesc& desc,
+                         ViewRole role) -> std::optional<dvv::media::ViewSpec> {
+        switch (role) {
+            case ViewRole::Display:
+            case ViewRole::Planes:
+                return dvv::media::planesView(desc, dvv::media::HOST_PLANES, host_domain);
+            case ViewRole::Raw:
+                return dvv::media::originalView(desc, dvv::media::HOST_PLANES, host_domain);
+        }
+        return std::nullopt;
+    };
 }
 
 namespace {
@@ -1126,10 +1312,7 @@ dvv::Result<MediaStack> hostStack(const std::shared_ptr<dvv::IExecutor>& cpu,
     DVV_TRY(std::shared_ptr<dvv::media::FrameStore> store,
             dvv::media::FrameStore::create({.cpu = cpu, .io = io}));
     MediaStack stack;
-    const dvv::media::Domain host = store->hostDomain();
-    stack.viewFor = [host](const dvv::media::FrameDesc& desc) {
-        return dvv::media::planesView(desc, dvv::media::HOST_PLANES, host);
-    };
+    stack.viewFor = hostStackViews(store->hostDomain());
     stack.store = std::move(store);
     return stack;
 }
@@ -1339,6 +1522,9 @@ void Session::setLoop(bool loop) {
 void Session::setHiddenComponents(dvv::media::HiddenComponents hidden) {
     command([hidden](detail::SessionCore& core) { core.setHiddenComponents(hidden); });
 }
+void Session::setViewRoles(ViewRoles roles) {
+    command([roles](detail::SessionCore& core) { core.setViewRoles(roles); });
+}
 void Session::step(std::int64_t delta) {
     command([delta](detail::SessionCore& core) { core.step(delta); });
 }
@@ -1347,6 +1533,10 @@ void Session::seek(std::int64_t index) {
 }
 void Session::logDiagnostics() {
     command([](detail::SessionCore& core) { core.logDiagnostics(); });
+}
+void Session::leasesForTest(dvv::MoveOnlyFunction<void(LeaseCounts) noexcept> done) {
+    command(
+        [done = std::move(done)](detail::SessionCore& core) mutable { core.leasesForTest(done); });
 }
 void Session::setFileReads(dvv::platform::FileReadMode mode) noexcept {
     core_->setFileReads(mode);
@@ -1415,9 +1605,7 @@ StackFactory gpuStackFactory(std::shared_ptr<dvv::gpu::GpuInstance> gpus,
         }
         MediaStack stack;
         stack.context = std::move(context);
-        stack.viewFor = [domain = *domain](const dvv::media::FrameDesc& /*desc*/) {
-            return dvv::media::displayView(domain);
-        };
+        stack.viewFor = gpuStackViews(*domain);
         stack.store = std::move(store);
         return stack;
     };
@@ -1460,7 +1648,7 @@ SessionStatus StatusSubscription::take() {
     return core ? core->status() : SessionStatus{};
 }
 
-// The binding of spec §6.2 (as DisplayState::setOnChanged({})): off the list first, so no new
+// The binding of spec §6.2 (as a FeedSubscription's destructor): off the list first, so no new
 // fan-out sees it; then, under its callback mutex (which waits for a running callback), marked
 // removed for a fan-out that copied the list before. The callback is destroyed outside the lock.
 void StatusSubscription::reset() noexcept {

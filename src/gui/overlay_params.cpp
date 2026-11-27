@@ -11,7 +11,7 @@
 #include "core/layout.h"
 #include "core/overlay.h"
 #include "core/ruler_labels.h"
-#include "render/display_state.h"
+#include "render/view_state.h"
 
 namespace rawreel {
 
@@ -41,6 +41,8 @@ constexpr std::array<double, GRID_LEVELS> TICK_LENGTH_PT{9, 5, 3};
 constexpr double TICK_WIDTH_PT = 0.75;
 constexpr double MARKER_DEPTH_PT = 3;
 constexpr double CHECKER_SQUARE_DIP = 8;  // the alpha checkerboard's square
+constexpr double PADDING_MARK_DIP = 6;    // the padding mark's disc (and the check's tile)
+constexpr double PADDING_RIM_DIP = 1;     // its dark rim
 // How far the lit tick reaches past the tick band, pt.
 constexpr double LIT_REACH_PT = 4;
 
@@ -81,6 +83,8 @@ OverlayConversion convertOverlay(const GridConfig& grid, const RulerConfig& rule
                            .tagMargin = spacingOf(RULER_TAG_MARGIN_DIP, per_dip)};
     params.cursorTagTextBlack = cursorTagTextBlack(rulers.cursorColour);
     params.checkerSize = backingOf(CHECKER_SQUARE_DIP, per_dip);
+    params.markSize = backingOf(PADDING_MARK_DIP, per_dip);
+    params.markRim = backingOf(PADDING_RIM_DIP, per_dip);
     params.dark = dark;
     return {.params = params, .strip = strip};
 }

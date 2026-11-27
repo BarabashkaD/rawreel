@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <format>
 #include <memory>
@@ -25,6 +26,7 @@
 #include "core/config.h"
 #include "core/config_writer.h"
 #include "core/exit_code.h"
+#include "core/frame_set.h"
 #include "core/log_file_switch.h"
 #include "core/log_level.h"
 #include "core/log_store.h"
@@ -49,6 +51,7 @@
 #include "gui/session_bridge.h"
 #include "gui/transport_bar.h"
 #include "gui/viewport.h"
+#include "render/frame_feed.h"
 
 namespace rawreel {
 
@@ -141,6 +144,18 @@ std::string randomSuffix() {
     const std::uint64_t value =
         (static_cast<std::uint64_t>(device()) << 32U) | static_cast<std::uint64_t>(device());
     return std::format("{:016x}", value);
+}
+
+// The inspector keys a save writes: inspectorConfigValues, gui.paddingCheck alone when the loaded
+// file did not let gui.zoomWindow be written (zoomSavable).
+std::vector<ConfigValue> savedInspectorValues(const InspectorConfig& config) {
+    std::vector<ConfigValue> values = inspectorConfigValues(config);
+    if (!config.zoomSavable) {
+        std::erase_if(values, [](const ConfigValue& value) {
+            return value.key != config_key::GUI_PADDING_CHECK;
+        });
+    }
+    return values;
 }
 
 }  // namespace
@@ -241,8 +256,8 @@ bool App::OnInit() {
         return failed();
     }
     // 6. wx owns top-level windows; the frame is shown once the Session exists.
-    display_ = std::make_shared<DisplayState>();
-    auto* frame = new MainFrame(display_);
+    feed_ = std::make_shared<FrameFeed>();
+    auto* frame = new MainFrame(feed_);
     bridge_ = std::make_shared<SessionBridge>(*frame);
     const std::string fault = injectedFault();
     if (fault == "presenter") {
@@ -251,9 +266,9 @@ bool App::OnInit() {
 
     // 7. The Session; its empty makeStack selects gpuStackFactory(gpus, cpu, io, presentation).
     // A selftest records every shown FrameSet (ShowHistory) on its way to the display.
-    std::shared_ptr<IDisplaySink> sink = display_;
+    std::shared_ptr<IDisplaySink> sink = feed_;
     if (selftest()) {
-        show_history_ = std::make_shared<ShowHistory>(display_);
+        show_history_ = std::make_shared<ShowHistory>(feed_);
         sink = show_history_;
     }
     if (the_arguments.debugSeekDelay > 0 || selftest()) {
@@ -288,6 +303,9 @@ bool App::OnInit() {
         return failed();
     }
     session_ = std::move(*session);
+    // The roles the viewports subscribe to (the Zoom window's Planes and Raw, the padding check's
+    // Raw restored on in the frame's constructor) reach the Session.
+    bindViewRoles();
 
     // 8. A lost device goes to the Session; any other presenter failure to the frame (D25).
     frame->viewport().setDeviceLostHandler([](std::uint64_t epoch) {
@@ -373,9 +391,15 @@ bool App::startLogAndConfig() {
         for (const std::string& warning : overlay_.warnings) {
             DVV_LOG_WARN("config '{}': {}", shown, warning);
         }
+        // The pixel inspector settings: as the overlay's.
+        inspector_ = parseInspectorConfig(loaded.text);
+        for (const std::string& warning : inspector_.warnings) {
+            DVV_LOG_WARN("config '{}': {}", shown, warning);
+        }
     }
     saved_overlay_ = overlayConfigValues(overlay_.grid, overlay_.rulers, overlay_.gridSavable,
                                          overlay_.rulersSavable);
+    saved_inspector_ = savedInspectorValues(inspector_);
     // The claim before the first log file: only the settings owner appends to the newest log
     // file (addendum §5.1, D10).
     if (!config_path_.empty()) {
@@ -575,6 +599,22 @@ bool App::saveOverlay(const GridConfig& grid, const RulerConfig& rulers, bool cl
         return false;
     }
     saved_overlay_ = std::move(values);
+    return true;
+}
+
+bool App::saveInspector(const InspectorConfig& config, bool closing) {
+    InspectorConfig next = config;
+    next.zoomSavable = inspector_.zoomSavable;
+    next.warnings = inspector_.warnings;
+    std::vector<ConfigValue> values = savedInspectorValues(next);
+    inspector_ = std::move(next);
+    const auto same = [](const ConfigValue& a, const ConfigValue& b) {
+        return a.key == b.key && a.value == b.value;
+    };
+    if (std::ranges::equal(values, saved_inspector_, same) || !saveSettings(values, closing)) {
+        return false;
+    }
+    saved_inspector_ = std::move(values);
     return true;
 }
 
@@ -876,12 +916,31 @@ bool App::startGpu() {
     return true;
 }
 
+void App::bindViewRoles() {
+    // The callback runs on the GUI thread (this call, a subscribe or a dropped subscription, never
+    // under a lock the Session's post takes) and cannot throw: a failed post is logged.
+    feed_->setRolesChanged([this](ViewRoles roles) noexcept {
+        try {
+            if (session_) {
+                session_->setViewRoles(roles);
+            }
+        } catch (const std::exception& error) {
+            DVV_LOG_ERROR("the view roles could not reach the Session: {}", error.what());
+        } catch (...) {
+            DVV_LOG_ERROR("the view roles could not reach the Session");
+        }
+    });
+}
+
 void App::shutdownSession() {
     if (produce_delay_) {
         produce_delay_->stop();  // first: the shutdown drain never waits out a delay
     }
     if (bridge_) {
         bridge_->detach();  // no event is queued onto the frame any more
+    }
+    if (feed_) {
+        feed_->setRolesChanged({});  // no roles reach the Session from here on
     }
     if (session_) {
         // No presenter exists any more and events are only queued, so nothing it waits for
@@ -907,7 +966,7 @@ int App::OnExit() {
     }
     bridge_.reset();
     show_history_.reset();
-    display_.reset();
+    feed_.reset();
     startup_ = {};
     if (selftest() && !decided_exit_code && gpu_instance_) {
         if (const std::uint64_t messages = gpu_instance_->validationMessageCount(); messages != 0) {

@@ -18,6 +18,7 @@
 
 #include "core/drop.h"
 #include "core/format_choice.h"
+#include "core/frame_set.h"
 #include "core/open_text.h"
 #include "core/session.h"
 #include "dvv/base/lifetime.h"
@@ -29,6 +30,8 @@
 #include "test_source_provider.h"
 
 using rawreel::SessionStatus;
+using rawreel::ViewRole;
+using rawreel::ViewRoles;
 using rawreel::testing::closeGate;
 using rawreel::testing::gateWaiters;
 using rawreel::testing::releaseGate;
@@ -1754,6 +1757,62 @@ TEST_SUITE("session") {
         f.session->reopen();
         const SessionEvent reopened = waitEvent(f, holds("gradient"), opened.seq);
         CHECK(firstShowAfter(f, reopened.seq).index == 0);
+        CHECK(errorCount(f) == 0);
+    }
+
+    TEST_CASE("session: view roles reach the sink") {
+        SessionFixture f;
+        f.session->setViewRoles(ViewRoles::of(ViewRole::Raw));
+        f.open(0, A);
+        REQUIRE(f.sink->waitShown(0));
+        REQUIRE(f.settle(1));
+        const std::vector<ShownFrame> history = f.sink->history();
+        REQUIRE_FALSE(history.empty());
+        const ShownFrame& shown = history.back();
+        CHECK(shown.roles == (ViewRoles::of(ViewRole::Display) | ViewRoles::of(ViewRole::Raw)));
+        CHECK_FALSE(shown.roles.has(ViewRole::Planes));
+        CHECK(shown.streamSet == f.session->status().streamGeneration);
+        CHECK(errorCount(f) == 0);
+    }
+
+    TEST_CASE("session: removing a role drops its leases without a request") {
+        SessionFixture f;
+        f.session->setViewRoles(ViewRoles::of(ViewRole::Raw));
+        f.open(0, A);
+        REQUIRE(f.sink->waitShown(0));
+        REQUIRE(f.settle(W));
+        const std::uint32_t ready = f.session->status().readyAhead;
+
+        f.session->setViewRoles(ViewRoles::of(ViewRole::Display));
+        f.session->setLoop(true);  // an executor barrier: the status shows loop after the roles
+        REQUIRE(f.waitStatus([](const SessionStatus& s) { return s.player.loop; }));
+        const SessionStatus status = f.session->status();
+        CHECK(status.inflight == 0);
+        CHECK(status.readyAhead == ready);
+
+        f.session->step(1);
+        REQUIRE(f.sink->waitShown(1));
+        const std::vector<ShownFrame> history = f.sink->history();
+        CHECK(history.back().roles == ViewRoles::of(ViewRole::Display));
+        CHECK(errorCount(f) == 0);
+    }
+
+    TEST_CASE("session: a role removed while its request is held is not shown") {
+        closeGate("rr");
+        SessionFixture f;
+        f.session->setViewRoles(ViewRoles::of(ViewRole::Raw));
+        f.open(0, "slow:gradient?index=0&gate=rr");
+        REQUIRE(waitGateWaiters("rr", 1));
+        f.session->setViewRoles(ViewRoles::of(ViewRole::Display));
+        f.session->setLoop(true);  // an executor barrier: the status shows loop after the roles
+        REQUIRE(f.waitStatus([](const SessionStatus& s) { return s.player.loop; }));
+        releaseGate("rr");
+        REQUIRE(f.sink->waitShown(0));
+        const std::vector<ShownFrame> history = f.sink->history();
+        REQUIRE_FALSE(history.empty());
+        for (const ShownFrame& shown : history) {
+            CHECK(shown.roles == ViewRoles::of(ViewRole::Display));
+        }
         CHECK(errorCount(f) == 0);
     }
 }

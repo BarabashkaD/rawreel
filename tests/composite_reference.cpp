@@ -11,9 +11,9 @@
 #include "dvv/media/display.h"
 #include "dvv/media/view.h"
 #include "dvv/media/view_lines.h"
-#include "render/composite_constants.h"
-#include "render/display_state.h"
 #include "render/pass_regions.h"
+#include "render/picture_constants.h"
+#include "render/view_state.h"
 
 using dvv::media::AxisView;
 using dvv::media::LineHit;
@@ -75,13 +75,13 @@ Colour bilinear(const HostDisplayImage& image, float u, float v) {
 }
 
 template <typename Colour>
-Colour sample(const CompositeConstants& k, const HostDisplayImage& image, float u, float v) {
+Colour sample(const PictureConstants& k, const HostDisplayImage& image, float u, float v) {
     if (k.zoom >= 1.0F) {
         return texel<Colour>(image, static_cast<int>(std::floor(u)),
                              static_cast<int>(std::floor(v)));
     }
-    std::uint32_t n = 1;  // min(COMPOSITE_MAX_TAPS, ceil(0.5 / zoom)), as the shader
-    while (n < COMPOSITE_MAX_TAPS && static_cast<float>(n) * k.zoom < 0.5F) {
+    std::uint32_t n = 1;  // min(PICTURE_MAX_TAPS, ceil(0.5 / zoom)), as the shader
+    while (n < PICTURE_MAX_TAPS && static_cast<float>(n) * k.zoom < 0.5F) {
         ++n;
     }
     const float nf = static_cast<float>(n);
@@ -105,13 +105,13 @@ Colour sample(const CompositeConstants& k, const HostDisplayImage& image, float 
 }
 
 // The checkerboard's linear grey at P pixel (x, y): square (0, 0) at the image origin is even.
-float checker(const CompositeConstants& k, std::int32_t x, std::int32_t y) {
+float checker(const PictureConstants& k, std::int32_t x, std::int32_t y) {
     const std::uint32_t sx =
         static_cast<std::uint32_t>(std::int64_t{x} - k.offsetX) / k.checkerSize;
     const std::uint32_t sy =
         static_cast<std::uint32_t>(std::int64_t{y} - k.offsetY) / k.checkerSize;
     const bool odd = ((sx + sy) & 1U) != 0;
-    const bool dark = (k.flags & COMPOSITE_DARK) != 0;
+    const bool dark = (k.flags & PICTURE_DARK) != 0;
     const float grey = dark ? (odd ? CHECKER_DARK_ODD : CHECKER_DARK_EVEN)
                             : (odd ? CHECKER_LIGHT_ODD : CHECKER_LIGHT_EVEN);
     return dvv::media::srgbDecode(grey);
@@ -161,7 +161,7 @@ std::optional<LineHit> winner(const std::optional<LineHit>& x, const std::option
     return x;
 }
 
-Rgb blendLine(const CompositeConstants& k, const Rgb& encoded, const LineHit& hit) {
+Rgb blendLine(const PictureConstants& k, const Rgb& encoded, const LineHit& hit) {
     const std::uint32_t colour = k.levelColour[hit.level];
     const float alpha = unpackByte(colour, 24);
     if (hit.halo) {
@@ -179,7 +179,7 @@ Rgb blendLine(const CompositeConstants& k, const Rgb& encoded, const LineHit& hi
 
 }  // namespace
 
-std::array<std::uint8_t, 4> compositePixel(const CompositeConstants& k, std::uint32_t px,
+std::array<std::uint8_t, 4> compositePixel(const PictureConstants& k, std::uint32_t px,
                                            std::uint32_t py,
                                            const std::optional<HostDisplayImage>& image) noexcept {
     const AxisView ax{.offset = k.offsetX, .zoom = k.zoom, .size = k.imageW, .extent = k.viewportW};
@@ -189,13 +189,13 @@ std::array<std::uint8_t, 4> compositePixel(const CompositeConstants& k, std::uin
     const auto y = static_cast<std::int32_t>(py + k.drawY);
     const bool inside = image.has_value() && inSpan(dvv::media::imageSpan(ax), x) &&
                         inSpan(dvv::media::imageSpan(ay), y);
-    const float grey = dvv::media::srgbDecode((k.flags & COMPOSITE_DARK) != 0 ? BACKGROUND_DARK
-                                                                              : BACKGROUND_LIGHT);
+    const float grey =
+        dvv::media::srgbDecode((k.flags & PICTURE_DARK) != 0 ? BACKGROUND_DARK : BACKGROUND_LIGHT);
     Rgb colour{grey, grey, grey};
     if (inside) {
         const float u = dvv::media::imageCoordinateAt(ax, x);
         const float v = dvv::media::imageCoordinateAt(ay, y);
-        if ((k.flags & COMPOSITE_ALPHA) != 0) {
+        if ((k.flags & PICTURE_ALPHA) != 0) {
             // The premultiplied picture over the checkerboard, in linear light.
             const Rgba s = sample<Rgba>(k, *image, u, v);
             const float under = checker(k, x, y) * (1.0F - s[3]);
@@ -204,7 +204,7 @@ std::array<std::uint8_t, 4> compositePixel(const CompositeConstants& k, std::uin
             colour = sample<Rgb>(k, *image, u, v);
         }
     }
-    const bool skip = (k.flags & COMPOSITE_SKIP_ENCODE) != 0;
+    const bool skip = (k.flags & PICTURE_SKIP_ENCODE) != 0;
     const Rgb encoded = encode3(colour);
     Rgb result = skip ? colour : encoded;
     const std::uint32_t drawn = (k.levelShape[0] | k.levelShape[1] | k.levelShape[2]) & LEVEL_DRAWN;
@@ -225,12 +225,12 @@ std::array<std::uint8_t, 4> compositePixel(const CompositeConstants& k, std::uin
 
 std::array<std::uint8_t, 4> compositeReference(std::uint32_t px, std::uint32_t py,
                                                dvv::platform::PixelSize viewport,
-                                               const DisplayParams& params,
+                                               const ViewParams& params,
                                                std::optional<HostDisplayImage> image) {
     const dvv::platform::PixelSize size =
         image ? dvv::platform::PixelSize{image->width, image->height} : dvv::platform::PixelSize{};
     const dvv::media::ViewTransform view = resolveView(params.view, viewport, size);
-    return compositePixel(compositeConstants(params, view, passRegions(viewport, {}, view), false),
+    return compositePixel(pictureConstants(params, view, passRegions(viewport, {}, view), false),
                           px, py, image);
 }
 

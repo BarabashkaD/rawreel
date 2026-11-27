@@ -11,6 +11,7 @@
 #include <functional>
 #include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -19,6 +20,8 @@
 #include <vector>
 
 #include "core/config_writer.h"
+#include "core/inspector.h"
+#include "core/layout.h"
 #include "core/log_level.h"
 #include "core/overlay.h"
 #include "dvv/base/error.h"
@@ -475,6 +478,139 @@ OverlayConfig parseOverlayConfig(std::string_view text) {
             read.lastValue(*rulers, config_key::GUI_RULERS_LAST_VALUE, defaults.lastValue);
     }
     return result;
+}
+
+namespace {
+
+std::string_view layoutName(InspectorLayout layout) noexcept {
+    switch (layout) {
+        case InspectorLayout::Structure: return "structure";
+        case InspectorLayout::Planes: return "planes";
+    }
+    return "structure";
+}
+
+std::string_view modeName(InspectorMode mode) noexcept {
+    switch (mode) {
+        case InspectorMode::Follow: return "follow";
+        case InspectorMode::Cell: return "cell";
+    }
+    return "follow";
+}
+
+// A JSON integer that fits an int; nullopt for anything else.
+std::optional<int> wholeInt(const dvv::json::Value& value) {
+    if (!value.is_number_integer()) {
+        return std::nullopt;
+    }
+    if (value.is_number_unsigned()) {
+        const auto number = value.get<std::uint64_t>();
+        return number <= static_cast<std::uint64_t>(std::numeric_limits<int>::max())
+                   ? std::optional<int>(static_cast<int>(number))
+                   : std::nullopt;
+    }
+    const auto number = value.get<std::int64_t>();
+    return number >= std::numeric_limits<int>::min() ? std::optional<int>(static_cast<int>(number))
+                                                     : std::nullopt;
+}
+
+// A string leaf that is one of two names.
+template <typename Enum>
+Enum readName(const dvv::json::Value& parent, std::string_view key, std::string_view first_name,
+              Enum first, std::string_view second_name, Enum second, Enum fallback,
+              std::vector<std::string>& warnings) {
+    const auto found = parent.find(memberName(key));
+    if (found == parent.end()) {
+        return fallback;
+    }
+    if (found->is_string()) {
+        const std::string& text = found->get_ref<const std::string&>();
+        if (text == first_name) {
+            return first;
+        }
+        if (text == second_name) {
+            return second;
+        }
+    }
+    warnings.push_back(std::format(R"({}: expected "{}" or "{}", not {}; using "{}")", key,
+                                   first_name, second_name, dvv::json::dump(*found),
+                                   fallback == first ? first_name : second_name));
+    return fallback;
+}
+
+}  // namespace
+
+InspectorConfig parseInspectorConfig(std::string_view text) {
+    InspectorConfig result;
+    const dvv::Result<dvv::json::Value> root = dvv::json::parse(text);
+    if (!root || !root->is_object()) {
+        return result;
+    }
+    const auto gui = root->find("gui");
+    if (gui == root->end() || !gui->is_object()) {
+        return result;
+    }
+    OverlayReader read(result.warnings);
+    const InspectorConfig defaults;
+    result.paddingCheck = read.flag(*gui, config_key::GUI_PADDING_CHECK, defaults.paddingCheck);
+    const dvv::json::Value* const zoom =
+        read.object(*gui, parentKey(config_key::GUI_ZOOM_WINDOW_X), result.zoomSavable);
+    if (zoom == nullptr) {
+        return result;
+    }
+    std::optional<int> x;
+    std::optional<int> y;
+    for (const auto& [key, target] : {std::pair{config_key::GUI_ZOOM_WINDOW_X, &x},
+                                      std::pair{config_key::GUI_ZOOM_WINDOW_Y, &y}}) {
+        if (const auto found = zoom->find(memberName(key)); found != zoom->end()) {
+            *target = wholeInt(*found);
+            if (!target->has_value()) {
+                result.warnings.push_back(
+                    std::format("{}: expected a whole number, not {}; using no place", key,
+                                dvv::json::dump(*found)));
+            }
+        }
+    }
+    if (x && y) {
+        result.zoomPlace = ScreenRect{.x = *x, .y = *y, .width = 0, .height = 0};
+    } else if (x.has_value() != y.has_value()) {
+        result.warnings.push_back(std::format("{}: needs both x and y; using no place",
+                                              parentKey(config_key::GUI_ZOOM_WINDOW_X)));
+    }
+    const GridRange size_range{static_cast<std::uint32_t>(ZOOM_WINDOW_SIZE_MIN),
+                               static_cast<std::uint32_t>(ZOOM_WINDOW_SIZE_MAX)};
+    result.zoomSizeDip.width =
+        static_cast<int>(read.number(*zoom, config_key::GUI_ZOOM_WINDOW_WIDTH, size_range,
+                                     static_cast<std::uint32_t>(defaults.zoomSizeDip.width)));
+    result.zoomSizeDip.height =
+        static_cast<int>(read.number(*zoom, config_key::GUI_ZOOM_WINDOW_HEIGHT, size_range,
+                                     static_cast<std::uint32_t>(defaults.zoomSizeDip.height)));
+    result.layout =
+        readName(*zoom, config_key::GUI_ZOOM_WINDOW_LAYOUT, "structure", InspectorLayout::Structure,
+                 "planes", InspectorLayout::Planes, defaults.layout, result.warnings);
+    result.mode = readName(*zoom, config_key::GUI_ZOOM_WINDOW_MODE, "follow", InspectorMode::Follow,
+                           "cell", InspectorMode::Cell, defaults.mode, result.warnings);
+    return result;
+}
+
+std::vector<ConfigValue> inspectorConfigValues(const InspectorConfig& config) {
+    std::vector<ConfigValue> values;
+    values.push_back({.key = config_key::GUI_PADDING_CHECK, .value = config.paddingCheck});
+    if (config.zoomPlace) {
+        values.push_back(
+            {.key = config_key::GUI_ZOOM_WINDOW_X, .value = std::int64_t{config.zoomPlace->x}});
+        values.push_back(
+            {.key = config_key::GUI_ZOOM_WINDOW_Y, .value = std::int64_t{config.zoomPlace->y}});
+    }
+    values.push_back({.key = config_key::GUI_ZOOM_WINDOW_WIDTH,
+                      .value = std::int64_t{config.zoomSizeDip.width}});
+    values.push_back({.key = config_key::GUI_ZOOM_WINDOW_HEIGHT,
+                      .value = std::int64_t{config.zoomSizeDip.height}});
+    values.push_back({.key = config_key::GUI_ZOOM_WINDOW_LAYOUT,
+                      .value = std::string(layoutName(config.layout))});
+    values.push_back(
+        {.key = config_key::GUI_ZOOM_WINDOW_MODE, .value = std::string(modeName(config.mode))});
+    return values;
 }
 
 std::vector<ConfigValue> overlayConfigValues(const GridConfig& grid, const RulerConfig& rulers,

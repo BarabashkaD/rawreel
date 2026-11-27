@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.2)
-project(rawreel VERSION 0.16.0 DESCRIPTION "rawreel raw video player" LANGUAGES CXX)
+project(rawreel VERSION 0.17.0 DESCRIPTION "rawreel raw video player" LANGUAGES CXX)
 # Version string; a pre-release build adds its release-stage label.
 set(rawreel_VERSION_STRING "${PROJECT_VERSION}")
 
@@ -29,14 +29,19 @@ endif()
 include("${DVV_CMAKE_DIR}/DvvCompilerOptions.cmake")
 include("${DVV_CMAKE_DIR}/DvvOsSources.cmake")
 
-# rawreel_render: the rendering of rawreel-gui that needs no wx (the display state and the viewport
-# compositor), so unit, GPU and sanitizer builds use it without the GUI.
+# rawreel_render: the rendering of rawreel-gui that needs no wx (the frame feed, the view state and
+# the view renderer), so unit, GPU and sanitizer builds use it without the GUI.
 add_library(rawreel_render STATIC
-    src/render/composite_constants.cpp
-    src/render/display_state.cpp
+    src/render/picture_constants.cpp
+    src/render/frame_feed.cpp
+    src/render/layer_block.cpp
     src/render/pass_regions.cpp
+    src/render/picture_pass.cpp
     src/render/ruler_constants.cpp
-    src/render/viewport_renderer.cpp)
+    src/render/ruler_pass.cpp
+    src/render/view_layout.cpp
+    src/render/view_state.cpp
+    src/render/view_renderer.cpp)
 target_include_directories(rawreel_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # dvv-gpu defines its text target only where the OS text API is found (Linux: pangocairo).
 if(NOT TARGET dvv::gpu_text)
@@ -46,8 +51,12 @@ endif()
 target_link_libraries(rawreel_render PUBLIC rawreel_core dvv::base dvv::gpu dvv::gpu_text
                                             dvv::media dvv::platform)
 dvv_add_shaders(rawreel_render NAMESPACE rawreel_shaders
-    SHADERS shaders/composite.slang shaders/grid_lines.slang shaders/rulers.slang
-    IMPORTS dvv::media)
+    SHADERS shaders/padding_check.slang shaders/picture.slang shaders/picture_inspect.slang
+            shaders/picture_lines.slang shaders/picture_markers.slang shaders/rulers.slang
+    IMPORTS dvv::media dvv::gpu_text)
+# The layer block for the GPU tests' probe: `import rawreel.layer_block;` with
+# dvv_add_shaders(... IMPORTS rawreel_render dvv::media).
+dvv_export_shader_sources(rawreel_render NAMESPACE rawreel SOURCES shaders/layer_block.slang)
 dvv_set_compiler_options(rawreel_render)
 
 # rawreel_core: the wx-free application core (the view's zoom and wheel policy, player logic,
@@ -66,12 +75,14 @@ add_library(rawreel_core STATIC
     src/core/ruler_labels.cpp
     src/core/gui_arguments.cpp
     src/core/info_text.cpp
+    src/core/inspector.cpp
     src/core/layout.cpp
     src/core/log_file_switch.cpp
     src/core/log_level.cpp
     src/core/log_mirror.cpp
     src/core/log_store.cpp
     src/core/log_text.cpp
+    src/core/inspector_text.cpp
     src/core/overlay.cpp
     src/core/perf_stats.cpp
     src/core/player.cpp
@@ -81,6 +92,7 @@ add_library(rawreel_core STATIC
     src/core/status_text.cpp
     src/core/svg_colour.cpp
     src/core/timer.cpp
+    src/core/zoom_keys.cpp
     src/core/view.cpp)
 # The UTF-16 to UTF-8 arguments of the Windows entries: src/core/utf8_arguments_win32.cpp.
 dvv_os_sources(rawreel_core OPTIONAL src/core/utf8_arguments)
@@ -219,10 +231,13 @@ if(NOT DVV_SANITIZE)
         src/gui/main_frame.cpp
         src/gui/overlay_params.cpp
         src/gui/player_panel.cpp
+        src/gui/raw_words_view.cpp
         src/gui/selftest.cpp
+        src/gui/selftest_inspector.cpp
         src/gui/session_bridge.cpp
         src/gui/settings.cpp
-        src/gui/viewport.cpp)
+        src/gui/viewport.cpp
+        src/gui/zoom_window.cpp)
     set_target_properties(rawreel_gui PROPERTIES OUTPUT_NAME rawreel-gui)
     # wx is an imported target, so its headers are SYSTEM includes (our /WX does not apply to them).
     target_link_libraries(rawreel_gui PRIVATE rawreel_panel rawreel_render rawreel_core dvv::base

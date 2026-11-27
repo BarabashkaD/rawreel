@@ -17,7 +17,7 @@
 
 #include "core/commands.h"
 #include "dvv/base/move_only_function.h"
-#include "render/display_state.h"
+#include "render/frame_feed.h"
 
 namespace rawreel {
 
@@ -29,7 +29,7 @@ class PlayerPanel final : public wxPanel {
 public:
     // `execute`, `seek` and `read_status` are the transport bar's (MainFrame::execute,
     // Session::seek, the session's current status).
-    PlayerPanel(wxWindow* parent, std::shared_ptr<DisplayState> display,
+    PlayerPanel(wxWindow* parent, std::shared_ptr<FrameFeed> feed,
                 dvv::MoveOnlyFunction<void(Command)> execute,
                 dvv::MoveOnlyFunction<void(std::int64_t)> seek,
                 dvv::MoveOnlyFunction<BarStatus()> read_status);

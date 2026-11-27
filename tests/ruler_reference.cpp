@@ -14,7 +14,7 @@
 #include "dvv/gpu/glyph_strip.h"
 #include "dvv/media/display.h"
 #include "dvv/media/view_lines.h"
-#include "render/composite_constants.h"
+#include "render/picture_constants.h"
 #include "render/ruler_constants.h"
 
 namespace rawreel {
@@ -76,8 +76,8 @@ void drawLabels(Rgb& colour, const RulerConstants& k, const dvv::gpu::GlyphStrip
     const std::uint32_t inset = (k.labelSpacing >> 16U) & 0xFFU;
     const std::int32_t text_top =
         static_cast<std::int32_t>(band_start) +
-        ((static_cast<std::int32_t>(k.labelBand) - static_cast<std::int32_t>(glyphs.height)) / 2);
-    const bool filled = across >= band_start + inset && across + inset < band_start + k.labelBand;
+        ((static_cast<std::int32_t>(labelBand(k)) - static_cast<std::int32_t>(glyphs.height)) / 2);
+    const bool filled = across >= band_start + inset && across + inset < band_start + labelBand(k);
     const auto p = static_cast<std::int32_t>(along_pixel);
     for (const RulerLabel& label : rulerLabels(rulerLabelInput(k, glyphs.advance))) {
         if (p < label.boxBegin || p >= label.boxEnd) {
@@ -134,8 +134,7 @@ std::array<std::uint8_t, 4> rulerPixel(const RulerConstants& k, const dvv::gpu::
     const bool dark = (k.flags & RULER_DARK) != 0;
     const bool rows = across >= k.rulerEdge - k.strip && across < k.rulerEdge;
     const bool ruler = rows && along_pixel >= k.rulerBegin && along_pixel < k.rulerEnd;
-    const bool corner =
-        top && rows && along_pixel >= k.rulerBegin - k.pictureStart && along_pixel < k.rulerBegin;
+    const bool corner = top && rows && along_pixel >= k.cornerBegin && along_pixel < k.rulerBegin;
     const std::uint32_t depth = k.rulerEdge - 1 - across;
     const float grey = dark ? BACKGROUND_DARK : BACKGROUND_LIGHT;
     Rgb colour{grey, grey, grey};

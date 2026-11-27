@@ -10,9 +10,9 @@
 #include "core/ruler_labels.h"
 #include "dvv/media/view.h"
 #include "dvv/media/view_lines.h"
-#include "render/composite_constants.h"
-#include "render/display_state.h"
 #include "render/pass_regions.h"
+#include "render/picture_constants.h"
+#include "render/view_state.h"
 
 namespace rawreel {
 
@@ -46,14 +46,15 @@ std::array<RulerConstants, 2> rulerConstants(const OverlayParams& overlay,
         band.regionW = region.width;
         band.regionH = region.height;
         band.axis = axis;
-        // The view's axes, as compositeConstants takes them: the bands match the grid by
+        // The view's axes, as pictureConstants takes them: the bands match the grid by
         // construction. P's origin and the ruler's place come from the regions.
         band.zoom = view_axis.zoom;
         band.offset = view_axis.offset;
         band.pictureStart = axis == 0 ? picture.x : picture.y;
         band.pictureExtent = view_axis.extent;
         band.imageSize = image ? view_axis.size : 0;
-        band.strip = axis == 0 ? picture.y : picture.x;
+        // From the panel's edge, where both bands begin: the band's y (top) or x (left).
+        band.strip = axis == 0 ? picture.y - region.y : picture.x - region.x;
         band.rulerEdge = axis == 0 ? hugged.y : hugged.x;
         band.rulerBegin = axis == 0 ? hugged.x : hugged.y;
         band.rulerEnd = band.rulerBegin + (axis == 0 ? hugged.width : hugged.height);
@@ -61,7 +62,8 @@ std::array<RulerConstants, 2> rulerConstants(const OverlayParams& overlay,
         band.tickWidth = overlay.tickWidth;
         band.markerDepth = overlay.markerDepth;
         band.litDepth = std::min(band.strip, overlay.litDepth);
-        band.labelBand = band.strip > band.tickBand ? band.strip - band.tickBand : 0;
+        // The corner ends where the top ruler begins and is the left strip wide (bandRulers[0]).
+        band.cornerBegin = axis == 0 ? regions.bandRulers[0].x : 0;
         band.cursorColour = overlay.cursorColour;
         band.labelSpacing = packedSpacing(overlay.labelSpacing);
         band.flags = (overlay.dark ? RULER_DARK : 0) | (skip_encode ? RULER_SKIP_ENCODE : 0) |

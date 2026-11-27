@@ -342,7 +342,8 @@ then stalls; it never skips a frame.
 | Ctrl+Q | File → Quit | Home / End | First / last frame |
 | A | View → Alpha (on or off) | L | Loop on or off |
 | G | View → Grid (on or off) | R | View → Rulers (on or off) |
-| 1, 2, 3 | View → the first, second, third plane (on or off) | | |
+| 1, 2, 3 | View → the first, second, third plane (on or off) | X | View → Padding Check (on or off) |
+| P | View → Pipette (on or off) | Shift+P | View → Live Probe (on or off) |
 
 View keys:
 
@@ -355,7 +356,8 @@ Mouse and trackpad: drag or scroll to pan a picture larger than the window; pinc
 Ctrl+scroll zooms on Windows and Linux. On macOS scrolling always pans.
 
 Playback → Stop, View → Format…, View → Grid and Rulers…, View → Hidden U and V at 0, View →
-Restart GPU and reopen, Help → GPU info and Help → Diagnostics have no key.
+Restart GPU and reopen, View → Zoom Window, View → Clear Pin, View → Copy Pixel Values, Help →
+GPU info and Help → Diagnostics have no key.
 
 **GPU failures.** When the GPU device is lost (or a presenter fails), playback pauses, the viewport
 shows the background and the infobar says "GPU device lost: … Restart the GPU to continue." with a
@@ -372,7 +374,10 @@ step with a 5 s deadline, closes the window and exits with 6 naming a failed ste
 - `about` (opt-in, not in CTest): Help → About, its layout, logo and links; run it when About changes.
 - `player` (needs a URI): play, pause, step, Home/End, the slider, loop, resize, the view commands,
   drag, wheel and pinch, and window sizing, View → Format… and file drops.
-- `lost` (needs a URI): an injected device loss, Reopen, play, a second loss.
+- `lost` (needs a URI): an injected device loss, Reopen, play, a second loss, a loss
+  with the Zoom window shown.
+- `inspector` (needs a URI): the pipette, the pin, the Zoom window, its keys, values and copy, the
+  padding check and its cost when off.
 - `perf` (needs a URI; manual): maximises the window, plays 600 frames, seeks to 20 random frames
   and prints one JSON line with `targetFps`, `actualFps`, `stalls`, `bottleneck`, `frames`,
   `presented`, `overwritten`, `p99TickLatenessMs`, `inflight`, `seekMedianMs` and `seekMaxMs`.
@@ -466,6 +471,56 @@ it touches. Its text is black on a cursor colour of relative luminance above 0.5
 
 The status bar shows the image pixel under the pointer, e.g. `x 812  y 403`; the field is empty
 off the picture and with no stream.
+
+### Pixel inspector
+
+The pixel inspector shows the exact stored values of one image pixel, read from the GPU's copy of
+the frame, so the text is exactly what the cells show, every frame, also during playback.
+
+- **Pipette.** P, View → Pipette or the bar's Pipette toggle turns the pipette on: the cursor over
+  the picture becomes an eyedropper and a click pins that image pixel. The pipette stays on after a
+  click; P or Esc turns it off. A drag still pans. The first pin opens the Zoom window without
+  taking the focus from the main window. The main picture marks the pin with a box in the cursor
+  colour (a dot at low zoom) and outlines, dashed, the region the Zoom window shows. View → Clear
+  Pin removes the pin; a new clip whose size does not contain the pinned pixel removes it too. The
+  pin is not saved.
+- **Live probe.** Shift+P or View → Live Probe (in both windows) shows the pixel under the cursor
+  instead of the pin; the pin stays where it is. Off the picture the probe stays on the last pixel.
+  Turning it off returns to the pin.
+- **Zoom window.** View → Zoom Window shows and hides it (on macOS: Show Zoom Window / Hide Zoom
+  Window); closing it keeps the pin. It opens at 640 × 640 pt; its place and size are saved. Its
+  toolbar has Pinned | Live, Follow | Cell, Structure | Planes, Fit cell and Numbers fit. The picture
+  has rulers in image pixel coordinates and the main window's grid. A click re-pins; panning by hand
+  looks around without moving the pin.
+  - Structure (S): one grid of image pixels over the picture. A subsampled YUV clip shows each
+    cell's Y and outlines each chroma block with its U and V once; without subsampling each cell
+    stacks all its components. Planes (S): one panel per component, side by side, at the same
+    region and scale, each cell grey by its code. Planes and Alpha apply in Structure only.
+  - Follow (F): the view stays centred on the pin. Cell (F): the view shows the largest grid cell
+    (major, minor or second minor) that holds the pin and fits the window, and jumps to the next.
+  - The zoom is a whole number of screen pixels per image pixel, from 1 to 256. Numbers fit (or
+    Actual Size) is the smallest zoom at which every number fits its cell; Fit cell (or Zoom to
+    Fit) fits the grid cell that holds the pin. Below the numbers' zoom the window is a plain
+    magnifier without numbers or cell lines.
+  - Keys in the Zoom window: arrows move the pin by one image pixel, Shift+arrows by one chroma
+    block; C centres the view on the pin; Space plays and pauses; the view keys act on the window
+    in front.
+- **Values.** The Zoom window's header and the status bar show the pixel, the frame and the code
+  values (`pinned 1236 565: Y 630 U 502 V 527`), with the format and its storage. Under the grid,
+  one line per component shows the raw stored word in hex and in binary, value bits and padding
+  bits marked, and the value and padding it holds; a packed word with several samples (v210, YUYV)
+  marks each sample. ⌘C (Ctrl+C on Windows and Linux) in the Zoom window or View → Copy Pixel
+  Values copies `frame 42 x 1236 y 565 Y 630 U 502 V 527` and the raw words
+  (`raw Y 0x9DAD U 0x7D80 V 0x84C0`).
+- **Padding check.** A stored word's padding is every bit no sample covers; by the format's rules
+  it is 0. X, View → Padding Check or the bar's Padding toggle marks, in orange, every image pixel
+  whose samples carry padding that is not 0, large enough to see one bad sample at Fit on a 4K
+  frame; a chroma sample marks its block. The status bar shows the number of such samples in the
+  shown frame and is empty when there are none. In the Zoom window a cell with non-zero padding has
+  an orange frame, a corner flag and an orange number (always, with the check on or off); the raw
+  word line shows non-zero padding bits in orange and the header adds e.g. `⚠ Y padding 45 (must
+  be 0)`. The check is off by default and saved. With the check off and the Zoom window closed, the
+  inspector costs nothing.
 
 ### Log pane
 
@@ -824,6 +879,11 @@ creates it in the user data folder when a setting is saved or an open changes Op
 | `gui.grid.<level>.adaptive` | `true`, `false` | `false` | rawreel-gui |
 | `gui.grid.<level>.halo` | `true`, `false` | `false` | rawreel-gui |
 | `gui.grid.<level>.minimumSpacing` | a whole number from 1 to 100 (pt): the level is hidden while its lines are closer | `2` / `4` / `3` | rawreel-gui |
+| `gui.paddingCheck` | `true`, `false` (Padding Check) | `false` | rawreel-gui |
+| `gui.zoomWindow.x`, `gui.zoomWindow.y` | the Zoom window's place (screen pt); both or neither | none | rawreel-gui |
+| `gui.zoomWindow.width`, `gui.zoomWindow.height` | a whole number from 200 to 8192 (pt) | `640` | rawreel-gui |
+| `gui.zoomWindow.layout` | `"structure"`, `"planes"` | `"structure"` | rawreel-gui |
+| `gui.zoomWindow.mode` | `"follow"`, `"cell"` | `"follow"` | rawreel-gui |
 | `log.level` | `error`, `warn`, `info`, `debug`, `trace` (any letter case) | `info` | rawreel-gui |
 | `log.source` | `true`, `false` | `false` | rawreel-gui |
 | `log.file.enabled` | `true`, `false` | `true` | rawreel-gui |
@@ -1019,8 +1079,9 @@ CTest sets these variables itself. The tests (`ctest --preset vs2026`, or
 - `rawreel.unit`, `rawreel.core_unit`, `rawreel.core_session`, `rawreel.core_timer`: the
   renderer's CPU reference, the player logic, commands, format choice, arguments, texts, the
   config loader and the headless Session, without a GPU.
-- `rawreel.gpu` (label `gpu`): the fit compositor against its CPU reference and the Session on the
-  GPU.
+- `rawreel.gpu.compositor`, `.inspect`, `.padding` and `.session` (label `gpu`): one entry per
+  test source of one binary; the fit compositor against its CPU reference, the inspect pipeline,
+  the padding check with the markers and readbacks, and the Session on the GPU.
 - `rawreel.gui_selftest.smoke`, `.smoke_source`, `.smoke_noffmpeg`, `.player` and `.lost` (labels
   `gpu;display;gui`): the selftests above, smoke with `log.source` on, and smoke without FFmpeg;
   `rawreel.gui_fault.presenter` and `.stack`: an injected presenter failure and a failed start exit

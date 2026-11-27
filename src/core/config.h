@@ -49,6 +49,8 @@
 #include <vector>
 
 #include "core/config_writer.h"
+#include "core/inspector.h"
+#include "core/layout.h"
 #include "core/overlay.h"
 #include "dvv/base/error.h"
 #include "dvv/base/log.h"
@@ -105,6 +107,13 @@ inline constexpr std::string_view LOG_SOURCE = "log.source";
 inline constexpr std::string_view LOG_FILE_ENABLED = "log.file.enabled";
 inline constexpr std::string_view LOG_FILE_FOLDER = "log.file.folder";
 inline constexpr std::string_view LOG_SYSTEM_ENABLED = "log.system.enabled";
+inline constexpr std::string_view GUI_PADDING_CHECK = "gui.paddingCheck";
+inline constexpr std::string_view GUI_ZOOM_WINDOW_X = "gui.zoomWindow.x";
+inline constexpr std::string_view GUI_ZOOM_WINDOW_Y = "gui.zoomWindow.y";
+inline constexpr std::string_view GUI_ZOOM_WINDOW_WIDTH = "gui.zoomWindow.width";
+inline constexpr std::string_view GUI_ZOOM_WINDOW_HEIGHT = "gui.zoomWindow.height";
+inline constexpr std::string_view GUI_ZOOM_WINDOW_LAYOUT = "gui.zoomWindow.layout";
+inline constexpr std::string_view GUI_ZOOM_WINDOW_MODE = "gui.zoomWindow.mode";
 inline constexpr std::string_view GUI_RULERS_SHOW = "gui.rulers.show";
 inline constexpr std::string_view GUI_RULERS_NUMBERS = "gui.rulers.numbers";
 inline constexpr std::string_view GUI_RULERS_CURSOR_COLOUR = "gui.rulers.cursorColour";
@@ -159,6 +168,33 @@ struct OverlayConfig {
 [[nodiscard]] std::vector<ConfigValue> overlayConfigValues(const GridConfig& grid,
                                                            const RulerConfig& rulers,
                                                            bool grid_keys, bool ruler_keys);
+
+// The size range of the Zoom window, in DIP.
+inline constexpr int ZOOM_WINDOW_SIZE_MIN = 200;
+inline constexpr int ZOOM_WINDOW_SIZE_MAX = 8192;
+
+// The pixel inspector's settings of a config file. Live and the pin are not saved.
+struct InspectorConfig {
+    bool paddingCheck = false;
+    // The Zoom window's origin (screen window units; width and height 0), when both x and y are
+    // set; its size is zoomSizeDip.
+    std::optional<ScreenRect> zoomPlace;
+    LayoutSize zoomSizeDip{640, 640};
+    InspectorLayout layout = InspectorLayout::Structure;
+    InspectorMode mode = InspectorMode::Follow;
+    bool zoomSavable = true;            // gui.zoomWindow is an object, null or missing
+    std::vector<std::string> warnings;  // without the "config '<path>': " prefix
+};
+
+// gui.paddingCheck and gui.zoomWindow of a config text (never an error). A bad leaf (a wrong
+// type, a size outside [200, 8192], a layout other than "structure" or "planes", a mode other than
+// "follow" or "cell") falls back to its default alone with "<key>: expected <what>, not <json>;
+// using <default>"; a bad x or y drops the place. A gui.zoomWindow that is not an object gives
+// the defaults and a warning.
+[[nodiscard]] InspectorConfig parseInspectorConfig(std::string_view text);
+// Every key: paddingCheck, then x and y (only with a place), width, height, layout, mode;
+// numbers as std::int64_t, the names in lower case.
+[[nodiscard]] std::vector<ConfigValue> inspectorConfigValues(const InspectorConfig& config);
 
 // "auto", "buffered", "unbuffered".
 [[nodiscard]] std::string_view fileReadsName(dvv::platform::FileReadMode mode) noexcept;

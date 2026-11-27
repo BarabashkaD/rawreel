@@ -197,6 +197,22 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
                  [this](wxCommandEvent& /*event*/) { execute_(Command::Alpha); });
     setUp(*alpha_, Command::Alpha, Icon::Blend);
     right->Add(alpha_, wxSizerFlags().Border(wxALL, border));
+    // The pipette after Alpha (pixel inspector design §4.1); it follows setPipette.
+    pipette_ =
+        new wxBitmapToggleButton(this, wxID_ANY, bundles_[static_cast<std::size_t>(Icon::Pipette)],
+                                 wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+    pipette_->Bind(wxEVT_TOGGLEBUTTON,
+                   [this](wxCommandEvent& /*event*/) { execute_(Command::Pipette); });
+    setUp(*pipette_, Command::Pipette, Icon::Pipette);
+    right->Add(pipette_, wxSizerFlags().Border(wxALL, border));
+    // The Padding check after the pipette (§4.7); its enabled state follows setPaddingCheck alone.
+    padding_ =
+        new wxBitmapToggleButton(this, wxID_ANY, bundles_[static_cast<std::size_t>(Icon::Binary)],
+                                 wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+    padding_->Bind(wxEVT_TOGGLEBUTTON,
+                   [this](wxCommandEvent& /*event*/) { execute_(Command::PaddingCheck); });
+    setUp(*padding_, Command::PaddingCheck, Icon::Binary);
+    right->Add(padding_, wxSizerFlags().Border(wxALL, border));
     zoom_out_ = addButton(*right, Command::ZoomOut, Icon::ZoomOut);
     // Zoom buttons design §3: a text button without a command; it takes no focus either.
     zoom_ = new wxButton(this, wxID_ANY, wxString());
@@ -378,6 +394,21 @@ void TransportBar::setAlpha(bool on, bool available) {
     }
     if (alpha_->IsThisEnabled() != available) {
         alpha_->Enable(available);
+    }
+}
+
+void TransportBar::setPipette(bool on) {
+    if (pipette_->GetValue() != on) {
+        pipette_->SetValue(on);
+    }
+}
+
+void TransportBar::setPaddingCheck(bool on, bool available) {
+    if (padding_->GetValue() != on) {
+        padding_->SetValue(on);
+    }
+    if (padding_->IsThisEnabled() != available) {
+        padding_->Enable(available);
     }
 }
 
@@ -775,12 +806,13 @@ void TransportBar::applyIdleView(bool fresh) {
 // CP-D4, as MainFrame::isAvailable: every button but Open and "i" waits for a stream, Last also for
 // a known length. Enable states, bitmaps and values change only when they differ. Zoom out and
 // Zoom in follow showZoom alone (zoom buttons design §4): a notification never enables them at a
-// limit. Alpha follows setAlpha alone: a notification never enables it for a clip without alpha.
+// limit. Alpha follows setAlpha alone: a notification never enables it for a clip without alpha;
+// the Padding check follows setPaddingCheck alone.
 void TransportBar::showStatus() {
     const PlayerStatus& status = last_status_.player;
     for (const IconButton& entry : buttons_) {
         if (entry.command == Command::ZoomOut || entry.command == Command::ZoomIn ||
-            entry.command == Command::Alpha) {
+            entry.command == Command::Alpha || entry.command == Command::PaddingCheck) {
             continue;
         }
         bool enabled = true;
