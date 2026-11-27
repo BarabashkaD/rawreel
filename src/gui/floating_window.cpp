@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include <wx/display.h>
 
@@ -21,6 +22,10 @@ namespace rawreel {
 namespace {
 
 constexpr int PLACE_GAP_DIP = 8;  // between the main window and a floating window, and between two
+
+LayoutSize layoutSizeOfWx(const wxSize& size) {
+    return {.width = size.x, .height = size.y};
+}
 
 }  // namespace
 
@@ -37,11 +42,14 @@ wxRect workAreaOf(const wxWindow& window) {
     return wxDisplay(display == wxNOT_FOUND ? 0U : static_cast<unsigned>(display)).GetClientArea();
 }
 
-FloatingWindow::FloatingWindow(MainFrame& owner, FloatingKind kind, const wxString& title)
+FloatingWindow::FloatingWindow(MainFrame& owner, FloatingKind kind, const wxString& title,
+                               FloatingSizing sizing)
     : wxFrame(&owner, wxID_ANY, title, wxDefaultPosition, wxDefaultSize,
-              wxCAPTION | wxCLOSE_BOX | wxFRAME_TOOL_WINDOW | wxFRAME_FLOAT_ON_PARENT),
+              wxCAPTION | wxCLOSE_BOX | wxFRAME_TOOL_WINDOW | wxFRAME_FLOAT_ON_PARENT |
+                  (sizing == FloatingSizing::Resizable ? wxRESIZE_BORDER | wxMAXIMIZE_BOX : 0)),
       owner_(owner),
-      kind_(kind) {
+      kind_(kind),
+      sizing_(sizing) {
     EnableFullScreenView(false);  // macOS: shows over a full-screen main window
     // Its events stop here, as a dialog's do: keys reach the main window only through onCharHook.
     SetExtraStyle(GetExtraStyle() | wxWS_EX_BLOCK_EVENTS);
@@ -54,6 +62,9 @@ FloatingWindow::FloatingWindow(MainFrame& owner, FloatingKind kind, const wxStri
     Bind(wxEVT_CHAR_HOOK, &FloatingWindow::onCharHook, this);
     Bind(wxEVT_CLOSE_WINDOW, &FloatingWindow::onClose, this);
     Bind(wxEVT_DPI_CHANGED, &FloatingWindow::onDpiChanged, this);
+    if (sizing_ == FloatingSizing::Resizable) {
+        Bind(wxEVT_SIZE, &FloatingWindow::onSize, this);
+    }
     Bind(wxEVT_SYS_COLOUR_CHANGED, &FloatingWindow::onSysColourChanged, this);
     if (native_policy::hidesStaleMapShow()) {
         Bind(wxEVT_SHOW, &FloatingWindow::onShow, this);
@@ -65,7 +76,8 @@ bool FloatingWindow::ownerHidden() const {
     return owner_.IsIconized() || (native_policy::hideMeansIconified() && !owner_.IsShown());
 }
 
-std::optional<ScreenRect> FloatingWindow::otherShown() const {
+std::vector<ScreenRect> FloatingWindow::othersShown() const {
+    std::vector<ScreenRect> shown;
     for (std::size_t i = 0; i < FLOATING_KIND_COUNT; ++i) {
         const auto other_kind = static_cast<FloatingKind>(i);
         if (other_kind == kind_) {
@@ -73,10 +85,10 @@ std::optional<ScreenRect> FloatingWindow::otherShown() const {
         }
         if (const FloatingWindow* const other = owner_.floatingWindow(other_kind);
             other != nullptr && other->IsShown()) {
-            return screenRect(other->GetScreenRect());
+            shown.push_back(screenRect(other->GetScreenRect()));
         }
     }
-    return std::nullopt;
+    return shown;
 }
 
 void FloatingWindow::showBesideOwner() {
@@ -89,6 +101,9 @@ void FloatingWindow::showBesideOwner() {
 }
 
 void FloatingWindow::showNow() {
+    if (sizing_ == FloatingSizing::Resizable && size_dip_.width > 0 && size_dip_.height > 0) {
+        SetSize(windowSizeOf(size_dip_));  // the kept DIP size, in this display's window units
+    }
     if (place_ && wxDisplay::GetFromPoint(*place_) != wxNOT_FOUND) {
         requested_ = wxRect(*place_, GetSize());  // the kept place wins over the computed one
     } else {
@@ -98,7 +113,7 @@ void FloatingWindow::showNow() {
         const ScreenRect place =
             floatingWindowPlace(screenRect(owner_.GetScreenRect()), screenRect(client),
                                 LayoutSize{.width = size.x, .height = size.y}, screenRect(work),
-                                otherShown(), FromDIP(PLACE_GAP_DIP));
+                                othersShown(), FromDIP(PLACE_GAP_DIP));
         requested_ = wxRectOf(place);
     }
     SetPosition(requested_.GetTopLeft());
@@ -111,10 +126,50 @@ void FloatingWindow::hideKeepingPlace() {
     // Only a shown window has a place to keep: one hidden by a minimise keeps the place it had,
     // one created while the main window was minimised has none yet.
     if (IsShown()) {
-        place_ = GetPosition();
+        keepPlace();
     }
     visible_ = false;
     Hide();
+}
+
+void FloatingWindow::keepPlace() {
+    place_ = GetPosition();
+    if (sizing_ == FloatingSizing::Resizable) {
+        size_dip_ = layoutSizeOfWx(ToDIP(GetSize()));
+    }
+}
+
+std::optional<ScreenRect> FloatingWindow::keptPlace() const {
+    if (!place_) {
+        return std::nullopt;
+    }
+    const wxSize size = GetSize();
+    return ScreenRect{.x = place_->x, .y = place_->y, .width = size.x, .height = size.y};
+}
+
+void FloatingWindow::restorePlace(std::optional<ScreenRect> place, LayoutSize size_dip) {
+    if (place) {
+        place_ = wxPoint(place->x, place->y);
+    } else {
+        place_.reset();
+    }
+    size_dip_ = size_dip;
+    if (sizing_ == FloatingSizing::Resizable && size_dip.width > 0 && size_dip.height > 0) {
+        SetSize(windowSizeOf(size_dip));
+    }
+}
+
+wxSize FloatingWindow::windowSizeOf(LayoutSize dip) const {
+    return FromDIP(wxSize(dip.width, dip.height));  // wx knows the display's scales
+}
+
+void FloatingWindow::onSize(wxSizeEvent& event) {
+    event.Skip();
+    // Our own SetSize (a DPI change, setSizeDip) gives windowSizeOf(size_dip_): keep the DIP
+    // size then, however late the event comes; converting back would drift by rounding.
+    if (IsShown() && GetSize() != windowSizeOf(size_dip_)) {
+        size_dip_ = layoutSizeOfWx(ToDIP(GetSize()));  // the user sized it
+    }
 }
 
 void FloatingWindow::followOwner(bool owner_hidden) {
@@ -196,6 +251,14 @@ void FloatingWindow::onClose(wxCloseEvent& event) {
 }
 
 void FloatingWindow::onDpiChanged(wxDPIChangedEvent& event) {
+    if (sizing_ == FloatingSizing::Resizable && !native_policy::dpiChangeTakesSuggestedRect()) {
+        // macOS and GTK: the DIP size stays, in the new window units; the top-left corner stays.
+        const wxPoint top_left = GetPosition();
+        measure();
+        SetSize(windowSizeOf(size_dip_));
+        SetPosition(top_left);
+        return;
+    }
     if (native_policy::dpiChangeTakesSuggestedRect()) {
         // Windows: skipped after the new min sizes are set, so wx sizes the window from its sizer
         // around the rect the OS suggests; keeping the old top-left could move the window back to
@@ -208,10 +271,15 @@ void FloatingWindow::onDpiChanged(wxDPIChangedEvent& event) {
     refit();
 }
 
-// A font change fits the window again; the colours follow the appearance.
+// A font change fits a Fitted window again and leaves a Resizable one its size; the colours follow
+// the appearance.
 void FloatingWindow::onSysColourChanged(wxSysColourChangedEvent& event) {
     applyColours();
-    refit();
+    if (sizing_ == FloatingSizing::Resizable) {
+        measure();  // the size stays
+    } else {
+        refit();
+    }
     event.Skip();
 }
 

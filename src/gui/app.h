@@ -34,7 +34,7 @@
 #include "dvv/gpu/device_id.h"
 #include "dvv/gpu/gpu_instance.h"
 #include "dvv/registry/component_registry.h"
-#include "render/display_state.h"
+#include "render/frame_feed.h"
 
 namespace rawreel {
 
@@ -84,10 +84,14 @@ public:
     // Called by MainFrame::onClose: detaches the bridge, then syncWait(session->shutdown()) and
     // releases the Session. Nothing it waits for needs the GUI thread. A second call does nothing.
     void shutdownSession();
+    // Installs the feed's roles callback, which sends every union of the viewports' roles to the
+    // Session; it reports the current union at once. OnInit() after the Session exists, and a
+    // selftest that replays that start order. GUI thread.
+    void bindViewRoles();
 
     // Null before OnInit() created it and after shutdownSession().
     [[nodiscard]] Session* session() const noexcept { return session_.get(); }
-    [[nodiscard]] const std::shared_ptr<DisplayState>& display() const noexcept { return display_; }
+    [[nodiscard]] const std::shared_ptr<FrameFeed>& feed() const noexcept { return feed_; }
     // The Log pane's records (spec §3.1): a Logger sink from the start of OnInit() on, never
     // removed; null before.
     [[nodiscard]] const std::shared_ptr<LogStore>& logStore() const noexcept { return log_store_; }
@@ -153,6 +157,14 @@ public:
     // written, and no dialog shown, when neither part is savable or the values equal the last ones
     // saved (at start: the loaded ones); false then.
     bool saveOverlay(const GridConfig& grid, const RulerConfig& rulers, bool closing);
+    // The pixel inspector settings (gui.paddingCheck, gui.zoomWindow), loaded with the config at
+    // start (the defaults without a usable file).
+    [[nodiscard]] const InspectorConfig& inspectorConfig() const noexcept { return inspector_; }
+    // Saves `config` through saveSettings(): gui.paddingCheck, and gui.zoomWindow only while the
+    // loaded file let it be saved (InspectorConfig::zoomSavable). Nothing is written when the
+    // values equal the last ones saved (at start: the loaded ones); false then. inspectorConfig()
+    // becomes `config`, its zoomSavable and warnings kept.
+    bool saveInspector(const InspectorConfig& config, bool closing);
     // Selftest runs only: overlay() read again from configPath(), its warnings logged, and the
     // values taken as the last ones saved, as at start. The frame is not changed.
     void reloadOverlayForTest();
@@ -291,12 +303,14 @@ private:
     std::uint64_t checked_splits_ = 0;  // the switch's splits() at the last size check
     bool size_warned_ = false;          // the 1 GiB warning was posted in this run
     std::unique_ptr<SettingsClaim> settings_claim_;
-    bool save_failed_ = false;                // a saveSettings() failed in this run
-    bool history_save_failed_ = false;        // a saveHistory() failed in this run
-    RecentList recent_;                       // recent()
-    OverlayConfig overlay_;                   // overlay()
-    std::vector<ConfigValue> saved_overlay_;  // the values saveOverlay() saved last
-    std::optional<bool> saved_log_pane_;      // set by the close's save
+    bool save_failed_ = false;                  // a saveSettings() failed in this run
+    bool history_save_failed_ = false;          // a saveHistory() failed in this run
+    RecentList recent_;                         // recent()
+    OverlayConfig overlay_;                     // overlay()
+    std::vector<ConfigValue> saved_overlay_;    // the values saveOverlay() saved last
+    InspectorConfig inspector_;                 // inspectorConfig()
+    std::vector<ConfigValue> saved_inspector_;  // the values saveInspector() saved last
+    std::optional<bool> saved_log_pane_;        // set by the close's save
     // expectOverlayAtCloseForTest()
     std::optional<OverlayConfig> expected_overlay_;
     std::optional<AppearanceResult> appearance_result_;
@@ -304,8 +318,8 @@ private:
     std::shared_ptr<dvv::IExecutor> io_;
     std::shared_ptr<dvv::gpu::GpuInstance> gpu_instance_;
     std::optional<dvv::gpu::DeviceId> device_;
-    Startup startup_;  // the component registry
-    std::shared_ptr<DisplayState> display_;
+    Startup startup_;                  // the component registry
+    std::shared_ptr<FrameFeed> feed_;  // the Session's display sink
     std::shared_ptr<ShowHistory> show_history_;
     std::shared_ptr<ProduceDelay> produce_delay_;
     std::shared_ptr<SessionBridge> bridge_;

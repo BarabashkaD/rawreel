@@ -70,6 +70,10 @@ void setAccessibleName(wxWindow& window, const wxString& name);
 // text).
 void setSecondaryText(wxWindow& label);
 
+// The system's monospace font at the normal font's size: macOS the user's fixed-pitch font
+// (wxSYS_ANSI_FIXED_FONT); Windows Consolas; GTK fontconfig's "monospace".
+[[nodiscard]] wxFont systemMonospaceFont();
+
 // A Settings page icon (Log pane and Settings design §5.1): on macOS the SF Symbol `sf_symbol` (a
 // template image, so it follows the light and dark appearance), as wxOSX requires an icon for
 // every page; elsewhere an empty bundle (the tabs show no icon).

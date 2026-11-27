@@ -11,3 +11,6 @@ CMakeUserPresets.json
 /libs/_third_party/
 # Design documents and plans are kept locally and never published.
 /docs/superpowers/
+
+# macOS Finder metadata
+.DS_Store

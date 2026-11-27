@@ -13,12 +13,15 @@
 // encoded, or decoded when the swapchain encodes.
 // rulerPixel() in tests/ruler_reference.cpp computes the same, in the same order.
 
-import composite_common;
+import picture_common;
+import dvv_gpu_text.gpu_text;
 import dvv_media.view_lines;
 import viewport_background;
 
+using namespace dvv::gpu;
 using namespace dvv::media;
 
+static const uint RULER_GLYPH_CELLS = 10;  // = rawreel::RULER_GLYPH_CELLS
 static const uint RULER_DARK = 1;
 static const uint RULER_SKIP_ENCODE = 2;
 static const uint RULER_TICKS = 4;
@@ -44,17 +47,16 @@ struct RulerConstants
     uint pictureStart;   // P's first output pixel on the axis
     uint pictureExtent;  // P's size on the axis
     uint imageSize;
-    uint strip;  // the strip's thickness toward P, as pictureRegion clamps it
+    uint strip;  // the strip's thickness toward P, as pictureRegion clamps it to the panel
     uint tickBand;
     uint tickWidth;
     uint markerDepth;
-    uint cursor;     // the cursor's image coordinate on the axis
-    uint labelBand;  // strip - tickBand: the numbers' band; the lit tick reaches
-                     // litDepth - tickBand into it
+    uint cursor;       // the cursor's image coordinate on the axis
+    uint cornerBegin;  // the top band's corner: [cornerBegin, rulerBegin); 0 on the left band
     uint rulerEdge;   // the first row (top band) or column (left band) past the ruler
     uint rulerBegin;  // the ruler along the axis: [rulerBegin, rulerEnd)
     uint rulerEnd;    // levelShape starts at 80
-    uint4 levelShape;  // per level: stepLog2 | LEVEL_DRAWN (composite_common); [3] unused
+    uint4 levelShape;  // per level: stepLog2 | LEVEL_DRAWN (picture_common); [3] unused
     uint4 tickLength;  // per level, from the inner edge; [3] unused
     uint cursorColour;  // the lit tick and the marker: 0xRRGGBB, sRGB-encoded
     uint litTick;       // the lit tick's image coordinate on the axis (RULER_LIT)
@@ -65,16 +67,9 @@ struct RulerConstants
 [[vk::push_constant]] ConstantBuffer<RulerConstants> pc;
 
 [[vk::binding(0, 0)]] [format("rgba8")] RWTexture2D<float4> output;
-// The glyph strip: ten digit cells, each width / 10 wide, the coverage in every channel; a 1 x 1
+// The glyph strip: ten digit cells (RULER_GLYPH_CELLS), the coverage in every channel; a 1 x 1
 // dummy without RULER_NUMBERS.
 [[vk::binding(1, 0)]] [format("rgba8")] RWTexture2D<float4> glyphs;
-
-// IEC 61966-2-1, as dvv::media::srgbDecode (input clamped).
-float srgbDecode(float x)
-{
-    x = clamp(x, 0.0, 1.0);
-    return x <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4);
-}
 
 // 0xRRGGBB, sRGB-encoded.
 float3 rgb(uint packed)
@@ -97,16 +92,6 @@ struct Label
     int boxBegin;
     int boxEnd;
 };
-
-uint decimalDigits(uint value)
-{
-    uint digits = 1u;
-    for (; value >= 10u; value = value / 10u)
-    {
-        digits = digits + 1u;
-    }
-    return digits;
-}
 
 Label noLabel()
 {
@@ -153,22 +138,16 @@ int saturatedSum(int a, int b)
 float3 drawText(float3 colour, Label label, int p, int gy, bool top, uint advance, uint height,
                 float3 text)
 {
-    const uint digits = decimalDigits(label.value);
-    const int length = int(digits * advance);
+    const int length = int(decimalDigits(label.value) * advance);
     if (p < label.textBegin || p >= label.textBegin + length || gy < 0 || gy >= int(height))
     {
         return colour;
     }
     const int offset = top ? p - label.textBegin : label.textBegin + length - 1 - p;
-    const uint cell = uint(offset) / advance;
-    uint power = 1u;
-    for (uint i = cell + 1u; i < digits; i = i + 1u)
-    {
-        power = power * 10u;
-    }
-    const uint digit = (label.value / power) % 10u;
-    const uint gx = digit * advance + uint(offset) % advance;
-    const float coverage = glyphs[uint2(gx, uint(gy))].x;
+    GlyphCells cells;
+    cells.advance = advance;
+    cells.height = height;
+    const float coverage = decimalCoverage(glyphs, cells, label.value, offset, gy);
     precise const float3 blended = colour + coverage * (text - colour);
     return blended;
 }
@@ -177,10 +156,9 @@ float3 drawText(float3 colour, Label label, int p, int gy, bool top, uint advanc
 // the band, in drawing order (numbers, the first tag, the last tag, the cursor tag).
 float3 drawLabels(float3 colour, AxisView axis, uint along_pixel, uint across, bool top, bool dark)
 {
-    uint width;
-    uint height;
-    glyphs.GetDimensions(width, height);
-    const uint advance = width / 10u;
+    const GlyphCells cells = glyphCells(glyphs, RULER_GLYPH_CELLS);
+    const uint advance = cells.advance;
+    const uint height = cells.height;
     if (advance == 0u)
     {
         return colour;
@@ -242,7 +220,8 @@ float3 drawLabels(float3 colour, AxisView axis, uint along_pixel, uint across, b
     // where it stops first (the step passes the size) only 0 is a multiple. Its colours follow
     // the theme.
     const uint band_start = pc.rulerEdge - pc.strip;
-    const int text_top = int(band_start) + (int(pc.labelBand) - int(height)) / 2;
+    const uint label_band = pc.strip > pc.tickBand ? pc.strip - pc.tickBand : 0;  // labelBand()
+    const int text_top = int(band_start) + (int(label_band) - int(height)) / 2;
     const int gy = int(across) - text_top;
     if ((pc.flags & RULER_TICKS) != 0)
     {
@@ -274,7 +253,7 @@ float3 drawLabels(float3 colour, AxisView axis, uint along_pixel, uint across, b
     }
 
     // The tags: opaque boxes of the band less the inset across, square.
-    const bool filled = across >= band_start + inset && across + inset < band_start + pc.labelBand;
+    const bool filled = across >= band_start + inset && across + inset < band_start + label_band;
     const float3 tag_fill = rgb(dark ? 0xe8e8e8 : 0x4d4d4d);
     const float3 tag_text = rgb(dark ? 0x1b1b1b : 0xf5f5f5);
     if (first_tag.drawn && p >= first_tag.boxBegin && p < first_tag.boxEnd)
@@ -296,7 +275,6 @@ float3 drawLabels(float3 colour, AxisView axis, uint along_pixel, uint across, b
     return colour;
 }
 
-
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void main(uint3 id: SV_DispatchThreadID)
@@ -316,8 +294,7 @@ void main(uint3 id: SV_DispatchThreadID)
     // rect lies in P. The corner sits left of the top ruler; everything else is background.
     const bool rows = across >= pc.rulerEdge - pc.strip && across < pc.rulerEdge;
     const bool ruler = rows && along_pixel >= pc.rulerBegin && along_pixel < pc.rulerEnd;
-    const bool corner = top && rows && along_pixel >= pc.rulerBegin - pc.pictureStart &&
-                        along_pixel < pc.rulerBegin;
+    const bool corner = top && rows && along_pixel >= pc.cornerBegin && along_pixel < pc.rulerBegin;
     // 0 on the ruler's row or column next to the picture.
     const uint depth = pc.rulerEdge - 1 - across;
     float3 colour = float3(viewportBackground(dark));

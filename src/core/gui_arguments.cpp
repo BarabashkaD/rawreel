@@ -17,12 +17,13 @@ namespace rawreel {
 
 namespace {
 
-constexpr std::array<std::pair<std::string_view, Scenario>, 5> SCENARIOS{{
+constexpr std::array<std::pair<std::string_view, Scenario>, 6> SCENARIOS{{
     {"smoke", Scenario::Smoke},
     {"player", Scenario::Player},
     {"lost", Scenario::Lost},
     {"perf", Scenario::Perf},
     {"about", Scenario::About},
+    {"inspector", Scenario::Inspector},
 }};
 
 constexpr std::uint32_t MAX_INFLIGHT = 64;

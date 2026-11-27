@@ -10,7 +10,7 @@
 #include "core/ruler_labels.h"
 #include "dvv/media/view_lines.h"
 #include "gui/overlay_params.h"
-#include "render/display_state.h"
+#include "render/view_state.h"
 
 using rawreel::GridConfig;
 using rawreel::GridLevelParams;
@@ -31,12 +31,18 @@ TEST_CASE("overlay params: the defaults at a scale of 2") {
     CHECK(params.tickWidth == 2);  // 0.75 pt x 2 = 1.5, half up
     CHECK(params.tickLength == std::array<std::uint32_t, 3>{18, 10, 6});
     CHECK(params.markerDepth == 6);
+    CHECK(params.markSize == 12);  // the padding marks: 6 and 1 DIP
+    CHECK(params.markRim == 2);
     CHECK(params.numbers);
     CHECK(params.strips == dvv::media::ViewStrips{});  // the rulers are hidden
     CHECK(params.tickBand == 0);
     CHECK_FALSE(params.dark);
     CHECK(rawreel::convertOverlay(GridConfig{}, RulerConfig{}, {.display = {2, 2}}, true)
               .params.dark);
+    const OverlayParams one =
+        rawreel::convertOverlay(GridConfig{}, RulerConfig{}, {.display = {1, 1}}, false).params;
+    CHECK(one.markSize == 6);
+    CHECK(one.markRim == 1);
 }
 
 TEST_CASE("overlay params: the rulers shown at a Windows scale of 125 %") {

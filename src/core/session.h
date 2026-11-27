@@ -6,7 +6,9 @@
 // events to ISessionEvents (both called on the Session executor), continuous state is polled with
 // status() or followed with subscribeStatus().
 
+#include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -14,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "core/frame_set.h"
 #include "core/player.h"
 #include "core/session_types.h"
 #include "dvv/base/error.h"
@@ -66,10 +69,20 @@ private:
 struct MediaStack {                                       // what device loss replaces (design D7)
     std::shared_ptr<dvv::gpu::ExecutionContext> context;  // null: host-only (tests)
     std::shared_ptr<dvv::media::FrameStore> store;
-    // The display view of a stream (GPU: displayView(deviceDomain), host fixture: planesView(desc,
-    // HOST_PLANES, host)); evaluated once per stream at attach.
-    dvv::MoveOnlyFunction<dvv::media::ViewSpec(const dvv::media::FrameDesc&)> viewFor;
+    // The view of a stream for a role (gpuStackViews, hostStackViews); evaluated for every role
+    // once per stream at attach. nullopt: the stack has no view for the role (its leases stay
+    // empty).
+    using ViewFor = dvv::MoveOnlyFunction<std::optional<dvv::media::ViewSpec>(
+        const dvv::media::FrameDesc&, ViewRole)>;
+    ViewFor viewFor;
 };
+// A GPU stack's views on its device domain: Display -> displayView, Planes -> planesView(desc,
+// vulkan::IMAGE), Raw -> originalView(desc, vulkan::BUFFER). Display's plan makes the other two on
+// the way, so they are cache hits.
+[[nodiscard]] MediaStack::ViewFor gpuStackViews(dvv::media::Domain device_domain);
+// A host-only stack's views on its host domain: Display and Planes -> planesView(desc,
+// HOST_PLANES), Raw -> originalView(desc, HOST_PLANES).
+[[nodiscard]] MediaStack::ViewFor hostStackViews(dvv::media::Domain host_domain);
 using StackFactory =
     dvv::MoveOnlyFunction<dvv::Result<MediaStack>(std::optional<dvv::gpu::DeviceId>)>;
 
@@ -150,6 +163,16 @@ public:
     // position, playback and a pending target are kept, and the sink keeps the old picture until
     // the new one arrives. Kept across clips and reopens; nothing hidden at construction.
     void setHiddenComponents(dvv::media::HiddenComponents hidden);
+    // The roles every shown FrameSet carries; Display is always added (Display alone at
+    // construction; kept across clips and reopens). An added role requests the shown frame and the
+    // window again with the role's views (position, playback and a pending target kept); a removed
+    // role's leases leave the ready frames and nothing new is requested. The window shrinks with
+    // the bytes of every role (D11). FrameFeed's roles callback calls it, under the feed's roles
+    // callback mutex. It posts the command to the executor and can throw what post throws; it
+    // takes the executor's queue lock, so nobody may call FrameFeed::setRolesChanged() or make or
+    // drop a FeedSubscription while holding that lock. The Session never does: it calls its sink
+    // on its executor with no mutex held.
+    void setViewRoles(ViewRoles roles);
     void step(std::int64_t delta);
     // Read-your-writes (spec §6.3): when the stored snapshot has a stream with a bounded length
     // above zero, `index` clamped into [0, length − 1] is the snapshot's player.target from the
@@ -158,6 +181,14 @@ public:
     // stream or with an unbounded length nothing is patched; the seek just runs in order.
     void seek(std::int64_t index);
     void logDiagnostics();  // Help -> Diagnostics: diagnosticsLines() to the log (Info)
+    // Selftest only: `done` runs on the executor with every outstanding lease of the store, each
+    // counted once: for the first role (in ViewRole order) whose view of an attached stream it
+    // holds, otherwise as `other` (a detached stream's or a stale view). All zero without a stack.
+    struct LeaseCounts {
+        std::array<std::size_t, VIEW_ROLE_COUNT> roles{};
+        std::size_t other = 0;
+    };
+    void leasesForTest(dvv::MoveOnlyFunction<void(LeaseCounts) noexcept> done);
     // Any thread (Log pane and Settings design §5.3): the mode of every later open, reopens and a
     // lost-device reopen included; an open already running keeps the mode it read. Starts as
     // SessionOptions::fileReads.
@@ -192,7 +223,7 @@ private:
 // "no usable GPU device" (+ " that can present to a window" when `presentation`). Context:
 // createContext(id, {defaultPipelineCacheFile("rawreel", info), or empty with a DVV_LOG_WARN line
 // when that fails, presentation}); store: FrameStore::create({cpu, io, context}) with default
-// budgets; viewFor: displayView(*store->deviceDomain()) for every FrameDesc. Errors of
+// budgets; viewFor: gpuStackViews(*store->deviceDomain()). Errors of
 // createContext and FrameStore::create pass through unchanged.
 [[nodiscard]] StackFactory gpuStackFactory(std::shared_ptr<dvv::gpu::GpuInstance> gpus,
                                            std::shared_ptr<dvv::IExecutor> cpu,

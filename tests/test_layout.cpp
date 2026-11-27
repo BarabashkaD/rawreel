@@ -7,6 +7,7 @@
 #include <initializer_list>
 #include <limits>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "core/layout.h"
@@ -71,6 +72,10 @@ bool inside(const ScreenRect& rect, const ScreenRect& area) {
            rect.y + rect.height <= area.y + area.height;
 }
 
+std::span<const ScreenRect> just(const ScreenRect& rect) {
+    return {&rect, 1};
+}
+
 bool overlap(const ScreenRect& a, const ScreenRect& b) {
     return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height &&
            b.y < a.y + a.height;
@@ -106,8 +111,7 @@ TEST_CASE("layout: floatingWindowPlace alone") {
     for (const Case& c : cases) {
         CAPTURE(c.frame.x);
         CAPTURE(c.frame.y);
-        const ScreenRect place =
-            floatingWindowPlace(c.frame, c.client, SIZE, c.work, std::nullopt, GAP);
+        const ScreenRect place = floatingWindowPlace(c.frame, c.client, SIZE, c.work, {}, GAP);
         CHECK(place == c.expected);
         CHECK(inside(place, c.work));
     }
@@ -117,15 +121,17 @@ TEST_CASE("layout: floatingWindowPlace beside another window") {
     const ScreenRect work{0, 0, 1920, 1080}, frame{400, 100, 800, 600}, client{400, 128, 800, 572};
     const LayoutSize size{240, 260};
     const ScreenRect info{1208, 100, 240, 260};
-    CHECK(floatingWindowPlace(frame, client, size, work, info, 8) ==
+    CHECK(floatingWindowPlace(frame, client, size, work, just(info), 8) ==
           ScreenRect{1208, 368, 240, 260});  // below
     const ScreenRect low{1208, 900, 240, 260};
-    CHECK(floatingWindowPlace(frame, client, size, work, low, 8) ==
-          ScreenRect{152, 100, 240, 260});    // left of the frame
+    // The other window is far below the right-of-frame spot, which does not touch it: right wins.
+    CHECK(floatingWindowPlace(frame, client, size, work, just(low), 8) ==
+          ScreenRect{1208, 100, 240, 260});   // right of the frame
     const ScreenRect wide{0, 0, 1920, 1080};  // maximised player, other inside its right edge,
                                               // no room below
     CHECK(floatingWindowPlace(wide, {0, 28, 1920, 1052}, size, work,
-                              ScreenRect{1672, 836, 240, 260}, 8) == ScreenRect{8, 36, 240, 260});
+                              just(ScreenRect{1672, 836, 240, 260}),
+                              8) == ScreenRect{8, 36, 240, 260});
 }
 
 TEST_CASE("layout: floatingWindowPlace in either order") {
@@ -187,12 +193,12 @@ TEST_CASE("layout: floatingWindowPlace in either order") {
         const ScreenRect info = floatingWindowPlace(c.frame, c.client, INFO, c.work, {}, GAP);
         CHECK(info == c.info);
         const ScreenRect grid_after =
-            floatingWindowPlace(c.frame, c.client, GRID, c.work, info, GAP);
+            floatingWindowPlace(c.frame, c.client, GRID, c.work, just(info), GAP);
         CHECK(grid_after == c.gridAfterInfo);
         const ScreenRect grid = floatingWindowPlace(c.frame, c.client, GRID, c.work, {}, GAP);
         CHECK(grid == c.grid);
         const ScreenRect info_after =
-            floatingWindowPlace(c.frame, c.client, INFO, c.work, grid, GAP);
+            floatingWindowPlace(c.frame, c.client, INFO, c.work, just(grid), GAP);
         CHECK(info_after == c.infoAfterGrid);
         for (const ScreenRect& place : {info, grid_after, grid, info_after}) {
             CHECK(inside(place, c.work));
@@ -208,7 +214,7 @@ TEST_CASE("layout: floatingWindowPlace falls back inside the left edge, overlapp
     const ScreenRect work{0, 0, 400, 700}, frame{0, 100, 300, 500}, client{0, 128, 300, 472};
     const ScreenRect info = floatingWindowPlace(frame, client, {240, 260}, work, {}, 8);
     CHECK(info == ScreenRect{52, 136, 240, 260});  // inside the right edge
-    const ScreenRect grid = floatingWindowPlace(frame, client, {300, 320}, work, info, 8);
+    const ScreenRect grid = floatingWindowPlace(frame, client, {300, 320}, work, just(info), 8);
     CHECK(grid == ScreenRect{8, 136, 300, 320});  // inside the left edge
     CHECK(overlap(info, grid));
     CHECK(inside(info, work));
@@ -222,11 +228,12 @@ TEST_CASE("layout: floatingWindowPlace clamps the last choice into the work area
     const ScreenRect frame = work, client{0, 28, 600, 472};
     const ScreenRect info{352, 36, 240, 260};
     CHECK(floatingWindowPlace(frame, client, {240, 260}, work, {}, 8) == info);
-    CHECK(floatingWindowPlace(frame, client, {700, 320}, work, info, 8) ==
+    CHECK(floatingWindowPlace(frame, client, {700, 320}, work, just(info), 8) ==
           ScreenRect{0, 36, 700, 320});
     // A player partly off the work area's left edge: inside the work area's left edge.
     CHECK(floatingWindowPlace({-100, 100, 600, 380}, {-100, 128, 600, 352}, {240, 260}, work,
-                              ScreenRect{252, 100, 240, 260}, 8) == ScreenRect{8, 136, 240, 260});
+                              just(ScreenRect{252, 100, 240, 260}),
+                              8) == ScreenRect{8, 136, 240, 260});
 }
 
 TEST_CASE("layout: rulerStrip") {
@@ -432,4 +439,25 @@ TEST_CASE("layout: a viewport for a clip beside the ruler strips keeps P at leas
             }
         }
     }
+}
+
+TEST_CASE("floating place: two others") {
+    const ScreenRect work{0, 0, 1920, 1080}, frame{400, 100, 800, 600}, client{400, 128, 800, 572};
+    const LayoutSize size{240, 260};
+    // Right of the frame and below the first window are taken: below the second window.
+    const std::array<ScreenRect, 2> both{{{1208, 100, 240, 260}, {1208, 368, 240, 260}}};
+    CHECK(floatingWindowPlace(frame, client, size, work, both, 8) ==
+          ScreenRect{1208, 636, 240, 260});
+    // A kept window blocks the right-of-frame spot, another sits further down: the spot below
+    // the first one (in the order of `others`) is free, so that one is taken.
+    const std::array<ScreenRect, 2> kept{{{1250, 150, 100, 100}, {1208, 700, 240, 200}}};
+    const ScreenRect place = floatingWindowPlace(frame, client, size, work, kept, 8);
+    CHECK(place == ScreenRect{1250, 258, 240, 260});
+    // Nothing fits outside the frame: inside its left edge, clamped into the work area.
+    const ScreenRect narrow{0, 0, 500, 700};
+    const std::array<ScreenRect, 2> crowd{{{252, 100, 240, 260}, {252, 368, 240, 260}}};
+    const ScreenRect last =
+        floatingWindowPlace({0, 100, 300, 500}, {0, 128, 300, 472}, size, narrow, crowd, 8);
+    CHECK(last == ScreenRect{8, 136, 240, 260});
+    CHECK(inside(last, narrow));
 }

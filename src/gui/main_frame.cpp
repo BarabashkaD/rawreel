@@ -21,6 +21,10 @@
 #include <utility>
 #include <vector>
 
+#include "render/frame_feed.h"
+#include "render/view_renderer.h"
+#include "render/view_state.h"
+
 // clang-format off
 #include <wx/infobar.h>  // wxInfoBarBase, before the generic class
 #include <wx/generic/infobar.h>
@@ -34,6 +38,8 @@
 #include "core/config_writer.h"
 #include "core/drop.h"
 #include "core/info_text.h"
+#include "core/inspector.h"
+#include "core/inspector_text.h"
 #include "core/layout.h"
 #include "core/log_file_switch.h"
 #include "core/log_store.h"
@@ -47,15 +53,18 @@
 #include "core/stream_name.h"
 #include "core/version_text.h"
 #include "core/view.h"
+#include "core/zoom_keys.h"
 #include "dvv/base/json.h"
 #include "dvv/base/log.h"
 #include "dvv/base/uri.h"
 #include "dvv/base/utf8.h"
 #include "dvv/components/ffmpeg.h"
 #include "dvv/gpu/execution_context.h"
+#include "dvv/gpu/glyph_strip.h"
 #include "dvv/gpu/gpu_info_json.h"
 #include "dvv/media/display.h"
 #include "dvv/media/pixel_format.h"
+#include "dvv/media/sample_grid.h"
 #include "dvv/media/types.h"
 #include "dvv/media/view.h"
 #include "dvv/media/view_lines.h"
@@ -77,6 +86,7 @@
 #include "gui/settings.h"
 #include "gui/transport_bar.h"
 #include "gui/viewport.h"
+#include "gui/zoom_window.h"
 
 using dvv::media::PointD;
 using dvv::media::ViewMode;
@@ -101,6 +111,12 @@ const CommandInfo& commandInfo(Command command) {
 // Edit -> Copy copies the Info window's rows while it is the floating window in front.
 bool infoInFront(const FloatingWindow* in_front) {
     return in_front != nullptr && in_front->kind() == FloatingKind::Info;
+}
+
+// Pixel inspector design §4.6: Edit -> Copy copies the pixel values while the Zoom window is the
+// floating window in front.
+bool zoomInFront(const FloatingWindow* in_front) {
+    return in_front != nullptr && in_front->kind() == FloatingKind::Zoom;
 }
 
 // What the transport bar shows for `status`: nothing without a stream (a default BarStatus).
@@ -129,14 +145,19 @@ constexpr std::string_view OPEN_URI_EXAMPLE =
 // Spec §2: the notice field's width comes from this text.
 constexpr const char* LONG_LOG_NOTICE = "99 errors, 99 warnings in the log";
 // Spec §7: the variable status fields' shares of the width the fixed fields leave (file,
-// position, rate, bottleneck), and the file field's width at the main window's minimum.
-constexpr std::array<int, 4> VARIABLE_FIELD_SHARES{3, 3, 2, 2};
+// position, rate, bottleneck, then the pixel values and the padding check of the pixel inspector
+// design §4.6, §4.7, as long as a position and a rate text), and the file field's width at the
+// main window's minimum.
+constexpr std::array<int, 6> VARIABLE_FIELD_SHARES{3, 3, 2, 2, 3, 2};
 constexpr int FILE_FIELD_MINIMUM_DIP = 120;
-// The four variable fields together at the minimum, so that the file field gets its 120 DIP.
-constexpr int VARIABLE_FIELDS_MINIMUM_DIP = FILE_FIELD_MINIMUM_DIP *
-                                            (VARIABLE_FIELD_SHARES[0] + VARIABLE_FIELD_SHARES[1] +
-                                             VARIABLE_FIELD_SHARES[2] + VARIABLE_FIELD_SHARES[3]) /
-                                            VARIABLE_FIELD_SHARES[0];
+// The first four variable fields' shares; the pixel inspector's two take only the width left over
+// beyond the minimum, so they do not raise it.
+constexpr int CLIP_FIELD_SHARES = VARIABLE_FIELD_SHARES[0] + VARIABLE_FIELD_SHARES[1] +
+                                  VARIABLE_FIELD_SHARES[2] + VARIABLE_FIELD_SHARES[3];
+constexpr int INSPECTOR_FIELD_SHARES = VARIABLE_FIELD_SHARES[4] + VARIABLE_FIELD_SHARES[5];
+// The first four variable fields together at the minimum, so that the file field gets its 120 DIP.
+constexpr int VARIABLE_FIELDS_MINIMUM_DIP =
+    FILE_FIELD_MINIMUM_DIP * CLIP_FIELD_SHARES / VARIABLE_FIELD_SHARES[0];
 
 // The wx key codes Task 4's normaliser names (core/commands.cpp, D17).
 static_assert(WXK_ESCAPE == 27 && WXK_SPACE == 32);
@@ -304,7 +325,7 @@ std::string typedRecentEntry(std::string_view text) {
     return recentEntryOfText(text, folder);
 }
 
-MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
+MainFrame::MainFrame(std::shared_ptr<FrameFeed> feed)
     : wxFrame(nullptr, wxID_ANY, "rawreel"), aui_([this] {
           // A size event before the player panel exists: the viewport minimum.
           return player_ != nullptr
@@ -318,8 +339,7 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
     }
     aui_.manage(this);
     player_ = new PlayerPanel(
-        this, std::move(display),
-        [this](Command command) { execute(command, CommandSource::Button); },
+        this, std::move(feed), [this](Command command) { execute(command, CommandSource::Button); },
         [this](std::int64_t index) {
             if (Session* session = wxGetApp().session(); session != nullptr && !closing_) {
                 session->seek(index);
@@ -391,11 +411,24 @@ MainFrame::MainFrame(std::shared_ptr<DisplayState> display)
             status_texts_[CURSOR_FIELD] = text;
             SetStatusText(text, static_cast<int>(CURSOR_FIELD));
         }
+        // Live: the probe follows the pointer; off the picture it stays on the last pixel (§4.1).
+        if (inspector_.live() && pixel && pixel != inspector_.probe()) {
+            inspector_.setProbe(pixel);
+            updateInspector(InspectorEvent::ProbeMoved);
+        }
     });
+    // The Zoom window's layout and mode loaded at start (its place and size: at its creation).
+    inspector_.setLayout(wxGetApp().inspectorConfig().layout);
+    inspector_.setMode(wxGetApp().inspectorConfig().mode);
+    // The padding check loaded at start; the main viewport's readbacks carry its count.
+    padding_check_ = wxGetApp().inspectorConfig().paddingCheck;
+    applyPaddingCheck();
+    viewport_->setReadbackHandler([this](ViewReadback readback) { onPaddingReadback(readback); });
     // The grid and ruler settings loaded at start.
     setOverlay(wxGetApp().overlay().grid, wxGetApp().overlay().rulers, OverlaySave::Later);
     // A context menu on the picture: Grid and Rulers.
     viewport_->setContextMenuHandler([this](wxPoint point) { popUpViewportMenu(point); });
+    viewport_->setPickHandler([this](dvv::media::ImagePixel pixel) { pinAt(pixel); });
     updatePlaneControls();  // the bar's plane toggles: their letters with no clip, disabled
     // Zoom buttons design §2.2: the zoom button's menu for the shown view. Its Fit, Actual size
     // and Resize items reach onMenu; its percentages onZoomMenu.
@@ -531,7 +564,8 @@ void MainFrame::buildMenus() {
         } else {
             menu->Append(menuId(info.command), label, help);
         }
-        if (info.command == Command::ResizeWindowToActualSize) {
+        if (info.command == Command::ResizeWindowToActualSize ||
+            info.command == Command::Alpha) {  // after Alpha: the pixel inspector's items
             menu->AppendSeparator();
         }
         if (info.command == Command::OpenUri) {
@@ -619,15 +653,7 @@ void MainFrame::buildStatusBar() {
     // Spec §7: without wxSTB_SHOW_TIPS, which shows only a cut field's own text and asserts on a
     // tooltip set by hand; the bar keeps its size grip and its end cut.
     CreateStatusBar(static_cast<int>(status_texts_.size()), wxSTB_DEFAULT_STYLE & ~wxSTB_SHOW_TIPS);
-    const std::array<int, 3> fixed = fixedFieldWidths(*GetStatusBar());
-    const std::array<int, STATUS_FIELD_COUNT> widths{-VARIABLE_FIELD_SHARES[0],
-                                                     -VARIABLE_FIELD_SHARES[1],
-                                                     -VARIABLE_FIELD_SHARES[2],
-                                                     -VARIABLE_FIELD_SHARES[3],
-                                                     fixed[0],
-                                                     fixed[1],
-                                                     fixed[2]};
-    SetStatusWidths(static_cast<int>(widths.size()), widths.data());
+    layoutStatusFields();
 #if defined(__WXMSW__)
     // Spec §7: wxMSW caps a tooltip at min(400 px, half the display); a path stays on one line
     // where it fits.
@@ -646,6 +672,7 @@ void MainFrame::buildStatusBar() {
     });
     bar->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
         event.Skip();
+        layoutStatusFields();  // before the bar's own handler lays the fields out
         // This handler runs before the bar's own: re-cut once wx has laid the fields out.
         CallAfter([this] {
             if (!closing_) {
@@ -653,6 +680,33 @@ void MainFrame::buildStatusBar() {
             }
         });
     });
+}
+
+void MainFrame::layoutStatusFields() {
+    wxStatusBar* const bar = GetStatusBar();
+    if (bar == nullptr) {
+        return;
+    }
+    const std::array<int, 3> fixed = fixedFieldWidths(*bar);
+    // Up to the minimum the first four variable fields share the width the fixed fields leave;
+    // beyond it PIXEL and PADDING take the excess until all six have their shares of it,
+    // while a pin or Live is on. Without them the two fields take no width.
+    const int variable = std::max(bar->GetClientSize().x - (fixed[0] + fixed[1] + fixed[2]), 0);
+    const int clip =
+        std::max(std::min(variable, FromDIP(VARIABLE_FIELDS_MINIMUM_DIP)),
+                 variable * CLIP_FIELD_SHARES / (CLIP_FIELD_SHARES + INSPECTOR_FIELD_SHARES));
+    const int inspector = status_inspecting_ ? variable - clip : 0;
+    const int pixel = inspector * VARIABLE_FIELD_SHARES[4] / INSPECTOR_FIELD_SHARES;
+    const std::array<int, STATUS_FIELD_COUNT> widths{-VARIABLE_FIELD_SHARES[0],
+                                                     -VARIABLE_FIELD_SHARES[1],
+                                                     -VARIABLE_FIELD_SHARES[2],
+                                                     -VARIABLE_FIELD_SHARES[3],
+                                                     fixed[0],
+                                                     pixel,
+                                                     fixed[1],
+                                                     inspector - pixel,
+                                                     fixed[2]};
+    SetStatusWidths(static_cast<int>(widths.size()), widths.data());
 }
 
 int MainFrame::statusFixedWidth() const {
@@ -699,6 +753,9 @@ void MainFrame::setOverlay(const GridConfig& grid, const RulerConfig& rulers, Ov
     grid_ = grid;
     rulers_ = rulers;
     viewport_->setOverlayConfig(grid_, rulers_);
+    if (ZoomWindow* const zoom = zoomWindow()) {
+        zoom->setOverlayConfig(grid_, rulers_);
+    }
     transportBar().setGridShown(grid_.levels[0].show);
     if (auto* const window = dynamic_cast<GridWindow*>(floatingWindow(FloatingKind::GridAndRulers));
         window != nullptr) {
@@ -710,8 +767,11 @@ void MainFrame::setOverlay(const GridConfig& grid, const RulerConfig& rulers, Ov
 }
 
 void MainFrame::applyViewCommand(Command command) {
+    applyViewCommand(command, activeViewport());
+}
+
+void MainFrame::applyMainViewCommand(Command command) {
     const dvv::platform::PixelSize extent = viewport_->pictureSize();
-    const dvv::platform::PixelSize image = viewport_->imageSize();
     if (command == Command::FitToWindow) {
         viewport_->setView({});
         return;
@@ -723,7 +783,7 @@ void MainFrame::applyViewCommand(Command command) {
     // Backing pixels in P: P's centre stays on its clip point.
     const PointD anchor{.x = extent.width / 2.0, .y = extent.height / 2.0};
     const std::optional<ViewRequest> next =
-        stepZoom(viewport_->view(), extent, image, command == Command::ZoomIn, anchor);
+        viewport_->zoomStep(viewport_->view(), command == Command::ZoomIn, anchor);
     if (next) {  // none at the limit (isAvailable said so)
         viewport_->setView(*next);
     }
@@ -854,7 +914,7 @@ LayoutSize MainFrame::viewportForActualSize(dvv::platform::PixelSize image) cons
 
 void MainFrame::resizeWindowToActualSize() {
     if (windowIsFixed()) {
-        applyViewCommand(Command::ActualSize);
+        applyMainViewCommand(Command::ActualSize);  // the main window's command (§4.2)
         return;
     }
     const dvv::platform::PixelSize image = viewport_->imageSize();
@@ -919,14 +979,10 @@ bool MainFrame::isAvailable(Command command) const {
             if (!hasStream() || viewport_ == nullptr || viewport_->imageSize().empty()) {
                 return false;
             }
-            // Zoom in and out: a next step from the shown zoom (none at the limits).
-            const double zoom = viewport_->shownView().zoom();
-            const double fit = viewport_->fitZoom();
-            if (command == Command::ZoomIn) {
-                return nextZoomIn(zoom, fit).has_value();
-            }
-            if (command == Command::ZoomOut) {
-                return nextZoomOut(zoom, fit).has_value();
+            // Zoom in and out: the step the command takes (none at the limits).
+            if (command == Command::ZoomIn || command == Command::ZoomOut) {
+                const Viewport& view = activeViewport();  // the Zoom view: its whole stops
+                return view.zoomStep(view.view(), command == Command::ZoomIn, {}).has_value();
             }
             return true;
         }
@@ -954,6 +1010,15 @@ bool MainFrame::isAvailable(Command command) const {
                    dvv::media::hasChroma(streams_.front().info.desc.format,
                                          streams_.front().colour.params);
         case Command::Alpha: return hasStream() && clipHasAlpha();
+        case Command::Pipette:
+        case Command::LiveProbe:
+        case Command::PaddingCheck: return hasStream();
+        case Command::ZoomWindow:  // shown: it can be hidden; hidden: only with something to show
+            return windowShown(FloatingKind::Zoom) || inspector_.pin().has_value() ||
+                   inspector_.live();
+        case Command::ClearPin: return inspector_.pin().has_value() || inspector_.live();
+        case Command::CopyValues:
+            return (inspector_.pin().has_value() || inspector_.live()) && values_.has_value();
     }
     return false;
 }
@@ -981,6 +1046,10 @@ void MainFrame::execute(Command command, CommandSource source) {
             updateAlphaControls();  // a refused click on the bar toggle has flipped its value
         } else if (planeIndex(command)) {
             updatePlaneControls();  // as for Alpha
+        } else if (command == Command::Pipette) {
+            transportBar().setPipette(pipette_);  // as for Alpha
+        } else if (command == Command::PaddingCheck) {
+            updatePaddingControls();  // as for Alpha
         }
         return;
     }
@@ -1073,11 +1142,48 @@ void MainFrame::execute(Command command, CommandSource source) {
         updatePlaneControls();
         return;
     }
+    if (command == Command::Pipette) {
+        setPipette(!pipette_, sourceName(source));
+        return;
+    }
+    if (command == Command::ZoomWindow) {  // a toggle, as the Info window
+        if (windowShown(FloatingKind::Zoom)) {
+            setWindowShown(FloatingKind::Zoom, false);
+        } else {
+            setWindowShown(FloatingKind::Zoom, true);
+            if (ZoomWindow* const zoom = zoomWindow()) {
+                zoom->Raise();
+            }
+        }
+        return;
+    }
+    if (command == Command::LiveProbe) {
+        setInspectorLive(!inspector_.live());
+        return;
+    }
+    if (command == Command::ClearPin) {
+        DVV_LOG_INFO("pin cleared ({})", sourceName(source));
+        inspector_.setPin(std::nullopt);
+        updateInspector(InspectorEvent::Other);
+        return;
+    }
+    if (command == Command::CopyValues) {
+        if (values_) {  // isAvailable: always set here
+            setClipboardText(copyText(*values_));
+        }
+        return;
+    }
     if (command == Command::Alpha) {
         alpha_ = !alpha_;
         DVV_LOG_INFO("alpha {} ({})", alpha_ ? "on" : "off", sourceName(source));
         viewport_->setAlpha(alpha_);
         updateAlphaControls();
+        return;
+    }
+    if (command == Command::PaddingCheck) {
+        padding_check_ = !padding_check_;
+        DVV_LOG_INFO("padding check {} ({})", padding_check_ ? "on" : "off", sourceName(source));
+        applyPaddingCheck();
         return;
     }
     Session* session = wxGetApp().session();
@@ -1143,7 +1249,13 @@ void MainFrame::execute(Command command, CommandSource source) {
         case Command::Plane3:
         case Command::HiddenChromaZero:
         case Command::Alpha:
+        case Command::Pipette:
+        case Command::ZoomWindow:
+        case Command::ClearPin:
+        case Command::CopyValues:
         case Command::Settings:
+        case Command::LiveProbe:
+        case Command::PaddingCheck:
         case Command::About: return;
     }
 }
@@ -1416,6 +1528,12 @@ void MainFrame::onCharHook(wxKeyEvent& event) {
     // §4.1).
     const bool keeps_keys =
         focusKeepsKeys(focusedWindow(), log_ != nullptr ? log_->list().control() : nullptr);
+    // Esc turns the pipette off (pixel inspector design §4.1), unless a text entry or the Log list
+    // keeps the key.
+    if (pipette_ && !keeps_keys && chord == normaliseKey(WXK_ESCAPE, false, false, false)) {
+        execute(Command::Pipette, CommandSource::Key);
+        return;
+    }
     if (const std::optional<Command> command = commandForKey(chord, keeps_keys)) {
         execute(*command, CommandSource::Key);
         return;  // consumed: the slider and the buttons never see bare keys
@@ -1643,6 +1761,7 @@ void MainFrame::onStackChanged(const std::weak_ptr<dvv::gpu::ExecutionContext>& 
         return;
     }
     context_ = context;
+    stack_epoch_ = epoch;
     stack_lost_ = context.expired();
     if (const std::shared_ptr<dvv::gpu::ExecutionContext> live = context.lock()) {
         // The device actually in use, once per stack (the log of a report names it).
@@ -1655,6 +1774,10 @@ void MainFrame::onStackChanged(const std::weak_ptr<dvv::gpu::ExecutionContext>& 
     }
     // After the dismissal: setStack may offer Reopen at once (a failed presenter start, D25).
     viewport_->setStack(context, epoch);
+    // A shown Zoom window presents on the same stack; a hidden one holds none.
+    if (ZoomWindow* const zoom = zoomWindow(); zoom != nullptr && zoom->wanted()) {
+        zoom->viewport().setStack(context, epoch);
+    }
 }
 
 void MainFrame::onStreamsChanged(const std::vector<StreamInfo>& streams) {
@@ -1668,6 +1791,7 @@ void MainFrame::onStreamsChanged(const std::vector<StreamInfo>& streams) {
     }
     streams_ = streams;
     updateAlphaControls();  // another clip keeps the state; the button follows its format
+    updatePaddingControls();
     updatePlaneControls();  // the planes too, by position, with the new clip's letters
     // The view's frame size; the renderer resolves the view against the frame it shows.
     if (streams_.empty()) {
@@ -1676,6 +1800,31 @@ void MainFrame::onStreamsChanged(const std::vector<StreamInfo>& streams) {
         const dvv::media::FrameDesc& desc = streams_.front().info.desc;
         viewport_->setImageSize({.width = desc.width, .height = desc.height});
     }
+    if (ZoomWindow* const zoom = zoomWindow()) {
+        zoom->viewport().setImageSize(viewport_->imageSize());
+    }
+    // No stream: no pipette, so Esc and P never act on a disabled toggle.
+    if (streams_.empty() && pipette_) {
+        setPipette(false, "no stream");
+    }
+    // Another clip size drops a pin outside it. No stream is no clip (a device loss, a stack
+    // rebuild, Close stream): the pin stays for the next clip, e.g. the Reopen's same clip. Any
+    // new stream set (an open, Format) clears the values even when the pin stays: they were the
+    // old clip's (§4.1).
+    if (!streams_.empty()) {
+        inspector_.clipChanged(viewport_->imageSize());
+    }
+    values_.reset();
+    if (held_readback_) {
+        const ViewReadback held = *held_readback_;
+        onReadback(held);
+    }
+    showPaddingCount(std::nullopt);  // the old clip's count; the new streams' readback fills it
+    if (held_padding_) {
+        const ViewReadback held = *held_padding_;
+        onPaddingReadback(held);
+    }
+    updateInspector(InspectorEvent::Other);
     if (auto* const window = dynamic_cast<GridWindow*>(floatingWindow(FloatingKind::GridAndRulers));
         window != nullptr) {
         window->showImageWidth(clipWidth(*viewport_));
@@ -1724,6 +1873,9 @@ void MainFrame::onStreamsChanged(const std::vector<StreamInfo>& streams) {
     if (!streams_.empty() && !sizing_uri_.empty() && streams_.front().requestedUri == sizing_uri_) {
         sizing_uri_.clear();
         sizeWindowForOpen();
+    }
+    if (streams_changed_for_test_) {
+        streams_changed_for_test_(streams_);
     }
 }
 
@@ -1898,6 +2050,12 @@ bool MainFrame::menuState(Command command) const {
         case Command::Plane3: return planes_[2];
         case Command::HiddenChromaZero: return chroma_zero_;
         case Command::Alpha: return alpha_;
+        case Command::Pipette: return pipette_;
+        case Command::LiveProbe: return inspector_.live();
+        case Command::ZoomWindow: return windowShown(FloatingKind::Zoom);
+        case Command::PaddingCheck: return padding_check_;
+        case Command::ClearPin:
+        case Command::CopyValues:
         case Command::Open:
         case Command::OpenUri:
         case Command::SaveLog:
@@ -1951,8 +2109,451 @@ std::array<char, 3> MainFrame::planeLetters() const {
                                  dvv::media::hasChroma(format, stream.colour.params));
 }
 
+void MainFrame::setPipette(bool on, std::string_view why) {
+    pipette_ = on;
+    DVV_LOG_INFO("pipette {} ({})", pipette_ ? "on" : "off", why);
+    viewport_->setTool(pipette_ ? ViewportTool::Pipette : ViewportTool::None);
+    transportBar().setPipette(pipette_);
+}
+
+void MainFrame::readbackForTest(ViewReadback readback) {
+    readback.epoch = status_epoch_;
+    readback.streamSet = status_stream_set_;
+    onReadback(readback);
+}
+
+ZoomWindow* MainFrame::zoomWindow() const {
+    return dynamic_cast<ZoomWindow*>(floatingWindow(FloatingKind::Zoom));
+}
+
+namespace {
+
+// The value metrics of a view's numbers, in backing pixels, from its value glyph strip: the strip's
+// cell advance, its height plus a 1 pt line gap, and a 2 pt pad, at the scale the strip is rastered
+// with. nullopt without a strip (the value glyphs off, or the OS raster failed).
+std::optional<ValueMetrics> valueMetricsOf(const Viewport& view) {
+    const std::shared_ptr<const dvv::gpu::GlyphStrip>& strip = view.valueGlyphs();
+    if (!strip) {
+        return std::nullopt;
+    }
+    const double backing_per_point = native_policy::dipPerFontPoint() * view.backingPerDip();
+    const auto backing = [backing_per_point](double points) {
+        return static_cast<std::uint32_t>(std::lround(backing_per_point * points));
+    };
+    const std::uint32_t pad = backing(2);
+    return ValueMetrics{.advance = strip->advance,
+                        .lineHeight = strip->height + backing(1),
+                        .padX = pad,
+                        .padY = pad};
+}
+
+}  // namespace
+
+void MainFrame::pinAt(dvv::media::ImagePixel pixel) {
+    if (closing_) {
+        return;
+    }
+    const bool first = !inspector_.pin().has_value();
+    inspector_.setPin(pixel);
+    DVV_LOG_INFO("pin at x {} y {}", pixel.x, pixel.y);
+    // showBesideOwner shows it without activating it: the main frame stays active (§4.1).
+    setWindowShown(FloatingKind::Zoom, true);
+    updateInspector(first ? InspectorEvent::FirstPin : InspectorEvent::PinMoved);
+}
+
+void MainFrame::updateInspector(InspectorEvent event) {
+    if (closing_) {
+        return;
+    }
+    const std::optional<dvv::media::ImagePixel> shown = inspector_.shown();
+    if (ZoomWindow* const zoom = zoomWindow()) {
+        Viewport& view = zoom->viewport();
+        InspectParams inspect{.on = true,
+                              .panels = inspector_.layout() == InspectorLayout::Planes
+                                            ? PanelKind::Planes
+                                            : PanelKind::Picture,
+                              .numbers = false,  // below: at a zoom where they fit
+                              .glyphs = {},      // the viewport's value glyphs (setInspect)
+                              .metrics = {},
+                              .letterCells = {},
+                              .probe = shown};
+        const std::optional<ValueMetrics> metrics = valueMetricsOf(view);
+        if (!streams_.empty()) {
+            const StreamInfo& stream = streams_.front();
+            const dvv::media::PixelFormatDesc& desc =
+                dvv::media::formatDesc(stream.info.desc.format);
+            const std::array<char, 4> letters = componentLetters(
+                desc, dvv::media::hasChroma(stream.info.desc.format, stream.colour.params));
+            for (std::size_t k = 0; k < letters.size(); ++k) {
+                inspect.letterCells.at(k) = letterCell(letters.at(k));
+            }
+            // The Zoom view follows the pin only when the event moves it (P9); the first pin
+            // opens it at the zoom where the numbers fit.
+            const ClipGrid clip{.image = view.imageSize(), .format = stream.info.desc.format};
+            const std::optional<std::uint32_t> fit =
+                metrics ? std::optional(numbersFitZoom(*metrics, inspector_.layout(), clip))
+                        : std::nullopt;
+            // A view at the last fit follows a new one (a display scale, the layout, the clip)
+            // around its centre, so a hand pan stays; a zoom the user chose stays. The
+            // fit is recorded first: the view change below runs updateInspector again.
+            const std::optional<std::uint32_t> old_fit = inspector_fit_;
+            if (fit) {
+                inspector_fit_ = fit;
+            }
+            if (fit && old_fit && *fit != *old_fit &&
+                view.view().mode == dvv::media::ViewMode::Zoom &&
+                wholeZoom(view.shownView().zoom()) == *old_fit) {
+                const dvv::platform::PixelSize extent = view.pictureSize();
+                const PointD anchor{.x = extent.width / 2.0, .y = extent.height / 2.0};
+                view.setView(zoomAround(view.view(), extent, view.imageSize(), *fit, anchor));
+            }
+            if (shown && recentres(event)) {
+                const bool first = event == InspectorEvent::FirstPin && fit.has_value();
+                setInspectorZoom(first ? *fit : wholeZoom(view.shownView().zoom()));
+            }
+            // The numbers at the shown zoom where they fit their cells.
+            if (fit) {  // the shown zoom, unrounded: a Fit view just under fit shows no numbers
+                inspect.metrics = *metrics;
+                inspect.numbers = view.shownView().zoom() >= static_cast<double>(*fit);
+            }
+        }
+        view.setInspect(inspect);
+        zoom->setToggles(inspector_.live(), inspector_.mode(), inspector_.layout());
+    }
+    updateMarkers();
+    if (!shown) {
+        held_readback_.reset();  // no pin: no values
+    }
+    // A new pin or probe clears the values: the header and the status stay pending until the
+    // readback of the new pixel arrives, never the old pixel's values beside the new pin.
+    if (!shown || (values_ && values_->pixel != *shown)) {
+        values_.reset();
+    }
+    showValues(std::nullopt, -1);  // the header and the status from values_
+}
+
+Viewport& MainFrame::activeViewport() const {
+    ZoomWindow* const zoom = zoomWindow();
+    if (zoom != nullptr && windowShown(FloatingKind::Zoom) && floatingInFront() == zoom) {
+        return zoom->viewport();
+    }
+    return *viewport_;
+}
+
+void MainFrame::applyViewCommand(Command command, Viewport& view) {
+    if (closing_) {
+        return;
+    }
+    ZoomWindow* const zoom = zoomWindow();
+    if (zoom == nullptr || &view != &zoom->viewport()) {
+        applyMainViewCommand(command);
+        return;
+    }
+    std::optional<std::uint32_t> next;
+    switch (command) {
+        case Command::ActualSize:  // Numbers fit
+            if (const std::optional<ValueMetrics> metrics = valueMetricsOf(view);
+                metrics && !streams_.empty()) {
+                const ClipGrid clip{.image = view.imageSize(),
+                                    .format = streams_.front().info.desc.format};
+                next = numbersFitZoom(*metrics, inspector_.layout(), clip);
+            }
+            break;
+        case Command::FitToWindow: next = fitCellZoom(grid_, view.pictureSize()); break;
+        case Command::ZoomIn:
+        case Command::ZoomOut:
+            // The next whole stop past the shown zoom; none at 1 (out) and 256 (in).
+            if (const std::optional<ViewRequest> step =
+                    view.zoomStep(view.view(), command == Command::ZoomIn, {})) {
+                next = wholeZoom(step->zoom);
+            }
+            break;
+        default: return;
+    }
+    if (next) {
+        setInspectorZoom(*next);
+    }
+}
+
+void MainFrame::setInspectorZoom(std::uint32_t zoom, std::optional<dvv::media::ImagePixel> at) {
+    ZoomWindow* const window = zoomWindow();
+    if (window == nullptr) {
+        return;
+    }
+    Viewport& view = window->viewport();
+    if (!at) {  // no pixel to centre on: the picture's centre stays
+        const dvv::platform::PixelSize extent = view.pictureSize();
+        const PointD anchor{.x = extent.width / 2.0, .y = extent.height / 2.0};
+        view.setView(zoomAround(view.view(), extent, view.imageSize(), zoom, anchor));
+        return;
+    }
+    PointD centre = followCentre(*at);
+    if (inspector_.mode() == InspectorMode::Cell) {
+        // The grid cell that holds the pixel; Follow when no level's cell fits (§4.4).
+        if (const std::optional<CellView> cell =
+                cellView(*at, grid_, zoom, view.pictureSize(), view.imageSize())) {
+            centre = cell->centre;
+        }
+    }
+    view.setView({.mode = dvv::media::ViewMode::Zoom,
+                  .zoom = static_cast<double>(zoom),
+                  .centre = centre,
+                  .image = view.imageSize()});
+}
+
+void MainFrame::inspectorKey(const ZoomKeyAction& action) {
+    if (closing_) {
+        return;
+    }
+    const auto run = [this](Command command) {
+        if (isAvailable(command)) {
+            execute(command, CommandSource::Key);
+        }
+    };
+    switch (action.key) {
+        case ZoomKey::MovePin:
+            if (!streams_.empty() &&
+                inspector_.movePin(action.dx, action.dy, action.block,
+                                   ClipGrid{.image = viewport_->imageSize(),
+                                            .format = streams_.front().info.desc.format})) {
+                if (const std::optional<dvv::media::ImagePixel> pin = inspector_.pin()) {
+                    DVV_LOG_INFO("pin moved to x {} y {}", pin->x, pin->y);
+                }
+                updateInspector(InspectorEvent::PinMoved);
+            }
+            return;
+        case ZoomKey::ToggleMode:
+            setInspectorMode(inspector_.mode() == InspectorMode::Follow ? InspectorMode::Cell
+                                                                        : InspectorMode::Follow);
+            return;
+        case ZoomKey::ToggleLayout:
+            setInspectorLayout(inspector_.layout() == InspectorLayout::Structure
+                                   ? InspectorLayout::Planes
+                                   : InspectorLayout::Structure);
+            return;
+        case ZoomKey::CentreOnPin:  // on the pin also with Live on (§4.1: C acts on the pin)
+            if (const ZoomWindow* const zoom = zoomWindow(); zoom != nullptr && inspector_.pin()) {
+                setInspectorZoom(wholeZoom(zoom->viewport().shownView().zoom()), inspector_.pin());
+            }
+            return;
+        case ZoomKey::LiveProbe: run(Command::LiveProbe); return;
+        case ZoomKey::PlayPause: run(Command::PlayPause); return;
+    }
+}
+
+void MainFrame::setInspectorLive(bool live) {
+    if (closing_) {
+        return;
+    }
+    if (live == inspector_.live()) {
+        updateInspector(InspectorEvent::Other);  // the toggles again; a hand pan stays
+        return;
+    }
+    inspector_.setLive(live);
+    DVV_LOG_INFO("live probe {}", live ? "on" : "off");
+    if (live) {
+        inspector_.setProbe(viewport_->cursorPixel());  // the pixel under the pointer, if any
+        setWindowShown(FloatingKind::Zoom, true);
+    }
+    updateInspector(InspectorEvent::Centre);  // on the probe, or back on the pin
+}
+
+void MainFrame::setInspectorMode(InspectorMode mode) {
+    if (closing_) {
+        return;
+    }
+    const bool changed = mode != inspector_.mode();
+    inspector_.setMode(mode);
+    updateInspector(changed ? InspectorEvent::ModeChanged : InspectorEvent::Other);
+}
+
+void MainFrame::setInspectorLayout(InspectorLayout layout) {
+    if (closing_) {
+        return;
+    }
+    inspector_.setLayout(layout);
+    updateInspector(InspectorEvent::Other);  // the panels, the numbers' fit and the header
+}
+
+void MainFrame::saveInspectorState(bool closing) {
+    InspectorConfig config = wxGetApp().inspectorConfig();
+    config.layout = inspector_.layout();
+    config.mode = inspector_.mode();
+    config.paddingCheck = padding_check_;
+    if (const ZoomWindow* const zoom = zoomWindow()) {
+        // The origin of a shown window is where it is now, of a hidden one where it was kept.
+        std::optional<ScreenRect> place = zoom->keptPlace();
+        if (zoom->IsShown()) {
+            const wxPoint at = zoom->GetPosition();
+            place = ScreenRect{.x = at.x, .y = at.y};
+        }
+        if (place) {
+            config.zoomPlace = ScreenRect{.x = place->x, .y = place->y};
+        }
+        const LayoutSize picture = zoom->pictureSizeDip();
+        config.zoomSizeDip = {
+            .width = std::clamp(picture.width, ZOOM_WINDOW_SIZE_MIN, ZOOM_WINDOW_SIZE_MAX),
+            .height = std::clamp(picture.height, ZOOM_WINDOW_SIZE_MIN, ZOOM_WINDOW_SIZE_MAX)};
+    }
+    (void)wxGetApp().saveInspector(config, closing);  // a failure is only logged
+}
+
+void MainFrame::updateMarkers() {
+    if (viewport_ == nullptr) {
+        return;
+    }
+    MarkerParams markers{.pin = inspector_.pin(), .outline = std::nullopt};
+    ZoomWindow* const zoom = zoomWindow();
+    if (zoom != nullptr && windowShown(FloatingKind::Zoom) &&
+        (inspector_.pin().has_value() || inspector_.live())) {
+        const dvv::media::ViewTransform shown = zoom->viewport().shownView();
+        const std::optional<dvv::media::PixelRange> x =
+            dvv::media::visiblePixels(dvv::media::axisX(shown));
+        const std::optional<dvv::media::PixelRange> y =
+            dvv::media::visiblePixels(dvv::media::axisY(shown));
+        if (x && y) {
+            markers.outline = ImageRect{.x = x->first,
+                                        .y = y->first,
+                                        .width = x->last - x->first + 1,
+                                        .height = y->last - y->first + 1};
+        }
+    }
+    viewport_->setMarkers(markers);
+}
+
+void MainFrame::onReadback(const ViewReadback& readback) {
+    if (closing_) {
+        return;
+    }
+    switch (readbackUse(readback, status_epoch_, status_stream_set_)) {
+        case ReadbackUse::Show:
+            held_readback_.reset();
+            ++zoom_readbacks_;
+            zoom_readback_epoch_ = readback.epoch;
+            // A readback still in flight for the old pixel shows nothing (updateInspector).
+            if (readback.probe && readback.probe->pixel == inspector_.shown()) {
+                showValues(readback.probe, readback.index);
+            }
+            return;
+        case ReadbackUse::Hold: held_readback_ = readback; return;
+        case ReadbackUse::Drop: return;
+    }
+}
+
+void MainFrame::showValues(const std::optional<ProbeSample>& probe, std::int64_t frame) {
+    if (probe && !streams_.empty()) {
+        const StreamInfo& stream = streams_.front();
+        const dvv::media::FrameDesc& desc = stream.info.desc;
+        const dvv::media::PixelFormatDesc& format = dvv::media::formatDesc(desc.format);
+        PixelValues values{.pixel = probe->pixel,
+                           .frame = frame,
+                           .live = inspector_.live() && inspector_.probe() == probe->pixel,
+                           .count = probe->count,
+                           .letters = componentLetters(
+                               format, dvv::media::hasChroma(desc.format, stream.colour.params)),
+                           .codes = probe->codes,
+                           .words = probe->words,
+                           .stored = {},
+                           .bits = format.components.empty()
+                                       ? std::uint8_t{0}
+                                       : static_cast<std::uint8_t>(format.components.front().bits)};
+        for (std::size_t k = 0; k < probe->count && k < format.components.size(); ++k) {
+            dvv::Result<dvv::media::StoredWord> word =
+                dvv::media::storedWord(desc.format, desc.width, desc.height, k,
+                                       dvv::media::sampleOf(format.components.at(k), probe->pixel));
+            if (word) {
+                values.stored.at(k) = *word;
+            }
+        }
+        values_ = values;
+    } else if (!inspector_.shown()) {
+        values_.reset();
+    }
+    layoutInspectorFields();
+    // The PIXEL status field and the Zoom window's header follow values_.
+    if (const wxString text = wxString::FromUTF8(pixelStatusText(values_));
+        text != status_texts_[PIXEL_FIELD]) {
+        status_texts_[PIXEL_FIELD] = text;
+        SetStatusText(text, static_cast<int>(PIXEL_FIELD));
+    }
+    if (ZoomWindow* const zoom = zoomWindow()) {
+        std::array<std::string, 4> header{};
+        std::vector<RawWordLine> raw;
+        if (values_ && !streams_.empty()) {
+            const dvv::media::FrameDesc& desc = streams_.front().info.desc;
+            const dvv::media::ViewTransform shown_view = zoom->viewport().shownView();
+            const dvv::media::PixelRange none{};
+            const std::optional<dvv::media::PixelRange> x_shown =
+                dvv::media::visiblePixels(dvv::media::axisX(shown_view));
+            const std::optional<dvv::media::PixelRange> y_shown =
+                dvv::media::visiblePixels(dvv::media::axisY(shown_view));
+            const dvv::media::PixelFormatDesc& format = dvv::media::formatDesc(desc.format);
+            header = headerLines(*values_, format.name, format, x_shown.value_or(none),
+                                 y_shown.value_or(none), wholeZoom(shown_view.zoom()),
+                                 inspector_.layout() == InspectorLayout::Planes);
+            raw = rawWordLines(*values_);
+        }
+        // A shown pixel without values: its readback is on the way.
+        const bool pending = !values_ && inspector_.shown().has_value();
+        zoom->showValues(values_, std::move(header), std::move(raw), pending);
+    }
+}
+
 void MainFrame::updateAlphaControls() {
     transportBar().setAlpha(alpha_, isAvailable(Command::Alpha));
+}
+
+void MainFrame::layoutInspectorFields() {
+    // PIXEL and PADDING take status width only while a pin, Live or the padding check with a
+    // stream to check is on; they never raise the minimum.
+    if (const bool inspecting =
+            inspector_.pin().has_value() || inspector_.live() || (padding_check_ && hasStream());
+        inspecting != status_inspecting_) {
+        status_inspecting_ = inspecting;
+        layoutStatusFields();
+        cutFileField();
+    }
+}
+
+void MainFrame::updatePaddingControls() {
+    transportBar().setPaddingCheck(padding_check_, isAvailable(Command::PaddingCheck));
+}
+
+void MainFrame::applyPaddingCheck() {
+    // Spec §5.3: the main view subscribes to {Display}, plus {Raw} while the check is on; with the
+    // Zoom window hidden too, no Raw lease is held.
+    viewport_->setFeedRoles(padding_check_
+                                ? ViewRoles::of(ViewRole::Display) | ViewRoles::of(ViewRole::Raw)
+                                : ViewRoles::of(ViewRole::Display));
+    viewport_->setPaddingMarks(padding_check_);
+    if (!padding_check_) {
+        held_padding_.reset();
+        showPaddingCount(std::nullopt);
+    }
+    layoutInspectorFields();
+    updatePaddingControls();
+}
+
+void MainFrame::onPaddingReadback(const ViewReadback& readback) {
+    if (closing_ || !readback.paddingSamples) {
+        return;  // a readback without a count leaves the field
+    }
+    switch (readbackUse(readback, status_epoch_, status_stream_set_)) {
+        case ReadbackUse::Show:
+            held_padding_.reset();
+            showPaddingCount(padding_check_ ? readback.paddingSamples : std::nullopt);
+            return;
+        case ReadbackUse::Hold: held_padding_ = readback; return;
+        case ReadbackUse::Drop: return;
+    }
+}
+
+void MainFrame::showPaddingCount(std::optional<std::uint64_t> samples) {
+    if (const wxString text = wxString::FromUTF8(paddingStatusText(samples));
+        text != status_texts_[PADDING_FIELD]) {
+        status_texts_[PADDING_FIELD] = text;
+        SetStatusText(text, static_cast<int>(PADDING_FIELD));
+    }
 }
 
 void MainFrame::updatePlaneControls() {
@@ -2013,6 +2614,12 @@ void MainFrame::onEditMenu(wxCommandEvent& event) {
         setClipboardText(infoCopyText(streams_.empty() ? nullptr : &streams_.front()));
         return;
     }
+    if (event.GetId() == wxID_COPY && zoomInFront(floatingInFront())) {
+        if (isAvailable(Command::CopyValues)) {
+            execute(Command::CopyValues, CommandSource::Menu);
+        }
+        return;
+    }
     // The action is called on the focused control; the event is never sent again (spec §4.2).
     if (log_ != nullptr) {
         (void)runEdit(event.GetId(), focusedWindow(), *log_);
@@ -2022,6 +2629,10 @@ void MainFrame::onEditMenu(wxCommandEvent& event) {
 void MainFrame::onEditUpdateUi(wxUpdateUIEvent& event) {
     if (!closing_ && event.GetId() == wxID_COPY && infoInFront(floatingInFront())) {
         event.Enable(true);  // §10 Copy: always, "No stream" too
+        return;
+    }
+    if (!closing_ && event.GetId() == wxID_COPY && zoomInFront(floatingInFront())) {
+        event.Enable(isAvailable(Command::CopyValues));
         return;
     }
     event.Enable(!closing_ && log_ != nullptr && canEdit(event.GetId(), focusedWindow(), *log_));
@@ -2101,6 +2712,16 @@ void MainFrame::onStatusChanged() {
         return;
     }
     last_revision_ = status.revision;
+    status_epoch_ = status.epoch;
+    status_stream_set_ = status.streamGeneration;
+    if (held_readback_) {
+        const ViewReadback held = *held_readback_;
+        onReadback(held);  // Show, Hold again or Drop against the new status
+    }
+    if (held_padding_) {
+        const ViewReadback held = *held_padding_;
+        onPaddingReadback(held);  // as for the Zoom viewport's
+    }
     ++status_notifications_;
     if (debug_transport_) {
         DVV_LOG_INFO("transport: notification revision {} position {} target {} playing {}",
@@ -2113,6 +2734,7 @@ void MainFrame::onStatusChanged() {
     // notification).
     showZoom();
     updateAlphaControls();
+    updatePaddingControls();
     updatePlaneControls();
     const StatusFields fields = statusFields(status);
     const std::array<wxString, 3> texts{wxString::FromUTF8(fields.position),
@@ -2211,7 +2833,18 @@ void MainFrame::setWindowShown(FloatingKind kind, bool shown) {
             if (auto* const grid_window = dynamic_cast<GridWindow*>(window.get())) {
                 grid_window->endPending();  // before the save below
             }
+            if (auto* const zoom = dynamic_cast<ZoomWindow*>(window.get())) {
+                zoom->detach();  // no lease, glyph strip or GPU object while hidden
+                // No readbacks while hidden: the PIXEL field goes blank rather than keep an old
+                // frame's values; the first readback after the next show fills it (§4.1).
+                values_.reset();
+                held_readback_.reset();
+                showValues(std::nullopt, -1);
+            }
             window->hideKeepingPlace();
+            if (kind == FloatingKind::Zoom) {
+                saveInspectorState(/*closing=*/false);  // its place and size kept, now saved
+            }
             if (kind == FloatingKind::GridAndRulers) {
                 setOverlay(grid_, rulers_, OverlaySave::Now);  // writes nothing when unchanged
             }
@@ -2230,6 +2863,32 @@ void MainFrame::setWindowShown(FloatingKind kind, bool shown) {
                         window = grid_window;
                         break;
                     }
+                    case FloatingKind::Zoom: {
+                        const InspectorConfig& config = wxGetApp().inspectorConfig();
+                        inspector_fit_.reset();  // a new view: no fit yet
+                        auto* const zoom = new ZoomWindow(*this, wxGetApp().feed(),
+                                                          config.zoomSizeDip, config.zoomPlace);
+                        zoom->setOverlayConfig(grid_, rulers_);
+                        Viewport& view = zoom->viewport();
+                        view.setImageSize(viewport_->imageSize());
+                        // As App wires the main viewport (D25): a lost device goes to the
+                        // Session, any other presenter failure to the frame.
+                        view.setDeviceLostHandler([](std::uint64_t epoch) {
+                            if (Session* const s = wxGetApp().session()) {
+                                s->reportDeviceLost(epoch);
+                            }
+                        });
+                        view.setFailureHandler(
+                            [this](const dvv::Error& error) { onPresenterFailed(error); });
+                        view.setPickHandler([this](dvv::media::ImagePixel pixel) { pinAt(pixel); });
+                        view.setReadbackHandler(
+                            [this](ViewReadback readback) { onReadback(readback); });
+                        // The numbers and the header's zoom line follow the Zoom view's zoom.
+                        view.setViewChangedHandler(
+                            [this] { updateInspector(InspectorEvent::Other); });
+                        window = zoom;
+                        break;
+                    }
                 }
                 wxWindow* const now = wxWindow::FindFocus();
                 wxWindow* const back = focus != nullptr ? focus : viewport_;
@@ -2241,7 +2900,15 @@ void MainFrame::setWindowShown(FloatingKind kind, bool shown) {
             if (kind == FloatingKind::GridAndRulers) {
                 showGridNotes();
             }
+            if (auto* const zoom = dynamic_cast<ZoomWindow*>(window.get())) {
+                zoom->attach(context_, stack_epoch_);
+                // The value strip is back only now: the numbers and their metrics follow it.
+                updateInspector(InspectorEvent::Other);
+            }
         }
+    }
+    if (kind == FloatingKind::Zoom) {
+        updateMarkers();  // the outline shows with the window only
     }
     if (kind == FloatingKind::Info) {
         transportBar().setInfoShown(windowShown(kind));
@@ -2309,6 +2976,7 @@ void MainFrame::onClose(wxCloseEvent& event) {
     closing_ = true;
     saveLogPaneState();
     saveOverlayState();
+    saveInspectorState(/*closing=*/true);
     stopStatusUpdates();
     if (selftest_) {
         selftest_->stop();  // the runner lives until ~MainFrame
@@ -2321,16 +2989,19 @@ void MainFrame::onClose(wxCloseEvent& event) {
         settings_->dismiss();  // spec §5.1: before the Session shuts down
     }
     for (wxWeakRef<FloatingWindow>& window : floating_) {
+        if (auto* const zoom = dynamic_cast<ZoomWindow*>(window.get())) {
+            zoom->detach();  // the presenter and subscription go now: Destroy() is deferred
+        }
         if (window) {
             window->Destroy();  // §10: it closes with the main window, before the Session goes
             window = nullptr;
         }
     }
     if (viewport_ != nullptr) {
-        viewport_->detachStack();  // setOnChanged({}), presenter, renderer, context
+        viewport_->detachStack();  // no wake, presenter, renderer, context
     }
-    if (const std::shared_ptr<DisplayState>& display = wxGetApp().display()) {
-        display->clear();  // drops the last FrameSet's leases on the GUI thread
+    if (const std::shared_ptr<FrameFeed>& feed = wxGetApp().feed()) {
+        feed->clear();  // drops the last FrameSet's leases on the GUI thread
     }
     wxGetApp().shutdownSession();  // bridge detached, syncWait(session->shutdown()), Session gone
     if (viewport_ != nullptr) {

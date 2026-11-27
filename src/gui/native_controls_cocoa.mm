@@ -211,6 +211,13 @@ void setAccessibleName(wxWindow& window, const wxString& name) {
     [view setAccessibilityLabel:[NSString stringWithUTF8String:name.utf8_str().data()]];
 }
 
+wxFont systemMonospaceFont() {
+    const double points = wxNORMAL_FONT->GetFractionalPointSize();
+    wxFont font = wxSystemSettings::GetFont(wxSYS_ANSI_FIXED_FONT);  // the user's fixed-pitch font
+    font.SetFractionalPointSize(points);
+    return font;
+}
+
 // secondaryLabelColor is a dynamic colour; wx keeps a fixed one, so it is resolved here for the
 // appearance the label draws with.
 void setSecondaryText(wxWindow& label) {

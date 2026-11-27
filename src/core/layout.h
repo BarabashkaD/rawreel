@@ -60,21 +60,21 @@ struct ScreenRect {
     bool operator==(const ScreenRect&) const = default;
 };
 
-// The place of a floating window of `size` beside the main window, either floating window first.
-// `frame` is the main window's outer rectangle and `client` its client area, in screen
-// coordinates; "fits" means inside `work_area`.
-// Without `other`: right of the frame (x = frame right + gap, y = frame.y) when that fits; else
-// inside its right edge (x = min(frame right, work right) - gap - size.width, y = client.y + gap).
-// With `other`, the other floating window's rectangle: below it (x = other.x, y = other bottom +
-// gap) when that fits; else left of the frame (x = frame.x - gap - size.width, y = frame.y) when
-// that fits; else inside its left edge (x = max(frame.x, work.x) + gap, y = client.y + gap). That
-// last place is the fallback when no place outside the frame fits. It does not avoid the other
-// window and can overlap it (a frame narrower than both windows, or the other window at a kept
-// place there). Always clamped into `work_area`, so both windows stay in
-// the work area. A window's kept place, when it has one, is the caller's to prefer.
+// The place of a floating window of `size` beside the main window, avoiding every window in
+// `others` (the other floating windows that are shown). `frame` is the main window's outer
+// rectangle and `client` its client area, in screen coordinates; "fits" means inside `work_area`.
+// The candidates, in order: right of the frame (x = frame right + gap, y = frame.y), below each of
+// `others` in turn (x = other.x, y = other bottom + gap), left of the frame (x = frame.x - gap -
+// size.width, y = frame.y). The first that fits and overlaps none of `others` wins; else the
+// fallback. Without `others` the fallback is inside the frame's right edge (x = min(frame right,
+// work right) - gap - size.width, y = client.y + gap); with them it is inside the frame's left edge
+// (x = max(frame.x, work.x) + gap, y = client.y + gap). The fallback does not avoid the others and
+// can overlap them (a frame narrower than the windows, or a window at a kept place there). The
+// fallback is clamped into `work_area`, so every window stays in the work area. A window's kept
+// place, when it has one, is the caller's to prefer.
 [[nodiscard]] ScreenRect floatingWindowPlace(ScreenRect frame, ScreenRect client, LayoutSize size,
-                                             ScreenRect work_area, std::optional<ScreenRect> other,
-                                             int gap) noexcept;
+                                             ScreenRect work_area,
+                                             std::span<const ScreenRect> others, int gap) noexcept;
 
 // `rect` moved into `work_area`: right and bottom edges first, then left and top, so a rectangle
 // larger than the work area keeps its top-left corner inside it.

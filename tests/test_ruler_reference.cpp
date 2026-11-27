@@ -21,10 +21,11 @@
 #include "dvv/media/view_lines.h"
 #include "dvv/platform/pixel_size.h"
 #include "rawreel_shaders/rulers.h"
-#include "render/composite_constants.h"
-#include "render/display_state.h"
 #include "render/pass_regions.h"
+#include "render/picture_constants.h"
 #include "render/ruler_constants.h"
+#include "render/view_layout.h"
+#include "render/view_state.h"
 #include "ruler_reference.h"
 
 using dvv::media::ImagePixel;
@@ -103,7 +104,7 @@ TEST_CASE("ruler constants: layout") {
     CHECK(offsetof(RulerConstants, tickWidth) == 52);
     CHECK(offsetof(RulerConstants, markerDepth) == 56);
     CHECK(offsetof(RulerConstants, cursor) == 60);
-    CHECK(offsetof(RulerConstants, labelBand) == 64);
+    CHECK(offsetof(RulerConstants, cornerBegin) == 64);
     CHECK(offsetof(RulerConstants, rulerEdge) == 68);
     CHECK(offsetof(RulerConstants, rulerBegin) == 72);
     CHECK(offsetof(RulerConstants, rulerEnd) == 76);
@@ -138,7 +139,7 @@ TEST_CASE("rulers shader: the push block matches RulerConstants") {
         {"axis", 16},         {"flags", 20},         {"zoom", 24},          {"offset", 28},
         {"pictureStart", 32}, {"pictureExtent", 36}, {"imageSize", 40},     {"strip", 44},
         {"tickBand", 48},     {"tickWidth", 52},     {"markerDepth", 56},   {"cursor", 60},
-        {"labelBand", 64},    {"rulerEdge", 68},     {"rulerBegin", 72},    {"rulerEnd", 76},
+        {"cornerBegin", 64},  {"rulerEdge", 68},     {"rulerBegin", 72},    {"rulerEnd", 76},
         {"levelShape", 80},   {"tickLength", 96},    {"cursorColour", 112}, {"litTick", 116},
         {"litDepth", 120},    {"labelSpacing", 124}};
     CHECK(offsets == expected);
@@ -174,7 +175,7 @@ TEST_CASE("ruler constants: the bands") {
     CHECK(bands[0].imageSize == 37);
     CHECK(bands[0].offset == dvv::media::axisX(view).offset);
     CHECK(bands[0].cursor == 4);
-    CHECK(bands[0].labelBand == 10);
+    CHECK(rawreel::labelBand(bands[0]) == 10);
     CHECK(bands[1].regionX == 0);
     CHECK(bands[1].regionY == 30);
     // The picture is narrower than P: the left band reaches the hugged rect.
@@ -203,6 +204,40 @@ TEST_CASE("ruler constants: the bands") {
     hidden.strips = {};
     for (const RulerConstants& band : bandsOf(hidden, view, extent, std::nullopt, false)) {
         CHECK(band.regionW * band.regionH == 0);
+    }
+}
+
+TEST_CASE("ruler constants: a panel's bands are a lone panel's, moved by its origin") {
+    const rawreel::OverlayParams overlay = retina();
+    const ViewTransform view = ViewTransform::fit({181, 67}, {37, 23});
+    const dvv::media::PixelRect panel{.x = 198, .y = 125, .width = 211, .height = 97};
+    const auto lone = rawreel::rulerConstants(
+        overlay, view, rawreel::passRegions(panel.size(), overlay.strips, view), ImagePixel{4, 5},
+        true);
+    // The picture is narrower than P: the corner is the left strip (30) wide, left of H.x 66.
+    CHECK(lone[0].cornerBegin == 36);
+    CHECK(lone[0].rulerBegin == 66);
+    CHECK(lone[1].cornerBegin == 0);
+    const auto moved = rawreel::rulerConstants(
+        overlay, view, rawreel::panelRegions(panel, overlay.strips, view), ImagePixel{4, 5}, true);
+    for (std::uint32_t axis = 0; axis < 2; ++axis) {
+        CAPTURE(axis);
+        const std::uint32_t along = axis == 0 ? panel.x : panel.y;
+        const std::uint32_t across = axis == 0 ? panel.y : panel.x;
+        RulerConstants expected = lone[axis];
+        expected.regionX += panel.x;
+        expected.regionY += panel.y;
+        expected.pictureStart += along;
+        expected.rulerBegin += along;
+        expected.rulerEnd += along;
+        expected.rulerEdge += across;
+        if (axis == 0) {
+            expected.cornerBegin += panel.x;
+        }
+        // The strip's thickness, and so the label band and the lit depth, stay the panel's own.
+        CHECK(moved[axis].strip == 30);
+        CHECK(rawreel::labelBand(moved[axis]) == 10);
+        CHECK(moved[axis] == expected);
     }
 }
 
@@ -248,14 +283,14 @@ TEST_CASE("ruler constants: the label flags and spacing") {
 
 TEST_CASE("ruler constants: the bands take the view's axes, as the grid does") {
     // A view resolved against another size than P (a caller error): the bands still follow the
-    // view, as compositeConstants does, so the ticks cannot drift from the grid lines.
+    // view, as pictureConstants does, so the ticks cannot drift from the grid lines.
     const rawreel::OverlayParams overlay = retina();
     const ViewTransform view = ViewTransform::fit({181, 67}, {37, 23});
     const PixelSize extent{300, 200};
     const auto bands = bandsOf(overlay, view, extent, std::nullopt, false);
-    const rawreel::CompositeConstants grid =
-        rawreel::compositeConstants(rawreel::DisplayParams{.overlay = overlay}, view,
-                                    rawreel::passRegions(extent, overlay.strips, view), false);
+    const rawreel::PictureConstants grid =
+        rawreel::pictureConstants(rawreel::ViewParams{.overlay = overlay}, view,
+                                  rawreel::passRegions(extent, overlay.strips, view), false);
     for (std::uint32_t axis = 0; axis < 2; ++axis) {
         const dvv::media::AxisView expected =
             axis == 0 ? dvv::media::axisX(view) : dvv::media::axisY(view);

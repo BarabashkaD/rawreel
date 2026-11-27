@@ -23,6 +23,7 @@
 #include <wx/eventfilter.h>
 #include <wx/timer.h>
 
+#include "core/frame_set.h"
 #include "core/gui_arguments.h"
 #include "core/player.h"
 #include "core/session_types.h"
@@ -133,7 +134,7 @@ public:
                         .epoch = frames.epoch,
                         .at = Clock::now()};
         for (std::uint32_t k = 0; k < frames.count; ++k) {
-            const auto& view = frames.views[k];
+            const auto& view = frames.lease(ViewRole::Display, k);
             record.viewsMatch = record.viewsMatch && view && view.key().index == frames.index;
         }
         {
@@ -250,8 +251,8 @@ void addSettingsCloseKeySteps(std::vector<SelfTestStep>& steps, SelfTest* test,
 void openFilesFromFinder(const wxArrayString& names);
 
 // The dispatcher: Smoke -> {smokeScenario(test)}, Lost -> {lostScenario(test), false}, Player ->
-// {playerScenario(test)}, Perf -> {perfScenario(test)}, About -> {aboutScenario(test)}; every other
-// scenario -> nullopt.
+// {playerScenario(test)}, Perf -> {perfScenario(test)}, About -> {aboutScenario(test)}, Inspector
+// -> {inspectorScenario(test)}; every other scenario -> nullopt.
 [[nodiscard]] std::optional<SelfTestScript> selfTestScript(Scenario scenario, SelfTest& test);
 [[nodiscard]] std::vector<SelfTestStep> smokeScenario(SelfTest& test);
 // Device loss (design v2 §8.4 lost, E3): an injected loss offers Reopen within 5 s without
@@ -265,5 +266,9 @@ void openFilesFromFinder(const wxArrayString& names);
 [[nodiscard]] std::vector<SelfTestStep> perfScenario(SelfTest& test);
 // Help -> About (opt-in, not in CTest): a shown frame, then the About step.
 [[nodiscard]] std::vector<SelfTestStep> aboutScenario(SelfTest& test);
+// The pixel inspector, slice A (selftest_inspector.cpp): the pipette toggle, a pin that opens the
+// Zoom window without activating it, the readback values in the status bar and the header, and
+// Copy from the Zoom window.
+[[nodiscard]] std::vector<SelfTestStep> inspectorScenario(SelfTest& test);
 
 }  // namespace rawreel

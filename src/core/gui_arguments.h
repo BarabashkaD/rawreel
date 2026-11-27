@@ -15,7 +15,7 @@
 namespace rawreel {
 
 enum class Appearance : std::uint8_t { System, Light, Dark };
-enum class Scenario : std::uint8_t { None, Smoke, Player, Lost, Perf, About };
+enum class Scenario : std::uint8_t { None, Smoke, Player, Lost, Perf, About, Inspector };
 // "smoke", ...; "" for None.
 [[nodiscard]] std::string_view scenarioName(Scenario scenario) noexcept;
 

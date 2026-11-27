@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <span>
 
 namespace rawreel {
 
@@ -46,30 +47,40 @@ bool fitsIn(const ScreenRect& rect, const ScreenRect& area) noexcept {
            rect.y + rect.height <= area.y + area.height;
 }
 
+bool overlaps(const ScreenRect& a, const ScreenRect& b) noexcept {
+    return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height &&
+           b.y < a.y + a.height;
+}
+
 }  // namespace
 
 ScreenRect floatingWindowPlace(ScreenRect frame, ScreenRect client, LayoutSize size,
-                               ScreenRect work_area, std::optional<ScreenRect> other,
+                               ScreenRect work_area, std::span<const ScreenRect> others,
                                int gap) noexcept {
     const auto at = [&](int x, int y) {
         return ScreenRect{.x = x, .y = y, .width = size.width, .height = size.height};
     };
     const int inside_y = client.y + gap;
-    if (!other) {
-        const int frame_right = frame.x + frame.width;
-        const ScreenRect right = at(frame_right + gap, frame.y);
-        if (fitsIn(right, work_area)) {
-            return right;
-        }
+    const int frame_right = frame.x + frame.width;
+    const auto free_spot = [&](const ScreenRect& spot) {
+        return fitsIn(spot, work_area) &&
+               std::none_of(others.begin(), others.end(),
+                            [&](const ScreenRect& other) { return overlaps(spot, other); });
+    };
+    if (const ScreenRect right = at(frame_right + gap, frame.y); free_spot(right)) {
+        return right;
+    }
+    if (others.empty()) {
         const int work_right = work_area.x + work_area.width;
         return clampInto(at(std::min(frame_right, work_right) - gap - size.width, inside_y),
                          work_area);
     }
-    if (const ScreenRect below = at(other->x, other->y + other->height + gap);
-        fitsIn(below, work_area)) {
-        return below;
+    for (const ScreenRect& other : others) {
+        if (const ScreenRect below = at(other.x, other.y + other.height + gap); free_spot(below)) {
+            return below;
+        }
     }
-    if (const ScreenRect left = at(frame.x - gap - size.width, frame.y); fitsIn(left, work_area)) {
+    if (const ScreenRect left = at(frame.x - gap - size.width, frame.y); free_spot(left)) {
         return left;
     }
     return clampInto(at(std::max(frame.x, work_area.x) + gap, inside_y), work_area);

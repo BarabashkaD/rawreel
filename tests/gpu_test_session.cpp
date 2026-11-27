@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/frame_set.h"
 #include "core/session.h"
 #include "core/session_types.h"
 #include "core/timer.h"
@@ -45,6 +46,8 @@
 
 using rawreel::FrameSet;
 using rawreel::SessionStatus;
+using rawreel::ViewRole;
+using rawreel::ViewRoles;
 using rawreel::testing::liveCountOf;
 using rawreel::testing::RecordingEvents;
 using rawreel::testing::RecordingSink;
@@ -60,10 +63,10 @@ constexpr std::int64_t S_FRAMES = 120;
 
 // The shown views are ToDisplay's images: one RGBA16F storage image per frame.
 bool isDisplayImage(const FrameSet& frames) {
-    if (frames.count != 1 || !frames.views[0]) {
+    if (frames.count != 1 || !frames.lease(ViewRole::Display)) {
         return false;
     }
-    const dvv::media::ReadLease& lease = frames.views[0];
+    const dvv::media::ReadLease& lease = frames.lease(ViewRole::Display);
     if (lease.view().format != dvv::media::displayFormat()) {
         return false;
     }
@@ -125,6 +128,50 @@ StackMaker observingStack(const std::shared_ptr<ObservedStore>& observed) {
                 -> dvv::Result<rawreel::MediaStack> {
                 DVV_TRY(rawreel::MediaStack stack, inner(device));
                 observed->set(stack.store);
+                return stack;
+            });
+    };
+}
+
+// The GPU stack of the first usable device with a store of the given staging and device budgets
+// and the default views (gpuStackViews); every made store is kept in `observed`.
+StackMaker budgetStack(const std::shared_ptr<ObservedStore>& observed, std::size_t staging_budget,
+                       std::size_t device_budget) {
+    return [observed, staging_budget,
+            device_budget](const rawreel::testing::GpuTestEnvironment& env) {
+        return rawreel::StackFactory(
+            [gpu_instance = env.gpuInstance, cpu = env.cpu, io = env.io, observed, staging_budget,
+             device_budget](
+                std::optional<dvv::gpu::DeviceId> /*device*/) -> dvv::Result<rawreel::MediaStack> {
+                std::optional<dvv::gpu::DeviceId> id;
+                for (const dvv::gpu::DeviceId candidate : gpu_instance->rankedDevices()) {
+                    if (gpu_instance->devices()[candidate.index()].usable()) {
+                        id = candidate;
+                        break;
+                    }
+                }
+                if (!id) {
+                    return dvv::makeError(dvv::Errc::Unsupported, "no usable GPU device");
+                }
+                DVV_TRY(std::shared_ptr<dvv::gpu::ExecutionContext> context,
+                        gpu_instance->createContext(*id, {}));
+                DVV_TRY(std::shared_ptr<dvv::media::FrameStore> store,
+                        dvv::media::FrameStore::create(
+                            dvv::media::FrameStoreOptions{.cpu = cpu,
+                                                          .io = io,
+                                                          .gpu = context,
+                                                          .stagingBudget = staging_budget,
+                                                          .deviceBudget = device_budget}));
+                const std::optional<dvv::media::Domain> domain = store->deviceDomain();
+                if (!domain) {
+                    return dvv::makeError(dvv::Errc::Internal,
+                                          "the GPU store has no device domain");
+                }
+                observed->set(store);
+                rawreel::MediaStack stack;
+                stack.context = std::move(context);
+                stack.viewFor = rawreel::gpuStackViews(*domain);
+                stack.store = std::move(store);
                 return stack;
             });
     };
@@ -200,8 +247,8 @@ public:
     // before), until releaseShown() or finish(). The display image check stays.
     void keepShown() {
         sink->setInspector([kept = kept_](const FrameSet& frames) {
-            if (frames.count >= 1 && frames.views[0]) {
-                dvv::media::ReadLease share = frames.views[0].share();
+            if (frames.count >= 1 && frames.lease(ViewRole::Display)) {
+                dvv::media::ReadLease share = frames.lease(ViewRole::Display).share();
                 const std::lock_guard lock(kept->mutex);
                 kept->lease = std::move(share);
             }
@@ -437,46 +484,8 @@ TEST_CASE("gpu session: a small-budget store evicts under in-flight GPU work") {
     // original + 9216 planes + 24576 display image) bytes.
     constexpr std::size_t STAGING_BUDGET = 27648;
     constexpr std::size_t DEVICE_BUDGET = 129024;
-    auto observed = std::make_shared<std::weak_ptr<dvv::media::FrameStore>>();
-    const StackMaker small_budget = [observed](const rawreel::testing::GpuTestEnvironment& env) {
-        return rawreel::StackFactory(
-            [gpu_instance = env.gpuInstance, cpu = env.cpu, io = env.io, observed](
-                std::optional<dvv::gpu::DeviceId> /*device*/) -> dvv::Result<rawreel::MediaStack> {
-                std::optional<dvv::gpu::DeviceId> id;
-                for (const dvv::gpu::DeviceId candidate : gpu_instance->rankedDevices()) {
-                    if (gpu_instance->devices()[candidate.index()].usable()) {
-                        id = candidate;
-                        break;
-                    }
-                }
-                if (!id) {
-                    return dvv::makeError(dvv::Errc::Unsupported, "no usable GPU device");
-                }
-                DVV_TRY(std::shared_ptr<dvv::gpu::ExecutionContext> context,
-                        gpu_instance->createContext(*id, {}));
-                DVV_TRY(std::shared_ptr<dvv::media::FrameStore> store,
-                        dvv::media::FrameStore::create(
-                            dvv::media::FrameStoreOptions{.cpu = cpu,
-                                                          .io = io,
-                                                          .gpu = context,
-                                                          .stagingBudget = STAGING_BUDGET,
-                                                          .deviceBudget = DEVICE_BUDGET}));
-                const std::optional<dvv::media::Domain> domain = store->deviceDomain();
-                if (!domain) {
-                    return dvv::makeError(dvv::Errc::Internal,
-                                          "the GPU store has no device domain");
-                }
-                *observed = store;
-                rawreel::MediaStack stack;
-                stack.context = std::move(context);
-                stack.viewFor = [domain = *domain](const dvv::media::FrameDesc& /*desc*/) {
-                    return dvv::media::displayView(domain);
-                };
-                stack.store = std::move(store);
-                return stack;
-            });
-    };
-    GpuSession g(small_budget);
+    auto observed = std::make_shared<ObservedStore>();
+    GpuSession g(budgetStack(observed, STAGING_BUDGET, DEVICE_BUDGET));
     g.open(S);
     // play() before the open job attached the stream would find no player.
     REQUIRE_MESSAGE(
@@ -665,5 +674,146 @@ TEST_CASE("gpu session: hidden set reaches the shown image") {
         CHECK(hidden_red < 1e-3F);
     }
     CHECK(g.events->of(Kind::Error).empty());
+    g.finish();
+}
+
+TEST_CASE("gpu session: roles acquire the display plan's entries") {
+    auto observed = std::make_shared<ObservedStore>();
+    GpuSession g(observingStack(observed));
+    g.session->setViewRoles(ViewRoles::all());
+    g.open(S);
+    REQUIRE_MESSAGE(
+        g.sink->waitFor([](const std::vector<ShownFrame>& history) { return hasShow(history, 0); },
+                        30s),
+        g.summary());
+    g.session->play();
+    REQUIRE_MESSAGE(
+        g.sink->waitFor([](const std::vector<ShownFrame>& history) { return hasShow(history, 30); },
+                        30s),
+        g.summary());
+    g.session->pause();
+    REQUIRE_MESSAGE(
+        g.waitStatus([](const SessionStatus& s) { return !s.player.playing && s.inflight == 0; },
+                     30s),
+        g.summary());
+    for (const ShownFrame& shown : g.sink->history()) {
+        CHECK(shown.roles == ViewRoles::all());
+        CHECK(shown.inspected);
+    }
+    // Planes is GpuUnpack's image and Raw the uploaded original: no role runs a converter of its
+    // own.
+    const dvv::media::StoreStats stats = observed->stats();
+    const std::uint64_t produced = runsOf(stats, "Produce");
+    CAPTURE(produced);
+    CHECK(produced >= 31);
+    CHECK(runsOf(stats, "Upload") == produced);
+    CHECK(runsOf(stats, "GpuUnpack") == produced);
+    CHECK(g.events->of(Kind::Error).empty());
+    g.finish();
+}
+
+TEST_CASE("gpu session: the planes role shrinks the window and survives a small budget") {
+    // Six frames of S in the device tier: 6 · (24576 display image + 9216 planes) bytes, so the
+    // Session's window is 6 / 2 = 3 frames.
+    constexpr std::size_t STAGING_BUDGET = std::size_t{6} * 9216;
+    constexpr std::size_t DEVICE_BUDGET = std::size_t{6} * (24576 + 9216);
+    constexpr std::uint32_t WINDOW = 3;
+    auto observed = std::make_shared<ObservedStore>();
+    GpuSession g(budgetStack(observed, STAGING_BUDGET, DEVICE_BUDGET));
+    g.session->setViewRoles(ViewRoles::of(ViewRole::Planes));
+    g.open(S);
+    REQUIRE_MESSAGE(
+        g.sink->waitFor([](const std::vector<ShownFrame>& history) { return hasShow(history, 0); },
+                        30s),
+        g.summary());
+    g.session->play();
+    std::uint32_t most_ready = 0;
+    // The window is reached (3, not a halved 2) and never exceeded (not Display's 4).
+    REQUIRE_MESSAGE(waitUntil(
+                        [&] {
+                            most_ready = std::max(most_ready, g.session->status().readyAhead);
+                            return most_ready >= WINDOW && hasShow(g.sink->history(), 40);
+                        },
+                        60s),
+                    g.summary());
+    CHECK(most_ready == WINDOW);
+    for (const ShownFrame& shown : g.sink->history()) {
+        CHECK(shown.roles.has(ViewRole::Planes));
+        CHECK(shown.inspected);
+        CHECK(shown.indicesMatch);
+    }
+    CHECK(g.events->of(Kind::Error).empty());
+    g.finish();
+}
+
+TEST_CASE("gpu session: roles survive a device loss and leave no lease") {
+    auto observed = std::make_shared<ObservedStore>();
+    GpuSession g(observingStack(observed));
+    g.session->setViewRoles(ViewRoles::all());
+    g.open(S);
+    REQUIRE_MESSAGE(
+        g.sink->waitFor([](const std::vector<ShownFrame>& history) { return hasShow(history, 0); },
+                        30s),
+        g.summary());
+    g.session->play();
+    REQUIRE_MESSAGE(
+        g.sink->waitFor([](const std::vector<ShownFrame>& history) { return hasShow(history, 10); },
+                        30s),
+        g.summary());
+    const std::weak_ptr<dvv::media::FrameStore> lost_store = observed->lock();
+    {
+        const std::shared_ptr<dvv::gpu::ExecutionContext> context = g.events->lastContext().lock();
+        REQUIRE(context);
+        dvv::gpu::testing::injectDeviceLost(*context);
+    }
+    REQUIRE(g.waitStatus([](const SessionStatus& s) { return !s.gpuAvailable; }, 5s));
+
+    g.session->reopen();
+    REQUIRE(g.waitStatus([](const SessionStatus& s) { return s.epoch == 2; }, 30s));
+    REQUIRE_MESSAGE(g.sink->waitFor(
+                        [](const std::vector<ShownFrame>& history) {
+                            return std::ranges::any_of(
+                                history, [](const ShownFrame& shown) { return shown.epoch == 2; });
+                        },
+                        30s),
+                    g.summary());
+    g.session->play();
+    std::int64_t first = -1;
+    for (const ShownFrame& shown : g.sink->history()) {
+        if (shown.epoch == 2) {
+            first = shown.index;
+            break;
+        }
+    }
+    REQUIRE_MESSAGE(g.sink->waitFor(
+                        [first](const std::vector<ShownFrame>& history) {
+                            return hasShow(history, first + 10, 2);
+                        },
+                        30s),
+                    g.summary());
+    for (const ShownFrame& shown : g.sink->history()) {
+        if (shown.epoch == 2) {
+            CHECK(shown.roles == ViewRoles::all());
+            CHECK(shown.inspected);
+        }
+    }
+    CHECK(lost_store.expired());
+
+    // After the shutdown only the sink's latest frame may hold leases on the new store.
+    {
+        const std::shared_ptr<dvv::media::FrameStore> store = observed->lock();
+        REQUIRE(store);
+        g.releaseShown();
+        dvv::syncWait(g.session->shutdown());
+        const std::vector<ShownFrame> history = g.sink->history();
+        REQUIRE_FALSE(history.empty());
+        const std::int64_t latest = history.back().index;
+        for (const dvv::media::LeaseInfo& lease : store->outstandingLeases()) {
+            CAPTURE(lease.where.file_name());
+            CAPTURE(lease.where.line());
+            CHECK(lease.key.index == latest);
+        }
+    }
+    CHECK(g.events->of(Kind::Error).size() == 1);
     g.finish();
 }

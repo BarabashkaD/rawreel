@@ -98,6 +98,12 @@ public:
     // The Alpha toggle: its value (MainFrame::alpha()) and whether it is enabled
     // (MainFrame::isAvailable(Command::Alpha)); no event. showStatus leaves it.
     void setAlpha(bool on, bool available);
+    // The Pipette toggle's value (MainFrame::pipette()); no event. It is enabled as the other
+    // stream buttons (showStatus), as isAvailable(Command::Pipette) is.
+    void setPipette(bool on);
+    // The Padding check toggle: its value (MainFrame's padding check) and whether it is enabled
+    // (MainFrame::isAvailable(Command::PaddingCheck)); no event. showStatus leaves it.
+    void setPaddingCheck(bool on, bool available);
     // The plane toggles (Plane1..3): their values (MainFrame::planes()), whether each is enabled
     // (MainFrame::isAvailable) and their letters (MainFrame::planeLetters()); the label, the name
     // and accessible name ("Y plane") and the tooltip follow the letter. Each changes only when it
@@ -222,6 +228,8 @@ private:
     std::array<wxToggleButton*, 3> planes_{};  // Plane1..3, labelled with plane_letters_
     std::array<char, 3> plane_letters_{};      // the letters shown; '\0' before the first setPlanes
     wxBitmapToggleButton* alpha_ = nullptr;
+    wxBitmapToggleButton* pipette_ = nullptr;
+    wxBitmapToggleButton* padding_ = nullptr;  // the Padding check
     wxBitmapToggleButton* grid_ = nullptr;
     wxBitmapToggleButton* info_ = nullptr;
     wxBitmapButton* play_ = nullptr;

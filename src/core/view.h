@@ -14,8 +14,6 @@
 
 namespace rawreel {
 
-inline constexpr std::uint32_t MAX_STREAMS = 1;  // D2: one stream at a time; v1.x tiles raise it
-
 // The physical pixel size of a view `width_points` x `height_points` in size (fractional points
 // allowed) whose layer has `scale` pixels per point (macOS: the CAMetalLayer's contentsScale, the
 // window's backing scale factor): points x scale rounded to nearest, at least 1 on each axis of a

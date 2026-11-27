@@ -50,6 +50,12 @@ enum class Command : std::uint8_t {
     Plane3,
     HiddenChromaZero,  // View -> Hidden U and V at 0: hidden U and V take 0, not the mid code
     Alpha,             // View -> Alpha: apply or ignore the clip's alpha
+    Pipette,    // View -> Pipette, Live Probe, Zoom Window, Clear Pin, Copy Pixel Values, Padding
+    LiveProbe,  // Check (the pixel inspector)
+    ZoomWindow,
+    ClearPin,
+    CopyValues,
+    PaddingCheck,
     GpuInfo,
     Diagnostics,
     About,

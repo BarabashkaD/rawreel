@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <optional>
 
+#include "core/frame_set.h"
 #include "core/view.h"
 #include "dvv/media/view.h"
 #include "dvv/platform/pixel_size.h"

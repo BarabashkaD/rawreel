@@ -1,4 +1,4 @@
-// The viewport compositor on a real device (design M3 v2 §4.4, §8.3): composite.slang matches the
+// The viewport compositor on a real device (design M3 v2 §4.4, §8.3): picture.slang matches the
 // CPU reference within 1 on store-made display images, frame() records only on change, other
 // epochs draw the background, an sRGB swapchain skips the encode, and lastRecorded() is readable
 // while frame() records.
@@ -30,6 +30,8 @@
 #include <vulkan/vulkan_core.h>
 
 #include "composite_reference.h"
+#include "core/frame_set.h"
+#include "core/inspector_text.h"
 #include "core/layout.h"
 #include "core/overlay.h"
 #include "core/ruler_labels.h"
@@ -54,24 +56,27 @@
 #include "dvv/media/view_lines.h"
 #include "dvv/platform/pixel_size.h"
 #include "gpu_support.h"
-#include "render/composite_constants.h"
-#include "render/display_state.h"
+#include "inspect_support.h"
+#include "render/frame_feed.h"
 #include "render/pass_regions.h"
+#include "render/picture_constants.h"
 #include "render/ruler_constants.h"
-#include "render/viewport_renderer.h"
+#include "render/view_renderer.h"
+#include "render/view_state.h"
 #include "ruler_reference.h"
 
 using dvv::media::resolveView;
 using dvv::media::ViewMode;
 using dvv::media::ViewTransform;
 using dvv::platform::PixelSize;
-using rawreel::CompositeConstants;
-using rawreel::DisplayParams;
-using rawreel::DisplaySnapshot;
 using rawreel::FrameSet;
 using rawreel::HostDisplayImage;
+using rawreel::PictureConstants;
 using rawreel::RecordedInfo;
-using rawreel::ViewportRenderer;
+using rawreel::RoleLeases;
+using rawreel::ViewParams;
+using rawreel::ViewRenderer;
+using rawreel::ViewSnapshot;
 
 namespace {
 
@@ -79,6 +84,12 @@ namespace {
 rawreel::PassRegions regionsOf(PixelSize extent, const rawreel::OverlayParams& overlay,
                                const ViewTransform& view) {
     return rawreel::passRegions(extent, overlay.strips, view);
+}
+
+// One presenter read: `frames` at feed `version` with `params`.
+ViewSnapshot viewSnapshot(FrameSet frames, ViewParams params, std::uint64_t version) {
+    return ViewSnapshot{.feed = {.frames = std::move(frames), .version = version},
+                        .params = std::move(params)};
 }
 
 using Rgba8 = std::array<std::uint8_t, 4>;
@@ -89,8 +100,8 @@ constexpr PixelSize IMAGE{37, 23};
 // An image smaller than P at zoom 1, so the rulers hug it.
 constexpr std::string_view HUG_IMAGE_URI = "synthetic:gradient?w=100&h=50&fmt=yuv420p&frames=1";
 constexpr PixelSize HUG_IMAGE{100, 50};
-const DisplayParams DARK{.overlay = {.dark = true}};
-const DisplayParams LIGHT{.overlay = {.dark = false}};
+const ViewParams DARK{.overlay = {.dark = true}};
+const ViewParams LIGHT{.overlay = {.dark = false}};
 constexpr Rgba8 DARK_BG{31, 31, 31, 255};
 constexpr Rgba8 LIGHT_BG{217, 217, 217, 255};
 
@@ -105,7 +116,8 @@ struct DisplayFrame {
 };
 
 FrameSet frameSet(const DisplayFrame& frame, std::int64_t index, std::uint64_t epoch) {
-    return FrameSet{.index = index, .count = 1, .views = {frame.lease.share()}, .epoch = epoch};
+    return FrameSet{
+        .index = index, .count = 1, .leases = {RoleLeases{frame.lease.share()}}, .epoch = epoch};
 }
 
 dvv::gpu::PresentFrameParams frameParams(PixelSize extent, dvv::gpu::PresentEncoding encoding,
@@ -137,7 +149,7 @@ bool withinOne(const Rgba8& a, const Rgba8& b) {
 }
 
 // Pixels with any channel more than 1 away from compositePixel(); the first one is reported.
-std::size_t mismatches(const std::vector<std::byte>& bytes, const CompositeConstants& constants,
+std::size_t mismatches(const std::vector<std::byte>& bytes, const PictureConstants& constants,
                        const std::optional<HostDisplayImage>& image) {
     const PixelSize extent{constants.viewportW, constants.viewportH};
     REQUIRE(bytes.size() == std::size_t{extent.width} * extent.height * 4);
@@ -169,7 +181,7 @@ struct RegionMatch {
     std::size_t missed = 0;
 };
 RegionMatch regionMatch(const std::vector<std::byte>& bytes, PixelSize extent,
-                        const CompositeConstants& constants,
+                        const PictureConstants& constants,
                         const std::optional<HostDisplayImage>& image) {
     REQUIRE(bytes.size() == std::size_t{extent.width} * extent.height * 4);
     RegionMatch match;
@@ -423,9 +435,9 @@ public:
     }
 
     // render(), submit, read back the RGBA8 output.
-    [[nodiscard]] std::vector<std::byte> renderAndRead(ViewportRenderer& renderer, PixelSize extent,
+    [[nodiscard]] std::vector<std::byte> renderAndRead(ViewRenderer& renderer, PixelSize extent,
                                                        const FrameSet& frames,
-                                                       const DisplayParams& params) {
+                                                       const ViewParams& params) {
         auto frame = renderer.render(extent, frames, params);
         REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
         REQUIRE(static_cast<bool>(frame->record));
@@ -444,9 +456,9 @@ private:
     std::unique_ptr<dvv::media::SourceFactory> factory_;
 };
 
-std::unique_ptr<ViewportRenderer> makeRenderer(
+std::unique_ptr<ViewRenderer> makeRenderer(
     const std::shared_ptr<dvv::gpu::ExecutionContext>& context, std::uint64_t epoch) {
-    auto renderer = ViewportRenderer::create(context, epoch);
+    auto renderer = ViewRenderer::create(context, epoch);
     REQUIRE_MESSAGE(renderer, (renderer ? std::string() : renderer.error().describe()));
     return std::move(*renderer);
 }
@@ -486,7 +498,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: matches the CPU reference") {
                 renderAndRead(*renderer, viewport, frameSet(*frame, 0, 1), DARK);
             const std::size_t wrong = mismatches(
                 bytes,
-                rawreel::compositeConstants(DARK, ViewTransform::fit(viewport, IMAGE), {}, false),
+                rawreel::pictureConstants(DARK, ViewTransform::fit(viewport, IMAGE), {}, false),
                 frame->image());
             CHECK(wrong <= allowance(viewport));
             if (viewport == IMAGE) {
@@ -498,16 +510,16 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: matches the CPU reference") {
         INFO("image N, viewport ", describe(viewport), ", light background");
         const std::vector<std::byte> bytes =
             renderAndRead(*renderer, viewport, frameSet(n, 0, 1), LIGHT);
-        CHECK(mismatches(bytes,
-                         rawreel::compositeConstants(LIGHT, ViewTransform::fit(viewport, IMAGE), {},
-                                                     false),
-                         n.image()) <= allowance(viewport));
+        CHECK(mismatches(
+                  bytes,
+                  rawreel::pictureConstants(LIGHT, ViewTransform::fit(viewport, IMAGE), {}, false),
+                  n.image()) <= allowance(viewport));
     }
     for (const bool dark : {true, false}) {
         INFO("no frame, viewport 211x97, ", dark ? "dark" : "light", " background");
         const PixelSize viewport{211, 97};
-        const std::vector<std::byte> bytes = renderAndRead(
-            *renderer, viewport, FrameSet{}, DisplayParams{.overlay = {.dark = dark}});
+        const std::vector<std::byte> bytes =
+            renderAndRead(*renderer, viewport, FrameSet{}, ViewParams{.overlay = {.dark = dark}});
         std::size_t wrong = 0;
         for (std::uint32_t y = 0; y < viewport.height; ++y) {
             for (std::uint32_t x = 0; x < viewport.width; ++x) {
@@ -563,33 +575,35 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: 200 % panned matches the CPU refe
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame g = displayFrame(G);
     const PixelSize viewport{30, 19};
-    const DisplayParams params{.view = {ViewMode::Zoom, 2, {12, 8}, IMAGE},
-                               .overlay = {.dark = true}};
+    const ViewParams params{.view = {ViewMode::Zoom, 2, {12, 8}, IMAGE}, .overlay = {.dark = true}};
     const std::vector<std::byte> bytes =
         renderAndRead(*renderer, viewport, frameSet(g, 0, 1), params);
     const auto view = resolveView(params.view, viewport, IMAGE);
-    CHECK(mismatches(bytes, rawreel::compositeConstants(params, view, {}, false), g.image()) == 0);
+    CHECK(mismatches(bytes, rawreel::pictureConstants(params, view, {}, false), g.image()) == 0);
     const RecordedInfo info = renderer->lastRecorded();
     CHECK(info.zoom == 2.0);
     CHECK(info.mode == ViewMode::Zoom);
     CHECK(info.origin == view.origin());
 
     // Through frame(): a setView that changes only the view records again, at the new view.
-    rawreel::DisplayState state;
-    state.show(frameSet(g, 0, 1));
+    const auto feed = std::make_shared<rawreel::FrameFeed>();
+    const rawreel::FeedSubscription subscription =
+        feed->subscribe(rawreel::ViewRoles::of(rawreel::ViewRole::Display), {});
+    rawreel::ViewState state;
+    feed->show(frameSet(g, 0, 1));
     state.setView(params.view);
     state.setOverlay(params.overlay);
-    auto panned = renderer->frame(
-        frameParams(viewport, dvv::gpu::PresentEncoding::Linear, 0, false), state.snapshot());
+    auto panned =
+        renderer->frame(frameParams(viewport, dvv::gpu::PresentEncoding::Linear, 0, false),
+                        rawreel::ViewSnapshot{subscription.snapshot(), state.params()});
     REQUIRE_MESSAGE(panned, (panned ? std::string() : panned.error().describe()));
     REQUIRE(static_cast<bool>(panned->record));
     CHECK(renderer->lastRecorded().origin == view.origin());
     submit(std::move(panned->record));
-    const DisplayParams moved{.view = {ViewMode::Zoom, 4, {20, 14}, IMAGE},
-                              .overlay = {.dark = true}};
+    const ViewParams moved{.view = {ViewMode::Zoom, 4, {20, 14}, IMAGE}, .overlay = {.dark = true}};
     state.setView(moved.view);
     auto next = renderer->frame(frameParams(viewport, dvv::gpu::PresentEncoding::Linear, 1, true),
-                                state.snapshot());
+                                rawreel::ViewSnapshot{subscription.snapshot(), state.params()});
     REQUIRE_MESSAGE(next, (next ? std::string() : next.error().describe()));
     REQUIRE(static_cast<bool>(next->record));
     const auto moved_view = resolveView(moved.view, viewport, IMAGE);
@@ -609,7 +623,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
     const PixelSize tall{74, 80};
     CHECK(renderer->lastRecorded() == RecordedInfo{});
 
-    const DisplaySnapshot first_snapshot{frameSet(g, 0, 1), DARK, 1};
+    const ViewSnapshot first_snapshot = viewSnapshot(frameSet(g, 0, 1), DARK, 1);
     auto first = renderer->frame(frameParams(wide, dvv::gpu::PresentEncoding::Linear, 0, false),
                                  first_snapshot);
     REQUIRE_MESSAGE(first, (first ? std::string() : first.error().describe()));
@@ -626,8 +640,9 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
         // Hidden rulers: empty rects around the picture.
         .rulers = dvv::media::rulerRects(wide, {}, ViewTransform::fit(wide, IMAGE)),
         .pictureRecords = 1,
-        .pictureFlags = rawreel::COMPOSITE_DARK,
-        .version = 1};  // the snapshot version this record drew
+        .pictureFlags = rawreel::PICTURE_DARK,
+        .version = 1,  // the snapshot version this record drew
+        .pictureParts = {{0, 0, wide.width, wide.height}}};
     CHECK(renderer->lastRecorded() == first_info);
     submit(std::move(first->record));
 
@@ -641,7 +656,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
 
     // A new version (the next FrameSet): recorded into the same image.
     auto next = renderer->frame(frameParams(wide, dvv::gpu::PresentEncoding::Linear, 2, true),
-                                DisplaySnapshot{frameSet(g, 1, 1), DARK, 2});
+                                viewSnapshot(frameSet(g, 1, 1), DARK, 2));
     REQUIRE(next);
     REQUIRE(static_cast<bool>(next->record));
     CHECK(next->image == first->image);
@@ -650,7 +665,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
     submit(std::move(next->record));
 
     // A new extent: a new image.
-    const DisplaySnapshot second_snapshot{frameSet(g, 1, 1), DARK, 2};
+    const ViewSnapshot second_snapshot = viewSnapshot(frameSet(g, 1, 1), DARK, 2);
     auto resized = renderer->frame(frameParams(tall, dvv::gpu::PresentEncoding::Linear, 3, true),
                                    second_snapshot);
     REQUIRE(resized);
@@ -673,9 +688,9 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
 
     // The same version with a new view (a zoom): recorded again. The same params once more: the
     // same image, no commands.
-    const DisplaySnapshot zoomed{
+    const ViewSnapshot zoomed = viewSnapshot(
         frameSet(g, 1, 1),
-        DisplayParams{.view = {ViewMode::Zoom, 4, {18, 11}, IMAGE}, .overlay = {.dark = true}}, 2};
+        ViewParams{.view = {ViewMode::Zoom, 4, {18, 11}, IMAGE}, .overlay = {.dark = true}}, 2);
     auto zoom =
         renderer->frame(frameParams(tall, dvv::gpu::PresentEncoding::Linear, 5, true), zoomed);
     REQUIRE(zoom);
@@ -692,16 +707,16 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
 
     // The same version and view with only the theme changed: the picture pass records. Only the
     // cursor changed, with the rulers hidden: nothing records.
-    const DisplaySnapshot light{
+    const ViewSnapshot light = viewSnapshot(
         frameSet(g, 1, 1),
-        DisplayParams{.view = {ViewMode::Zoom, 4, {18, 11}, IMAGE}, .overlay = {.dark = false}}, 2};
+        ViewParams{.view = {ViewMode::Zoom, 4, {18, 11}, IMAGE}, .overlay = {.dark = false}}, 2);
     auto theme =
         renderer->frame(frameParams(tall, dvv::gpu::PresentEncoding::Linear, 6, true), light);
     REQUIRE(theme);
     REQUIRE(static_cast<bool>(theme->record));
     CHECK(renderer->lastRecorded().pictureRecords == 6);
     submit(std::move(theme->record));
-    DisplaySnapshot pointed{frameSet(g, 1, 1), light.params, 2};
+    ViewSnapshot pointed = viewSnapshot(frameSet(g, 1, 1), light.params, 2);
     pointed.params.cursor = dvv::media::PointD{10.5, 20.5};
     auto cursor =
         renderer->frame(frameParams(tall, dvv::gpu::PresentEncoding::Linear, 6, true), pointed);
@@ -712,7 +727,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
 
     // No frame: the background only.
     auto cleared = renderer->frame(frameParams(tall, dvv::gpu::PresentEncoding::Linear, 7, true),
-                                   DisplaySnapshot{FrameSet{}, DARK, 3});
+                                   viewSnapshot(FrameSet{}, DARK, 3));
     REQUIRE(cleared);
     REQUIRE(static_cast<bool>(cleared->record));
     CHECK(renderer->lastRecorded() ==
@@ -724,8 +739,9 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame() records only when somethi
                        .pictureDrawn = {0, 0, tall.width, tall.height},
                        .rulers = dvv::media::rulerRects(tall, {}, resolveView({}, tall, {})),
                        .pictureRecords = 7,
-                       .pictureFlags = rawreel::COMPOSITE_DARK,
-                       .version = 3});
+                       .pictureFlags = rawreel::PICTURE_DARK,
+                       .version = 3,
+                       .pictureParts = {{0, 0, tall.width, tall.height}}});
     submit(std::move(cleared->record));
 }
 
@@ -752,7 +768,8 @@ TEST_CASE_FIXTURE(CompositorTest,
     const dvv::media::ReadLease planes = hostPlanesLease(G);
     const ErrorLog errors;
     const PixelSize viewport{211, 97};
-    const FrameSet frames{.index = 0, .count = 1, .views = {planes.share()}, .epoch = 1};
+    const FrameSet frames{
+        .index = 0, .count = 1, .leases = {RoleLeases{planes.share()}}, .epoch = 1};
     const std::vector<std::byte> bytes = renderAndRead(*renderer, viewport, frames, DARK);
     std::size_t wrong = 0;
     for (std::uint32_t y = 0; y < viewport.height; ++y) {
@@ -777,7 +794,8 @@ TEST_CASE_FIXTURE(CompositorTest,
     const PixelSize viewport{211, 97};
     const auto first = makeRenderer(context(), 1);
     for (int i = 0; i < 3; ++i) {
-        const FrameSet frames{.index = 0, .count = 1, .views = {view.share()}, .epoch = 1};
+        const FrameSet frames{
+            .index = 0, .count = 1, .leases = {RoleLeases{view.share()}}, .epoch = 1};
         const std::vector<std::byte> bytes = renderAndRead(*first, viewport, frames, DARK);
         CHECK(pixelAt(bytes, viewport, 0, 0) == DARK_BG);
         CHECK(first->lastRecorded().index == -1);
@@ -788,7 +806,8 @@ TEST_CASE_FIXTURE(CompositorTest,
     // A renderer of the next epoch reports it again, once.
     const auto second = makeRenderer(context(), 2);
     for (int i = 0; i < 2; ++i) {
-        const FrameSet frames{.index = 0, .count = 1, .views = {view.share()}, .epoch = 2};
+        const FrameSet frames{
+            .index = 0, .count = 1, .leases = {RoleLeases{view.share()}}, .epoch = 2};
         [[maybe_unused]] const std::vector<std::byte> bytes =
             renderAndRead(*second, viewport, frames, DARK);
     }
@@ -815,14 +834,14 @@ TEST_CASE_FIXTURE(CompositorTest,
     }  // the FrameSet and the frame's own lease are gone; the record function holds a share
     const std::vector<dvv::media::LeaseInfo> leases = outstandingLeases();
     REQUIRE(leases.size() == 1);
-    CHECK(std::string_view(leases.front().where.file_name()).ends_with("viewport_renderer.cpp"));
+    CHECK(std::string_view(leases.front().where.file_name()).ends_with("view_renderer.cpp"));
     REQUIRE(static_cast<bool>(record));
     REQUIRE(output != nullptr);
     submit(std::move(record));
     const std::vector<std::byte> bytes = read(output);
     const HostDisplayImage shown{.width = IMAGE.width, .height = IMAGE.height, .rgba16f = host};
     CHECK(mismatches(bytes,
-                     rawreel::compositeConstants(DARK, ViewTransform::fit(IMAGE, IMAGE), {}, false),
+                     rawreel::pictureConstants(DARK, ViewTransform::fit(IMAGE, IMAGE), {}, false),
                      shown) == 0);
 }
 
@@ -831,15 +850,14 @@ TEST_CASE_FIXTURE(CompositorTest, "an sRGB-encoding presenter skips the composit
     const DisplayFrame n = displayFrame(N);
     const PixelSize viewport{211, 97};
     auto frame = renderer->frame(frameParams(viewport, dvv::gpu::PresentEncoding::Srgb, 0, false),
-                                 DisplaySnapshot{frameSet(n, 0, 1), DARK, 1});
+                                 viewSnapshot(frameSet(n, 0, 1), DARK, 1));
     REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
     REQUIRE(static_cast<bool>(frame->record));
     submit(std::move(frame->record));
     const std::vector<std::byte> bytes = read(frame->image);
-    CHECK(
-        mismatches(bytes,
-                   rawreel::compositeConstants(DARK, ViewTransform::fit(viewport, IMAGE), {}, true),
-                   n.image()) <= allowance(viewport));
+    CHECK(mismatches(bytes,
+                     rawreel::pictureConstants(DARK, ViewTransform::fit(viewport, IMAGE), {}, true),
+                     n.image()) <= allowance(viewport));
 }
 
 TEST_CASE_FIXTURE(CompositorTest, "compositor: lastRecorded() may be read while frame() records") {
@@ -871,7 +889,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: lastRecorded() may be read while 
         for (std::uint64_t i = 0; i < 200; ++i) {
             auto frame = renderer->frame(
                 frameParams(viewport, dvv::gpu::PresentEncoding::Linear, i, true),
-                DisplaySnapshot{frameSet(g, static_cast<std::int64_t>(i % 2), 1), DARK, i + 1});
+                viewSnapshot(frameSet(g, static_cast<std::int64_t>(i % 2), 1), DARK, i + 1));
             REQUIRE(frame);
             CHECK(static_cast<bool>(frame->record));  // dropped unsubmitted
         }
@@ -883,11 +901,11 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: lastRecorded() may be read while 
 
 TEST_CASE_FIXTURE(CompositorTest, "compositor: the grid matches the CPU reference") {
     // frame() on a new renderer, submitted and read back.
-    const auto draw = [this](PixelSize extent, const FrameSet& frames, const DisplayParams& params,
+    const auto draw = [this](PixelSize extent, const FrameSet& frames, const ViewParams& params,
                              dvv::gpu::PresentEncoding encoding) {
         const auto renderer = makeRenderer(context(), 1);
         auto frame = renderer->frame(frameParams(extent, encoding, 0, false),
-                                     DisplaySnapshot{frames.share(), params, 1});
+                                     viewSnapshot(frames.share(), params, 1));
         REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
         REQUIRE(static_cast<bool>(frame->record));
         submit(std::move(frame->record));
@@ -901,13 +919,12 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: the grid matches the CPU referenc
             const DisplayFrame g =
                 displayFrame("synthetic:gradient?w=64&h=48&fmt=yuv420p&frames=1", {64, 48});
             const PixelSize p{256, 192};
-            const DisplayParams params{.view = {ViewMode::Zoom, 4, {32, 24}, {64, 48}},
-                                       .overlay = testGrid(24, 4)};
+            const ViewParams params{.view = {ViewMode::Zoom, 4, {32, 24}, {64, 48}},
+                                    .overlay = testGrid(24, 4)};
             const ViewTransform view = resolveView(params.view, p, {64, 48});
             REQUIRE(view.offset() == dvv::media::PixelOffset{0, 0});
             const std::vector<std::byte> bytes = draw(p, frameSet(g, 0, 1), params, encoding);
-            const CompositeConstants constants =
-                rawreel::compositeConstants(params, view, {}, skip);
+            const PictureConstants constants = rawreel::pictureConstants(params, view, {}, skip);
             REQUIRE((constants.levelShape[2] & rawreel::LEVEL_DRAWN) != 0);
             const RegionMatch match = regionMatch(bytes, p, constants, g.image());
             MESSAGE("400 %: " << (std::size_t{p.width} * p.height) - match.exact
@@ -918,12 +935,11 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: the grid matches the CPU referenc
             const DisplayFrame g =
                 displayFrame("synthetic:gradient?w=1920&h=1080&fmt=yuv420p&frames=1", {1920, 1080});
             const PixelSize p{908, 511};
-            const DisplayParams params{.overlay = testGrid(12, 2)};
+            const ViewParams params{.overlay = testGrid(12, 2)};
             const ViewTransform view = resolveView(params.view, p, {1920, 1080});
             REQUIRE(std::abs(view.zoom() - 0.473) < 0.001);
             const std::vector<std::byte> bytes = draw(p, frameSet(g, 0, 1), params, encoding);
-            const CompositeConstants constants =
-                rawreel::compositeConstants(params, view, {}, skip);
+            const PictureConstants constants = rawreel::pictureConstants(params, view, {}, skip);
             REQUIRE((constants.levelShape[1] & rawreel::LEVEL_DRAWN) != 0);
             const RegionMatch match = regionMatch(bytes, p, constants, g.image());
             MESSAGE("Fit 47.3 %: " << (std::size_t{p.width} * p.height) - match.exact
@@ -938,15 +954,15 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: P below the strips") {
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame g = displayFrame(G);
     const PixelSize extent{211, 97};
-    DisplayParams params{.overlay = testGrid(4, 2)};
+    ViewParams params{.overlay = testGrid(4, 2)};
     auto whole = renderer->frame(frameParams(extent, dvv::gpu::PresentEncoding::Linear, 0, false),
-                                 DisplaySnapshot{frameSet(g, 0, 1), params, 1});
+                                 viewSnapshot(frameSet(g, 0, 1), params, 1));
     REQUIRE_MESSAGE(whole, (whole ? std::string() : whole.error().describe()));
     REQUIRE(static_cast<bool>(whole->record));
     CHECK(renderer->lastRecorded().picture == dvv::media::PixelRect{0, 0, 211, 97});
     submit(std::move(whole->record));
     const std::vector<std::byte> first = read(whole->image);
-    const CompositeConstants first_constants = rawreel::compositeConstants(
+    const PictureConstants first_constants = rawreel::pictureConstants(
         params, resolveView(params.view, extent, IMAGE),
         rawreel::PassRegions{.picture = {0, 0, 211, 97}, .pictureDrawn = {0, 0, 211, 97}}, false);
     CHECK(regionMatch(first, extent, first_constants, g.image()).exact ==
@@ -954,7 +970,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: P below the strips") {
 
     params.overlay.strips = {.top = 20, .left = 20};
     auto below = renderer->frame(frameParams(extent, dvv::gpu::PresentEncoding::Linear, 1, true),
-                                 DisplaySnapshot{frameSet(g, 0, 1), params, 1});
+                                 viewSnapshot(frameSet(g, 0, 1), params, 1));
     REQUIRE_MESSAGE(below, (below ? std::string() : below.error().describe()));
     REQUIRE(static_cast<bool>(below->record));
     CHECK(below->image == whole->image);
@@ -972,7 +988,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: P below the strips") {
                                         resolveView(params.view, picture.size(), IMAGE)),
                               std::nullopt, false),
                           false) == 0);
-    const CompositeConstants constants = rawreel::compositeConstants(
+    const PictureConstants constants = rawreel::pictureConstants(
         params, resolveView(params.view, picture.size(), IMAGE),
         regionsOf(extent, params.overlay, resolveView(params.view, picture.size(), IMAGE)), false);
     CHECK(regionMatch(second, extent, constants, g.image()).exact ==
@@ -983,7 +999,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: P below the strips") {
     params.overlay.strips = {};
     auto whole_again =
         renderer->frame(frameParams(extent, dvv::gpu::PresentEncoding::Linear, 2, true),
-                        DisplaySnapshot{frameSet(g, 0, 1), params, 1});
+                        viewSnapshot(frameSet(g, 0, 1), params, 1));
     REQUIRE_MESSAGE(whole_again, (whole_again ? std::string() : whole_again.error().describe()));
     REQUIRE(static_cast<bool>(whole_again->record));
     CHECK(whole_again->image == whole->image);
@@ -999,17 +1015,17 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: the grid in a P taller than wide"
     const DisplayFrame g =
         displayFrame("synthetic:gradient?w=64&h=48&fmt=yuv420p&frames=1", {64, 48});
     const PixelSize p{97, 211};
-    const DisplayParams params{.view = {ViewMode::Zoom, 4, {12, 26}, {64, 48}},
-                               .overlay = testGrid(24, 4)};
+    const ViewParams params{.view = {ViewMode::Zoom, 4, {12, 26}, {64, 48}},
+                            .overlay = testGrid(24, 4)};
     const auto renderer = makeRenderer(context(), 1);
     auto frame = renderer->frame(frameParams(p, dvv::gpu::PresentEncoding::Linear, 0, false),
-                                 DisplaySnapshot{frameSet(g, 0, 1), params, 1});
+                                 viewSnapshot(frameSet(g, 0, 1), params, 1));
     REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
     REQUIRE(static_cast<bool>(frame->record));
     submit(std::move(frame->record));
     const std::vector<std::byte> bytes = read(frame->image);
-    const CompositeConstants constants =
-        rawreel::compositeConstants(params, resolveView(params.view, p, {64, 48}), {}, false);
+    const PictureConstants constants =
+        rawreel::pictureConstants(params, resolveView(params.view, p, {64, 48}), {}, false);
     REQUIRE((constants.levelShape[2] & rawreel::LEVEL_DRAWN) != 0);
     CHECK(regionMatch(bytes, p, constants, g.image()).exact == std::size_t{p.width} * p.height);
 }
@@ -1018,7 +1034,8 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a cursor move records only the ru
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame g = displayFrame(G);
     const PixelSize extent{211, 97};
-    DisplaySnapshot snapshot{frameSet(g, 0, 1), DisplayParams{.overlay = testRulers(4)}, 1};
+    ViewSnapshot snapshot =
+        viewSnapshot(frameSet(g, 0, 1), ViewParams{.overlay = testRulers(4)}, 1);
     auto first =
         renderer->frame(frameParams(extent, dvv::gpu::PresentEncoding::Linear, 0, false), snapshot);
     REQUIRE_MESSAGE(first, (first ? std::string() : first.error().describe()));
@@ -1077,7 +1094,7 @@ struct AlphaShown {
 };
 
 // The alpha of the texels P shows at a zoom >= 1, where each pixel shows one texel unmixed.
-AlphaShown alphaShown(const CompositeConstants& k, const DisplayFrame& frame) {
+AlphaShown alphaShown(const PictureConstants& k, const DisplayFrame& frame) {
     const dvv::media::AxisView ax{
         .offset = k.offsetX, .zoom = k.zoom, .size = k.imageW, .extent = k.viewportW};
     const dvv::media::AxisView ay{
@@ -1110,10 +1127,10 @@ struct AlphaView {
 TEST_CASE_FIXTURE(CompositorTest, "compositor: alpha over the checker matches the CPU reference") {
     const DisplayFrame a = displayFrame(ALPHA_URI, ALPHA_IMAGE);
     const PixelSize p{61, 43};
-    const auto render = [&](const DisplayParams& params, dvv::gpu::PresentEncoding encoding) {
+    const auto render = [&](const ViewParams& params, dvv::gpu::PresentEncoding encoding) {
         const auto renderer = makeRenderer(context(), 1);
         auto frame = renderer->frame(frameParams(p, encoding, 0, false),
-                                     DisplaySnapshot{frameSet(a, 0, 1), params, 1});
+                                     viewSnapshot(frameSet(a, 0, 1), params, 1));
         REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
         REQUIRE(static_cast<bool>(frame->record));
         submit(std::move(frame->record));
@@ -1144,14 +1161,14 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: alpha over the checker matches th
                     CAPTURE(zoom);
                     CAPTURE(shown_view.centre.x);
                     CAPTURE(shown_view.centre.y);
-                    const DisplayParams params{
+                    const ViewParams params{
                         .view = {ViewMode::Zoom, zoom, shown_view.centre, ALPHA_IMAGE},
                         .overlay = {.dark = dark, .checkerSize = 8},
                         .alpha = alpha};
                     const ViewTransform view = resolveView(params.view, p, ALPHA_IMAGE);
-                    const CompositeConstants constants =
-                        rawreel::compositeConstants(params, view, {}, skip);
-                    REQUIRE(((constants.flags & rawreel::COMPOSITE_ALPHA) != 0) == alpha);
+                    const PictureConstants constants =
+                        rawreel::pictureConstants(params, view, {}, skip);
+                    REQUIRE(((constants.flags & rawreel::PICTURE_ALPHA) != 0) == alpha);
                     if (zoom >= 0.5) {
                         REQUIRE(constants.offsetX < 0);
                         REQUIRE(constants.offsetY < 0);
@@ -1176,13 +1193,13 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: alpha over the checker matches th
     // size; the reference with square 8 tells the sizes apart.
     for (const std::uint32_t size : {3U, 12U, 16U}) {
         CAPTURE(size);
-        const DisplayParams params{.view = {ViewMode::Zoom, 1.0, {32, 32}, ALPHA_IMAGE},
-                                   .overlay = {.checkerSize = size},
-                                   .alpha = true};
+        const ViewParams params{.view = {ViewMode::Zoom, 1.0, {32, 32}, ALPHA_IMAGE},
+                                .overlay = {.checkerSize = size},
+                                .alpha = true};
         const ViewTransform view = resolveView(params.view, p, ALPHA_IMAGE);
-        const CompositeConstants constants = rawreel::compositeConstants(params, view, {}, false);
+        const PictureConstants constants = rawreel::pictureConstants(params, view, {}, false);
         REQUIRE(constants.checkerSize == size);
-        CompositeConstants eight = constants;
+        PictureConstants eight = constants;
         eight.checkerSize = 8;
         const std::vector<std::byte> bytes = render(params, dvv::gpu::PresentEncoding::Linear);
         CHECK(mismatches(bytes, constants, a.image()) == 0);
@@ -1194,7 +1211,8 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: toggling alpha re-records only th
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame g = displayFrame(G);
     const PixelSize extent{211, 97};
-    DisplaySnapshot snapshot{frameSet(g, 0, 1), DisplayParams{.overlay = testRulers(4)}, 1};
+    ViewSnapshot snapshot =
+        viewSnapshot(frameSet(g, 0, 1), ViewParams{.overlay = testRulers(4)}, 1);
     auto first =
         renderer->frame(frameParams(extent, dvv::gpu::PresentEncoding::Linear, 0, false), snapshot);
     REQUIRE_MESSAGE(first, (first ? std::string() : first.error().describe()));
@@ -1202,7 +1220,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: toggling alpha re-records only th
     submit(std::move(first->record));
     CHECK(renderer->lastRecorded().pictureRecords == 1);
     CHECK(renderer->lastRecorded().rulerRecords == 1);
-    CHECK((renderer->lastRecorded().pictureFlags & rawreel::COMPOSITE_ALPHA) == 0);
+    CHECK((renderer->lastRecorded().pictureFlags & rawreel::PICTURE_ALPHA) == 0);
     // The same version: only the params change, on and off again.
     for (std::uint64_t i = 1; i <= 2; ++i) {
         const bool on = i == 1;
@@ -1217,7 +1235,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: toggling alpha re-records only th
         const RecordedInfo info = renderer->lastRecorded();
         CHECK(info.pictureRecords == 1 + i);
         CHECK(info.rulerRecords == 1);
-        CHECK(((info.pictureFlags & rawreel::COMPOSITE_ALPHA) != 0) == on);
+        CHECK(((info.pictureFlags & rawreel::PICTURE_ALPHA) != 0) == on);
     }
 }
 
@@ -1226,9 +1244,9 @@ TEST_CASE_FIXTURE(CompositorTest,
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame g = displayFrame(G);
     const PixelSize extent{211, 97};
-    DisplaySnapshot snapshot{
+    ViewSnapshot snapshot = viewSnapshot(
         frameSet(g, 0, 1),
-        DisplayParams{.overlay = testRulers(4), .cursor = dvv::media::PointD{80.5, 50.5}}, 1};
+        ViewParams{.overlay = testRulers(4), .cursor = dvv::media::PointD{80.5, 50.5}}, 1);
     auto first =
         renderer->frame(frameParams(extent, dvv::gpu::PresentEncoding::Linear, 0, false), snapshot);
     REQUIRE_MESSAGE(first, (first ? std::string() : first.error().describe()));
@@ -1259,7 +1277,8 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a dropped frame records both pass
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame g = displayFrame(G);
     const PixelSize extent{211, 97};
-    const DisplaySnapshot snapshot{frameSet(g, 0, 1), DisplayParams{.overlay = testRulers(4)}, 1};
+    const ViewSnapshot snapshot =
+        viewSnapshot(frameSet(g, 0, 1), ViewParams{.overlay = testRulers(4)}, 1);
     for (std::uint64_t i = 0; i < 2; ++i) {
         auto frame = renderer->frame(
             frameParams(extent, dvv::gpu::PresentEncoding::Linear, i, false), snapshot);
@@ -1276,7 +1295,8 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: each pass records on its own inpu
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame g = displayFrame(G);
     const PixelSize extent{211, 97};
-    DisplaySnapshot snapshot{frameSet(g, 0, 1), DisplayParams{.overlay = testRulers(4)}, 1};
+    ViewSnapshot snapshot =
+        viewSnapshot(frameSet(g, 0, 1), ViewParams{.overlay = testRulers(4)}, 1);
     dvv::gpu::PresentEncoding encoding = dvv::gpu::PresentEncoding::Linear;
     std::uint64_t number = 0;
     const auto step = [&](std::uint64_t pictures, std::uint64_t rulers) {
@@ -1290,9 +1310,9 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: each pass records on its own inpu
     };
     step(1, 1);
     // Playback: the next FrameSet records the picture pass only.
-    snapshot = DisplaySnapshot{frameSet(g, 1, 1), snapshot.params, 2};
+    snapshot = viewSnapshot(frameSet(g, 1, 1), snapshot.params, 2);
     step(2, 1);
-    snapshot = DisplaySnapshot{frameSet(g, 2, 1), snapshot.params, 3};
+    snapshot = viewSnapshot(frameSet(g, 2, 1), snapshot.params, 3);
     step(3, 1);
     // The encode rule alone switches: both passes.
     encoding = dvv::gpu::PresentEncoding::Srgb;
@@ -1321,7 +1341,8 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: rulers hidden dispatch no ruler p
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame g = displayFrame(G);
     const PixelSize extent{211, 97};
-    DisplaySnapshot snapshot{frameSet(g, 0, 1), DisplayParams{.overlay = testGrid(4, 2)}, 1};
+    ViewSnapshot snapshot =
+        viewSnapshot(frameSet(g, 0, 1), ViewParams{.overlay = testGrid(4, 2)}, 1);
     for (std::uint64_t i = 0; i < 3; ++i) {
         snapshot.params.cursor = dvv::media::PointD{20.5 + (30.0 * static_cast<double>(i)), 40.5};
         auto frame = renderer->frame(
@@ -1337,19 +1358,18 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: rulers hidden dispatch no ruler p
 }
 
 TEST_CASE_FIXTURE(CompositorTest, "compositor: the ruler pass matches its CPU reference") {
-    const auto draw = [this](PixelSize extent, const FrameSet& frames, const DisplayParams& params,
+    const auto draw = [this](PixelSize extent, const FrameSet& frames, const ViewParams& params,
                              dvv::gpu::PresentEncoding encoding) {
         const auto renderer = makeRenderer(context(), 1);
         auto frame = renderer->frame(frameParams(extent, encoding, 0, false),
-                                     DisplaySnapshot{frames.share(), params, 1});
+                                     viewSnapshot(frames.share(), params, 1));
         REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
         REQUIRE(static_cast<bool>(frame->record));
         submit(std::move(frame->record));
         return read(frame->image);
     };
     // The bands as frame() builds them: the cursor mapped in P.
-    const auto bands = [](PixelSize extent, const DisplayParams& params, PixelSize image,
-                          bool skip) {
+    const auto bands = [](PixelSize extent, const ViewParams& params, PixelSize image, bool skip) {
         const dvv::media::PixelRect p = dvv::media::pictureRegion(extent, params.overlay.strips);
         const ViewTransform view = resolveView(params.view, p.size(), image);
         const std::optional<dvv::media::ImagePixel> cursor =
@@ -1370,9 +1390,9 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: the ruler pass matches its CPU re
                 const PixelSize extent{286, 222};  // P = 256 x 192
                 for (const std::uint32_t width : {1U, 2U}) {
                     CAPTURE(width);
-                    DisplayParams params{.view = {ViewMode::Zoom, 4, {32, 24}, {64, 48}},
-                                         .overlay = testRulers(24),
-                                         .cursor = dvv::media::PointD{160.5, 80.5}};
+                    ViewParams params{.view = {ViewMode::Zoom, 4, {32, 24}, {64, 48}},
+                                      .overlay = testRulers(24),
+                                      .cursor = dvv::media::PointD{160.5, 80.5}};
                     params.overlay.dark = dark;
                     params.overlay.tickWidth = width;
                     const auto constants = bands(extent, params, {64, 48}, skip);
@@ -1402,8 +1422,8 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: the ruler pass matches its CPU re
                 const DisplayFrame g = displayFrame(
                     "synthetic:gradient?w=1920&h=1080&fmt=yuv420p&frames=1", {1920, 1080});
                 const PixelSize extent{938, 541};  // P = 908 x 511
-                DisplayParams params{.overlay = testRulers(12),
-                                     .cursor = dvv::media::PointD{500.5, 300.5}};
+                ViewParams params{.overlay = testRulers(12),
+                                  .cursor = dvv::media::PointD{500.5, 300.5}};
                 params.overlay.dark = dark;
                 const auto constants = bands(extent, params, {1920, 1080}, skip);
                 REQUIRE((constants[1].flags & rawreel::RULER_TICKS) != 0);
@@ -1418,9 +1438,9 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: the ruler pass matches its CPU re
                 // H = {115, 90, 100, 50}, the rest of the bands is the background.
                 const DisplayFrame g = displayFrame(HUG_IMAGE_URI, HUG_IMAGE);
                 const PixelSize extent{300, 200};
-                DisplayParams params{.view = {ViewMode::Zoom, 1, {50, 25}, HUG_IMAGE},
-                                     .overlay = testRulers(24),
-                                     .cursor = dvv::media::PointD{150.5, 110.5}};
+                ViewParams params{.view = {ViewMode::Zoom, 1, {50, 25}, HUG_IMAGE},
+                                  .overlay = testRulers(24),
+                                  .cursor = dvv::media::PointD{150.5, 110.5}};
                 params.overlay.dark = dark;
                 const auto constants = bands(extent, params, HUG_IMAGE, skip);
                 REQUIRE(constants[0].rulerEdge == 90);
@@ -1458,14 +1478,14 @@ TEST_CASE_FIXTURE(CompositorTest,
             const bool skip = encoding == dvv::gpu::PresentEncoding::Srgb;
             CAPTURE(c.name);
             CAPTURE(skip);
-            const DisplayParams params{.view = c.view, .overlay = overlay};
+            const ViewParams params{.view = c.view, .overlay = overlay};
             const dvv::media::PixelRect p = dvv::media::pictureRegion(extent, overlay.strips);
             const ViewTransform view = resolveView(params.view, p.size(), HUG_IMAGE);
             const rawreel::PassRegions regions = regionsOf(extent, overlay, view);
             REQUIRE(regions.pictureDrawn != regions.picture);
             const auto renderer = makeRenderer(context(), 1);
             auto frame = renderer->frame(frameParams(extent, encoding, 0, false),
-                                         DisplaySnapshot{frameSet(g, 0, 1), params, 1});
+                                         viewSnapshot(frameSet(g, 0, 1), params, 1));
             REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
             REQUIRE(static_cast<bool>(frame->record));
             // No column of [P.x, H.x) and no row of [P.y, H.y) is dispatched.
@@ -1473,8 +1493,8 @@ TEST_CASE_FIXTURE(CompositorTest,
             CHECK(renderer->lastRecorded().rulers == regions.rulers);
             submit(std::move(frame->record));
             const std::vector<std::byte> bytes = read(frame->image);
-            const CompositeConstants constants =
-                rawreel::compositeConstants(params, view, regions, skip);
+            const PictureConstants constants =
+                rawreel::pictureConstants(params, view, regions, skip);
             for (std::size_t l = 0; l < 3; ++l) {
                 REQUIRE((constants.levelShape[l] & rawreel::LEVEL_DRAWN) != 0);
             }
@@ -1503,12 +1523,12 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: the reserved space is the picture
         for (const bool dark : {false, true}) {
             CAPTURE(encoding == dvv::gpu::PresentEncoding::Srgb);
             CAPTURE(dark);
-            DisplayParams params{.view = {ViewMode::Zoom, 1, {50, 25}, HUG_IMAGE},
-                                 .overlay = testRulers(24)};
+            ViewParams params{.view = {ViewMode::Zoom, 1, {50, 25}, HUG_IMAGE},
+                              .overlay = testRulers(24)};
             params.overlay.dark = dark;
             const auto renderer = makeRenderer(context(), 1);
             auto frame = renderer->frame(frameParams(extent, encoding, 0, false),
-                                         DisplaySnapshot{frameSet(g, 0, 1), params, 1});
+                                         viewSnapshot(frameSet(g, 0, 1), params, 1));
             REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
             REQUIRE(static_cast<bool>(frame->record));
             REQUIRE(renderer->lastRecorded().rulers.hugged ==
@@ -1535,10 +1555,9 @@ TEST_CASE_FIXTURE(CompositorTest,
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame g = displayFrame(G);
     const PixelSize extent{211, 97};
-    DisplaySnapshot snapshot{
+    ViewSnapshot snapshot = viewSnapshot(
         frameSet(g, 0, 1),
-        DisplayParams{.view = {ViewMode::Zoom, 8, {18.5, 11.5}, IMAGE}, .overlay = testRulers(4)},
-        1};
+        ViewParams{.view = {ViewMode::Zoom, 8, {18.5, 11.5}, IMAGE}, .overlay = testRulers(4)}, 1);
     std::uint64_t number = 0;
     const auto step = [&](std::uint64_t pictures, std::uint64_t rulers) {
         auto frame = renderer->frame(
@@ -1555,7 +1574,7 @@ TEST_CASE_FIXTURE(CompositorTest,
     snapshot.params.view.centre = {14.5, 11.5};
     step(2, 2);
     // A new frame with the same view: the picture pass alone.
-    snapshot = DisplaySnapshot{frameSet(g, 1, 1), snapshot.params, 2};
+    snapshot = viewSnapshot(frameSet(g, 1, 1), snapshot.params, 2);
     step(3, 2);
 }
 
@@ -1566,17 +1585,16 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a new frame leaves the hugging ru
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame g = displayFrame(HUG_IMAGE_URI, HUG_IMAGE);
     const PixelSize extent{300, 200};
-    DisplaySnapshot snapshot{
+    ViewSnapshot snapshot = viewSnapshot(
         frameSet(g, 0, 1),
-        DisplayParams{.view = {ViewMode::Zoom, 1, {50, 25}, HUG_IMAGE}, .overlay = testRulers(24)},
-        1};
+        ViewParams{.view = {ViewMode::Zoom, 1, {50, 25}, HUG_IMAGE}, .overlay = testRulers(24)}, 1);
     auto first =
         renderer->frame(frameParams(extent, dvv::gpu::PresentEncoding::Linear, 0, false), snapshot);
     REQUIRE_MESSAGE(first, (first ? std::string() : first.error().describe()));
     REQUIRE(static_cast<bool>(first->record));
     REQUIRE(renderer->lastRecorded().rulers.hugged == dvv::media::PixelRect{115, 90, 100, 50});
     submit(std::move(first->record));
-    snapshot = DisplaySnapshot{frameSet(g, 1, 1), snapshot.params, 2};
+    snapshot = viewSnapshot(frameSet(g, 1, 1), snapshot.params, 2);
     auto next =
         renderer->frame(frameParams(extent, dvv::gpu::PresentEncoding::Linear, 1, true), snapshot);
     REQUIRE(next);
@@ -1603,11 +1621,12 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a cursor move dispatches only the
         const bool skip = encoding == dvv::gpu::PresentEncoding::Srgb;
         CAPTURE(skip);
         const auto renderer = makeRenderer(context(), 1);
-        DisplaySnapshot snapshot{frameSet(g, 0, 1),
-                                 DisplayParams{.view = {ViewMode::Zoom, 1, {50, 25}, HUG_IMAGE},
-                                               .overlay = testRulers(24),
-                                               .cursor = dvv::media::PointD{120.5, 95.5}},
-                                 1};
+        ViewSnapshot snapshot =
+            viewSnapshot(frameSet(g, 0, 1),
+                         ViewParams{.view = {ViewMode::Zoom, 1, {50, 25}, HUG_IMAGE},
+                                    .overlay = testRulers(24),
+                                    .cursor = dvv::media::PointD{120.5, 95.5}},
+                         1);
         auto first = renderer->frame(frameParams(extent, encoding, 0, false), snapshot);
         REQUIRE_MESSAGE(first, (first ? std::string() : first.error().describe()));
         REQUIRE(static_cast<bool>(first->record));
@@ -1688,11 +1707,11 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a cursor move on a 4K output disp
     const PixelSize extent{3840, 2160};
     rawreel::OverlayParams overlay = testRulers(24);
     overlay.strips = {.top = 60, .left = 60};
-    DisplaySnapshot snapshot{frameSet(g, 0, 1),
-                             DisplayParams{.view = {ViewMode::Zoom, 1, {960, 540}, CLIP},
-                                           .overlay = overlay,
-                                           .cursor = dvv::media::PointD{1500.5, 1000.5}},
-                             1};
+    ViewSnapshot snapshot = viewSnapshot(frameSet(g, 0, 1),
+                                         ViewParams{.view = {ViewMode::Zoom, 1, {960, 540}, CLIP},
+                                                    .overlay = overlay,
+                                                    .cursor = dvv::media::PointD{1500.5, 1000.5}},
+                                         1);
     const auto renderer = makeRenderer(context(), 1);
     const auto threads = [](const std::array<dvv::media::PixelRect, 2>& rects) {
         std::uint64_t count = 0;
@@ -1734,7 +1753,8 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: an extent smaller than the strips
     // pictureRegion's 0-wide case is dvv-media's test.
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame g = displayFrame(G);
-    const DisplaySnapshot snapshot{frameSet(g, 0, 1), DisplayParams{.overlay = testRulers(4)}, 1};
+    const ViewSnapshot snapshot =
+        viewSnapshot(frameSet(g, 0, 1), ViewParams{.overlay = testRulers(4)}, 1);
     const PixelSize small{8, 8};
     auto shrunk =
         renderer->frame(frameParams(small, dvv::gpu::PresentEncoding::Linear, 0, true), snapshot);
@@ -1799,7 +1819,8 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a new frame does not rebuild the 
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame g = displayFrame(G);
     const PixelSize extent{211, 97};
-    DisplaySnapshot snapshot{frameSet(g, 0, 1), DisplayParams{.overlay = testRulers(4)}, 1};
+    ViewSnapshot snapshot =
+        viewSnapshot(frameSet(g, 0, 1), ViewParams{.overlay = testRulers(4)}, 1);
     std::uint64_t number = 0;
     const auto step = [&](std::uint64_t pictures, std::uint64_t lines) {
         auto frame = renderer->frame(
@@ -1813,14 +1834,13 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a new frame does not rebuild the 
     };
     step(1, 1);
     for (std::uint64_t i = 2; i < 5; ++i) {  // playback: the same view, a new FrameSet
-        snapshot =
-            DisplaySnapshot{frameSet(g, static_cast<std::int64_t>(i), 1), snapshot.params, i};
+        snapshot = viewSnapshot(frameSet(g, static_cast<std::int64_t>(i), 1), snapshot.params, i);
         step(i, 1);
     }
     // A cursor move records the ruler pass alone, and a frame after it keeps the table.
     snapshot.params.cursor = dvv::media::PointD{100.5, 50.5};
     step(4, 1);
-    snapshot.version = 5;
+    snapshot.feed.version = 5;
     step(5, 1);
 }
 
@@ -1828,9 +1848,9 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: the line table is rebuilt when it
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame g = displayFrame(G);
     PixelSize extent{211, 97};
-    DisplaySnapshot snapshot{
+    ViewSnapshot snapshot = viewSnapshot(
         frameSet(g, 0, 1),
-        DisplayParams{.view = {ViewMode::Zoom, 8, {18, 11}, IMAGE}, .overlay = testGrid(4, 2)}, 1};
+        ViewParams{.view = {ViewMode::Zoom, 8, {18, 11}, IMAGE}, .overlay = testGrid(4, 2)}, 1);
     std::uint64_t number = 0;
     bool completed = false;
     // Each step shows a new FrameSet, so the picture pass records whenever P is not empty.
@@ -1845,7 +1865,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: the line table is rebuilt when it
         }
         CHECK(renderer->lastRecorded().pictureRecords == pictures);
         CHECK(renderer->lastRecorded().linePasses == lines);
-        ++snapshot.version;
+        ++snapshot.feed.version;
         return frame->image;
     };
     step(1, 1);
@@ -1860,18 +1880,18 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: the line table is rebuilt when it
             displayFrame("synthetic:gradient?w=42&h=23&fmt=yuv420p&frames=1", narrow_size);
         const DisplayFrame wide =
             displayFrame("synthetic:gradient?w=44&h=23&fmt=yuv420p&frames=1", wide_size);
-        snapshot.frames = frameSet(narrow, 1, 1);
+        snapshot.feed.frames = frameSet(narrow, 1, 1);
         snapshot.params.view = {ViewMode::Zoom, 5, {21, 11}, narrow_size};
         step(3, 2);
         const ViewTransform narrow_view = resolveView(snapshot.params.view, extent, narrow_size);
-        snapshot.frames = frameSet(wide, 2, 1);
+        snapshot.feed.frames = frameSet(wide, 2, 1);
         snapshot.params.view.image = wide_size;  // the zoom and the centre stay
         const ViewTransform wide_view = resolveView(snapshot.params.view, extent, wide_size);
         REQUIRE(wide_view.offset() == narrow_view.offset());
         REQUIRE(narrow_view.offset().x == 0);
         const auto image = step(4, 3);
-        const CompositeConstants constants =
-            rawreel::compositeConstants(snapshot.params, wide_view, {}, false);
+        const PictureConstants constants =
+            rawreel::pictureConstants(snapshot.params, wide_view, {}, false);
         REQUIRE((constants.levelShape[2] & rawreel::LEVEL_DRAWN) != 0);
         const RegionMatch match = regionMatch(read(image), extent, constants, wide.image());
         CHECK(match.exact == std::size_t{extent.width} * extent.height);
@@ -1913,9 +1933,9 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: the line table is rebuilt when it
         step(4, 2);
     }
     SUBCASE("a FrameSet of another epoch") {
-        snapshot.frames = frameSet(g, 1, 2);  // the background only
+        snapshot.feed.frames = frameSet(g, 1, 2);  // the background only
         step(3, 1);
-        snapshot.frames = frameSet(g, 2, 1);
+        snapshot.feed.frames = frameSet(g, 2, 1);
         step(4, 2);
     }
     SUBCASE("an empty P") {
@@ -1935,23 +1955,23 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a colour or opacity change keeps 
         const bool skip = encoding == dvv::gpu::PresentEncoding::Srgb;
         CAPTURE(skip);
         const auto renderer = makeRenderer(context(), 1);
-        DisplaySnapshot snapshot{frameSet(g, 0, 1),
-                                 DisplayParams{.view = {ViewMode::Zoom, 4, {32, 24}, {64, 48}},
-                                               .overlay = testGrid(24, 4)},
-                                 1};
+        ViewSnapshot snapshot = viewSnapshot(
+            frameSet(g, 0, 1),
+            ViewParams{.view = {ViewMode::Zoom, 4, {32, 24}, {64, 48}}, .overlay = testGrid(24, 4)},
+            1);
         std::uint64_t number = 0;
         const auto step = [&](std::uint64_t pictures, std::uint64_t lines) {
             auto frame = renderer->frame(frameParams(p, encoding, number, number != 0), snapshot);
             ++number;
-            ++snapshot.version;
+            ++snapshot.feed.version;
             REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
             REQUIRE(static_cast<bool>(frame->record));
             submit(std::move(frame->record));
             CHECK(renderer->lastRecorded().pictureRecords == pictures);
             CHECK(renderer->lastRecorded().linePasses == lines);
             const ViewTransform view = resolveView(snapshot.params.view, p, {64, 48});
-            const CompositeConstants constants =
-                rawreel::compositeConstants(snapshot.params, view, {}, skip);
+            const PictureConstants constants =
+                rawreel::pictureConstants(snapshot.params, view, {}, skip);
             REQUIRE((constants.levelShape[2] & rawreel::LEVEL_DRAWN) != 0);
             const RegionMatch match = regionMatch(read(frame->image), p, constants, g.image());
             CHECK(match.exact == std::size_t{p.width} * p.height);
@@ -1975,23 +1995,23 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: the cached line table draws the s
         const bool skip = encoding == dvv::gpu::PresentEncoding::Srgb;
         CAPTURE(skip);
         const auto renderer = makeRenderer(context(), 1);
-        DisplaySnapshot snapshot{frameSet(g, 0, 1),
-                                 DisplayParams{.view = {ViewMode::Zoom, 4, {32, 24}, {64, 48}},
-                                               .overlay = testGrid(24, 4)},
-                                 1};
+        ViewSnapshot snapshot = viewSnapshot(
+            frameSet(g, 0, 1),
+            ViewParams{.view = {ViewMode::Zoom, 4, {32, 24}, {64, 48}}, .overlay = testGrid(24, 4)},
+            1);
         std::uint64_t number = 0;
         const auto step = [&](std::uint64_t lines) {
             auto frame = renderer->frame(frameParams(p, encoding, number, number != 0), snapshot);
             ++number;
-            ++snapshot.version;
+            ++snapshot.feed.version;
             REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
             REQUIRE(static_cast<bool>(frame->record));
             submit(std::move(frame->record));
             CHECK(renderer->lastRecorded().pictureRecords == number);
             CHECK(renderer->lastRecorded().linePasses == lines);
             const ViewTransform view = resolveView(snapshot.params.view, p, {64, 48});
-            const CompositeConstants constants =
-                rawreel::compositeConstants(snapshot.params, view, {}, skip);
+            const PictureConstants constants =
+                rawreel::pictureConstants(snapshot.params, view, {}, skip);
             const RegionMatch match = regionMatch(read(frame->image), p, constants, g.image());
             CHECK(match.exact == std::size_t{p.width} * p.height);
         };
@@ -2041,7 +2061,8 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: glyph strip uploads") {
     const auto renderer = makeRenderer(context(), 1);
     const DisplayFrame g = displayFrame(G);
     const PixelSize extent{211, 97};
-    DisplaySnapshot snapshot{frameSet(g, 0, 1), DisplayParams{.overlay = testRulers(4)}, 1};
+    ViewSnapshot snapshot =
+        viewSnapshot(frameSet(g, 0, 1), ViewParams{.overlay = testRulers(4)}, 1);
     snapshot.params.overlay.numbers = true;
     snapshot.params.overlay.glyphs = syntheticStrip(0);
     std::uint64_t number = 0;
@@ -2141,14 +2162,15 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a glyph strip that fails to uploa
     dvv::Logger::instance().addSink(warnings, dvv::LogLevel::Warn);
     const DisplayFrame g = displayFrame(G);
     const PixelSize extent{211, 97};
-    DisplaySnapshot snapshot{frameSet(g, 0, 1), DisplayParams{.overlay = testRulers(4)}, 1};
+    ViewSnapshot snapshot =
+        viewSnapshot(frameSet(g, 0, 1), ViewParams{.overlay = testRulers(4)}, 1);
     snapshot.params.overlay.numbers = true;
     snapshot.params.overlay.glyphs = std::make_shared<const dvv::gpu::GlyphStrip>();
     // A fresh renderer's frame of `params` at the last cursor below, read back.
-    const auto drawn = [&](const DisplayParams& params) {
+    const auto drawn = [&](const ViewParams& params) {
         const auto fresh = makeRenderer(context(), 1);
         auto frame = fresh->frame(frameParams(extent, dvv::gpu::PresentEncoding::Linear, 0, false),
-                                  DisplaySnapshot{frameSet(g, 0, 1), params, 1});
+                                  viewSnapshot(frameSet(g, 0, 1), params, 1));
         REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
         REQUIRE(static_cast<bool>(frame->record));
         submit(std::move(frame->record));
@@ -2171,10 +2193,10 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a glyph strip that fails to uploa
         last = read(frame->image);
     }
     // The numbers cleared: the pixels of a frame with the numbers off, which a strip changes.
-    DisplayParams plain = snapshot.params;
+    ViewParams plain = snapshot.params;
     plain.overlay.numbers = false;
     CHECK(last == drawn(plain));
-    DisplayParams labelled = snapshot.params;
+    ViewParams labelled = snapshot.params;
     labelled.overlay.glyphs = syntheticStrip(0);
     CHECK(last != drawn(labelled));
     // Another strip that fails: tried, and warned, once.
@@ -2205,7 +2227,8 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a dropped glyph upload is never b
     for (const std::string_view between : {"hidden", "no image", "failed upload"}) {
         CAPTURE(between);
         const auto renderer = makeRenderer(context(), 1);
-        DisplaySnapshot snapshot{frameSet(g, 0, 1), DisplayParams{.overlay = testRulers(4)}, 1};
+        ViewSnapshot snapshot =
+            viewSnapshot(frameSet(g, 0, 1), ViewParams{.overlay = testRulers(4)}, 1);
         snapshot.params.overlay.numbers = true;
         snapshot.params.overlay.glyphs = syntheticStrip(0);
         std::uint64_t number = 0;
@@ -2227,7 +2250,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a dropped glyph upload is never b
         if (between == "hidden") {
             snapshot.params.overlay.strips = {};
         } else if (between == "no image") {
-            snapshot.frames = FrameSet{};
+            snapshot.feed.frames = FrameSet{};
         } else {
             snapshot.params.overlay.glyphs = std::make_shared<const dvv::gpu::GlyphStrip>();
         }
@@ -2237,7 +2260,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: a dropped glyph upload is never b
         CHECK(renderer->lastRecorded().glyphUploads == 2);
         CHECK(renderer->glyphImage() == nullptr);
 
-        snapshot.frames = frameSet(g, 0, 1);
+        snapshot.feed.frames = frameSet(g, 0, 1);
         snapshot.params.overlay.strips = testRulers(4).strips;
         snapshot.params.overlay.glyphs = strip;
         dvv::gpu::PresentFrame back = next(true);
@@ -2348,19 +2371,18 @@ unsigned labelKinds(const rawreel::RulerConstants& constants, std::uint32_t adva
 }  // namespace
 
 TEST_CASE_FIXTURE(CompositorTest, "compositor: ruler numbers match the reference") {
-    const auto draw = [this](PixelSize extent, const FrameSet& frames, const DisplayParams& params,
+    const auto draw = [this](PixelSize extent, const FrameSet& frames, const ViewParams& params,
                              dvv::gpu::PresentEncoding encoding) {
         const auto renderer = makeRenderer(context(), 1);
         auto frame = renderer->frame(frameParams(extent, encoding, 0, false),
-                                     DisplaySnapshot{frames.share(), params, 1});
+                                     viewSnapshot(frames.share(), params, 1));
         REQUIRE_MESSAGE(frame, (frame ? std::string() : frame.error().describe()));
         REQUIRE(static_cast<bool>(frame->record));
         submit(std::move(frame->record));
         return read(frame->image);
     };
     // The bands as frame() builds them: the cursor mapped in P.
-    const auto bands = [](PixelSize extent, const DisplayParams& params, PixelSize image,
-                          bool skip) {
+    const auto bands = [](PixelSize extent, const ViewParams& params, PixelSize image, bool skip) {
         const dvv::media::PixelRect p = dvv::media::pictureRegion(extent, params.overlay.strips);
         const ViewTransform view = resolveView(params.view, p.size(), image);
         const std::optional<dvv::media::ImagePixel> cursor =
@@ -2475,13 +2497,12 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: ruler numbers match the reference
                     CAPTURE(skip);
                     CAPTURE(dark);
                     CAPTURE(edge);
-                    DisplayParams params{
-                        .view = {ViewMode::Zoom,
-                                 scene.zoom,
-                                 {scene.image.width / 2.0, scene.image.height / 2.0},
-                                 scene.image},
-                        .overlay = testRulers(scene.zoom < 1 ? 8.0F : 24.0F),
-                        .cursor = scene.cursor};
+                    ViewParams params{.view = {ViewMode::Zoom,
+                                               scene.zoom,
+                                               {scene.image.width / 2.0, scene.image.height / 2.0},
+                                               scene.image},
+                                      .overlay = testRulers(scene.zoom < 1 ? 8.0F : 24.0F),
+                                      .cursor = scene.cursor};
                     params.overlay.dark = dark;
                     params.overlay.numbers = true;
                     params.overlay.glyphs = strip;
@@ -2496,7 +2517,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: ruler numbers match the reference
                     const auto constants = bands(extent, params, scene.image, skip);
                     for (const rawreel::RulerConstants& band : constants) {
                         REQUIRE((band.flags & rawreel::RULER_NUMBERS) != 0);
-                        REQUIRE(band.labelBand == 10);
+                        REQUIRE(rawreel::labelBand(band) == 10);
                         REQUIRE(((band.flags & rawreel::RULER_TICKS) != 0) == scene.ticks);
                     }
                     // The scene still shows the labels it is for.
@@ -2592,22 +2613,39 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame cost (manual)") {
     for (const PixelSize extent : {PixelSize{1920, 1080}, PixelSize{3840, 2160}}) {
         const auto renderer = makeRenderer(context(), 1);
         const dvv::media::ViewRequest view{ViewMode::Zoom, 1, {1920, 1080}, PICTURE};
-        const CompositeConstants constants = rawreel::compositeConstants(
-            rawreel::DisplayParams{.overlay = grid}, resolveView(view, extent, PICTURE), {}, false);
+        const PictureConstants constants = rawreel::pictureConstants(
+            rawreel::ViewParams{.overlay = grid}, resolveView(view, extent, PICTURE), {}, false);
         for (std::size_t l = 0; l < rawreel::GRID_LEVELS; ++l) {
             REQUIRE((constants.levelShape[l] & rawreel::LEVEL_DRAWN) != 0);
         }
         std::uint64_t version = 0;
         std::uint64_t number = 0;
-        const auto measure = [&](const rawreel::OverlayParams& overlay, bool new_frame) {
-            DisplaySnapshot snapshot{frameSet(g, 0, 1),
-                                     DisplayParams{.view = view, .overlay = overlay}, ++version};
+        // `pin`: a pin marker (picture.slang plus the marker pass); `move_pin`: it moves one pixel
+        // per frame; `outline`: also an outline around the pin, as the main view draws it while
+        // the Zoom window shows.
+        const auto measure = [&](const rawreel::OverlayParams& overlay, bool new_frame,
+                                 bool pin = false, bool move_pin = false, bool outline = false) {
+            rawreel::MarkerParams markers;
+            if (pin) {
+                markers.pin = dvv::media::ImagePixel{.x = 1900, .y = 1060};
+            }
+            if (outline) {
+                markers.outline =
+                    rawreel::ImageRect{.x = 1880, .y = 1050, .width = 40, .height = 20};
+            }
+            ViewSnapshot snapshot = viewSnapshot(
+                frameSet(g, 0, 1), ViewParams{.view = view, .overlay = overlay, .markers = markers},
+                ++version);
             std::vector<double> ms;
             std::uint64_t pictures = 0;
             std::uint64_t bands = 0;
             for (std::size_t i = 0; i < WARM_UP + SAMPLES; ++i) {
                 if (new_frame) {
-                    snapshot.version = ++version;
+                    snapshot.feed.version = ++version;
+                }
+                if (move_pin) {
+                    snapshot.params.markers.pin = dvv::media::ImagePixel{
+                        .x = 1900 + static_cast<std::uint32_t>(i % 2), .y = 1060};
                 }
                 snapshot.params.cursor =
                     dvv::media::PointD{100.5 + (7.0 * static_cast<double>(i % 100)), 200.5};
@@ -2623,6 +2661,7 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame cost (manual)") {
                 if (i >= WARM_UP) {
                     const RecordedInfo after = renderer->lastRecorded();
                     pictures += after.pictureRecords - before.pictureRecords;
+                    pictures += after.markerRecords - before.markerRecords;
                     bands += after.rulerRecords - before.rulerRecords;
                     ms.push_back(std::chrono::duration<double, std::milli>(stop - start).count());
                 }
@@ -2650,7 +2689,104 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: frame cost (manual)") {
         print("full", measure(rulers, true));
         print("cursor-only", measure(rulers, false));
         print("cursor-only, numbers", measure(numbers, false));
+        print("full, pin", measure(rulers, true, true));
+        print("full, pin + outline", measure(rulers, true, true, false, true));
+        print("cursor-only, pin", measure(rulers, false, true));
+        print("pin move", measure(rulers, false, true, true));
     }
+    static_cast<void>(std::fflush(stdout));
+}
+
+// Wall time per frame as above, for the two inspector costs of the spec's performance acceptance.
+// "zoom 900 pt, values": the Zoom window's picture, 1800 x 1800 backing pixels (900 pt at scale 2),
+// 150 backing pixels per image pixel, the values and the cell lines on, a pin, a new frame each
+// time (budget 0.3 ms over "empty"). "4K, padding check": the main view of a 4K yuv420p10le frame
+// with its Raw view, the check off and on (budget 0.5 ms for the difference). Prints to stdout;
+// RAWREEL_MEASURE_FRAMES=1 runs it.
+TEST_CASE_FIXTURE(CompositorTest, "compositor: frame cost, Zoom view and padding check (manual)") {
+    if (dvv::getEnvironment("RAWREEL_MEASURE_FRAMES").value_or("") != "1") {
+        MESSAGE("skipped: set RAWREEL_MEASURE_FRAMES=1");
+        return;
+    }
+    constexpr PixelSize PICTURE{3840, 2160};
+    constexpr std::size_t WARM_UP = 20;
+    constexpr std::size_t SAMPLES = 200;
+    const auto median_p95 = [](std::vector<double> ms) {
+        std::ranges::sort(ms);
+        return std::array<double, 2>{ms[ms.size() / 2], ms[(ms.size() * 95) / 100]};
+    };
+    rawreel::testing::GpuTestEnvironment env = rawreel::testing::makeGpuTestEnvironment();
+    const std::optional<dvv::media::FormatId> format = dvv::media::findFormat("yuv420p10le");
+    REQUIRE(format.has_value());
+    const rawreel::testing::InspectFrame inspect =
+        rawreel::testing::openInspectFrame(env, format.value_or(dvv::media::FormatId{}), PICTURE);
+    const auto renderer = makeRenderer(inspect.context, inspect.frames.epoch);
+    const auto measure = [&](PixelSize extent, const ViewParams& params) {
+        ViewSnapshot snapshot = viewSnapshot(inspect.frames.share(), params, 1);
+        std::vector<double> ms;
+        for (std::size_t i = 0; i < WARM_UP + SAMPLES; ++i) {
+            snapshot.feed.version = i + 2;
+            const auto start = std::chrono::steady_clock::now();
+            auto frame = renderer->frame(
+                frameParams(extent, dvv::gpu::PresentEncoding::Linear, i, true), snapshot);
+            REQUIRE(frame);
+            REQUIRE(static_cast<bool>(frame->record));
+            auto done = rawreel::testing::submitAndWait(*inspect.context, *env.cpu,
+                                                        std::move(frame->record));
+            REQUIRE(done);
+            const auto stop = std::chrono::steady_clock::now();
+            if (i >= WARM_UP) {
+                ms.push_back(std::chrono::duration<double, std::milli>(stop - start).count());
+            }
+        }
+        return median_p95(std::move(ms));
+    };
+    std::vector<double> empty;
+    for (std::size_t i = 0; i < WARM_UP + SAMPLES; ++i) {
+        const auto start = std::chrono::steady_clock::now();
+        auto done = rawreel::testing::submitAndWait(*inspect.context, *env.cpu,
+                                                    [](dvv::gpu::CommandRecorder&) {});
+        REQUIRE(done);
+        const auto stop = std::chrono::steady_clock::now();
+        if (i >= WARM_UP) {
+            empty.push_back(std::chrono::duration<double, std::milli>(stop - start).count());
+        }
+    }
+    const std::array<double, 2> round_trip = median_p95(std::move(empty));
+    std::println("frame cost, inspector: wall ms per submitted-and-waited frame, {} samples each",
+                 SAMPLES);
+    std::println("empty                      median {:7.3f} p95 {:7.3f}", round_trip[0],
+                 round_trip[1]);
+
+    // The Zoom window: the value strip as the app builds it (VALUE_GLYPHS, 11 pt at scale 2).
+    dvv::Result<dvv::gpu::GlyphStrip> glyphs = dvv::gpu::rasterGlyphStrip(
+        {.family = "", .sizePoints = 11}, 2.0, std::string(rawreel::VALUE_GLYPHS));
+    REQUIRE_MESSAGE(glyphs, (glyphs ? std::string() : glyphs.error().describe()));
+    const auto strip = std::make_shared<const dvv::gpu::GlyphStrip>(std::move(*glyphs));
+    ViewParams zoom;
+    zoom.view = dvv::media::ViewRequest{ViewMode::Zoom, 150, {1920, 1080}, PICTURE};
+    zoom.inspect.on = true;
+    zoom.inspect.numbers = true;
+    zoom.inspect.glyphs = strip;
+    zoom.inspect.metrics = {
+        .advance = strip->advance, .lineHeight = strip->height + 2, .padX = 4, .padY = 4};
+    zoom.markers.pin = dvv::media::ImagePixel{.x = 1920, .y = 1080};
+    const std::array<double, 2> zoom_cost = measure({1800, 1800}, zoom);
+    std::println("1800x1800 {:<19} median {:7.3f} p95 {:7.3f}; minus empty {:+7.3f} (budget 0.3)",
+                 "zoom 900 pt, values", zoom_cost[0], zoom_cost[1], zoom_cost[0] - round_trip[0]);
+
+    // The padding check: the main view (Fit), the Raw role present in both.
+    const ViewParams plain;
+    ViewParams checked;
+    checked.paddingMarks = true;
+    checked.overlay.markSize = 12;
+    checked.overlay.markRim = 1;
+    const std::array<double, 2> off = measure(PICTURE, plain);
+    const std::array<double, 2> on = measure(PICTURE, checked);
+    std::println("3840x2160 {:<19} median {:7.3f} p95 {:7.3f}", "4K, no check", off[0], off[1]);
+    std::println(
+        "3840x2160 {:<19} median {:7.3f} p95 {:7.3f}; check on - off {:+7.3f} (budget 0.5)",
+        "4K, padding check", on[0], on[1], on[0] - off[0]);
     static_cast<void>(std::fflush(stdout));
 }
 
@@ -2702,14 +2838,14 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: grid cost in pairs (manual)") {
                 const auto grid_on = makeRenderer(context(), 1);
                 std::uint64_t version = 0;
                 std::uint64_t number = 0;
-                const auto run = [&](ViewportRenderer& renderer,
-                                     const rawreel::OverlayParams& overlay, std::size_t i) {
+                const auto run = [&](ViewRenderer& renderer, const rawreel::OverlayParams& overlay,
+                                     std::size_t i) {
                     const double zoom = rebuilt && i % 2 == 1 ? c.zoom * 1.0001 : c.zoom;
-                    const DisplaySnapshot snapshot{
+                    const ViewSnapshot snapshot = viewSnapshot(
                         frameSet(g, 0, 1),
-                        DisplayParams{.view = {ViewMode::Zoom, zoom, {1920, 1080}, PICTURE},
-                                      .overlay = overlay},
-                        ++version};
+                        ViewParams{.view = {ViewMode::Zoom, zoom, {1920, 1080}, PICTURE},
+                                   .overlay = overlay},
+                        ++version);
                     const auto start = std::chrono::steady_clock::now();
                     auto frame = renderer.frame(
                         frameParams(extent, dvv::gpu::PresentEncoding::Linear, number++, true),
@@ -2735,8 +2871,8 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: grid cost in pairs (manual)") {
                 }
                 const ViewTransform view =
                     resolveView({ViewMode::Zoom, c.zoom, {1920, 1080}, PICTURE}, extent, PICTURE);
-                const CompositeConstants constants = rawreel::compositeConstants(
-                    rawreel::DisplayParams{.overlay = *c.grid}, view, {}, false);
+                const PictureConstants constants = rawreel::pictureConstants(
+                    rawreel::ViewParams{.overlay = *c.grid}, view, {}, false);
                 std::string drawn;
                 for (std::size_t l = 0; l < rawreel::GRID_LEVELS; ++l) {
                     drawn += (constants.levelShape[l] & rawreel::LEVEL_DRAWN) != 0 ? '1' : '0';
@@ -2761,4 +2897,32 @@ TEST_CASE_FIXTURE(CompositorTest, "compositor: grid cost in pairs (manual)") {
         }
     }
     static_cast<void>(std::fflush(stdout));
+}
+
+TEST_CASE_FIXTURE(CompositorTest, "inspect: a view without layers uses today's pipeline") {
+    const auto renderer = makeRenderer(context(), 1);
+    const DisplayFrame g = displayFrame(G);
+    const ViewParams picture = [] {
+        ViewParams params = DARK;
+        params.inspect.on = true;  // the Picture panel: no layer on
+        return params;
+    }();
+    const ViewParams planes = [&picture] {
+        ViewParams params = picture;
+        params.inspect.panels = rawreel::PanelKind::Planes;  // no planes view: one Picture panel
+        return params;
+    }();
+    const std::vector<std::byte> today = renderAndRead(*renderer, IMAGE, frameSet(g, 0, 1), DARK);
+    CHECK(mismatches(today,
+                     rawreel::pictureConstants(DARK, ViewTransform::fit(IMAGE, IMAGE), {}, false),
+                     g.image()) == 0);
+    for (const ViewParams* params : {&DARK, &picture, &planes}) {
+        const std::vector<std::byte> bytes =
+            renderAndRead(*renderer, IMAGE, frameSet(g, 0, 1), *params);
+        CHECK(bytes == today);
+        const RecordedInfo info = renderer->lastRecorded();
+        CHECK_FALSE(info.inspectPipeline);
+        CHECK(info.panels == 1);
+        CHECK(info.layerUploads == 0);
+    }
 }

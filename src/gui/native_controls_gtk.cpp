@@ -105,6 +105,11 @@ void setAccessibleName(wxWindow& window, const wxString& name) {
     }
 }
 
+wxFont systemMonospaceFont() {
+    const double points = wxNORMAL_FONT->GetFractionalPointSize();
+    return wxFont(wxFontInfo(points).Family(wxFONTFAMILY_TELETYPE));  // fontconfig's "monospace"
+}
+
 // GTK's own secondary text: the theme's "dim-label" style class (adding it again does nothing).
 void setSecondaryText(wxWindow& label) {
     if (GtkWidget* const widget = label.GetHandle(); widget != nullptr) {

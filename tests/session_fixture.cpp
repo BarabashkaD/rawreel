@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdio>
 #include <memory>
 #include <mutex>
@@ -11,6 +12,7 @@
 #include <thread>
 #include <utility>
 
+#include "core/frame_set.h"
 #include "core/timer.h"
 #include "dvv/base/lifetime.h"
 #include "dvv/base/task.h"
@@ -68,6 +70,13 @@ void RecordingSink::show(FrameSet frames) {
     shown.index = frames.index;
     shown.count = frames.count;
     shown.epoch = frames.epoch;
+    shown.streamSet = frames.streamSet;
+    for (std::size_t r = 0; r < VIEW_ROLE_COUNT; ++r) {
+        const auto role = static_cast<ViewRole>(r);
+        if (frames.lease(role)) {
+            shown.roles = shown.roles | ViewRoles::of(role);
+        }
+    }
     shown.indicesMatch = frames.count > 0;
     std::function<bool(const FrameSet&)> inspect;
     {
@@ -75,8 +84,8 @@ void RecordingSink::show(FrameSet frames) {
         inspect = inspect_;
     }
     shown.inspected = !inspect || inspect(frames);
-    for (std::uint32_t s = 0; s < frames.count && s < frames.views.size(); ++s) {
-        const auto& view = frames.views.at(s);
+    for (std::uint32_t s = 0; s < frames.count && s < MAX_STREAMS; ++s) {
+        const auto& view = frames.lease(ViewRole::Display, s);
         if (!view) {
             shown.indicesMatch = false;
             continue;
@@ -349,10 +358,7 @@ SessionOptions SessionFixture::options() {
             DVV_TRY(std::shared_ptr<dvv::media::FrameStore> store,
                     dvv::media::FrameStore::create({.cpu = cpu_pool, .io = io_pool}));
             MediaStack stack;
-            const dvv::media::Domain host = store->hostDomain();
-            stack.viewFor = [host](const dvv::media::FrameDesc& desc) {
-                return dvv::media::planesView(desc, dvv::media::HOST_PLANES, host);
-            };
+            stack.viewFor = hostStackViews(store->hostDomain());
             stack.store = std::move(store);
             return stack;
         };

@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 #include "core/commands.h"
 #include "core/layout.h"
@@ -20,9 +21,13 @@ namespace rawreel {
 
 class MainFrame;
 
-enum class FloatingKind : std::uint8_t { Info, GridAndRulers };
+enum class FloatingKind : std::uint8_t { Info, GridAndRulers, Zoom };
+// Fitted: the window sizes itself from its controls (refit). Resizable: the user sizes it; the size
+// is kept in DIP, so a font or scale change leaves it, and it is saved with the place.
+enum class FloatingSizing : std::uint8_t { Fitted, Resizable };
+
 inline constexpr std::size_t FLOATING_KIND_COUNT =
-    static_cast<std::size_t>(FloatingKind::GridAndRulers) + 1;  // the last kind
+    static_cast<std::size_t>(FloatingKind::Zoom) + 1;  // the last kind
 
 // A wx rectangle as the layout's screen rectangle, and back.
 [[nodiscard]] ScreenRect screenRect(const wxRect& rect);
@@ -32,7 +37,8 @@ inline constexpr std::size_t FLOATING_KIND_COUNT =
 
 class FloatingWindow : public wxFrame {
 public:
-    FloatingWindow(MainFrame& owner, FloatingKind kind, const wxString& title);
+    FloatingWindow(MainFrame& owner, FloatingKind kind, const wxString& title,
+                   FloatingSizing sizing = FloatingSizing::Fitted);
     FloatingWindow(const FloatingWindow&) = delete;
     FloatingWindow& operator=(const FloatingWindow&) = delete;
     FloatingWindow(FloatingWindow&&) = delete;
@@ -46,6 +52,14 @@ public:
     void showBesideOwner();
     // Hides the window and, if it was shown, keeps its place for this run.
     void hideKeepingPlace();
+    // The kept place (the position, and the size in window units) when there is one: the window was
+    // hidden once or restorePlace() set it.
+    [[nodiscard]] std::optional<ScreenRect> keptPlace() const;
+    // The kept size in DIP (a Resizable window; the last size it had, else 0 x 0).
+    [[nodiscard]] LayoutSize keptSizeDip() const noexcept { return size_dip_; }
+    // Sets the place the next show uses (x and y of `place`) and the size in DIP; a Resizable
+    // window takes the size at once.
+    void restorePlace(std::optional<ScreenRect> place, LayoutSize size_dip);
     // The owner was minimised (X11: hidden) or restored: a shown window hides with it, keeping its
     // place, and shows again, without activating, when the owner comes back.
     void followOwner(bool owner_hidden);
@@ -80,8 +94,11 @@ protected:
 private:
     [[nodiscard]] bool ownerHidden() const;
     void showNow();  // placed (kept place, else computed) and shown without activating
-    // The screen rectangle of another floating window that is shown, if any.
-    [[nodiscard]] std::optional<ScreenRect> otherShown() const;
+    // The screen rectangles of the other floating windows that are shown.
+    [[nodiscard]] std::vector<ScreenRect> othersShown() const;
+    void keepPlace();  // the position and, when Resizable, the DIP size, for this run
+    [[nodiscard]] wxSize windowSizeOf(LayoutSize dip) const;  // DIP to this window's units
+    void onSize(wxSizeEvent& event);
     void onCharHook(wxKeyEvent& event);
     void onClose(wxCloseEvent& event);
     void onDpiChanged(wxDPIChangedEvent& event);
@@ -90,8 +107,10 @@ private:
 
     MainFrame& owner_;
     FloatingKind kind_;
+    FloatingSizing sizing_;
     wxPanel* content_ = nullptr;
     std::optional<wxPoint> place_;  // kept at hide, for this run
+    LayoutSize size_dip_;           // the Resizable size, kept in DIP
     wxRect requested_;
     bool visible_ = false;          // the last show or hide asked for it to be on screen
     bool hidden_by_owner_ = false;  // the minimised owner hid the shown window

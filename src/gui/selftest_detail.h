@@ -123,6 +123,18 @@ void openSmokeStream(SelfTest* test);
 void showRulers(MainFrame& frame, bool show);
 // The frame's wxEVT_MENU handler for the menu item `id`.
 bool sendMenu(wxFrame& frame, int id);
+// A char-hook key event, injected (injectInput) as a real key press reaches the frame's
+// wxEVT_CHAR_HOOK handler first: whether a handler took it (one that called Skip() did not).
+// `target` is the window the event starts at (the focused window), from where it propagates up to
+// its top-level window. `ctrl`: ControlDown(), i.e. Cmd on macOS. `alt`: AltDown().
+bool sendKey(wxWindow& target, int keycode, bool shift = false, bool ctrl = false,
+             bool alt = false);
+// sendKey() at `focus`, with the focus there; false without a window.
+bool sendKeyWithFocus(MainFrame& frame, wxWindow* focus, int keycode, bool ctrl = false);
+// A mouse event of `type` on the viewport at the client point `at` (window units), injected, with
+// the button states given.
+void sendViewportMouse(Viewport& viewport, wxEventType type, wxPoint at, bool left_down,
+                       bool middle_down);
 // The Info window, shown first: the window in it that wx gives the focus when the user activates
 // it (focusLanding: the content panel, as the static text takes no focus from the keyboard);
 // null without a window.

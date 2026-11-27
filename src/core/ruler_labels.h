@@ -40,7 +40,8 @@
 
 namespace rawreel {
 
-inline constexpr std::string_view RULER_DIGITS = "0123456789";  // the glyph strip's cells, in order
+// The glyph strip's cells, in order; the shader's cell count is RULER_GLYPH_CELLS.
+inline constexpr std::string_view RULER_DIGITS = "0123456789";
 
 // The label spacing in device-independent pixels (pt): the number's gap after its tick, a tag's
 // padding along, a tag's inset across from the label band, and the end tags' margin inside the

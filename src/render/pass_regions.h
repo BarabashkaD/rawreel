@@ -1,6 +1,6 @@
 #pragma once
 
-// Which output pixels each pass of the viewport renderer draws: the picture pass and the two
+// Which output pixels each pass of the view renderer draws: the picture pass and the two
 // bands of the ruler pass split the output, so each pass reruns alone. A change that moves only
 // the cursor (its marker, the lit tick) redraws only the ruler pixels of each band, as nothing
 // else in a band depends on the cursor.
