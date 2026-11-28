@@ -1,9 +1,11 @@
 # Verifies the pinned custom_ffmpeg archive and its build provenance:
-#   cmake -DPREFIX=<third-party prefix> -DWORK_DIR=<dir> [-DOUT_FILE=<file>]
+#   cmake (-DPREFIX=<third-party prefix> | -DSTATE_FILE=<file>) -DWORK_DIR=<dir> [-DOUT_FILE=<file>]
 #         -P packaging/verify-ffmpeg-archive.cmake
-# Downloads DVV_CUSTOM_FFMPEG_URL with the pinned SHA256, runs `gh attestation verify` against the
-# repository of the URL, checks that the attested ref is refs/tags/v<DVV_CUSTOM_FFMPEG_VERSION> and
-# writes the attested commit to OUT_FILE (default <WORK_DIR>/custom_ffmpeg-commit.txt).
+# Reads the prefix's state file (<PREFIX>/dvv-third-party-state.cmake, or STATE_FILE: a copy of it,
+# so a job without the prefix can run the check), downloads DVV_CUSTOM_FFMPEG_URL with the pinned
+# SHA256, runs `gh attestation verify` against the repository of the URL, checks that the attested
+# ref is refs/tags/v<DVV_CUSTOM_FFMPEG_VERSION> and writes the attested commit to OUT_FILE (default
+# <WORK_DIR>/custom_ffmpeg-commit.txt).
 cmake_minimum_required(VERSION 3.25)
 include("${CMAKE_CURRENT_LIST_DIR}/check-package.cmake")
 
@@ -11,21 +13,38 @@ function(fail text)
     message(FATAL_ERROR "verify-ffmpeg-archive: ${text}")
 endfunction()
 
-foreach(required IN ITEMS PREFIX WORK_DIR)
-    if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
-        fail("${required} is required")
-    endif()
-endforeach()
-cmake_path(ABSOLUTE_PATH PREFIX NORMALIZE)
+if(NOT DEFINED WORK_DIR OR WORK_DIR STREQUAL "")
+    fail("WORK_DIR is required")
+endif()
+set(has_prefix OFF)
+set(has_state_file OFF)
+if(DEFINED PREFIX AND NOT PREFIX STREQUAL "")
+    set(has_prefix ON)
+endif()
+if(DEFINED STATE_FILE AND NOT STATE_FILE STREQUAL "")
+    set(has_state_file ON)
+endif()
+if(has_prefix AND has_state_file)
+    fail("pass PREFIX or STATE_FILE, not both")
+elseif(has_prefix)
+    cmake_path(ABSOLUTE_PATH PREFIX NORMALIZE)
+    set(state "${PREFIX}/dvv-third-party-state.cmake")
+elseif(has_state_file)
+    cmake_path(ABSOLUTE_PATH STATE_FILE NORMALIZE OUTPUT_VARIABLE state)
+else()
+    fail("PREFIX or STATE_FILE is required")
+endif()
 cmake_path(ABSOLUTE_PATH WORK_DIR NORMALIZE)
 if(NOT OUT_FILE)
     set(OUT_FILE "${WORK_DIR}/custom_ffmpeg-commit.txt")
 endif()
 cmake_path(ABSOLUTE_PATH OUT_FILE NORMALIZE)
 
-set(state "${PREFIX}/dvv-third-party-state.cmake")
 if(NOT EXISTS "${state}")
-    fail("${state} is missing (bootstrap the prefix first)")
+    if(has_prefix)
+        fail("${state} is missing (bootstrap the prefix first)")
+    endif()
+    fail("${state} is missing")
 endif()
 include("${state}")
 if(NOT DVV_BUNDLE_FFMPEG)

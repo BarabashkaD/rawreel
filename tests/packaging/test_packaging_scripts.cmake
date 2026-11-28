@@ -1,5 +1,5 @@
-# Unit tests of packaging/check-package.cmake and packaging/scan-artifact-privacy.cmake, and the
-# argument checks of packaging/dry-run.cmake. Run as
+# Unit tests of packaging/check-package.cmake and packaging/scan-artifact-privacy.cmake, the
+# argument checks of packaging/dry-run.cmake and packaging/verify-ffmpeg-archive.cmake. Run as
 # cmake -DWORK_DIR=<dir> -P test_packaging_scripts.cmake (CTest rawreel.packaging_scripts). Every
 # tree and file is built inside WORK_DIR, which is emptied first.
 # Each case prints "PASS <case>"; the first failed assertion stops the script. Lines that hold a
@@ -1495,6 +1495,60 @@ run_release_check("${case}" "${dist}" "linux: no package-info-linux.cmake")
 release_infos("${dist}" 1.0.0 1.0.0 "")
 file(APPEND "${dist}/package-info-macos.cmake" "set(RAWREEL_BUNDLED OFF)\n")
 run_release_check("${case}" "${dist}" "")
+pass("${case}")
+
+# --- verify-ffmpeg-archive.cmake: the arguments and the state file (no download, no gh) -------
+
+set(verify_script "${CMAKE_CURRENT_LIST_DIR}/../../packaging/verify-ffmpeg-archive.cmake")
+function(run_verify case expected)
+    execute_process(COMMAND "${CMAKE_COMMAND}" "-DWORK_DIR=${WORK_DIR}/verify-work" ${ARGN}
+                            -P "${verify_script}"
+                    RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE err)
+    string(REGEX REPLACE "[ \t\r\n]+" " " err "${err}")
+    if(result EQUAL 0)
+        message(FATAL_ERROR "FAIL ${case}: the check passed, expected '${expected}'")
+    endif()
+    string(FIND "${err}" "${expected}" at)
+    if(at EQUAL -1)
+        message(FATAL_ERROR "FAIL ${case}: expected '${expected}', got: ${err}")
+    endif()
+endfunction()
+
+set(verify_dir "${WORK_DIR}/verify")
+file(MAKE_DIRECTORY "${verify_dir}/prefix")
+set(case "verify-ffmpeg-archive: exactly one of PREFIX and STATE_FILE")
+run_verify("${case}" "PREFIX or STATE_FILE is required")
+run_verify("${case}" "pass PREFIX or STATE_FILE, not both" "-DPREFIX=${verify_dir}/prefix"
+           "-DSTATE_FILE=${verify_dir}/state.cmake")
+pass("${case}")
+
+set(case "verify-ffmpeg-archive: the state file is read from PREFIX or from STATE_FILE")
+run_verify("${case}" "${verify_dir}/prefix/dvv-third-party-state.cmake is missing"
+           "-DPREFIX=${verify_dir}/prefix")
+run_verify("${case}" "${verify_dir}/state.cmake is missing" "-DSTATE_FILE=${verify_dir}/state.cmake")
+file(WRITE "${verify_dir}/state.cmake" "set(DVV_BUNDLE_FFMPEG OFF)\n")
+run_verify("${case}" "does not bundle FFmpeg (DVV_BUNDLE_FFMPEG is OFF)"
+           "-DSTATE_FILE=${verify_dir}/state.cmake")
+file(WRITE "${verify_dir}/state.cmake"
+     "set(DVV_BUNDLE_FFMPEG ON)\nset(DVV_CUSTOM_FFMPEG_SHA256 \"00\")\n"
+     "set(DVV_CUSTOM_FFMPEG_VERSION \"1.0.0\")\n")
+run_verify("${case}" "DVV_CUSTOM_FFMPEG_URL is missing in ${verify_dir}/state.cmake"
+           "-DSTATE_FILE=${verify_dir}/state.cmake")
+pass("${case}")
+
+# --- package-info Linux APT line -------------------------------------------------------------
+
+# release.yml's clean-system check reads RAWREEL_LINUX_APT_PACKAGES from package-info-linux.cmake
+# (written by make-packages.cmake inside its Linux-only block); losing the line breaks that check
+# without any other test failing.
+set(case "make-packages.cmake writes RAWREEL_LINUX_APT_PACKAGES into package-info-linux.cmake")
+file(READ "${CMAKE_CURRENT_LIST_DIR}/../../packaging/make-packages.cmake" make_packages_text)
+string(FIND "${make_packages_text}" "if(RAWREEL_PLATFORM STREQUAL \"linux\")" linux_block)
+string(FIND "${make_packages_text}"
+       "set(RAWREEL_LINUX_APT_PACKAGES \\\"\${RAWREEL_LINUX_APT_PACKAGES}\\\")" apt_line)
+if(linux_block EQUAL -1 OR apt_line EQUAL -1 OR apt_line LESS linux_block)
+    message(FATAL_ERROR "FAIL ${case}: the APT packages line is missing from the Linux block")
+endif()
 pass("${case}")
 
 get_property(passed GLOBAL PROPERTY test_packaging_passed)

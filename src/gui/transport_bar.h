@@ -174,16 +174,19 @@ private:
 
     wxBitmapButton* addButton(wxSizer& sizer, Command command, Icon icon);
     void setUp(wxAnyButton& button, Command command, Icon icon);
+    // An icon push button's minimum size: the larger of the native minimum and BUTTON_*_DIP.
     void applyMinSize(wxAnyButton& button);
+    // A toggle's size (issue #44): exactly an icon push button's (Open's minimum, set before),
+    // as its minimum and maximum size.
+    void applyToggleSize(wxToggleButton& toggle);
+    // Every icon push button's minimum size, then every toggle's (the plane toggles among them):
+    // the icon rebuild and a DPI change.
+    void applyButtonSizes();
     // The zoom button's minimum size and zoom_room_ from its font (the constructor and a DPI
     // change), then applyZoomLabel().
     void applyZoomMinSize();
     void applyZoomLabel();  // the zoom button's label for zoom_shown_
-    // The plane toggles' minimum sizes: the larger of the native minimum for the letter and
-    // BUTTON_*_DIP (creation, a letter change, the icon rebuild and a DPI change). Whether one
-    // changed.
-    bool applyPlaneMinSize();
-    void popUpZoomMenu();  // the zoom button's wxEVT_BUTTON
+    void popUpZoomMenu();   // the zoom button's wxEVT_BUTTON
     void rebuildIcons();
     [[nodiscard]] wxColour systemColour(wxSystemColour index);
     void onDpiChanged(wxDPIChangedEvent& event);

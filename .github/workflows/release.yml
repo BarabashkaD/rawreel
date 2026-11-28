@@ -4,7 +4,10 @@
 # A real run must be started from main; it does the same from the v<version> tag of rawreel (the
 # libraries at its pins), attests the files and creates a draft release (a pre-release while the
 # major version is 0); a maintainer reviews and publishes it. Packages: Windows x64, Linux x64 and
-# macOS arm64 (Apple Silicon).
+# macOS arm64 (Apple Silicon). The Linux package is built in the CI image at the digest that the
+# pinned dvv-build names (ci-image/image.txt, read by its tools/ci-image-ref.cmake), the image CI
+# tests in; linux-host-checks verifies the custom_ffmpeg attestation and runs the package on a
+# clean Ubuntu 24.04.
 name: release
 
 on:
@@ -131,13 +134,67 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
-  linux:
+  # The CI image that the pinned dvv-build's CI tests in: tools/ci-image-ref.cmake reads the digest
+  # from ci-image/image.txt of the dvv-build commit that RELEASE_REF pins (libs/dvv-build) and
+  # prints the image reference and the container options (the runner account, not root). The job
+  # stays on the host and installs nothing.
+  linux-image:
     needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      options: ${{ steps.image.outputs.options }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: rawreel
+      # The submodule URLs are relative (check-pins), so dvv-build is the owner's dvv-build.
+      - name: The pinned dvv-build
+        id: pin
+        run: |
+          commit=$(git -C rawreel rev-parse HEAD:libs/dvv-build)
+          echo "dvv-build $commit"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/dvv-build
+          ref: ${{ steps.pin.outputs.commit }}
+          persist-credentials: false
+          path: dvv-build
+          sparse-checkout: |
+            ci-image/image.txt
+            tools/ci-image-ref.cmake
+          sparse-checkout-cone-mode: false
+      # The account that hosts the image, as in dvv-ci.yml (the ghcr package is public).
+      - name: CI image
+        id: image
+        env:
+          OWNER: ${{ vars.DVV_CI_IMAGE_OWNER || github.repository_owner }}
+        run: |
+          out=$(cmake "-DOWNER=$OWNER" -P dvv-build/tools/ci-image-ref.cmake)
+          echo "$out"
+          echo "$out" >> "$GITHUB_OUTPUT"
+
+  # Built in the CI image (linux-image), so the compiler, the window-system and Vulkan packages
+  # and the tools are those that CI tests with; the job installs nothing. Inside the container the
+  # paths are the container's ($RUNNER_TEMP, /__w/...): ${{ runner.temp }} would name the host's.
+  linux:
+    needs: [check, linux-image]
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     permissions:
       contents: read
-      attestations: read
+    container:
+      image: ${{ needs.linux-image.outputs.image }}
+      options: ${{ needs.linux-image.outputs.options }}
+    defaults:
+      run:
+        shell: bash -e {0}
     steps:
       # One checkout: the libraries come as submodules at the commits rawreel pins.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -146,36 +203,36 @@ jobs:
           submodules: recursive
           persist-credentials: false
           path: rawreel
+      # Before anything else runs in the image: it was built from the pinned dvv-build's inputs and
+      # holds the pinned tools and packages (the report names its environment hash).
+      - name: Check the CI image
+        env:
+          DVV_CI_IMAGE: ${{ needs.linux-image.outputs.image }}
+        run: cmake -DDVV_BUILD=rawreel/libs/dvv-build -P rawreel/libs/dvv-build/tools/check-ci-image.cmake
       # Tags can move: the log keeps the commit of rawreel and of every library this run built.
       - name: Record the commits
         run: |
           git -C rawreel rev-parse HEAD
           git -C rawreel submodule status
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.13"
-      - name: Install tools
-        run: python -m pip install -r rawreel/libs/dvv-build/tools/requirements.txt
       # Every pin is the commit of its library's version tag, the submodule URLs are relative and
       # the workflows use the pinned dvv-build version.
       - name: Check the pins
         run: cmake -DREPO=rawreel -DMODE=app -P rawreel/libs/dvv-build/tools/check-pins.cmake
-      - name: Install the compiler
-        run: sudo apt-get update && sudo apt-get install -y clang-19 libclang-rt-19-dev libstdc++-14-dev
-      # bootstrap builds wxWidgets on GTK 3 (its pkg-config check asks for these window-system
-      # packages); xvfb and xauth give the GUI smoke a display, lavapipe is its Vulkan device.
-      - name: Install the window-system and Vulkan packages
-        run: sudo apt-get install -y libgtk-3-dev pkgconf libx11-dev libxcb1-dev libxrandr-dev libwayland-dev zlib1g-dev libpng-dev xvfb xauth mesa-vulkan-drivers libvulkan1
+      # The container's own folders, for the steps that take paths as inputs.
+      - name: Folders
+        id: dirs
+        run: |
+          echo "out=$RUNNER_TEMP/out" >> "$GITHUB_OUTPUT"
+          echo "state=$RUNNER_TEMP/ffmpeg-state" >> "$GITHUB_OUTPUT"
       # No cache restore: bootstrap builds the prefix from the pinned, SHA256-checked archives
       # (libs/dvv-build/deps/versions.cmake), so no CI cache entry reaches a release.
       - name: Bootstrap
         run: ./rawreel/libs/dvv-build/bootstrap.sh --toolchain clang
-      # The archive the prefix bundles is the release of the custom_ffmpeg tag that SOURCE.txt names
-      # as the corresponding source (the attested ref is refs/tags/v<version>).
-      - name: Verify the custom_ffmpeg archive (SHA256 and attestation)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: cmake -DPREFIX=rawreel/libs/_third_party/clang "-DWORK_DIR=${{ runner.temp }}/ffmpeg-check" -P rawreel/packaging/verify-ffmpeg-archive.cmake
+      # For linux-host-checks, which verifies the custom_ffmpeg archive that the prefix names.
+      - name: Keep the prefix state
+        run: |
+          mkdir -p "$RUNNER_TEMP/ffmpeg-state"
+          cp rawreel/libs/_third_party/clang/dvv-third-party-state.cmake "$RUNNER_TEMP/ffmpeg-state/"
       - name: Build (Release)
         working-directory: rawreel
         run: |
@@ -185,17 +242,65 @@ jobs:
         working-directory: rawreel
         run: ctest --preset ninja-clang-release -LE "gpu|display|gui|oracle"
       - name: Package
-        run: cmake -DBUILD_DIR=rawreel/libs/_build/rawreel/ninja-clang -DCONFIG=Release "-DOUT_DIR=${{ runner.temp }}/out" -P rawreel/packaging/make-packages.cmake
+        run: cmake -DBUILD_DIR=rawreel/libs/_build/rawreel/ninja-clang -DCONFIG=Release "-DOUT_DIR=$RUNNER_TEMP/out" -P rawreel/packaging/make-packages.cmake
       # Lavapipe is a Vulkan device, so the GUI smoke must run here (no skip allowed).
       - name: Package smoke tests
         env:
           VERSION: ${{ inputs.version }}
           VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.json
           NO_AT_BRIDGE: "1"
-        run: xvfb-run -a -s "-screen 0 1920x1080x24" cmake "-DOUT_DIR=${{ runner.temp }}/out" -DPLATFORM=linux "-DWORK_DIR=${{ runner.temp }}/smoke" "-DEXPECTED_VERSION=$VERSION" -DGUI_SMOKE=linux -P rawreel/packaging/package-smoke.cmake
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" cmake "-DOUT_DIR=$RUNNER_TEMP/out" -DPLATFORM=linux "-DWORK_DIR=$RUNNER_TEMP/smoke" "-DEXPECTED_VERSION=$VERSION" -DGUI_SMOKE=linux -P rawreel/packaging/package-smoke.cmake
+      # Only out/ paths, so the artifact root stays out/ and publish finds the files at its top.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux
+          path: |
+            ${{ steps.dirs.outputs.out }}/rawreel-*
+            ${{ steps.dirs.outputs.out }}/package-info-linux.cmake
+          if-no-files-found: error
+          overwrite: true
+      # Not a release file: publish downloads its artifacts by name.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-ffmpeg-state
+          path: ${{ steps.dirs.outputs.state }}/dvv-third-party-state.cmake
+          if-no-files-found: error
+          overwrite: true
+
+  # The Linux checks that need the host: gh attestation verify (gh 2.49 or newer; the CI image has
+  # no gh) and docker for the clean system. Publish needs this job.
+  linux-host-checks:
+    needs: linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      # The packaging scripts only; the libraries are not needed.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          persist-credentials: false
+          path: rawreel
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux-ffmpeg-state
+          path: ${{ runner.temp }}/ffmpeg-state
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux
+          path: ${{ runner.temp }}/out
+      # The archive the prefix bundles is the release of the custom_ffmpeg tag that SOURCE.txt names
+      # as the corresponding source (the attested ref is refs/tags/v<version>).
+      - name: Verify the custom_ffmpeg archive (SHA256 and attestation)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: cmake "-DSTATE_FILE=${{ runner.temp }}/ffmpeg-state/dvv-third-party-state.cmake" "-DWORK_DIR=${{ runner.temp }}/ffmpeg-check" -P rawreel/packaging/verify-ffmpeg-archive.cmake
       # The only proof of the dependency list in README.md: a fresh Ubuntu 24.04 with just those
-      # packages (from the build's packaging-info) runs the package. xvfb and xauth are for the
-      # test only. The runner has the dev packages, so its own ldd proves less.
+      # packages (RAWREEL_LINUX_APT_PACKAGES of the package info) runs the package. xvfb and xauth
+      # are for the test only. The build image has the dev packages, so its own ldd proves less.
+      # The only step of the Linux release that installs from the live archive, on purpose.
       - name: Clean-system check
         timeout-minutes: 20
         env:
@@ -204,7 +309,7 @@ jobs:
           OUT: ${{ runner.temp }}/out
           APP: ${{ runner.temp }}/clean-system
         run: |
-          info=rawreel/libs/_build/rawreel/ninja-clang/packaging-info-Release.cmake
+          info=$OUT/package-info-linux.cmake
           packages=$(sed -n 's/^set(RAWREEL_LINUX_APT_PACKAGES "\(.*\)")$/\1/p' "$info" | tr ';' ' ')
           if [ -z "$packages" ]; then
             echo "::error::no RAWREEL_LINUX_APT_PACKAGES in $info"
@@ -240,15 +345,6 @@ jobs:
               /app/rawreel-cli info "lavfi:testsrc2=s=64x48:r=25,format=yuv420p" --json
               xvfb-run -a -s "-screen 0 1920x1080x24" /app/rawreel-gui --selftest smoke
             '
-      # Only out/ paths, so the artifact root stays out/ and publish finds the files at its top.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: linux
-          path: |
-            ${{ runner.temp }}/out/rawreel-*
-            ${{ runner.temp }}/out/package-info-linux.cmake
-          if-no-files-found: error
-          overwrite: true
 
   # Apple Silicon, macOS 27, Xcode 27. The runner has no Metal device that KosmicKrisp can use
   # (spec C10): the package smoke accepts "Vulkan: not available" and a skipped GUI selftest
@@ -348,7 +444,7 @@ jobs:
           overwrite: true
 
   publish:
-    needs: [windows, linux, macos]
+    needs: [windows, linux, linux-host-checks, macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

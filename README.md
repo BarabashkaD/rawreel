@@ -64,6 +64,12 @@ X11: on a Wayland desktop it runs through XWayland, so `DISPLAY` must be set (as
 desktop session, and in WSL on Windows 11 with WSLg). Without a display it exits with 1 and "no
 X11 display (DISPLAY is not set); rawreel-gui needs X11 or XWayland".
 
+The Linux package is built and tested in the CI image of the dvv-build version that the release
+pins (`ghcr.io/barabashkad/dvv-build-ci`, at the digest in that dvv-build's `ci-image/image.txt`):
+the Ubuntu 24.04 image with the compiler, packages and tools that rawreel's CI tests with. The
+release workflow checks the image before it builds, and runs the package on a clean Ubuntu 24.04
+with only the packages above.
+
 ### macOS
 
 **Requirements (macOS):** a Mac with Apple Silicon and macOS 27 or newer. Nothing else is needed:

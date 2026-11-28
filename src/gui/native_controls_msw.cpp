@@ -114,6 +114,9 @@ wxFont systemMonospaceFont() {
 // Windows: labels keep the normal window text (as File Properties).
 void setSecondaryText(wxWindow& /*label*/) {}
 
+// A push-like toggle and a bitmap button are both BUTTON controls with the same padding.
+void useIconButtonPadding(wxToggleButton& /*toggle*/) {}
+
 // No icons on the tabs of the Windows dialog.
 wxBitmapBundle settingsPageIcon(std::string_view /*sf_symbol*/) {
     return {};

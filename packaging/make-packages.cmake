@@ -5,7 +5,8 @@
 # rawreel-<v>-linux-x64.tar.xz, builds the symbols archive (-symbols.zip or -symbols.tar.xz),
 # checks that a bundled FFmpeg's SOURCE.txt in the package names the custom_ffmpeg tag of the
 # third-party prefix, and writes <OUT_DIR>/package-info-<platform>.cmake (read by
-# package-smoke.cmake and check-release-ffmpeg.cmake; no absolute paths).
+# package-smoke.cmake, check-release-ffmpeg.cmake and the clean-system check of release.yml; no
+# absolute paths).
 # macOS: installs the component into a folder (rawreel.app and the documents), gives the exes the
 # one LC_RPATH of the app, signs ad hoc from the inside out (the libraries in Contents/Frameworks
 # except a vendor-signed one, which keeps its signature, then the exes, then the app; never
@@ -266,10 +267,13 @@ set(RAWREEL_SYMBOLS \"${symbols}\")
 set(RAWREEL_SOURCE_TXT_CUSTOM_FFMPEG \"${source_txt_versions}\")
 set(RAWREEL_LICENCE_SUPPLEMENTS \"${RAWREEL_LICENCE_SUPPLEMENTS}\")
 ")
-# The ELF rules of package-smoke.cmake (Linux only, so the Windows file stays as it was).
+# The ELF rules of package-smoke.cmake and the Ubuntu packages that release.yml's clean-system
+# check installs, which runs without the build tree (Linux only, so the Windows file stays as it
+# was).
 if(RAWREEL_PLATFORM STREQUAL "linux")
     file(APPEND "${OUT_DIR}/package-info-${RAWREEL_PLATFORM}.cmake"
 "set(RAWREEL_LINUX_SYSTEM_SONAMES \"${RAWREEL_LINUX_SYSTEM_SONAMES}\")
+set(RAWREEL_LINUX_APT_PACKAGES \"${RAWREEL_LINUX_APT_PACKAGES}\")
 set(RAWREEL_LINUX_GLIBC_MAX \"${RAWREEL_LINUX_GLIBC_MAX}\")
 set(RAWREEL_LINUX_GLIBCXX_MAX \"${RAWREEL_LINUX_GLIBCXX_MAX}\")
 ")
