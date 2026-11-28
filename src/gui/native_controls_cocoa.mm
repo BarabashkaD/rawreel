@@ -240,6 +240,9 @@ void setSecondaryText(wxWindow& label) {
                  channel([colour blueComponent]), channel([colour alphaComponent])));
 }
 
+// wxOSX gives a toggle and a bitmap button the same NSRoundedBezelStyle.
+void useIconButtonPadding(wxToggleButton& /*toggle*/) {}
+
 std::optional<std::size_t> dataViewTopRow(wxDataViewCtrl& view) {
     return wx_generic::dataViewTopRow(view);
 }

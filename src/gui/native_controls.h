@@ -18,6 +18,7 @@
 
 class wxDataViewCtrl;
 class wxListCtrl;
+class wxToggleButton;
 
 namespace rawreel {
 
@@ -69,6 +70,12 @@ void setAccessibleName(wxWindow& window, const wxString& name);
 // wxEVT_SYS_COLOUR_CHANGED); GTK the "dim-label" style class; Windows: nothing (the normal window
 // text).
 void setSecondaryText(wxWindow& label);
+// A toggle (a wxBitmapToggleButton or a text wxToggleButton) drawn with the padding of an icon push
+// button (wxBitmapButton), so that both fit the same width (issue #44): in a native control bar
+// they share one bezel. GTK the CSS padding 0 that wxGTK gives a wxBU_EXACTFIT wxButton (every
+// wxBitmapButton) but not a wxToggleButton. macOS: nothing (wxOSX gives both the same
+// NSRoundedBezelStyle). Windows: nothing (both are push-like BUTTON controls).
+void useIconButtonPadding(wxToggleButton& toggle);
 
 // The system's monospace font at the normal font's size: macOS the user's fixed-pitch font
 // (wxSYS_ANSI_FIXED_FONT); Windows Consolas; GTK fontconfig's "monospace".

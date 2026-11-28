@@ -185,10 +185,11 @@ TransportBar::TransportBar(wxWindow* parent, dvv::MoveOnlyFunction<void(Command)
         plane->Disable();
         plane->Bind(wxEVT_TOGGLEBUTTON,
                     [this, command](wxCommandEvent& /*event*/) { execute_(command); });
+        useIconButtonPadding(*plane);
+        applyToggleSize(*plane);
         right->Add(plane, wxSizerFlags().Border(wxALL, border));
         planes_.at(k) = plane;
     }
-    (void)applyPlaneMinSize();
     // Alpha in its own group before the zoom group; its enabled state follows setAlpha alone.
     alpha_ =
         new wxBitmapToggleButton(this, wxID_ANY, bundles_[static_cast<std::size_t>(Icon::Blend)],
@@ -280,17 +281,49 @@ void TransportBar::setUp(wxAnyButton& button, Command command, Icon icon) {
     if (command != Command::Open && command != Command::InfoWindow) {
         button.Disable();
     }
-    applyMinSize(button);
+    if (auto* const toggle = dynamic_cast<wxToggleButton*>(&button); toggle != nullptr) {
+        useIconButtonPadding(*toggle);
+        applyToggleSize(*toggle);
+    } else {
+        applyMinSize(button);
+    }
     buttons_.push_back({&button, command, icon});
 }
 
-// The larger of the native minimum and BUTTON_*_DIP.
 void TransportBar::applyMinSize(wxAnyButton& button) {
     button.SetMinSize(wxDefaultSize);
     button.InvalidateBestSize();
     const wxSize native = button.GetBestSize();
     const wxSize least = FromDIP(wxSize(BUTTON_WIDTH_DIP, BUTTON_HEIGHT_DIP));
     button.SetMinSize(wxSize(std::max(native.x, least.x), std::max(native.y, least.y)));
+}
+
+// The native toggles of macOS and GTK are wider than the icon buttons (wx's padding for a toggle,
+// not a platform rule): the toggle's own best size is not asked.
+void TransportBar::applyToggleSize(wxToggleButton& toggle) {
+    if (open_ == nullptr) {
+        DVV_LOG_ERROR("transport: a toggle is sized before the Open button exists");
+        return;
+    }
+    const wxSize size = open_->GetMinSize();
+    toggle.SetMinSize(size);
+    toggle.SetMaxSize(size);
+}
+
+void TransportBar::applyButtonSizes() {
+    for (const IconButton& entry : buttons_) {
+        if (dynamic_cast<wxToggleButton*>(entry.button) == nullptr) {
+            applyMinSize(*entry.button);
+        }
+    }
+    for (const IconButton& entry : buttons_) {
+        if (auto* const toggle = dynamic_cast<wxToggleButton*>(entry.button); toggle != nullptr) {
+            applyToggleSize(*toggle);
+        }
+    }
+    for (wxToggleButton* const plane : planes_) {
+        applyToggleSize(*plane);
+    }
 }
 
 // The zoom button's minimum (zoom buttons design §3): as wide as "Fit (8888.8 %)" and the mark
@@ -307,21 +340,6 @@ void TransportBar::applyZoomMinSize() {
     dc.SetFont(zoom_->GetFont());
     zoom_room_ = dc.GetTextExtent(widest).x;
     applyZoomLabel();
-}
-
-bool TransportBar::applyPlaneMinSize() {
-    const wxSize least = FromDIP(wxSize(BUTTON_WIDTH_DIP, BUTTON_HEIGHT_DIP));
-    bool changed = false;
-    for (wxToggleButton* const plane : planes_) {
-        const wxSize before = plane->GetMinSize();
-        plane->SetMinSize(wxDefaultSize);
-        plane->InvalidateBestSize();
-        const wxSize native = plane->GetBestSize();
-        const wxSize size(std::max(native.x, least.x), std::max(native.y, least.y));
-        plane->SetMinSize(size);
-        changed = changed || size != before;
-    }
-    return changed;
 }
 
 // The shown text, cut by hand when wider than zoom_room_: trailing characters go until the rest
@@ -414,7 +432,6 @@ void TransportBar::setPaddingCheck(bool on, bool available) {
 
 void TransportBar::setPlanes(std::array<bool, 3> on, std::array<bool, 3> available,
                              std::array<char, 3> letters) {
-    bool relabelled = false;
     for (std::size_t k = 0; k < planes_.size(); ++k) {
         wxToggleButton& plane = *planes_.at(k);
         const char letter = letters.at(k);
@@ -428,7 +445,6 @@ void TransportBar::setPlanes(std::array<bool, 3> on, std::array<bool, 3> availab
                 static_cast<Command>(static_cast<std::size_t>(Command::Plane1) + k);
             plane.SetToolTip(
                 fromUtf8(tooltipText(commandInfo(command), planeHelp(letter), CMD_FOR_CTRL)));
-            relabelled = true;
         }
         if (plane.GetValue() != on.at(k)) {
             plane.SetValue(on.at(k));
@@ -436,10 +452,6 @@ void TransportBar::setPlanes(std::array<bool, 3> on, std::array<bool, 3> availab
         if (plane.IsThisEnabled() != available.at(k)) {
             plane.Enable(available.at(k));
         }
-    }
-    // A wider letter widens its button: the row is laid out again.
-    if (relabelled && applyPlaneMinSize()) {
-        Layout();
     }
 }
 
@@ -469,19 +481,15 @@ void TransportBar::rebuildIcons() {
     for (const IconButton& entry : buttons_) {
         const Icon icon = entry.button == play_ ? play_icon_ : entry.icon;
         entry.button->SetBitmapLabel(bundles_[static_cast<std::size_t>(icon)]);
-        applyMinSize(*entry.button);
     }
-    (void)applyPlaneMinSize();  // the plane toggles keep their letters, no bitmap
+    applyButtonSizes();
     ++icon_rebuilds_;
     Layout();
 }
 
 void TransportBar::onDpiChanged(wxDPIChangedEvent& event) {
-    for (const IconButton& entry : buttons_) {
-        applyMinSize(*entry.button);
-    }
+    applyButtonSizes();
     applyZoomMinSize();
-    (void)applyPlaneMinSize();
     Layout();
     event.Skip();
 }

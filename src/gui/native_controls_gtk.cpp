@@ -18,6 +18,7 @@
 
 #include <gtk/gtk.h>
 #include <wx/dataview.h>
+#include <wx/tglbtn.h>
 
 #include "dvv/base/uri.h"
 #include "dvv/base/utf8.h"
@@ -115,6 +116,21 @@ void setSecondaryText(wxWindow& label) {
     if (GtkWidget* const widget = label.GetHandle(); widget != nullptr) {
         gtk_style_context_add_class(gtk_widget_get_style_context(widget), "dim-label");
     }
+}
+
+// The provider wxButton::Create adds for wxBU_EXACTFIT (wxWindowGTK::GTKApplyCssStyle, which is
+// protected): the theme's padding goes.
+void useIconButtonPadding(wxToggleButton& toggle) {
+    GtkWidget* const widget = toggle.GetHandle();
+    if (widget == nullptr) {
+        return;
+    }
+    GtkCssProvider* const provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(provider, "* { padding: 0; }", -1, nullptr);
+    gtk_style_context_add_provider(gtk_widget_get_style_context(widget),
+                                   GTK_STYLE_PROVIDER(provider),
+                                   GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(provider);
 }
 
 // No icons on the tabs of the dialog.

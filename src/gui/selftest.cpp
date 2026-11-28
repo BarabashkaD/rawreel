@@ -10375,6 +10375,68 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             seen = std::format("playing {}", status().playing);
             return !status().playing;
         }));
+    // Issue #27: after a Shift step (Shift+Right, 10 frames) the playhead follows playback; the
+    // bar stays Idle and every update moves the thumb on.
+    steps.push_back(idle_at("idle at 10 for a Shift step", 10));
+    steps.push_back(step(
+        "Shift+Right steps to 20",
+        [&frame, record_seeks] {
+            record_seeks();
+            sendKey(frame, WXK_RIGHT, true);
+        },
+        [&frame, scrub, settled, seeks_text](std::string& seen) {
+            TransportBar& bar = frame.transportBar();
+            const bool idle = bar.scrubState() == ScrubState::Idle;
+            seen = std::format("idle {}, slider {}, seeks [{}]", idle, bar.slider().GetValue(),
+                               seeks_text());
+            return settled(20) && idle && bar.slider().GetValue() == 20 && scrub->seeks.empty();
+        }));
+    steps.push_back(step(
+        "the playhead follows playback after a Shift step",
+        [&frame, scrub] {
+            frame.transportBar().setUpdateObserverForTest(
+                [scrub](int value) { scrub->updates.push_back(value); });
+            sendKey(frame, WXK_SPACE);
+        },
+        [&frame, scrub, seeks_text, status](std::string& seen) {
+            TransportBar& bar = frame.transportBar();
+            const bool idle = bar.scrubState() == ScrubState::Idle;
+            const bool rising = std::ranges::is_sorted(scrub->updates);
+            std::vector<int> distinct = scrub->updates;
+            const auto [first, last] = std::ranges::unique(distinct);
+            distinct.erase(first, last);
+            const bool after_step = !distinct.empty() && distinct.front() >= 20;
+            seen = std::format(
+                "idle {}, playing {}, updates {}, distinct {}, rising {}, from {}, "
+                "seeks [{}]",
+                idle, status().playing, scrub->updates.size(), distinct.size(), rising,
+                distinct.empty() ? -1 : distinct.front(), seeks_text());
+            return idle && status().playing && rising && after_step && distinct.size() >= 4 &&
+                   scrub->seeks.empty();
+        }));
+    steps.push_back(step(
+        "pause after the Shift step: the thumb is at the target",
+        [&frame, status] {
+            if (status().playing) {
+                frame.execute(Command::PlayPause);
+            }
+        },
+        [&frame, scrub, stop_recording, status](std::string& seen) {
+            TransportBar& bar = frame.transportBar();
+            const PlayerStatus now = status();
+            const SessionStatus full = frame.session().status();
+            const bool idle = bar.scrubState() == ScrubState::Idle;
+            const bool rising = std::ranges::is_sorted(scrub->updates);
+            seen = std::format("idle {}, playing {}, slider {}, target {}, rising {}", idle,
+                               now.playing, bar.slider().GetValue(), now.target, rising);
+            if (now.playing || !idle || !rising || full.inflight != 0 ||
+                frame.lastRevisionForTest() != full.revision ||
+                bar.slider().GetValue() != now.target) {
+                return false;
+            }
+            stop_recording();
+            return true;
+        }));
     // The tail of a Windows release pair (spec §6.2 notes): Windows reads TBM_GETPOS again for
     // the CHANGED, so it carries the value the Idle view has just set. Paused, that value is the
     // release's; during playback only the idle_value_ rule keeps it from seeking (and pausing).
@@ -12275,35 +12337,37 @@ std::vector<SelfTestStep> playerScenario(SelfTest& test) {
             frame.playerPanel().Layout();
             return ok;
         }));
-    // The icon buttons (Zoom out and Zoom in among them; the zoom text button is not one) are
-    // equally wide, and so are the Loop and "i" toggles (on MSW a toggle without wxBU_EXACTFIT gets
-    // the standard push-button width). On Windows a toggle is as wide as a button; the native
-    // toggles of macOS (NSButton) and GTK are wider.
+    // The icon buttons (Zoom out and Zoom in among them; the zoom text button is not one) and
+    // every toggle (the bitmap toggles and the plane letters) are equally wide on every OS (issue
+    // #44): in a native control bar a toggle and a push button share one bezel.
     steps.push_back(step(
         "the buttons are equally wide", [] {},
         [&frame](std::string& seen) {
             seen.clear();
             TransportBar& bar = frame.transportBar();
-            auto width = [&bar, &seen](Command command) {
-                const int x = bar.buttonForTest(command).GetSize().x;
-                seen +=
-                    std::format("{} {}; ", commandTable()[static_cast<std::size_t>(command)].id, x);
+            auto width = [&seen](std::string_view id, const wxWindow& button) {
+                const int x = button.GetSize().x;
+                seen += std::format("{} {}; ", id, x);
                 return x;
             };
-            const int button = width(Command::Open);
-            bool equal = true;
-            for (const Command command : {Command::Format, Command::First, Command::StepBack,
-                                          Command::PlayPause, Command::Stop, Command::StepForward,
-                                          Command::Last, Command::ZoomOut, Command::ZoomIn}) {
-                const int other = width(command);
-                equal = equal && other == button;
+            auto command_width = [&bar, &width](Command command) {
+                return width(commandTable()[static_cast<std::size_t>(command)].id,
+                             bar.buttonForTest(command));
+            };
+            const int button = command_width(Command::Open);
+            // An unlaid-out bar (all widths 0) must not pass: Open is at least the minimum width.
+            bool equal = button >= bar.FromDIP(29);
+            for (const Command command :
+                 {Command::Format, Command::First, Command::StepBack, Command::PlayPause,
+                  Command::Stop, Command::StepForward, Command::Last, Command::ZoomOut,
+                  Command::ZoomIn, Command::Loop, Command::Alpha, Command::Pipette,
+                  Command::PaddingCheck, Command::Grid, Command::InfoWindow}) {
+                equal = command_width(command) == button && equal;
             }
-            const int toggle = width(Command::Loop);
-            const int info = width(Command::InfoWindow);
-            equal = equal && info == toggle;
-#if defined(__WXMSW__)
-            equal = equal && toggle == button;
-#endif
+            for (std::size_t k = 0; k < 3; ++k) {
+                equal = width(std::format("plane{}", k + 1), bar.planeButtonForTest(k)) == button &&
+                        equal;
+            }
             return equal;
         }));
     steps.push_back(step(
